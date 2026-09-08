@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- chat_dynamics_ui: shared first-paint bootstrap and account preference -->
+    <script src="./theme.js"></script>
+    <meta name="color-scheme" content="light dark" />
+    <title>插件参数配置</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./plugin_nav.css" />
+    <link rel="stylesheet" href="./theme.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="app plugin-shell">
+      <div class="plugin-layout">
+        <aside class="plugin-side" aria-label="插件页面">
+          <p class="plugin-side-label">页面</p>
+          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
+        </aside>
+        <div class="plugin-main">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
+              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <p class="eyebrow">ASTRBOT / CONFIG</p>
+            <h1 id="pageTitle">插件参数配置</h1>
+            <p class="lede" id="pageDesc">常用项默认展开，高级项折叠。Provider 从 AstrBot 已有服务商中选择。</p>
+          </div>
+        </div>
+        <div class="topbar-tools">
+          <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
+          <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
+            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
+            <span class="connection-copy">
+              <span class="tool-label">连接状态</span>
+              <span id="linkLabel">未连接</span>
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <div class="action-bar" role="region" aria-label="配置操作">
+        <div class="action-copy">
+          <strong id="actionTitle">未修改</strong>
+          <p class="ops-note" id="configNote" role="status" aria-live="polite"></p>
+        </div>
+        <div class="action-buttons">
+          <button type="button" class="button button-quiet" id="btnConfigReload">重新读取</button>
+          <button type="button" class="button" id="btnConfigApply">强制应用</button>
+          <button type="button" class="button button-primary" id="btnConfigSave" disabled>保存并应用</button>
+        </div>
+      </div>
+
+      <main class="content">
+        <p class="ops-note error hidden" id="configMismatch" role="status"></p>
+        <div id="configForm" class="config-sections" aria-label="插件参数表单" aria-busy="true"></div>
+      </main>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

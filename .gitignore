@@ -1,0 +1,25 @@
+data/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+artifacts/
+dist/
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local-only work artifacts (never publish)
+.agents/
+.codegraph/
+astrbot_plugin_chat_dynamics/

@@ -1,0 +1,20 @@
+{
+  "plugin_name": "细腻群聊动态过滤器",
+  "pages.console.title": "群聊动态控制台",
+  "pages.console.desc": "按 UMO 会话监视群聊氛围、冷却与对话图谱。",
+  "console_title": "群聊动态控制台",
+  "observe_mode": "观察模式",
+  "balanced_mode": "平衡模式",
+  "active_group_mode": "活跃群聊",
+  "content_redacted": "控制台正文：已脱敏",
+  "pages.config.title": "插件参数配置",
+  "pages.config.desc": "常用项展开、高级项折叠；Provider 从 AstrBot 已有服务商选择。",
+  "pages.today.title": "今日读空气",
+  "pages.today.desc": "场合胶囊、存在感温度计与最近为什么没回（群主仪表盘首页）。",
+  "pages.manners.title": "分寸台",
+  "pages.manners.desc": "隐身—懂事—活跃旋钮与社交/媒体分寸芯片。",
+  "pages.memory.title": "记忆小本",
+  "pages.memory.desc": "纪念日、约定与试用梗；忘掉或今晚别提。",
+  "pages.replay.title": "场景回放",
+  "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。"
+}

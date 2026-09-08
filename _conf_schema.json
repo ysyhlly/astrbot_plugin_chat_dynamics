@@ -1,0 +1,648 @@
+{
+  "decision_mode": {
+    "description": "互动决策模式",
+    "type": "string",
+    "default": "legacy",
+    "options": [
+      "legacy",
+      "persona_model"
+    ],
+    "hint": "旧安装保持 legacy。persona_model 沿用当前 AstrBot 人设，每个完整回合先模型决策，再由主 Agent 回复；建议先打开 shadow_mode。"
+  },
+  "decision_provider": {
+    "description": "互动决策 Provider",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "仅 persona_model 生效；为空沿用主回复 Provider。每轮至多一次决策调用，决策模型不调用工具。"
+  },
+  "decision_timeout": {
+    "description": "决策超时秒数",
+    "type": "float",
+    "default": 8.0,
+    "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
+  },
+  "enable": {
+    "description": "是否启用群聊动态过滤器",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，对生效范围内的群聊做防抖、指代门闩、冷却和回复装饰。主回复仍走 AstrBot 原管线（人格、历史、工具）。"
+  },
+  "pipeline_mode": {
+    "description": "管线模式",
+    "type": "string",
+    "default": "filter",
+    "options": [
+      "filter",
+      "exclusive"
+    ],
+    "hint": "filter：只关门/装饰，不 stop_event，其它插件仍能收到消息。exclusive：旧独占模式，会吞掉后续插件，仅在确实需要时开启。"
+  },
+  "ambient_intervention": {
+    "description": "允许未被点名时主动插话",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。legacy 下按 WTS 决定弱指代是否开口。persona_model 下该开关不再单独否决模型决策，仅作控制台兼容项。"
+  },
+  "takeover_all": {
+    "description": "对全部群聊生效",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后对所有未被黑名单排除的群启用过滤器。默认关闭，避免一安装就改变全部群聊。"
+  },
+  "takeover_groups": {
+    "description": "生效群聊白名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "填入需要过滤的群聊 ID。白名单为空且未开启“对全部群聊生效”时，不会处理任何群。"
+  },
+  "exclude_groups": {
+    "description": "排除群聊黑名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "黑名单中的群聊将保持 AstrBot 默认处理流程，本插件不介入。"
+  },
+  "provider": {
+    "description": "旧版统一 Chat Provider（兼容项）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "兼容 v1.1：当 reply_provider/vibe_provider 为空时同时作为主回复和氛围校准 Provider。新配置请优先填写专用字段。"
+  },
+  "reply_provider": {
+    "description": "主回复 Chat Provider",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "为空时回退旧版 provider，再为空时按当前 UMO 使用会话默认 Provider。"
+  },
+  "vibe_provider": {
+    "description": "氛围校准 Chat Provider",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "仅用于低频氛围校准；为空时回退旧版 provider。persona_model 下不会再调用氛围 LLM，此字段失效。"
+  },
+  "bot_names": {
+    "description": "机器人昵称 / 唤醒名",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "用于识别点名。请填写完整昵称（如“小助手”），不要用“bot”“助手”这种容易误伤的短词。"
+  },
+  "command_prefix": {
+    "description": "指令前缀",
+    "type": "string",
+    "default": "/",
+    "hint": "以此前缀开头的消息不会被状态机吞掉，交给指令处理器。"
+  },
+  "debounce_base_cooldown": {
+    "description": "防抖基础冷却时间 (秒)",
+    "type": "float",
+    "default": 3.5,
+    "slider": {
+      "min": 0,
+      "max": 30,
+      "step": 0.1
+    },
+    "hint": "同一用户发送消息后的基础等待时间（默认 3.5 秒）。"
+  },
+  "debounce_extended_cooldown": {
+    "description": "悬挂语句扩展冷却时间 (秒)",
+    "type": "float",
+    "default": 6.5,
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 0.1
+    },
+    "hint": "当检测到语句截断或未闭合标点时动态拉伸的冷却时间（默认 6.5 秒）。"
+  },
+  "debounce_max_cap": {
+    "description": "防抖硬上限时间 (秒)",
+    "type": "float",
+    "default": 12.0,
+    "slider": {
+      "min": 0,
+      "max": 120,
+      "step": 0.5
+    },
+    "hint": "单次聚合窗口的最长允许持续时间，防止无限推迟（默认 12.0 秒）。"
+  },
+  "strong_addressivity_threshold": {
+    "description": "强指代判定阈值",
+    "type": "float",
+    "default": 0.7,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "定向度评分大于等于该阈值时判定为明确指向机器人（默认 0.70）。"
+  },
+  "safe_hover_threshold": {
+    "description": "安全悬停判定阈值",
+    "type": "float",
+    "default": 0.4,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "定向度在此区间内 (0.40 ~ 0.70) 仅静默记入图谱，不主动抢答（默认 0.40）。"
+  },
+  "deep_cooling_minutes": {
+    "description": "深度冷却周期 (分钟)",
+    "type": "float",
+    "default": 15.0,
+    "slider": {
+      "min": 0,
+      "max": 180,
+      "step": 1
+    },
+    "hint": "触发话题壁垒或冷场后，机器人保持静默观察的分钟数（默认 15.0 分钟）。"
+  },
+  "chars_per_second": {
+    "description": "模拟打字速率 (字/秒)",
+    "type": "float",
+    "default": 25.0,
+    "slider": {
+      "min": 1,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "用于计算拟人化输入延迟的打字速度（默认 25.0 字/秒）。"
+  },
+  "base_thinking_delay": {
+    "description": "基础思考停顿 (秒)",
+    "type": "float",
+    "default": 0.8,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 0.1
+    },
+    "hint": "首次输出前的拟人化思考停顿（默认 0.8 秒）。"
+  },
+  "max_fragments": {
+    "description": "最大碎发条数",
+    "type": "int",
+    "default": 3,
+    "slider": {
+      "min": 1,
+      "max": 3,
+      "step": 1
+    },
+    "hint": "装饰原管线回复时最多拆成几条。超过 3 没有意义，硬上限就是 3。"
+  },
+  "max_fragment_chars": {
+    "description": "单条消息目标长度",
+    "type": "int",
+    "default": 120,
+    "slider": {
+      "min": 40,
+      "max": 500,
+      "step": 10
+    },
+    "hint": "碎发时单条消息的软长度目标；极长回复会优先保留完整内容。"
+  },
+  "inter_burst_interval": {
+    "description": "碎发基础间隔 (秒)",
+    "type": "float",
+    "default": 1.2,
+    "slider": {
+      "min": 0.6,
+      "max": 3,
+      "step": 0.1
+    },
+    "hint": "连续短消息之间的基础间隔，会按消息长度和群聊模式微调。"
+  },
+  "casual_emoji_enabled": {
+    "description": "允许闲聊表情反应",
+    "type": "bool",
+    "default": false,
+    "hint": "legacy 下仅在非正式短回复末尾追加一个场景匹配的认可 Emoji。persona_model 下后处理不补表情，表情由带人设的生成决定。"
+  },
+  "strip_markdown_in_banter": {
+    "description": "闲聊模式格式降级",
+    "type": "bool",
+    "default": true,
+    "hint": "在快速碎梗与非正式闲聊氛围下自动清洗 Markdown 格式与生硬标点。"
+  },
+  "vibe_llm_enabled": {
+    "description": "启用低频 LLM 氛围校准",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。legacy 下可低频校准氛围。persona_model 下不会再调用氛围 LLM，本地遥测仍作为决策参考。"
+  },
+  "shadow_mode": {
+    "description": "观察模式（不产生副作用）",
+    "type": "bool",
+    "default": false,
+    "hint": "legacy：只记录预计动作，不抑制、停止、调用 LLM 或发送。persona_model：仍调用决策模型并记录预计动作/状态/目标/耗时，但不生成回复、不改宿主回复。"
+  },
+  "console_show_message_content": {
+    "description": "控制台显示消息正文",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
+  },
+  "telemetrics_window_seconds": {
+    "description": "遥测滑动窗口 (秒)",
+    "type": "float",
+    "default": 60.0,
+    "slider": {
+      "min": 15,
+      "max": 300,
+      "step": 5
+    },
+    "hint": "计算 MPM、平均字符数和场景标签时使用的时间窗口（默认 60 秒）。"
+  },
+  "fast_banter_enter_mpm": {
+    "description": "进入快速碎梗的 MPM",
+    "type": "float",
+    "default": 12.0,
+    "slider": {
+      "min": 4,
+      "max": 40,
+      "step": 0.5
+    },
+    "hint": "消息速率达到该阈值时，氛围状态机更倾向进入 fast_banter。"
+  },
+  "chill_fade_enter_mpm": {
+    "description": "进入能量衰退的 MPM",
+    "type": "float",
+    "default": 3.0,
+    "slider": {
+      "min": 0.5,
+      "max": 12,
+      "step": 0.5
+    },
+    "hint": "消息速率低于该阈值时，氛围状态机更倾向进入 chill_fade。"
+  },
+  "wts_topic_weight": {
+    "description": "WTS 话题相关度权重",
+    "type": "float",
+    "default": 0.12,
+    "slider": {
+      "min": 0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "legacy 环境插话时，话题相关度对发言欲望的加分权重。persona_model 下不单独否决是否开口，仅作决策参考。"
+  },
+  "wts_professionalism_weight": {
+    "description": "WTS 专业度权重",
+    "type": "float",
+    "default": 0.08,
+    "slider": {
+      "min": 0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "legacy 下内容专业度对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
+  },
+  "wts_question_weight": {
+    "description": "WTS 问题价值权重",
+    "type": "float",
+    "default": 0.08,
+    "slider": {
+      "min": 0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "legacy 下问句或求助句对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
+  },
+  "wts_participation_weight": {
+    "description": "WTS 多人参与度权重",
+    "type": "float",
+    "default": 0.06,
+    "slider": {
+      "min": 0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "legacy 下窗口内独立发言人数对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
+  },
+  "wts_fatigue_weight": {
+    "description": "WTS 发言疲劳权重",
+    "type": "float",
+    "default": 1.0,
+    "slider": {
+      "min": 0,
+      "max": 2,
+      "step": 0.05
+    },
+    "hint": "legacy 下五分钟内累计发言对发言欲望的惩罚倍率。persona_model 下不因连续短句强制冷却。"
+  },
+  "conversation_router_enabled": {
+    "description": "启用短期会话路由",
+    "type": "bool",
+    "default": true,
+    "hint": "结合活跃话题、候选父消息和对话对象判断自然续聊，区分谈论机器人与向机器人提问。"
+  },
+  "routing_neural_timeout": {
+    "description": "模糊消息向量等待上限（秒）",
+    "type": "float",
+    "default": 0.5,
+    "slider": {"min": 0, "max": 2, "step": 0.1},
+    "hint": "仅启用神经向量时生效；明确 @ 或引用不等待。超时使用本地证据，0 表示不等待。"
+  },
+  "topic_window_seconds": {
+    "description": "活跃话题保留时间（秒）",
+    "type": "float",
+    "default": 300.0,
+    "slider": {
+      "min": 60.0,
+      "max": 1800.0,
+      "step": 30.0
+    },
+    "hint": "会话话题活跃窗口。超时无新消息的话题会被自动清理，避免历史话题错误复用。"
+  },
+  "topic_join_threshold": {
+    "description": "话题归属综合置信度阈值",
+    "type": "float",
+    "default": 0.48,
+    "slider": {
+      "min": 0.30,
+      "max": 0.85,
+      "step": 0.02
+    },
+    "hint": "新消息匹配已有活跃话题的最低得分。高于此值且领先第二话题一定间隔（如 0.06）时归入该话题。"
+  },
+  "parent_window_seconds": {
+    "description": "候选父消息检索窗口（秒）",
+    "type": "float",
+    "default": 180.0,
+    "slider": {
+      "min": 30.0,
+      "max": 600.0,
+      "step": 15.0
+    },
+    "hint": "在当前话题内向前寻找最可能被回复/提问的父消息的时间跨度。"
+  },
+  "parent_accept_threshold": {
+    "description": "推断回复边接受阈值",
+    "type": "float",
+    "default": 0.72,
+    "slider": {
+      "min": 0.50,
+      "max": 0.95,
+      "step": 0.02
+    },
+    "hint": "多因子打分达到该阈值且显著领先（margin >= 0.08）时，才建立推断回复边 (inferred_reply)。"
+  },
+  "neural_embedding_enabled": {
+    "description": "启用神经网络 Embedding",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后通过 AstrBot Embedding Provider 计算语义向量。未配置或调用失败时自动回退到本地哈希 embedding。"
+  },
+  "embedding_provider": {
+    "description": "Embedding Provider ID",
+    "type": "string",
+    "default": "",
+    "hint": "在插件「参数配置」页从 Embedding 服务商下拉选择；留空则使用第一个可用的 Embedding Provider。原生设置页请填写 Embedding Provider ID。"
+  },
+  "neural_link_threshold": {
+    "description": "神经网络语义边阈值",
+    "type": "float",
+    "default": 0.78,
+    "slider": {
+      "min": 0.5,
+      "max": 0.95,
+      "step": 0.01
+    },
+    "hint": "两侧都已缓存神经网络向量时，余弦相似度达到该阈值会建立语义候选边。"
+  },
+  "embedding_cache_size": {
+    "description": "Embedding 缓存条数",
+    "type": "int",
+    "default": 512,
+    "slider": {
+      "min": 64,
+      "max": 4096,
+      "step": 64
+    },
+    "hint": "进程内 LRU 缓存的文本向量条数，避免对同一句话重复请求 Embedding API。"
+  },
+  "presence_knob": {
+    "description": "分寸旋钮（存在感）",
+    "type": "string",
+    "default": "sensible",
+    "options": [
+      "ghost",
+      "sensible",
+      "lively"
+    ],
+    "hint": "隐身(ghost)：尽量少开口；懂事(sensible)：默认；活跃(lively)：更愿意轻接。立即生效。"
+  },
+  "social_manners_enabled": {
+    "description": "启用社交分寸总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后接力棒/谁的场/捧场配额都不生效。默认开启（懂事档）。"
+  },
+  "relay_baton_enabled": {
+    "description": "接力棒：人类互回时靠边",
+    "type": "bool",
+    "default": true,
+    "hint": "两人正在互回时不插话；冷场、点名缺口或 @ 才轻接。"
+  },
+  "private_field_enabled": {
+    "description": "谁的场：A↔B 私场不硬插",
+    "type": "bool",
+    "default": true,
+    "hint": "误判偏保守。公开整活、@bot、明确求助除外。"
+  },
+  "hyped_quota_enabled": {
+    "description": "捧场配额：整活最多起哄一次",
+    "type": "bool",
+    "default": true,
+    "hint": "同一段整活最多起哄一次；用完改旁听；被点名可回但不叠梗。"
+  },
+  "mood_memory_enabled": {
+    "description": "情绪轻接（话题情绪记忆）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。短标签+衰减；有 selflearning 时优先消费已批准记忆。"
+  },
+  "slang_trial_enabled": {
+    "description": "黑话试用期",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。新梗小声用一次，冷场收回；未审查/敏感不进场。"
+  },
+  "group_memory_enabled": {
+    "description": "群记忆小本（纪念日/约定）",
+    "type": "bool",
+    "default": true,
+    "hint": "默认开启，但须显式写入纪念日或约定才有效。"
+  },
+  "selflearning_integration": {
+    "description": "尝试对接 selflearning",
+    "type": "bool",
+    "default": true,
+    "hint": "有则增强记忆/关系/黑话候选；检测失败安静降级，不阻断回复链路。"
+  },
+  "media_image_gate_enabled": {
+    "description": "会看图（门闩）",
+    "type": "bool",
+    "default": true,
+    "hint": "见到图片/表情时用短标签判断能不能插话与力道；不默认看图答题。失败安静降级。"
+  },
+  "media_voice_gate_enabled": {
+    "description": "会听语音（门闩）",
+    "type": "bool",
+    "default": true,
+    "hint": "见到语音时用短标签判断开不开口；不做每条转写。短敷衍旁听，求助口吻才更愿意接。"
+  },
+  "media_understand_reply_enabled": {
+    "description": "允许理解接话（默认关）",
+    "type": "bool",
+    "default": false,
+    "hint": "L2：未 @ 时，仅「看/听这个」等强相关才把图/语音交主 Agent。@ 或引用 bot 时始终交模型识图/听语音（隐私档除外）。宿主无多模态时安静降级。"
+  },
+  "media_privacy_strict": {
+    "description": "媒体隐私严格档",
+    "type": "bool",
+    "default": true,
+    "hint": "证件/私密感图片不描述细节、不写记忆；未强点名时优先沉默。"
+  },
+  "deciding_detect_enabled": {
+    "description": "识别决策中场合",
+    "type": "bool",
+    "default": true,
+    "hint": "约时间/投票/选型/分工时进入决策中：不插科、短澄清；不确定不当决策态。"
+  },
+  "gap_fill_proactive_enabled": {
+    "description": "缺口补全主动",
+    "type": "bool",
+    "default": true,
+    "hint": "悬空问句、约定缺口、求助后沉默等白名单才主动；不是怕冷场找话。"
+  },
+  "cold_memory_nudge_enabled": {
+    "description": "冷场公共记忆轻唤",
+    "type": "bool",
+    "default": true,
+    "hint": "开关默认开，但仅活跃档(lively)生效；无记忆小本不编群史。"
+  },
+  "newcomer_caution_enabled": {
+    "description": "新人更收",
+    "type": "bool",
+    "default": true,
+    "hint": "新/低频发言者提高插话门槛；禁止环境主动点名；误判偏收。"
+  },
+  "pace_align_enabled": {
+    "description": "节奏对齐",
+    "type": "bool",
+    "default": true,
+    "hint": "跟群节奏调延迟与片段长度；不单独授权更多主动。"
+  },
+  "proactive_quota_enabled": {
+    "description": "主动配额",
+    "type": "bool",
+    "default": true,
+    "hint": "每小时/每话题段上限；用尽后纯响应（只答 @/强相关）。"
+  },
+  "proactive_quota_per_hour": {
+    "description": "每小时主动上限",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "偏紧默认 2。用尽后只答点名/强相关。"
+  },
+  "proactive_quota_per_topic": {
+    "description": "每话题段主动上限",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "同一话题段默认最多主动 1 次。"
+  },
+  "daily_rhythm_enabled": {
+    "description": "今日作息总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "氛围向作息：日间可早安/少量分享；夜晚收束中≠已睡。非真实日历。"
+  },
+  "rhythm_morning_hi_enabled": {
+    "description": "醒来可早安",
+    "type": "bool",
+    "default": true,
+    "hint": "醒来窗可选问好；隐身/冲突/私场/决策中不主动早安。"
+  },
+  "rhythm_day_share_slots": {
+    "description": "白天分享槽",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 2,
+      "step": 1
+    },
+    "hint": "0～2 槽/日，耗主动配额；优先缺口/公共记忆，禁硬编炫耀日程。"
+  },
+  "rhythm_goodnight_text_quota": {
+    "description": "当晚文字晚安配额",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 1,
+      "max": 2,
+      "step": 1
+    },
+    "hint": "收束会话文字晚安相关默认 1，最多 2；首波可回，后续静默。"
+  },
+  "rhythm_sleep_after_winddown": {
+    "description": "收束后再睡",
+    "type": "bool",
+    "default": true,
+    "hint": "回晚安不得直接已睡；冷场约 20～40 分钟后再入睡。"
+  },
+  "rhythm_allow_self_sleep": {
+    "description": "允许自己主动睡",
+    "type": "bool",
+    "default": true,
+    "hint": "到睡点且已冷/收束完成可无声入睡；热聊推迟。"
+  },
+  "rhythm_allow_wake": {
+    "description": "允许被吵醒",
+    "type": "bool",
+    "default": true,
+    "hint": "@/引用睡前/强求助/媒体向 bot/命令 → 短回后短醒冷却再睡。"
+  },
+  "rhythm_insomnia_enabled": {
+    "description": "允许睡不着主动",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关。开启后极低概率+周期硬顶，至多一句气氛点缀。"
+  },
+  "rhythm_force_sleep": {
+    "description": "强制入睡",
+    "type": "bool",
+    "default": false,
+    "hint": "覆盖状态：环境主动=0；普通晚安不吵醒。"
+  },
+  "rhythm_skip_morning_hi_tonight": {
+    "description": "今晚别早安",
+    "type": "bool",
+    "default": false,
+    "hint": "今晚跳过醒来问好。"
+  }
+}

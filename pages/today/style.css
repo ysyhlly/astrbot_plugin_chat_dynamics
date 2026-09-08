@@ -1,0 +1,7 @@
+/* today page — only layout glue; visual language from shared/base.css */
+.tonight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}

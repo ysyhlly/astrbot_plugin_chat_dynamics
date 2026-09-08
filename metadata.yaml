@@ -1,0 +1,44 @@
+name: astrbot_plugin_chat_dynamics
+display_name: 细腻群聊动态过滤器 (Chat Dynamics)
+short_desc: 群聊原管线过滤器：防抖聚合、指代门闩、冷却离场与拟人化回复装饰，不替代 AstrBot 人格/历史/工具
+desc: |
+  AstrBot 群聊动态过滤器 (AstrBot Chat Dynamics Plugin)
+
+  挂在 AstrBot 原回复链路前后，而不是再造一个 bot：防抖合并碎发、按指代/冷却决定是否放行 LLM、把回复装饰成更像群聊的口吻。人格、会话历史、工具和图片仍由 AstrBot 处理。
+
+  核心特性：
+  1. 输入防抖与碎发聚合器 (Turn-Taking & Debounce Buffer)
+     - 默认 3.5s 滑动窗口，按 UMO 会话与用户聚合连续碎发。
+     - 语法截断与悬挂检测将等待延长到默认 6.5s，单轮硬上限默认 12s。
+  2. 多线程指代与对话图谱追踪器 (Conversation Graph & Addressivity Router)
+     - DAG 支持逐消息入图、显式 thread_id、引用/@mention/语义候选边（可选 AstrBot 神经网络 Embedding，默认哈希向量 + 概念分类器）、乱序补边、防环与兄弟分支上下文。
+     - 三级定向度打分；安全悬停队列可由同一用户的后续补充累积消解。
+  3. 氛围与能量探针 (Vibe & Energy Analyzer)
+     - 实时物理遥测：MPM、平均字符数、Emoji/媒体消息比例和正式标点消息比例。
+     - 本地场景、情绪和私密边界标签。
+     - 施密特触发器滞后状态机：平滑切换 fast_banter（快速碎梗）、serious_inquiry（严肃探讨）与 chill_fade（能量衰退）。
+     - `vibe_llm_enabled=false` 默认关闭低频 LLM 校准；需要时每个 UMO 会话至少 12 个完整回合后、最多每 120 秒调用一次。
+  4. 插话与离场仲裁器 (Intervention & Back-off Arbiter)
+     - 默认只放行明确 @ / 点名 / 引用；可选 `ambient_intervention` 让弱指代走 WTS。
+     - 能量极度不对称切断：连续敷衍（哦/6）离场，好/收到/谢谢不算敷衍。
+     - 冷场与话题壁垒深度冷却期（默认 15 分钟，可配置 0~180 分钟），重载后仍保持。
+     - 极低信息量收尾，严禁“如果还有问题随时问我”等客服式结语。
+  5. 拟人化行为合成器 (Pacing & Style Shaper)
+     - 装饰原管线回复：自然边界切分，实际最多 3 条。
+     - 真实打字耗时模拟（思考停顿 + 字数 CPS 延迟），拒绝秒回大段长文。
+     - 格式降级：在闲聊模式清洗 Markdown、列表标号与生硬标点，随群同频。
+     - 可选认可 Emoji：按触发句场景选择；严肃/私密/技术/长回复不加。
+  默认 filter 模式不 stop_event；纯媒体只计入氛围指标并抑制原生 LLM，文字加媒体保留文字进入过滤链。
+  支持按 UMO 的并发状态隔离、观察模式、配置预设、受限控制台快照和有界会话清理。
+version: v1.3.3
+author: Antigravity
+repo: ""
+astrbot_version: ">=4.16,<5"
+tags:
+  - chat-dynamics
+  - state-machine
+  - humanlike
+  - debounce
+  - conversation-graph
+  - pacing
+  - vibe-analyzer

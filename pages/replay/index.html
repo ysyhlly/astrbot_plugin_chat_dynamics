@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- chat_dynamics_ui: shared first-paint bootstrap and account preference -->
+    <script src="./theme.js"></script>
+    <meta name="color-scheme" content="light dark" />
+    <title>场景回放</title>
+    <link rel="stylesheet" href="./base.css" />
+    <link rel="stylesheet" href="./shell.css" />
+    <link rel="stylesheet" href="./plugin_nav.css" />
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./theme.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="app wire-app plugin-shell">
+      <div class="plugin-layout">
+        <aside class="plugin-side" aria-label="插件页面">
+          <p class="plugin-side-label">页面</p>
+          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
+        </aside>
+        <div class="plugin-main">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
+              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <p class="eyebrow">ASTRBOT / REPLAY</p>
+            <h1>场景回放</h1>
+            <p class="lede">色块时间轨回顾为什么开口 / 为什么安静。默认无明文，不是监控墙。</p>
+          </div>
+        </div>
+        <div class="topbar-tools">
+          <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
+            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
+            <span class="connection-copy">
+              <span class="tool-label">连接状态</span>
+              <span id="linkLabel">未连接</span>
+            </span>
+          </div>
+          <button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+        </div>
+      </header>
+
+      <section class="wire-card" aria-label="群选择">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">SCENE</p>
+            <h2>回放哪一群</h2>
+          </div>
+          <span class="card-note" id="trackHint">点色块看人话原因</span>
+        </div>
+        <div class="field-grid">
+          <label for="sessionSelect">当前群 / 会话
+            <select id="sessionSelect"></select>
+          </label>
+        </div>
+      </section>
+
+      <section class="wire-card" aria-labelledby="railTitle">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">COLOR RAIL</p>
+            <h2 id="railTitle">色块时间轨</h2>
+          </div>
+          <span class="card-note" id="railCounts">开口 — · 安静 —</span>
+        </div>
+        <div class="replay-legend" aria-label="图例">
+          <span class="legend-item lane-speak">开口</span>
+          <span class="legend-item lane-manners">分寸</span>
+          <span class="legend-item lane-media">媒体</span>
+          <span class="legend-item lane-rhythm">作息</span>
+          <span class="legend-item lane-arbiter">仲裁</span>
+          <span class="legend-item lane-proactive">主动</span>
+        </div>
+        <div class="replay-rail" id="replayRail" role="listbox" aria-label="开口与安静色块"></div>
+        <div class="empty-state hidden" id="railEmpty">
+          还没有色块。观察一段时间，或先到「今日读空气」看最近为什么没回。
+        </div>
+      </section>
+
+      <section class="wire-card" aria-labelledby="detailTitle">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">WHY</p>
+            <h2 id="detailTitle">这块在说什么</h2>
+          </div>
+          <span class="card-note">人话原因 · 无原文</span>
+        </div>
+        <p class="one-liner" id="blockDetail">点时间轨上的色块。</p>
+        <p class="ops-note" id="blockMeta"></p>
+        <div class="tonight-actions" aria-label="顺着感觉调分寸">
+          <button type="button" class="button" id="btnGhostTonight" disabled>今晚隐身</button>
+          <button type="button" class="button" id="btnSensibleTonight" disabled>今晚懂事</button>
+          <button type="button" class="button button-primary" id="btnLivelyTonight" disabled>今晚活跃一点</button>
+        </div>
+        <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
+      </section>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

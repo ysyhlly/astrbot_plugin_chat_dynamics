@@ -1,0 +1,15 @@
+{
+  "plugin_name": "Chat Dynamics",
+  "pages.console.title": "Chat Dynamics Console",
+  "pages.console.desc": "Monitor vibe, cooling, and conversation graphs by UMO session.",
+  "pages.config.title": "Plugin Config",
+  "pages.config.desc": "Essentials expanded, advanced collapsed; pick Providers from AstrBot.",
+  "pages.today.title": "Today · Read the Air",
+  "pages.today.desc": "Occasion capsule, presence thermometer, and recent why-silent reasons.",
+  "pages.manners.title": "Manners Desk",
+  "pages.manners.desc": "Ghost–sensible–lively knob plus social/media manner chips.",
+  "pages.memory.title": "Notebook",
+  "pages.memory.desc": "Anniversaries, reminders, and slang trials; forget or mute tonight.",
+  "pages.replay.title": "Scene Replay",
+  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
+}
