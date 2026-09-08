@@ -32,7 +32,7 @@ desc: |
   支持按 UMO 的并发状态隔离、观察模式、配置预设、受限控制台快照和有界会话清理。
 version: v1.3.3
 author: Antigravity
-repo: ""
+repo: "https://github.com/ysyhlly/astrbot_plugin_chat_dynamics"
 astrbot_version: ">=4.16,<5"
 tags:
   - chat-dynamics
