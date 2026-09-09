@@ -361,6 +361,6 @@ python scripts/check_coverage.py --json artifacts/coverage.json
 
 真实 SDK smoke 只证明导入、签名、MessageChain、Reply、Web response、Hook 和插件生命周期契约；实际平台适配器发送与 Dashboard 部署仍需在发布前完成一次人工 staging 验证。
 
-`metadata.yaml` 的 `repo` 目前留空。仓库创建并填入真实 URL 前，本插件保持未发布状态；上架前还要在干净目录中重新检查打包清单、SDK 兼容矩阵和控制台认证边界。
+`metadata.yaml` 的 `repo` 指向公开仓库 <https://github.com/ysyhlly/astrbot_plugin_chat_dynamics>，v1.3.3 为首个公开发布版（Release 页附确定性 ZIP、文件清单和 SHA256）。上架更新前，在干净目录中重新检查打包清单、SDK 兼容矩阵和控制台认证边界。
 
-发布包只包含运行时代码、`pages/console`、`i18n`（含 `.astrbot-plugin/i18n`）、Schema、metadata、requirements、README、CHANGELOG 和 LICENSE。发布前可先运行 `python scripts/check_release.py --allow-empty-repo` 做本地结构检查。创建仓库并填写真实 URL 后，运行 `python scripts/check_release.py`，再运行 `python scripts/build_release.py` 生成确定性 ZIP、文件清单和 SHA256；仓库 URL 为空时打包命令会直接失败。
+发布包只包含运行时代码、`pages`（六个后台页面）、`i18n`（含 `.astrbot-plugin/i18n`）、Schema、metadata、requirements、README、CHANGELOG 和 LICENSE。发布前可先运行 `python scripts/check_release.py --allow-empty-repo` 做本地结构检查。创建仓库并填写真实 URL 后，运行 `python scripts/check_release.py`，再运行 `python scripts/build_release.py` 生成确定性 ZIP、文件清单和 SHA256；仓库 URL 为空时打包命令会直接失败。

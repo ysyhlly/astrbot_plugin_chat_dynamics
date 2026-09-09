@@ -53,7 +53,10 @@ def _launch_browser(pw):
     executable = _chromium_executable()
     if executable:
         launch_args["executable_path"] = executable
-    return pw.chromium.launch(**launch_args)
+    try:
+        return pw.chromium.launch(**launch_args)
+    except Exception as exc:
+        pytest.skip(f"Chromium unavailable: {exc}")
 
 
 def _screenshot_dir() -> Path | None:

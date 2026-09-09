@@ -29,8 +29,14 @@ def _launch_browser(pw):
         ])
     for candidate in candidates:
         if candidate and candidate.is_file():
-            return pw.chromium.launch(headless=True, executable_path=str(candidate))
-    return pw.chromium.launch(headless=True)
+            try:
+                return pw.chromium.launch(headless=True, executable_path=str(candidate))
+            except Exception as exc:
+                pytest.skip(f"Chromium unavailable: {exc}")
+    try:
+        return pw.chromium.launch(headless=True)
+    except Exception as exc:
+        pytest.skip(f"Chromium unavailable: {exc}")
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):

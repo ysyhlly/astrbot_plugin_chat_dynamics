@@ -50,9 +50,30 @@ def test_plugin_version_follows_metadata_yaml(tmp_path):
     assert validate_release(copied, allow_empty_repo=False) == []
 
 
-def test_release_check_accepts_local_checkout_but_requires_repo_for_public_release():
+def test_release_check_accepts_local_checkout_but_requires_repo_for_public_release(tmp_path):
     assert validate_release(ROOT, allow_empty_repo=True) == []
-    errors = validate_release(ROOT, allow_empty_repo=False)
+    # The checked-in tree now carries the real repository URL, so the public
+    # gate passes as-is. The empty-repo rejection is exercised on a copy.
+    assert validate_release(ROOT, allow_empty_repo=False) == []
+    copied = tmp_path / "plugin"
+    shutil.copytree(
+        ROOT,
+        copied,
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "dist", "artifacts", ".git", ".venv"),
+    )
+    metadata = copied / "metadata.yaml"
+    metadata.write_text(
+        re.sub(
+            r'^\s*repo\s*:\s*.*$',
+            'repo: ""',
+            metadata.read_text(encoding="utf-8"),
+            count=1,
+            flags=re.MULTILINE,
+        ),
+        encoding="utf-8",
+    )
+    assert validate_release(copied, allow_empty_repo=True) == []
+    errors = validate_release(copied, allow_empty_repo=False)
     assert any("repo must be a real" in error for error in errors)
 
 

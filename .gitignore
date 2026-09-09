@@ -22,4 +22,5 @@ Thumbs.db
 # Local-only work artifacts (never publish)
 .agents/
 .codegraph/
+.omo/
 astrbot_plugin_chat_dynamics/
