@@ -146,6 +146,9 @@ class MockEvent:
     def stop_event(self) -> None:
         self.is_stopped = True
 
+    def continue_event(self) -> None:
+        self.is_stopped = False
+
     def should_call_llm(self, call_llm: bool) -> None:
         self.call_llm = bool(call_llm)
 

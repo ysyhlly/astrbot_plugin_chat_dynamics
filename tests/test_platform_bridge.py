@@ -423,6 +423,9 @@ async def test_run_native_agent_forwards_image_and_audio_urls():
         unified_msg_origin = "room"
         message_obj = type("M", (), {"message": [Image(), Record()]})()
 
+        def continue_event(self):
+            pass
+
         def get_messages(self):
             return list(self.message_obj.message)
 
@@ -438,4 +441,3 @@ async def test_run_native_agent_forwards_image_and_audio_urls():
     assert text == "seen"
     assert captured.get("image_urls") == ["/tmp/pic.png"]
     assert captured.get("audio_urls") == ["/tmp/voice.wav"]
-

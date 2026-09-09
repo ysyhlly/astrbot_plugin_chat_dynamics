@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import random
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.daily_rhythm")
 

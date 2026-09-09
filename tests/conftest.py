@@ -10,6 +10,20 @@ import pytest
 from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def isolated_host_request_hooks(monkeypatch):
+    """Unit doubles have no running host registry; real dispatch is tested in integration/."""
+    try:
+        from astrbot.core.pipeline import context_utils
+    except ImportError:
+        return
+
+    async def no_registered_hooks(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(context_utils, "call_event_hook", no_registered_hooks)
+
+
 @pytest.fixture
 def offline_web_responses(monkeypatch):
     """Route-unit tests exercise payloads; real HTTP serialization lives in integration/."""

@@ -37,7 +37,8 @@ async def prepare_request(event, prompt, image_urls, audio_urls):
     request = ProviderRequest(**kwargs)
     stopped = await call_event_hook(owned, EventType.OnLLMRequestEvent, request)
     task = asyncio.current_task()
-    if task is not None and task.cancelling():
+    cancelling = getattr(task, "cancelling", None)
+    if cancelling is not None and cancelling():
         raise asyncio.CancelledError()
     if stopped:
         raise RuntimeError("native_request_stopped")

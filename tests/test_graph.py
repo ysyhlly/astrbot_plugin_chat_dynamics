@@ -341,7 +341,7 @@ def test_legacy_semantic_methods_removed():
 def test_add_message_creates_zero_heuristic_edges():
     """R1.2: add_message creates zero heuristic/semantic edges for similar messages."""
     dag = ConversationDAG(session_id="test")
-    m1 = dag.add_message("m1", "alice", "这段代码怎么挂了", timestamp=1.0)
+    dag.add_message("m1", "alice", "这段代码怎么挂了", timestamp=1.0)
     m2 = dag.add_message("m2", "bob", "Python 接口报错了", timestamp=2.0)
 
     assert not m2.parent_ids
@@ -389,7 +389,7 @@ def test_link_inferred_reply_rejects_cycles():
 def test_link_inferred_reply_rejects_causal_inversion():
     """R1.4: link_inferred_reply rejects responses that precede candidate parents."""
     dag = ConversationDAG(session_id="test")
-    p = dag.add_message("p1", "alice", "Parent", timestamp=10.0)
+    dag.add_message("p1", "alice", "Parent", timestamp=10.0)
     c = dag.add_message("c1", "bob", "Earlier message", timestamp=5.0)
 
     assert dag.link_inferred_reply("c1", "p1", confidence=0.85) is False
@@ -496,4 +496,3 @@ def test_adopt_thread_downward_dfs_prevents_parent_and_sibling_corruption():
     assert c1.thread_id == "Q"
     assert p.thread_id == "P"
     assert c2.thread_id == "P"
-

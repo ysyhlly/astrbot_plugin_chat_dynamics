@@ -2,6 +2,20 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.3.4 — 品牌定名「群间」· CI 修复与发布契约
+
+### 品牌与文档
+
+- 插件定名「群间 · Chat Dynamics」：`metadata.yaml`、`@register`、插件市场与控制台 i18n 统一新名称与新简介。
+- README 重写为用户向文档：快速开始、两种互动模式对照表、常用配置、控制台指令与使用边界。
+
+### CI 修复
+
+- 控制台搭档快照按 `native_request.hooks_available()` 区分 native 分发能力：legacy+exclusive 且宿主钩子不可用时才显示 `native_hooks_bypassed`。
+- 单测替身隔离宿主请求钩子：无注册钩子的环境不再误报 native 分发失败；真实分发契约由 integration/ 覆盖。
+- 修复戳一戳兼容性测试在真实 AstrBot SDK 下 `sys.modules` 未导入即取键的 KeyError。
+- 新增约 90 个行为测试补齐覆盖率门槛：作息状态机、控制台快照、native 请求钩子、主动插话、媒体/平台桥接、群记忆、投递回执与主插件流程。
+
 ## v1.3.3 — 今日作息 · 面板视觉 · 搭档互联（首个公开发布版）
 
 ### 今日作息

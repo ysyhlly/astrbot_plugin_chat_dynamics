@@ -199,8 +199,8 @@ _PRESETS = {
 @register(
     "astrbot_plugin_chat_dynamics",
     "Antigravity",
-    "细腻群聊动态过滤器 (Chat Dynamics)",
-    "v1.3.3",
+    "群间 · Chat Dynamics",
+    "v1.3.4",
     "",
 )
 class ChatDynamicsPlugin(Star):

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Iterable, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from .vibe_analyzer import GroupChatMode
 

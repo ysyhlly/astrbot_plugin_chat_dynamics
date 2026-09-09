@@ -513,15 +513,21 @@ async def test_reset_cancels_direct_recall_before_request_mutation(tmp_path):
     assert request.prompt == "original" and request.extra_user_content_parts == []
 
 
-def test_dashboard_does_not_claim_native_dispatch_for_legacy_exclusive():
+@pytest.mark.parametrize("hooks_available", [False, True])
+def test_dashboard_reports_native_dispatch_capability_for_legacy_exclusive(monkeypatch, hooks_available):
     from astrbot_plugin_chat_dynamics.core.dashboard import companion_snapshot
+    from astrbot_plugin_chat_dynamics.core import native_request
+
+    monkeypatch.setattr(native_request, "hooks_available", lambda: hooks_available)
 
     plugin = NS(
         handle_memory_recall=lambda *_: None, initializer=NS(is_initialized=True)
     )
     bridge = SelfLearningBridge(context(metadata(plugin, "LivingMemory")))
     host = NS(selflearning=bridge, decision_mode="legacy", pipeline_mode="exclusive")
-    assert companion_snapshot(host)["detail"] == "native_hooks_bypassed"
+    snapshot = companion_snapshot(host)
+    assert snapshot["detail"] == ("native_hooks" if hooks_available else "native_hooks_bypassed")
+    assert snapshot["native_dispatch"] is hooks_available
     host.pipeline_mode = "filter"
     assert companion_snapshot(host)["detail"] == "native_hooks"
 
