@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import random
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -91,7 +93,7 @@ def test_poke_policy_varies_with_streak_and_presence():
     others = PokeReplyPolicy().decide(at_bot=False)
     assert first.speak is True
     assert first.reason == "poke_ack"
-    assert bool(first.text) != bool(first.poke_back) or first.text or first.poke_back
+    assert first.text == ""
     assert repeat.speak is True
     assert repeat.reason == "poke_repeat"
     assert others.speak is False
@@ -167,3 +169,40 @@ async def test_plugin_ignores_poke_at_others():
     assert plugin._metrics.get("poke_seen", 0) >= 1
     assert plugin._metrics.get("poke_replied", 0) == 0
     assert plugin.debounce.get_pending_count(event.unified_msg_origin) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "empty", "error", "reset", "send_failed"])
+async def test_poke_text_uses_reply_llm_and_commits_only_on_success(outcome):
+    plugin = _plugin({"pipeline_mode": "filter", "presence_knob": "sensible", "reply_provider": "poke-model"})
+    plugin.poke_policy = PokeReplyPolicy(rng=random.Random(0))
+    event = MockEvent("", group_id="poke-llm", message_id="poke-generated", self_id="bot_42",
+                      components=[Poke("bot_42")])
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        if outcome == "error":
+            raise RuntimeError("provider unavailable")
+        if outcome == "reset":
+            plugin._sessions[event.unified_msg_origin].epoch += 1
+        return SimpleNamespace(completion_text="" if outcome == "empty" else "刚刚在想你说的事呢。")
+
+    plugin.context.llm_generate = generate
+    if outcome == "send_failed":
+        event.send = AsyncMock(return_value=False)
+    await plugin.on_group_message(event)
+    assert len(calls) == 1
+    assert calls[0]["chat_provider_id"] == "poke-model"
+    assert "连续第 1 次" in calls[0]["prompt"]
+    runtime = plugin._sessions[event.unified_msg_origin]
+    if outcome == "success":
+        assert event.replies_sent == ["刚刚在想你说的事呢。"]
+        assert runtime.last_bot_node.text == "刚刚在想你说的事呢。"
+        await plugin.on_group_message(event)
+        assert len(calls) == 1
+    else:
+        assert not event.replies_sent
+        assert runtime.last_bot_node is None
+        assert not plugin.arbiter.has_bot_spoken(event.unified_msg_origin)
+    await plugin.terminate()

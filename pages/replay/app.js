@@ -30,8 +30,12 @@ const els = {
   railCounts: document.getElementById("railCounts"),
   replayRail: document.getElementById("replayRail"),
   railEmpty: document.getElementById("railEmpty"),
+  detailDialog: document.getElementById("detailDialog"),
+  detailTitle: document.getElementById("detailTitle"),
+  btnCloseDetail: document.getElementById("btnCloseDetail"),
   blockDetail: document.getElementById("blockDetail"),
   blockMeta: document.getElementById("blockMeta"),
+  blockEvents: document.getElementById("blockEvents"),
   tonightNote: document.getElementById("tonightNote"),
   btnRefresh: document.getElementById("btnRefresh"),
   btnGhostTonight: document.getElementById("btnGhostTonight"),
@@ -44,6 +48,8 @@ let selectedUmo = storageGet(UMO_KEY, "");
 let busy = false;
 let blocks = [];
 let selectedIndex = -1;
+let refreshRevision = 0;
+const TOPIC_COLORS = ["speak", "media", "rhythm", "arbiter", "proactive", "manners"];
 
 function setTonightEnabled(ok) {
   for (const id of ["btnGhostTonight", "btnSensibleTonight", "btnLivelyTonight"]) {
@@ -51,35 +57,30 @@ function setTonightEnabled(ok) {
   }
 }
 
-function blockWidth(block, span) {
-  const start = Number(block.start_ts || 0);
-  const end = Number(block.end_ts || start);
-  const dur = Math.max(8, end - start);
-  const pct = span > 0 ? dur / span : 1;
-  return Math.max(18, Math.min(120, Math.round(pct * 220)));
-}
-
 function selectBlock(index) {
   selectedIndex = index;
   const nodes = els.replayRail.querySelectorAll(".replay-block");
-  nodes.forEach((node, i) => node.classList.toggle("is-selected", i === index));
+  nodes.forEach(node => {
+    const selected = Number(node.dataset.index) === index;
+    node.classList.toggle("is-selected", selected);
+    node.setAttribute("aria-pressed", String(selected));
+  });
+  els.blockEvents.replaceChildren();
   const block = blocks[index];
   if (!block) {
+    els.detailDialog.close();
     els.blockDetail.textContent = "点时间轨上的色块。";
     els.blockMeta.textContent = "";
+    els.tonightNote.textContent = "";
     return;
   }
-  const lane = LANE_ZH[block.lane] || block.lane || "";
-  const action = block.action === "speak" ? "开口" : "安静";
-  els.blockDetail.textContent = block.reason_zh || `${action} · ${lane}`;
-  const meta = [
-    formatTs(block.start_ts),
-    lane,
-    block.count > 1 ? `${block.count} 次相近判断` : "",
-    block.reason_code || "",
-  ].filter(Boolean);
-  els.blockMeta.textContent = meta.join(" · ");
-  if (block.action === "silent") {
+  els.detailTitle.textContent = block.topic_title || "未关联主题";
+  const speak = (block.events || []).filter(event => event.action === "speak").length;
+  els.blockDetail.textContent = `开口 ${speak} 次 · 安静 ${(block.events || []).length - speak} 次`;
+  els.blockMeta.textContent = `${formatTs(block.start_ts)} — ${formatTs(block.end_ts)} · ${block.message_count || 0} 条消息`;
+  const events = Array.isArray(block.events) && block.events.length ? block.events : [];
+  els.blockEvents.innerHTML = events.map(event => `<li><time>${escapeHtml(formatTs(event.ts))}</time><div><strong>${escapeHtml(event.reason_zh || "未记录具体原因")}</strong><span>${escapeHtml([event.action === "speak" ? "开口" : "安静", LANE_ZH[event.lane] || "", event.association || "", event.session_id ? `会话 ${redactId(event.session_id)}` : "", event.reason_code || ""].filter(Boolean).join(" · "))}</span></div></li>`).join("");
+  if (!speak) {
     els.tonightNote.textContent = "若觉得这段太安静，可用下面的分寸旋钮松一点。";
   } else {
     els.tonightNote.textContent = "若觉得这段太吵，可调到懂事或隐身。";
@@ -87,10 +88,8 @@ function selectBlock(index) {
 }
 
 function renderRail(data) {
-  blocks = Array.isArray(data.blocks) ? data.blocks : [];
-  const speak = Number(data.speak_count || 0);
-  const silent = Number(data.silent_count || 0);
-  els.railCounts.textContent = `开口 ${speak} · 安静 ${silent}`;
+  blocks = Array.isArray(data.topic_blocks) ? data.topic_blocks : [];
+  els.railCounts.textContent = `${blocks.length} 个主题场景`;
   els.trackHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览最近判断";
   if (!blocks.length) {
     els.replayRail.innerHTML = "";
@@ -99,35 +98,44 @@ function renderRail(data) {
     return;
   }
   els.railEmpty.classList.add("hidden");
-  const first = Number(blocks[0].start_ts || 0);
-  const last = Number(blocks[blocks.length - 1].end_ts || first);
-  const span = Math.max(1, last - first);
-  els.replayRail.innerHTML = blocks
-    .map((block, index) => {
-      const lane = block.lane || (block.action === "speak" ? "speak" : "manners");
-      const label = escapeHtml(block.reason_zh || LANE_ZH[lane] || lane);
-      return `<button type="button" class="replay-block lane-${escapeHtml(lane)}" data-action="${escapeHtml(
-        block.action || "silent"
-      )}" data-index="${index}" style="flex-basis:${blockWidth(block, span)}px" title="${label}" aria-label="${label}"></button>`;
-    })
-    .join("");
-  selectBlock(blocks.length - 1);
+  const timestamp = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+  const first = Math.min(...blocks.map(block => timestamp(block.start_ts)));
+  const last = Math.max(first + 1, ...blocks.map(block => timestamp(block.end_ts)));
+  const span = last - first;
+  const axis = Array.from({ length: 5 }, (_, i) => `<time>${escapeHtml(formatTs(first + span * i / 4))}</time>`).join("");
+  els.replayRail.innerHTML = `<div class="gantt-chart"><div class="gantt-heading">聊天主题 / 时间</div><div class="gantt-axis">${axis}</div>${blocks.map((block, index) => {
+    const lane = TOPIC_COLORS[index % TOPIC_COLORS.length];
+    const left = Math.max(0, Math.min(99.5, (timestamp(block.start_ts) - first) / span * 100));
+    const width = Math.max(0.5, Math.min(100 - left, (timestamp(block.end_ts) - timestamp(block.start_ts)) / span * 100));
+    const title = block.topic_title || "未关联主题";
+    const label = escapeHtml(title);
+    const session = !selectedUmo && block.session_id ? `<small>会话 ${escapeHtml(redactId(block.session_id))}</small>` : "";
+    return `<div class="gantt-label lane-${lane}"><span>${label}${session}</span></div><div class="gantt-track"><button type="button" class="replay-block lane-${lane}" data-index="${index}" style="left:${left}%;width:${width}%" title="${label}" aria-label="${escapeHtml(`${title} · ${formatTs(block.start_ts)} · 查看详情`)}" aria-haspopup="dialog" aria-pressed="false"><span class="scene-reason">${label}</span></button></div>`;
+  }).join("")}</div>`;
+  selectBlock(-1);
+
 }
 
 async function refresh() {
+  const revision = ++refreshRevision;
   try {
     const params = selectedUmo ? { umo: selectedUmo } : {};
     const data = await apiGet("replay", params);
+    if (revision !== refreshRevision) return;
     online = true;
     setLink(els, true, "已连接");
     fillSessionSelect(els.sessionSelect, data.sessions || [], selectedUmo);
     renderRail(data);
     setTonightEnabled(true);
   } catch (err) {
+    if (revision !== refreshRevision) return;
     online = false;
     setLink(els, false, (err && err.message) || "离线");
     setTonightEnabled(false);
     els.replayRail.innerHTML = "";
+    blocks = [];
+    selectBlock(-1);
+    els.railCounts.textContent = "主题 —";
     els.railEmpty.classList.remove("hidden");
     els.blockDetail.textContent = "回放暂时不可用，请稍后刷新。";
   }
@@ -164,7 +172,9 @@ async function boot() {
     const btn = event.target.closest(".replay-block");
     if (!btn) return;
     selectBlock(Number(btn.getAttribute("data-index")));
+    els.detailDialog.showModal();
   });
+  els.btnCloseDetail.addEventListener("click", () => els.detailDialog.close());
   els.btnRefresh.addEventListener("click", () => void refresh());
   els.btnGhostTonight.addEventListener("click", () => void savePresence("ghost"));
   els.btnSensibleTonight.addEventListener("click", () => void savePresence("sensible"));

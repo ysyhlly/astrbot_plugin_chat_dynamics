@@ -286,6 +286,27 @@ def test_read_air_quota_and_rhythm_failures_fall_back_to_defaults():
 
 # --------------------------------------------------------------------------- #
 # dashboard scene replay timeline
+
+def test_replay_topics_isolate_sessions_and_ambiguous_decisions():
+    def node(topic, ts, text):
+        return NS(metadata={"routing": {"topic_id": topic}}, thread_id=topic,
+                  msg_id=topic, timestamp=ts, text=text)
+
+    plugin = NS(dags={
+        "room-a": NS(nodes={"a": node("same", 10, "讨论部署问题"),
+                            "b": node("other", 20, "周末去哪玩")}),
+        "room-b": NS(nodes={"a": node("same", 10, "另一群的内容")}),
+    }, console_show_message_content=False)
+    events = [{"session_id": "room-a", "ts": 11, "action": "speak"},
+              {"session_id": "room-a", "ts": 21, "action": "silent"}]
+    rows = dash.replay_topic_blocks(plugin, events, "room-a")
+    assert len(rows) == 3
+    assert all(row["session_id"] == "room-a" for row in rows)
+    assert rows[0]["topic_title"] == "话题 1"
+    assert rows[0]["events"][0]["association"] == "按时间关联"
+    assert rows[-1]["topic_title"] == "未关联主题"
+    plugin.console_show_message_content = True
+    assert dash.replay_topic_blocks(plugin, [], "room-a")[0]["topic_title"] == "讨论部署问题"
 # --------------------------------------------------------------------------- #
 
 
@@ -334,6 +355,7 @@ def test_scene_replay_dedupes_and_merges_blocks(monkeypatch):
     assert len(blocks) == 2
     assert blocks[0]["lane"] == "media"
     assert blocks[0]["count"] == 2
+    assert [event["reason_zh"] for event in blocks[0]["events"]] == ["媒体", "语音"]
     assert blocks[1]["lane"] == "rhythm"
     assert blocks[1]["end_ts"] == 23.0
     assert result["content_redacted"] is True

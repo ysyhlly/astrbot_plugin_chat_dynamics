@@ -554,6 +554,7 @@ def merge_replay_blocks(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             block = blocks[-1]
             block["end_ts"] = max(block["end_ts"], ts)
             block["count"] = int(block["count"]) + 1
+            block["events"].append(dict(item))
             block["reason_code"] = str(item.get("reason_code") or block["reason_code"])
             block["reason_zh"] = str(item.get("reason_zh") or block["reason_zh"])
             continue
@@ -570,12 +571,63 @@ def merge_replay_blocks(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "reason_code": str(item.get("reason_code") or ""),
                 "reason_zh": str(item.get("reason_zh") or ""),
                 "count": 1,
+                "events": [dict(item)],
             }
         )
     if blocks:
         last = blocks[-1]
         last["end_ts"] = max(float(last["end_ts"]), float(last["start_ts"]) + 20.0)
     return blocks
+
+
+def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str) -> List[Dict[str, Any]]:
+    """Group retained conversation nodes by session and routed topic.
+
+    Legacy decisions have no message identity. Associate only when the preceding
+    minute contains exactly one topic, and disclose this temporal association.
+    """
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    session_nodes: Dict[str, list] = {}
+    show_content = bool(getattr(plugin, "console_show_message_content", False))
+    for sid, dag in getattr(plugin, "dags", {}).items():
+        if selected and sid != selected:
+            continue
+        nodes = sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-80:]
+        session_nodes[sid] = nodes
+        for node in nodes:
+            topic = str(node.metadata.get("routing", {}).get("topic_id") or node.thread_id or node.msg_id)
+            key = (sid, topic)
+            if key not in groups:
+                groups[key] = {
+                    "session_id": sid, "topic_id": topic,
+                    "topic_title": _truncate(node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}",
+                    "start_ts": node.timestamp, "end_ts": node.timestamp,
+                    "events": [], "message_count": 0, "count": 0,
+                }
+            group = groups[key]
+            group["end_ts"] = max(group["end_ts"], node.timestamp)
+            group["message_count"] += 1
+    for event in events:
+        sid = str(event.get("session_id") or selected)
+        candidates = {
+            str(node.metadata.get("routing", {}).get("topic_id") or node.thread_id or node.msg_id)
+            for node in session_nodes.get(sid, [])
+            if 0 <= float(event.get("ts") or 0) - node.timestamp <= 60
+        }
+        topic = next(iter(candidates)) if len(candidates) == 1 else ""
+        key = (sid, topic)
+        if key not in groups:
+            groups[key] = {
+                "session_id": sid, "topic_id": topic, "topic_title": "未关联主题",
+                "start_ts": float(event.get("ts") or 0), "end_ts": float(event.get("ts") or 0),
+                "events": [], "message_count": 0, "count": 0,
+            }
+        group = groups[key]
+        group["start_ts"] = min(group["start_ts"], float(event.get("ts") or 0))
+        group["end_ts"] = max(group["end_ts"], float(event.get("ts") or 0))
+        group["events"].append({**event, "association": "按时间关联" if topic else "未关联主题"})
+        group["count"] += 1
+    return sorted(groups.values(), key=lambda group: group["start_ts"])
 
 
 def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, Any]:
@@ -608,7 +660,7 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         code = str(item.get("reason_code") or "")
         zh = str(item.get("reason_zh") or "")
         ts = item.get("ts")
-        key = (action, code, zh, ts)
+        key = (str(item.get("session_id") or ""), action, code, zh, ts)
         if key in seen:
             continue
         seen.add(key)
@@ -620,6 +672,7 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
                 "lane": lane,
                 "reason_code": code,
                 "reason_zh": zh,
+                "session_id": str(item.get("session_id") or ""),
             }
         )
     sessions = []
@@ -641,6 +694,8 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         "presence_knob": str(getattr(plugin, "presence_knob", "sensible") or "sensible"),
         "events": ordered[-64:],
         "blocks": merge_replay_blocks(ordered[-64:]),
+        "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
+        "topic_content_redacted": not bool(getattr(plugin, "console_show_message_content", False)),
         "speak_count": speak,
         "silent_count": silent,
         "sessions": sessions,

@@ -34,7 +34,7 @@
           <div class="brand-copy">
             <p class="eyebrow">ASTRBOT / REPLAY</p>
             <h1>场景回放</h1>
-            <p class="lede">色块时间轨回顾为什么开口 / 为什么安静。默认无明文，不是监控墙。</p>
+            <p class="lede">按聊天主题回看群聊进展，点选主题查看开口情况和判断详情。</p>
           </div>
         </div>
         <div class="topbar-tools">
@@ -68,41 +68,35 @@
         <div class="card-heading">
           <div>
             <p class="eyebrow">COLOR RAIL</p>
-            <h2 id="railTitle">色块时间轨</h2>
+            <h2 id="railTitle">主题时间轨</h2>
           </div>
-          <span class="card-note" id="railCounts">开口 — · 安静 —</span>
+          <span class="card-note" id="railCounts">主题 —</span>
         </div>
-        <div class="replay-legend" aria-label="图例">
-          <span class="legend-item lane-speak">开口</span>
-          <span class="legend-item lane-manners">分寸</span>
-          <span class="legend-item lane-media">媒体</span>
-          <span class="legend-item lane-rhythm">作息</span>
-          <span class="legend-item lane-arbiter">仲裁</span>
-          <span class="legend-item lane-proactive">主动</span>
-        </div>
-        <div class="replay-rail" id="replayRail" role="listbox" aria-label="开口与安静色块"></div>
+        <p class="ops-note">横轴为时间，纵轴为群聊主题。点击色块查看开口情况和具体原因。主题名称遵循聊天内容显示设置。</p>
+        <div class="replay-rail" id="replayRail" role="group" aria-label="群聊主题场景"></div>
         <div class="empty-state hidden" id="railEmpty">
           还没有色块。观察一段时间，或先到「今日读空气」看最近为什么没回。
         </div>
       </section>
 
-      <section class="wire-card" aria-labelledby="detailTitle">
+      <dialog class="wire-card scene-dialog" id="detailDialog" aria-labelledby="detailTitle">
         <div class="card-heading">
           <div>
             <p class="eyebrow">WHY</p>
             <h2 id="detailTitle">这块在说什么</h2>
           </div>
-          <span class="card-note">人话原因 · 无原文</span>
+          <button type="button" class="button button-quiet" id="btnCloseDetail">关闭详情</button>
         </div>
         <p class="one-liner" id="blockDetail">点时间轨上的色块。</p>
         <p class="ops-note" id="blockMeta"></p>
+        <ol class="scene-events" id="blockEvents" aria-label="场景中的逐次判断" aria-live="polite"></ol>
         <div class="tonight-actions" aria-label="顺着感觉调分寸">
           <button type="button" class="button" id="btnGhostTonight" disabled>今晚隐身</button>
           <button type="button" class="button" id="btnSensibleTonight" disabled>今晚懂事</button>
           <button type="button" class="button button-primary" id="btnLivelyTonight" disabled>今晚活跃一点</button>
         </div>
         <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
-      </section>
+      </dialog>
         </div>
       </div>
     </div>

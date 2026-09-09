@@ -8,8 +8,8 @@ desc: |
   提供观察模式、会话控制台、冷却与重置，并支持媒体门闩、今日作息和可选记忆联动。
   按完整 UMO 隔离会话；需配置生效群，默认不处理任何群。
   氛围 LLM 默认关闭（vibe_llm_enabled=false）；人设模式的观察仍会调用决策模型。
-version: v1.3.4
-author: Antigravity
+version: v1.3.5
+author: ysyhlly
 repo: "https://github.com/ysyhlly/astrbot_plugin_chat_dynamics"
 astrbot_version: ">=4.16,<5"
 tags:
