@@ -589,6 +589,10 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     groups: Dict[tuple, Dict[str, Any]] = {}
     session_nodes: Dict[str, list] = {}
     show_content = bool(getattr(plugin, "console_show_message_content", False))
+    clock = getattr(plugin, "time_service", None)
+    # DAG nodes use monotonic time; social/rhythm decisions use wall time.
+    # Convert only at the presentation boundary, never mutate runtime nodes.
+    wall_offset = float(clock.wall_time()) - float(clock.time()) if clock is not None else 0.0
     for sid, dag in getattr(plugin, "dags", {}).items():
         if selected and sid != selected:
             continue
@@ -601,18 +605,18 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
                     "topic_title": _truncate(node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}",
-                    "start_ts": node.timestamp, "end_ts": node.timestamp,
+                    "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "message_count": 0, "count": 0,
                 }
             group = groups[key]
-            group["end_ts"] = max(group["end_ts"], node.timestamp)
+            group["end_ts"] = max(group["end_ts"], node.timestamp + wall_offset)
             group["message_count"] += 1
     for event in events:
         sid = str(event.get("session_id") or selected)
         candidates = {
             str(node.metadata.get("routing", {}).get("topic_id") or node.thread_id or node.msg_id)
             for node in session_nodes.get(sid, [])
-            if 0 <= float(event.get("ts") or 0) - node.timestamp <= 60
+            if 0 <= float(event.get("ts") or 0) - (node.timestamp + wall_offset) <= 60
         }
         topic = next(iter(candidates)) if len(candidates) == 1 else ""
         key = (sid, topic)

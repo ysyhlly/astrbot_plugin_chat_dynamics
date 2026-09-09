@@ -18,7 +18,7 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
             if (endpoint !== 'replay') return original(endpoint, params);
             return {ok:true,data:{sessions:[],speak_count:1,silent_count:6,
               topic_blocks:['speak','manners','media','rhythm','arbiter','proactive'].map((lane,i) => ({
-                topic_title:'聊天主题 '+i,message_count:2,lane,action:i ? 'silent':'speak',start_ts:1700000000+i*60,end_ts:1700000060+i*60,
+                topic_title:'聊天主题 '+i,message_count:2,lane,action:i ? 'silent':'speak',start_ts:1700000000+i*60,end_ts:1700000000+i*60,
                 count:2,reason_zh:'场景原因 '+i,reason_code:lane,
                 events:[{ts:1700000000+i*60,reason_zh:'第一次具体判断 <安全文本>',session_id:'room-a'},
                         {ts:1700000005+i*60,reason_zh:'第二次具体判断',session_id:'room-a'}]
@@ -47,6 +47,11 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
         for width in (1366, 390):
             page.set_viewport_size({"width": width, "height": 1000})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            assert page.locator('.replay-block').evaluate_all("""nodes => nodes.every(node => {
+                const bar = node.getBoundingClientRect();
+                const track = node.parentElement.getBoundingClientRect();
+                return bar.width >= 84 && bar.height >= 44 && bar.right <= track.right + 1;
+            })""")
             page.screenshot(path=str(tmp_path / f'replay-{theme}-{width}.png'))
         page.evaluate("() => {window.AstrBotPluginPage.apiGet = async () => {throw new Error('offline')}}")
         page.locator('#btnCloseDetail').click()

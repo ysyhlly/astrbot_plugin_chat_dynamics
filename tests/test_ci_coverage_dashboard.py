@@ -307,6 +307,19 @@ def test_replay_topics_isolate_sessions_and_ambiguous_decisions():
     assert rows[-1]["topic_title"] == "未关联主题"
     plugin.console_show_message_content = True
     assert dash.replay_topic_blocks(plugin, [], "room-a")[0]["topic_title"] == "讨论部署问题"
+
+
+def test_replay_topics_convert_monotonic_nodes_to_wall_time():
+    node = NS(metadata={}, thread_id="topic", msg_id="m", timestamp=990, text="话题")
+    plugin = NS(dags={"room": NS(nodes={"m": node})},
+                time_service=NS(time=lambda: 1000, wall_time=lambda: 1800000000))
+    event = {"session_id": "room", "ts": 1799999995, "action": "silent"}
+    rows = dash.replay_topic_blocks(plugin, [event], "room")
+    assert len(rows) == 1
+    assert rows[0]["start_ts"] == 1799999990
+    assert rows[0]["end_ts"] == 1799999995
+    assert rows[0]["events"][0]["association"] == "按时间关联"
+    assert node.timestamp == 990
 # --------------------------------------------------------------------------- #
 
 
