@@ -131,6 +131,8 @@ def iter_release_files(root: Path) -> Iterable[Path]:
         ".astrbot-plugin",
         "i18n",
         "core",
+        "logo.png",
+        "assets",
     )
     paths: list[Path] = []
     for relative in explicit:

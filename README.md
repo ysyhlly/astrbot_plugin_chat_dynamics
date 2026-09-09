@@ -1,6 +1,12 @@
+<div align="center">
+
+<img src="assets/cover.png" alt="群间 · Chat Dynamics" width="520" />
+
 # 群间 · Chat Dynamics
 
 让机器人跟上群聊节奏，接话有分寸。
+
+</div>
 
 AstrBot 群聊互动插件：合并碎发、追踪话题、判断回应时机，并调整回复节奏。支持沿用当前人设，由模型决定何时参与、回应谁。
 
