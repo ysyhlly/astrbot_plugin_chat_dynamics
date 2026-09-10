@@ -89,13 +89,41 @@ def test_theme_canvas_without_external_resources(browser, page_server, name, sou
         query = "?ui=night" if source == "query" else "?ui=day" if source == "day_override" else ""
         page.goto(f"{page_server}/{name}/index.html{query}")
         night = source != "day_override"
-        assert page.locator("html").get_attribute("data-theme") == ("night" if night else "day")
+        assert page.locator("html").get_attribute("data-ui-theme") == ("night" if night else "day")
         assert page.locator("html").evaluate("node => getComputedStyle(node).backgroundColor") == (
             "rgb(11, 20, 25)" if night else "rgb(245, 246, 244)"
         )
         assert page.locator("html").evaluate("node => getComputedStyle(node).colorScheme") == (
             "dark" if night else "light"
         )
+
+
+@pytest.mark.parametrize("name", PAGES)
+@pytest.mark.parametrize("theme", ["day", "night"])
+def test_host_theme_updates_do_not_change_plugin_palette(browser, page_server, name, theme):
+    with browser.new_context() as context:
+        setup(context, {"ui": theme})
+        page = context.new_page()
+        page.goto(f"{page_server}/{name}/index.html?ui={theme}")
+        page.wait_for_function("document.querySelector('#uiThemeStatus')?.textContent === '已恢复账号偏好'")
+        # AstrBot's bridge applyContext writes this attribute on every host update.
+        for host_theme in ("light", "dark"):
+            result = page.evaluate("""hostTheme => {
+                document.documentElement.setAttribute('data-theme', hostTheme);
+                return {
+                    current: window.ChatDynamicsTheme.current(),
+                    background: getComputedStyle(document.documentElement).backgroundColor,
+                    text: getComputedStyle(document.body).color,
+                };
+            }""", host_theme)
+            assert result == {
+                "current": theme,
+                "background": "rgb(11, 20, 25)" if theme == "night" else "rgb(245, 246, 244)",
+                "text": "rgb(234, 243, 240)" if theme == "night" else "rgb(23, 42, 43)",
+            }
+        page.locator("#btnUiTheme").click()
+        page.wait_for_function("document.querySelector('#uiThemeStatus').textContent === '已保存到账号'")
+        assert page.evaluate("window.ChatDynamicsTheme.current()") == ("day" if theme == "night" else "night")
 
 
 @pytest.mark.parametrize("name", PAGES)
@@ -132,7 +160,7 @@ def test_theme_survives_reload_navigation_and_new_context_without_storage(browse
         page.wait_for_function("document.querySelector('#uiThemeStatus').textContent === '已保存到账号'")
         assert account["ui"] == "night"
         page.reload()
-        page.wait_for_function("document.documentElement.dataset.theme === 'night'")
+        page.wait_for_function("document.documentElement.dataset.uiTheme === 'night'")
         page.locator('[data-nav-page="today"]').click()
         page.wait_for_url("**/today/index.html?**")
         assert "asset_token=fresh" in page.url and "ui=night" in page.url
@@ -143,7 +171,7 @@ def test_theme_survives_reload_navigation_and_new_context_without_storage(browse
         page = reopened.new_page()
         page.goto(f"{page_server}/memory/index.html?ui=day")
         page.wait_for_function("document.querySelector('#uiThemeStatus')?.textContent === '已恢复账号偏好'")
-        assert page.locator("html").get_attribute("data-theme") == "night"
+        assert page.locator("html").get_attribute("data-ui-theme") == "night"
 
 
 def test_late_restore_cannot_undo_click(browser, page_server):
@@ -163,7 +191,7 @@ def test_late_restore_cannot_undo_click(browser, page_server):
         page.locator("#btnUiTheme").click()
         page.evaluate("window.releaseTheme()")
         page.wait_for_function("document.querySelector('#uiThemeStatus').textContent === '已保存到账号'")
-        assert page.locator("html").get_attribute("data-theme") == "night"
+        assert page.locator("html").get_attribute("data-ui-theme") == "night"
 
 
 def test_rapid_theme_changes_are_saved_in_order(browser, page_server):
@@ -204,7 +232,7 @@ def test_real_opaque_iframe_restores_account_theme(browser, page_server):
         page.set_content(f'<iframe sandbox="allow-scripts" src="{page_server}/today/index.html"></iframe>')
         frame = page.frame_locator("iframe")
         frame.locator("#uiThemeStatus").filter(has_text="已恢复账号偏好").wait_for()
-        assert frame.locator("html").get_attribute("data-theme") == "night"
+        assert frame.locator("html").get_attribute("data-ui-theme") == "night"
         assert frame.locator("html").evaluate("() => {try {localStorage.getItem('x'); return false;} catch {return true;}}")
         frame.locator("#btnUiTheme").click()
         frame.locator("#uiThemeStatus").filter(has_text="已保存到账号").wait_for()

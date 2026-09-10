@@ -22,6 +22,6 @@ done
 ```
 
 HTML should use `./base.css` (wire pages), `./shell.css`, `./plugin_nav.css`, `./style.css`.
-Daytime paper UI is the default (`data-theme="day"`); canonical day/night tokens live in `theme.css`. The shared `theme.js` bootstrap reads `chat_dynamics_ui` when available, then restores the authenticated account preference via `ui_preferences`. Only explicit toggles save the account preference; initialization does not overwrite it. Signed navigation carries `ui` even when iframe storage/history is unavailable.
+Daytime paper UI is the default (`data-ui-theme="day"`); canonical day/night tokens live in `theme.css`. The shared `theme.js` bootstrap reads `chat_dynamics_ui` when available, then restores the authenticated account preference via `ui_preferences`. Only explicit toggles save the account preference; initialization does not overwrite it. Signed navigation carries `ui` even when iframe storage/history is unavailable.
 JS imports `./api.js` / `./shell.js` / `./plugin_nav.js` (never `../shared`).
 Config live skin: `./style.css` + `./plugin_nav.css` only (no base.css).

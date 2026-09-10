@@ -84,7 +84,7 @@ def test_all_viewports_no_horizontal_overflow_and_touch_targets(
         page.on("pageerror", lambda err: print(f"PAGE ERROR: {err}"))
         page.add_init_script(f"""
             window.addEventListener("DOMContentLoaded", () => {{
-                document.documentElement.setAttribute("data-theme", "{theme}");
+                document.documentElement.setAttribute("data-ui-theme", "{theme}");
             }});
             window.confirm = () => true;
             window.AstrBotPluginPage = {{

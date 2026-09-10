@@ -39,7 +39,7 @@
   --mono: "Cascadia Code", "Sarasa Term SC", "Consolas", "SFMono-Regular", ui-monospace, monospace;
 }
 
-html[data-theme="night"] {
+html[data-ui-theme="night"] {
   color-scheme: dark;
   --bg: #071017;
   --surface: #0d1a22;
@@ -92,7 +92,7 @@ html {
   color-scheme: light;
 }
 
-html[data-theme="night"] {
+html[data-ui-theme="night"] {
   color-scheme: dark;
 }
 

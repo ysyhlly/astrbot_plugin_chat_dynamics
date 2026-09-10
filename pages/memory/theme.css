@@ -29,7 +29,7 @@
   --mono: "Cascadia Code", "Sarasa Term SC", "Consolas", ui-monospace, monospace;
 }
 
-html[data-theme="night"] {
+html[data-ui-theme="night"] {
   --bg: #0b1419;
   --surface: #111f26;
   --surface-soft: #162830;
@@ -55,7 +55,7 @@ html[data-theme="night"] {
 }
 
 /* Legacy page-specific names resolve to the same semantic colors. */
-:root, html[data-theme="night"] {
+:root, html[data-ui-theme="night"] {
   --panel: var(--surface);
   --accent: var(--cyan);
   --stat-bg: var(--surface);

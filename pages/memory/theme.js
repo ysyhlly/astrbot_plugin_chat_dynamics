@@ -14,7 +14,9 @@
   }
 
   function current() {
-    return document.documentElement.dataset.theme === "night" ? "night" : "day";
+    // AstrBot owns data-theme (dark/light) and rewrites it during bridge context updates.
+    // Keep the plugin preference independent so host initialization cannot reset its palette.
+    return document.documentElement.dataset.uiTheme === "night" ? "night" : "day";
   }
 
   function renderStatus(message = status, failed = false) {
@@ -28,7 +30,7 @@
 
   function paint(value) {
     const next = valid(value) ? value : "day";
-    document.documentElement.dataset.theme = next;
+    document.documentElement.dataset.uiTheme = next;
     document.documentElement.style.colorScheme = next === "night" ? "dark" : "light";
     const meta = document.querySelector('meta[name="color-scheme"]');
     if (meta) meta.content = next === "night" ? "dark light" : "light dark";

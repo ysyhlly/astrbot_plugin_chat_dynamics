@@ -10,11 +10,11 @@ const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 
 const CONFIG_GROUPS = [
   {
-    id: "basics",
-    title: "基础开关",
-    blurb: "启用、接管范围、决策模式",
-    open: true,
-    keys: [
+    "id": "basics",
+    "title": "启用与接管范围",
+    "blurb": "先确定在哪些群生效，以及使用哪种决策方式",
+    "open": true,
+    "keys": [
       "enable",
       "shadow_mode",
       "decision_mode",
@@ -24,44 +24,160 @@ const CONFIG_GROUPS = [
       "takeover_groups",
       "exclude_groups",
       "bot_names",
-      "command_prefix",
-    ],
+      "command_prefix"
+    ]
   },
   {
-    id: "manners",
-    title: "你想 bot 怎样",
-    blurb: "分寸旋钮、社交分寸、媒体门闩、记忆玩法、selflearning",
-    open: true,
-    keys: [
+    "id": "providers",
+    "title": "回复与决策模型",
+    "blurb": "选择回复、决策和氛围模型，设置决策等待时间",
+    "open": true,
+    "keys": [
+      "reply_provider",
+      "decision_provider",
+      "decision_timeout",
+      "vibe_provider",
+      "provider"
+    ]
+  },
+  {
+    "id": "routing",
+    "title": "话题识别与归属",
+    "blurb": "话题识别、模型复判、上下文窗口与父消息判断",
+    "open": true,
+    "keys": [
+      "conversation_router_enabled",
+      "topic_reranker_enabled",
+      "topic_reranker_provider",
+      "topic_reranker_timeout",
+      "topic_window_seconds",
+      "topic_join_threshold",
+      "parent_window_seconds",
+      "parent_accept_threshold",
+      "routing_neural_timeout"
+    ]
+  },
+  {
+    "id": "embedding",
+    "title": "语义理解",
+    "blurb": "向量模型、关联阈值与缓存容量",
+    "open": false,
+    "keys": [
+      "neural_embedding_enabled",
+      "embedding_provider",
+      "neural_link_threshold",
+      "embedding_cache_size"
+    ]
+  },
+  {
+    "id": "addressivity",
+    "title": "点名与冷却",
+    "blurb": "明确点名、等待接话与深度冷却",
+    "open": false,
+    "keys": [
+      "strong_addressivity_threshold",
+      "safe_hover_threshold",
+      "deep_cooling_minutes"
+    ]
+  },
+  {
+    "id": "manners",
+    "title": "社交分寸",
+    "blurb": "参与程度、接话礼仪与私密话题边界",
+    "open": false,
+    "keys": [
       "presence_knob",
       "social_manners_enabled",
       "relay_baton_enabled",
       "private_field_enabled",
-      "hyped_quota_enabled",
-      "media_image_gate_enabled",
-      "media_voice_gate_enabled",
-      "media_understand_reply_enabled",
-      "media_privacy_strict",
-      "deciding_detect_enabled",
+      "deciding_detect_enabled"
+    ]
+  },
+  {
+    "id": "proactive",
+    "title": "主动参与与配额",
+    "blurb": "主动找话题、新人保护与发言次数限制",
+    "open": false,
+    "keys": [
       "gap_fill_proactive_enabled",
       "cold_memory_nudge_enabled",
       "newcomer_caution_enabled",
-      "pace_align_enabled",
+      "hyped_quota_enabled",
       "proactive_quota_enabled",
       "proactive_quota_per_hour",
-      "proactive_quota_per_topic",
-      "mood_memory_enabled",
-      "slang_trial_enabled",
-      "group_memory_enabled",
-      "selflearning_integration",
-    ],
+      "proactive_quota_per_topic"
+    ]
   },
   {
-    id: "daily_rhythm",
-    title: "今日作息",
-    blurb: "氛围作息：收束≠已睡；失眠默认关",
-    open: false,
-    keys: [
+    "id": "media",
+    "title": "图片与语音",
+    "blurb": "媒体理解、回复门槛与隐私保护",
+    "open": false,
+    "keys": [
+      "media_image_gate_enabled",
+      "media_voice_gate_enabled",
+      "media_understand_reply_enabled",
+      "media_privacy_strict"
+    ]
+  },
+  {
+    "id": "vibe",
+    "title": "群聊氛围",
+    "blurb": "氛围分析、统计窗口与模式切换阈值",
+    "open": false,
+    "keys": [
+      "vibe_llm_enabled",
+      "telemetrics_window_seconds",
+      "fast_banter_enter_mpm",
+      "chill_fade_enter_mpm"
+    ]
+  },
+  {
+    "id": "wts",
+    "title": "发言意愿权重",
+    "blurb": "调整话题、专业性、问题价值、参与度与疲劳的影响",
+    "open": false,
+    "keys": [
+      "wts_topic_weight",
+      "wts_professionalism_weight",
+      "wts_question_weight",
+      "wts_participation_weight",
+      "wts_fatigue_weight"
+    ]
+  },
+  {
+    "id": "debounce",
+    "title": "消息合并",
+    "blurb": "等待碎片补充，控制一轮消息的最长合并时间",
+    "open": false,
+    "keys": [
+      "debounce_base_cooldown",
+      "debounce_extended_cooldown",
+      "debounce_max_cap"
+    ]
+  },
+  {
+    "id": "pacing",
+    "title": "回复节奏与格式",
+    "blurb": "打字速度、分段间隔、长度与文字风格",
+    "open": false,
+    "keys": [
+      "chars_per_second",
+      "base_thinking_delay",
+      "max_fragments",
+      "max_fragment_chars",
+      "inter_burst_interval",
+      "pace_align_enabled",
+      "casual_emoji_enabled",
+      "strip_markdown_in_banter"
+    ]
+  },
+  {
+    "id": "daily_rhythm",
+    "title": "每日作息",
+    "blurb": "早晚问候、入睡、唤醒与当晚安排",
+    "open": false,
+    "keys": [
       "daily_rhythm_enabled",
       "rhythm_morning_hi_enabled",
       "rhythm_day_share_slots",
@@ -71,95 +187,30 @@ const CONFIG_GROUPS = [
       "rhythm_allow_wake",
       "rhythm_insomnia_enabled",
       "rhythm_force_sleep",
-      "rhythm_skip_morning_hi_tonight",
-    ],
+      "rhythm_skip_morning_hi_tonight"
+    ]
   },
   {
-    id: "providers",
-    title: "Provider",
-    blurb: "回复 / 决策 / 氛围 / Embedding",
-    open: true,
-    keys: [
-      "reply_provider",
-      "decision_provider",
-      "decision_timeout",
-      "vibe_provider",
-      "provider",
-      "embedding_provider",
-    ],
+    "id": "memory",
+    "title": "记忆与联动",
+    "blurb": "群记忆、情绪记忆、口头禅与自学习插件联动",
+    "open": false,
+    "keys": [
+      "group_memory_enabled",
+      "mood_memory_enabled",
+      "slang_trial_enabled",
+      "selflearning_integration"
+    ]
   },
   {
-    id: "debounce",
-    title: "防抖与打字节奏",
-    blurb: "冷却、碎发、打字模拟",
-    open: false,
-    keys: [
-      "debounce_base_cooldown",
-      "debounce_extended_cooldown",
-      "debounce_max_cap",
-      "chars_per_second",
-      "base_thinking_delay",
-      "max_fragments",
-      "max_fragment_chars",
-      "inter_burst_interval",
-    ],
-  },
-  {
-    id: "addressivity",
-    title: "指代与冷却",
-    blurb: "点名阈值、深度冷却",
-    open: false,
-    keys: [
-      "strong_addressivity_threshold",
-      "safe_hover_threshold",
-      "deep_cooling_minutes",
-    ],
-  },
-  {
-    id: "vibe",
-    title: "氛围与模式阈值",
-    blurb: "碎梗 / 衰退、表情与格式",
-    open: false,
-    keys: [
-      "vibe_llm_enabled",
-      "telemetrics_window_seconds",
-      "fast_banter_enter_mpm",
-      "chill_fade_enter_mpm",
-      "casual_emoji_enabled",
-      "strip_markdown_in_banter",
-    ],
-  },
-  {
-    id: "wts",
-    title: "仲裁权重",
-    blurb: "WTS 各分量",
-    open: false,
-    keys: [
-      "wts_topic_weight",
-      "wts_professionalism_weight",
-      "wts_question_weight",
-      "wts_participation_weight",
-      "wts_fatigue_weight",
-    ],
-  },
-  {
-    id: "embedding",
-    title: "Embedding / 语义边",
-    blurb: "神经网络图谱相关",
-    open: false,
-    keys: [
-      "neural_embedding_enabled",
-      "neural_link_threshold",
-      "embedding_cache_size",
-    ],
-  },
-  {
-    id: "console",
-    title: "控制台",
-    blurb: "观测隐私",
-    open: false,
-    keys: ["console_show_message_content"],
-  },
+    "id": "console",
+    "title": "面板隐私",
+    "blurb": "控制面板是否显示消息正文",
+    "open": false,
+    "keys": [
+      "console_show_message_content"
+    ]
+  }
 ];
 
 const SPAN2_KEYS = new Set([
@@ -182,6 +233,7 @@ const els = {
   btnConfigApply: document.getElementById("btnConfigApply"),
   btnConfigSave: document.getElementById("btnConfigSave"),
   configSearch: document.getElementById("configSearch"),
+  configCategory: document.getElementById("configCategory"),
   configResultCount: document.getElementById("configResultCount"),
 };
 
@@ -213,7 +265,7 @@ function filterConfigFields() {
   els.configForm.querySelectorAll("details.config-group").forEach((group) => {
     let matches = 0;
     group.querySelectorAll(".config-field").forEach((field) => {
-      const visible = !query || field.dataset.search.includes(query);
+      const visible = !query || group.dataset.search.includes(query) || field.dataset.search.includes(query);
       field.hidden = !visible;
       if (visible) matches += 1;
     });
@@ -453,8 +505,8 @@ function groupedKeys(schemaKeys) {
   if (remaining.size) {
     groups.push({
       id: "other",
-      title: "其他",
-      blurb: "未归类字段",
+      title: "新增设置",
+      blurb: "当前版本新增的参数，仍可在这里查看和修改",
       open: false,
       keys: Array.from(remaining),
     });
@@ -489,6 +541,10 @@ function renderConfigForm(panel) {
   }
 
   const groups = groupedKeys(keys);
+  const selectedCategory = els.configCategory.value;
+  els.configCategory.innerHTML = '<option value="">选择设置分类…</option>' + groups.map((group) =>
+    `<option value="${escapeHtml(group.id)}">${escapeHtml(group.title)} · ${group.keys.length} 项</option>`).join("");
+  els.configCategory.value = groups.some((group) => group.id === selectedCategory) ? selectedCategory : "";
   els.configForm.innerHTML = groups
     .map((group) => {
       const isOpen = openGroups.has(group.id);
@@ -496,7 +552,7 @@ function renderConfigForm(panel) {
       const badge = mismatchCount
         ? `<span class="group-badge">${mismatchCount} 项不一致</span>`
         : `<span class="group-badge">${group.keys.length} 项</span>`;
-      return `<details class="config-group" data-group-id="${escapeHtml(group.id)}" ${isOpen ? "open" : ""}>
+      return `<details class="config-group" data-group-id="${escapeHtml(group.id)}" data-search="${escapeHtml(`${group.title} ${group.blurb}`.toLocaleLowerCase())}" ${isOpen ? "open" : ""}>
         <summary>
           <div class="group-title">
             <strong>${escapeHtml(group.title)}</strong>
@@ -589,6 +645,17 @@ async function applyConfigPanel() {
 
 async function boot() {
   els.configSearch.addEventListener("input", filterConfigFields);
+  els.configCategory.addEventListener("change", () => {
+    const id = els.configCategory.value;
+    const group = [...els.configForm.querySelectorAll("details.config-group")].find((item) => item.dataset.groupId === id);
+    if (!group) return;
+    els.configSearch.value = "";
+    openGroups.add(id);
+    persistView();
+    filterConfigFields();
+    group.querySelector("summary").focus({preventScroll: true});
+    group.scrollIntoView({block: "start"});
+  });
   for (const [id, expand] of [["btnExpandGroups", true], ["btnCollapseGroups", false]]) {
     document.getElementById(id).addEventListener("click", () => {
       els.configSearch.value = "";
@@ -601,7 +668,7 @@ async function boot() {
   await wirePageNav("config");
   els.pageDesc.textContent = t(
     "pages.config.desc",
-    "常用项默认展开，高级项折叠。Provider 从 AstrBot 已有服务商中选择。",
+    "按接管、理解、参与和回复流程分类。可搜索参数，或直接跳转到对应分类。",
   );
   if (bridge && typeof bridge.ready === "function") {
     try {

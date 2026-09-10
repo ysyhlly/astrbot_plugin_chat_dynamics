@@ -7,7 +7,7 @@
     <!-- Paint the document canvas before any external resource can delay navigation. -->
     <style>
       html { background: #f5f6f4; color-scheme: light; }
-      html[data-theme="night"] { background: #0b1419; color-scheme: dark; }
+      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
     </style>
     <script>
       (() => {
@@ -15,7 +15,7 @@
         const query = new URLSearchParams(location.search).get("ui");
         let saved;
         try { saved = localStorage.getItem("chat_dynamics_ui"); } catch {}
-        document.documentElement.dataset.theme = valid(query) ? query : valid(saved) ? saved : "day";
+        document.documentElement.dataset.uiTheme = valid(query) ? query : valid(saved) ? saved : "day";
       })();
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
@@ -46,7 +46,7 @@
           <div class="brand-copy">
             <p class="eyebrow">ASTRBOT / CONFIG</p>
             <h1 id="pageTitle">插件参数配置</h1>
-            <p class="lede" id="pageDesc">常用项默认展开，高级项折叠。Provider 从 AstrBot 已有服务商中选择。</p>
+            <p class="lede" id="pageDesc">按接管、理解、参与和回复流程分类。可搜索参数，或直接跳转到对应分类。</p>
           </div>
         </div>
         <div class="topbar-tools">
@@ -76,6 +76,7 @@
       <main class="content">
         <div class="config-toolbar">
           <label class="config-search">查找设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
+          <label class="config-category">跳转分类<select id="configCategory"><option value="">正在读取分类…</option></select></label>
           <div class="config-view-actions"><button type="button" class="button button-quiet" id="btnExpandGroups">全部展开</button><button type="button" class="button button-quiet" id="btnCollapseGroups">全部收起</button></div>
           <p id="configResultCount" class="ops-note" role="status" aria-live="polite"></p>
         </div>

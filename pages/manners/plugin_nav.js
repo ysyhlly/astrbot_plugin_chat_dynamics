@@ -44,7 +44,7 @@ function mountThemeToggle() {
   btn.setAttribute("aria-label", "切换日间或夜间界面");
   btn.innerHTML = '<span class="ui-theme-icon" aria-hidden="true">◐</span><span class="ui-theme-label">日间模式</span><span class="ui-theme-switch" aria-hidden="true"></span>';
   btn.addEventListener("click", () => {
-    const current = document.documentElement.getAttribute("data-theme") === "night" ? "night" : "day";
+    const current = document.documentElement.getAttribute("data-ui-theme") === "night" ? "night" : "day";
     applyUi(current === "night" ? "day" : "night");
   });
   side.appendChild(btn);

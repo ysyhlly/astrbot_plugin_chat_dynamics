@@ -35,12 +35,12 @@
 .lane-rhythm { --chip: #6148bb; }
 .lane-arbiter { --chip: #b33262; }
 .lane-proactive { --chip: #267436; }
-html[data-theme="night"] .lane-speak { --chip: #ffb454; }
-html[data-theme="night"] .lane-manners { --chip: #afc0d4; }
-html[data-theme="night"] .lane-media { --chip: #54d9e1; }
-html[data-theme="night"] .lane-rhythm { --chip: #b5a0ff; }
-html[data-theme="night"] .lane-arbiter { --chip: #ff8bb2; }
-html[data-theme="night"] .lane-proactive { --chip: #8cd878; }
+html[data-ui-theme="night"] .lane-speak { --chip: #ffb454; }
+html[data-ui-theme="night"] .lane-manners { --chip: #afc0d4; }
+html[data-ui-theme="night"] .lane-media { --chip: #54d9e1; }
+html[data-ui-theme="night"] .lane-rhythm { --chip: #b5a0ff; }
+html[data-ui-theme="night"] .lane-arbiter { --chip: #ff8bb2; }
+html[data-ui-theme="night"] .lane-proactive { --chip: #8cd878; }
 
 
 .replay-rail { overflow-x: auto; padding: 6px 4px 14px; }
@@ -53,7 +53,7 @@ html[data-theme="night"] .lane-proactive { --chip: #8cd878; }
 .gantt-track { position: relative; height: 64px; border-bottom: 1px solid var(--line); background: repeating-linear-gradient(to right, var(--line) 0, var(--line) 1px, transparent 1px, transparent 25%); }
 .gantt-empty { display: block; padding: 23px 12px; font-size: 12px; color: var(--muted); }
 .replay-block { position: absolute; top: 10px; height: 44px; min-width: 84px; padding: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; border: 1px solid var(--chip); border-radius: 5px; background: var(--chip); color: #fff; cursor: pointer; font: inherit; text-align: left; }
-html[data-theme="night"] .replay-block { color: #14252b; }
+html[data-ui-theme="night"] .replay-block { color: #14252b; }
 .replay-block > span:first-child { padding-left: 5px; }
 .scene-reason { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .replay-block:hover { filter: brightness(1.12); z-index: 1; }
