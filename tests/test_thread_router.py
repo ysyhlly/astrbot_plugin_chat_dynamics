@@ -1,11 +1,9 @@
 import asyncio
-from dataclasses import replace
 from types import SimpleNamespace
 import pytest
 
 from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG, ConversationNode
 from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRuntime
-from astrbot_plugin_chat_dynamics.core.semantics import semantic_match
 from astrbot_plugin_chat_dynamics.core.thread_router import (
     ThreadRouter,
     TopicResolver,
