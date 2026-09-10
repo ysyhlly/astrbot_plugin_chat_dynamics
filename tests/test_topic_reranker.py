@@ -66,3 +66,13 @@ async def test_timeout_and_error_leave_unknown_and_cancel_propagates():
     adapter.generate.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         await reranker.rerank(**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output,expected", [(' {"title":"显卡散热优化"}', '显卡散热优化'), ('plain text', ''), ('{"title":"<script>"}', ''), ('{"title":3}', '')])
+async def test_topic_title_validation(output, expected):
+    adapter = AsyncMock()
+    adapter.generate.return_value = output
+    result = await TopicReranker(adapter, enabled=True).title(umo="room", messages=["GPU fan"])
+    assert result == expected
+    assert adapter.generate.call_args.kwargs["umo"] == "room"

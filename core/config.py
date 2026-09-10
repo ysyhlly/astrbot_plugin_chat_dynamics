@@ -54,7 +54,7 @@ class RuntimeConfig:
     neural_link_threshold: float
     embedding_cache_size: int
     conversation_router_enabled: bool = True
-    topic_reranker_enabled: bool = False
+    topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
     topic_reranker_timeout: float = 3.0
     routing_neural_timeout: float = 0.5
@@ -262,7 +262,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         ),
         neural_embedding_enabled=_bool(_get(raw, "neural_embedding_enabled", False), False),
         conversation_router_enabled=_bool(_get(raw, "conversation_router_enabled", True), True),
-        topic_reranker_enabled=_bool(_get(raw, "topic_reranker_enabled", False), False),
+        topic_reranker_enabled=_bool(_get(raw, "topic_reranker_enabled", True), True),
         topic_reranker_provider=str(_get(raw, "topic_reranker_provider", "") or "").strip(),
         topic_reranker_timeout=_number(raw, "topic_reranker_timeout", 3.0, lambda value: 0.1 <= value <= 10, warnings),
         routing_neural_timeout=_number(raw, "routing_neural_timeout", 0.5, lambda value: 0 <= value <= 2, warnings),

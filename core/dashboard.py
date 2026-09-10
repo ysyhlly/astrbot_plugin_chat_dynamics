@@ -605,7 +605,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             if key not in groups:
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
-                    "topic_title": "待确认 / 未知话题" if topic == "UNKNOWN" else (_truncate(node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}"),
+                    "topic_title": "待确认 / 未知话题" if topic == "UNKNOWN" else (_truncate(node.metadata.get("topic_title") or node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}"),
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "messages": [], "message_count": 0, "count": 0,
                 }
@@ -712,7 +712,7 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
         "archived_topics": [
             {"session_id": sid, "topic_id": topic.topic_id,
-             "topic_title": _truncate(topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}
+             "topic_title": _truncate(getattr(topic, "title", "") or topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}
             for sid, runtime in getattr(plugin, "_sessions", {}).items() if not selected or sid == selected
             for topic in getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).values()
         ],

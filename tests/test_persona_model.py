@@ -68,8 +68,12 @@ def model_plugin(monkeypatch):
     p.decision_calls = []
 
     async def decide(**kwargs):
-        p.decision_calls.append(kwargs)
         payload = json.loads(kwargs["prompt"])
+        if "topics" in payload:
+            return SimpleNamespace(completion_text="UNKNOWN")
+        if "messages" in payload:
+            return SimpleNamespace(completion_text='{"title":"日常讨论"}')
+        p.decision_calls.append(kwargs)
         ids = [m["message_id"] for m in payload["conversation"]["messages"]]
         return SimpleNamespace(completion_text=json.dumps({
             "action": "reply", "state": "focused", "target_message_ids": ids,
@@ -491,6 +495,8 @@ async def test_decision_timeout_has_no_retry(model_plugin):
     calls = []
 
     async def slow(**kwargs):
+        if "messages" in json.loads(kwargs["prompt"]):
+            return SimpleNamespace(completion_text='{"title":"日常讨论"}')
         calls.append(kwargs)
         await asyncio.Event().wait()
 

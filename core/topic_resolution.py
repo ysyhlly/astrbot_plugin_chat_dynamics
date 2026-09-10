@@ -51,6 +51,8 @@ class TopicResolver:
                 topic.message_ids.remove(node.msg_id)
         topic = state.topics.setdefault(topic_id, TopicState(topic_id))
         topic.message_ids.append(node.msg_id)
+        if topic.generated_title:
+            node.metadata["topic_title"] = topic.generated_title
         topic.participants.add(node.user_id)
         topic.updated_at = max(topic.updated_at, node.timestamp)
         if not topic.created_at:
@@ -106,7 +108,7 @@ class TopicResolver:
         if nodes:
             topic.updated_at = max(n.timestamp for n in nodes)
         if substantive:
-            topic.label = substantive[0].text.strip()[:80]
+            topic.label = topic.generated_title or substantive[0].text.strip()[:80]
         return nodes
 
     def score_topic(self, node, dag, topic, matches) -> float:

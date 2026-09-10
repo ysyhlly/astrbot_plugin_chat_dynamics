@@ -350,8 +350,8 @@
     "hint": "结合活跃话题、候选父消息和对话对象判断自然续聊，区分谈论机器人与向机器人提问。"
   },
   "topic_reranker_enabled": {
-    "description": "启用模糊话题 LLM 复判", "type": "bool", "default": false,
-    "hint": "仅对无法确定的话题候选调用模型，失败时保留未知归属。"
+    "description": "启用话题 LLM 聚合辅助", "type": "bool", "default": true,
+    "hint": "对模糊归属和拟新建话题调用模型，识别同一讨论的回答、补充和子问题；失败保留本地判断。"
   },
   "topic_reranker_provider": {
     "description": "话题复判模型", "type": "string", "default": "",

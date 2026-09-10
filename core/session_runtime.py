@@ -22,6 +22,8 @@ class TopicState:
     participants: set[str] = field(default_factory=set)
     updated_at: float = 0.0
     label: str = ""
+    generated_title: str = ""
+    title_attempted: bool = False
     created_at: float = 0.0
     exemplar_messages: list[tuple[str, float]] = field(default_factory=list)
     centroid_vector: Optional[list[float]] = None

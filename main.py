@@ -2097,6 +2097,7 @@ class ChatDynamicsPlugin(Star):
                 enabled=True, timeout_seconds=self._runtime_config.topic_reranker_timeout,
             )
             await self.thread_router.rerank_pending(runtime, node, reranker)
+            await self.thread_router.title_topic(runtime, node, reranker)
 
         last_bot_node = runtime.last_bot_node
         runtime.expire_hovers(now)

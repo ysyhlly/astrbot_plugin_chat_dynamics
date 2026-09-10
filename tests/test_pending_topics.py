@@ -78,3 +78,64 @@ async def test_reranker_commits_only_topic_and_survives_embedding_reroute():
     assert "pending" in rt.routing_state.topics["b"].message_ids
     assert router.route(rt, node).topic_id == "b"
     assert not node.metadata["routing"]["bot_is_addressee"]
+
+
+@pytest.mark.asyncio
+async def test_new_topic_is_aggregated_with_real_candidate_context():
+    rt, router = setup()
+    node = rt.dag.add_message("new", "A", "a differently worded follow-up question", timestamp=4)
+    router.route(rt, node)
+    assert node.metadata["routing"]["topic_id"] == "new"
+    class Reranker:
+        async def rerank(self, **kwargs):
+            assert all(c.topic_id != "new" for c in kwargs["candidates"])
+            candidate = next(c for c in kwargs["candidates"] if c.topic_id == "a")
+            assert "substantive topic a" in candidate.exemplars[0]
+            return SimpleNamespace(choice="A", topic_id="a")
+    await router.rerank_pending(rt, node, Reranker())
+    assert node.metadata["routing"]["topic_id"] == "a"
+    assert "new" not in rt.routing_state.topics
+    assert "new" in rt.routing_state.topics["a"].message_ids
+    assert not node.metadata["routing"]["parent_message_id"]
+
+
+@pytest.mark.asyncio
+async def test_new_topic_unknown_fallback_and_only_one_attempt():
+    rt, router = setup()
+    node = rt.dag.add_message("new", "A", "unrelated discussion", timestamp=4)
+    router.route(rt, node)
+    class Reranker:
+        calls = 0
+        async def rerank(self, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(choice="UNKNOWN", topic_id="")
+    reranker = Reranker()
+    await router.rerank_pending(rt, node, reranker)
+    await router.rerank_pending(rt, node, reranker)
+    assert reranker.calls == 1
+    assert node.metadata["routing"]["topic_id"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_title_once_and_reset_guard():
+    rt, router = setup()
+    class Titler:
+        calls = 0
+        async def title(self, **kwargs):
+            self.calls += 1
+            return "显卡散热优化"
+    titler = Titler()
+    node = rt.dag.nodes["a"]
+    await router.title_topic(rt, node, titler)
+    router.topic_resolver.rebuild_profile(rt.routing_state.topics["a"], rt.dag)
+    await router.title_topic(rt, node, titler)
+    assert rt.routing_state.topics["a"].label == "显卡散热优化"
+    assert node.metadata["topic_title"] == "显卡散热优化"
+    assert titler.calls == 1
+    class ResetTitler:
+        async def title(self, **kwargs):
+            rt.revision += 1
+            rt.routing_state.clear()
+            return "过期标题"
+    await router.title_topic(rt, rt.dag.nodes["b"], ResetTitler())
+    assert "topic_title" not in rt.dag.nodes["b"].metadata

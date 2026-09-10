@@ -502,6 +502,10 @@ class ThreadRouter:
                 result.topic_id = archived.topic_id
                 topic_conf = archived.score
                 topic_evidence.append("topic_reopen")
+                if archived.topic.title:
+                    state.topics[archived.topic_id] = TopicState(
+                        archived.topic_id, generated_title=archived.topic.title,
+                        label=archived.topic.title, title_attempted=True)
                 state.archive.pop(archived.topic_id)
         result.topic_confidence = topic_conf
         for ev in topic_evidence:
@@ -679,31 +683,74 @@ class ThreadRouter:
 
         dag, state = runtime.dag, runtime.routing_state
         snapshot = node.metadata.get("routing", {})
-        if not snapshot.get("topic_ambiguous") or snapshot.get("rerank_attempted"):
+        source_id = snapshot.get("topic_id", "")
+        new_topic = source_id == node.msg_id
+        if (not snapshot.get("topic_ambiguous") and not new_topic) or snapshot.get("rerank_attempted"):
+            return
+        revision, epoch = runtime.revision, runtime.epoch
+        topic_ids = [tid for _, tid in snapshot.get("topic_candidates", []) if tid != source_id]
+        topic_ids.extend(t.topic_id for t in sorted(state.topics.values(), key=lambda t: t.updated_at, reverse=True)
+                         if t.topic_id != source_id)
+        candidates = []
+        for tid in dict.fromkeys(topic_ids):
+            topic = state.topics.get(tid)
+            if topic is None:
+                continue
+            recent = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes
+                      and 0 < node.timestamp - dag.nodes[mid].timestamp <= self.topic_resolver.window_seconds]
+            if not recent:
+                continue
+            candidates.append(RerankCandidate(tid, topic.label, tuple(
+                f"{n.user_id}: {n.text}" for n in recent[-3:])))
+            if len(candidates) == 3:
+                break
+        if not candidates:
             return
         snapshot["rerank_attempted"] = True
-        revision, epoch = runtime.revision, runtime.epoch
-        candidates = [RerankCandidate(tid, state.topics[tid].label, tuple(
-            [build_contextual_query(node, dag, state.topics[tid])]
-        )) for _, tid in snapshot.get("topic_candidates", [])[:3] if tid in state.topics]
         decision = await reranker.rerank(umo=runtime.umo, text=node.text,
                                          candidates=candidates, ambiguous=True)
         if (runtime.dag is not dag or runtime.routing_state is not state
                 or runtime.revision != revision or runtime.epoch != epoch
                 or dag.get_node(node.msg_id) is not node
                 or node.metadata.get("routing") is not snapshot
-                or node.msg_id not in state.pending_assignments):
+                or (not new_topic and node.msg_id not in state.pending_assignments)):
             return
         topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
-        if not topic_id or (decision.choice != "NEW" and topic_id not in state.topics):
+        if not topic_id or (decision.choice != "NEW" and
+                            (topic_id not in state.topics or topic_id not in {c.topic_id for c in candidates})):
             return
         self._remember(state, node, topic_id, dag=dag)
+        if source_id != topic_id and source_id in state.topics and not state.topics[source_id].message_ids:
+            state.topics.pop(source_id)
+            state.archive.pop(source_id)
         state.pending_assignments.pop(node.msg_id, None)
         snapshot.update(topic_id=topic_id, topic_ambiguous=False, topic_status="committed",
                         topic_confidence=0.78, ambiguous=snapshot.get("addressee_confidence", 0.0) < 0.72)
         snapshot["evidence"] = list(snapshot.get("evidence", [])) + ["topic_llm_rerank"]
         node.metadata["topic_id"] = topic_id
         state.last_topic_id = topic_id
+
+    async def title_topic(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
+        state, dag = runtime.routing_state, runtime.dag
+        topic_id = node.metadata.get("routing", {}).get("topic_id")
+        topic = state.topics.get(topic_id)
+        if topic is None or topic.title_attempted:
+            return
+        messages = [dag.nodes[mid].text for mid in topic.message_ids if mid in dag.nodes][-5:]
+        if not messages:
+            return
+        topic.title_attempted = True
+        revision, epoch = runtime.revision, runtime.epoch
+        title = await reranker.title(umo=runtime.umo, messages=messages)
+        if (not title or runtime.routing_state is not state or runtime.dag is not dag
+                or runtime.revision != revision or runtime.epoch != epoch
+                or state.topics.get(topic_id) is not topic):
+            return
+        topic.generated_title = title
+        topic.label = title
+        for mid in topic.message_ids:
+            if mid in dag.nodes:
+                dag.nodes[mid].metadata["topic_title"] = title
 
     def observe_bot_message(self, runtime: Any, node: ConversationNode) -> RoutingInference:
         """Call only after successful delivery, when the bot node is in the DAG."""

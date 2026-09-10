@@ -17,6 +17,7 @@ class ArchivedTopic:
     participants: frozenset[str]
     updated_at: float
     archived_at: float
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,8 @@ class TopicArchive:
         if not texts or not topic.topic_id or not 0 <= now - updated_at <= self.ttl_seconds:
             return None
         entry = ArchivedTopic(topic.topic_id, "\n".join(texts), tuple(texts),
-                              frozenset(sorted(topic.participants)[:32]), updated_at, now)
+                              frozenset(sorted(topic.participants)[:32]), updated_at, now,
+                              getattr(topic, "generated_title", ""))
         self.entries[entry.topic_id] = entry
         self.prune(now)
         return self.entries.get(entry.topic_id)
