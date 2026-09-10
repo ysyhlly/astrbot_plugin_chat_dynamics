@@ -246,3 +246,42 @@ html, body {
 .page-nav { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .page-nav-btn { white-space: nowrap; }
 
+/* Room for readable settings beside the shared navigation rail. */
+.app.plugin-shell { max-width: 1320px; width: 100%; }
+.brand-copy h1 { font-size: 26px; letter-spacing: -.03em; }
+.topbar { padding: 10px 0 18px; }
+.topbar-tools { margin-left: auto; }
+.config-toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; margin: 22px 0 16px; }
+.config-search { display: grid; flex: 1 1 260px; gap: 6px; font-size: 12px; color: var(--muted); }
+.config-search input { width: 100%; min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--input-bg); color: var(--text); font: inherit; font-size: 14px; }
+.config-view-actions { display: flex; gap: 6px; }
+#configResultCount { flex-basis: 100%; }
+.config-group > summary { justify-content: initial; padding: 17px 18px; }
+.group-title { flex: 1; }
+.group-badge { margin-left: auto; }
+.config-grid { gap: 0; margin-top: 0; }
+.group-body { padding: 0 18px; }
+.config-field { min-width: 0; padding: 18px 14px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+.config-field.mismatched { box-shadow: inset 3px 0 var(--danger); }
+.config-key { color: var(--muted); overflow-wrap: anywhere; }
+.config-title { font-size: 14px; line-height: 1.55; }
+.config-hint { line-height: 1.65; overflow-wrap: anywhere; }
+.config-effective { overflow-wrap: anywhere; font-size: 11px; }
+.config-field input[type="text"], .config-field input[type="number"], .config-field select, .config-field textarea { min-height: 40px; margin-top: 3px; }
+.config-field textarea { resize: vertical; }
+.config-check { min-height: 40px; margin-top: 3px; }
+.config-check input { width: 18px; height: 18px; accent-color: var(--cyan); }
+.config-field[hidden], .config-group[hidden] { display: none; }
+:is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.config-group { scroll-margin-top: 100px; }
+@media (max-width: 760px) {
+  .brand-copy h1 { font-size: 22px; }
+  .group-body { padding: 0 10px; }
+  .config-field { padding: 15px 6px; }
+  .action-bar { position: static; }
+  .action-buttons { width: 100%; }
+  .action-buttons .button { flex: 1; justify-content: center; padding: 9px 8px; }
+  .config-group > summary { padding: 14px 12px; }
+  .group-title span { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) { .config-group > summary::after { transition: none; } }

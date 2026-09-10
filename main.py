@@ -89,6 +89,7 @@ _MAX_INPUT_CHARS = 4000
 _MAX_TURN_CHARS = 8000
 _MAX_TURN_FRAGMENTS = 32
 _KV_COOLING = "cooling_until"
+_KV_RUNTIME = "panel_runtime_v1"
 _METRIC_NAMES = (
     "message_received",
     "takeover_considered",
@@ -115,6 +116,7 @@ _METRIC_NAMES = (
     "cooling_triggered",
     "reset_triggered",
     "cooling_persist_failed",
+    "panel_persist_failed",
     "media_seen",
     "poke_seen",
     "poke_replied",
@@ -201,7 +203,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.3.8",
+    "v1.3.9",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -361,6 +363,9 @@ class ChatDynamicsPlugin(Star):
         self._cooling_persist_revision: int = 0
         self._cooling_persist_dirty: bool = False
         self._cooling_persist_event = asyncio.Event()
+        self._runtime_persist_task: Optional[asyncio.Task] = None
+        self._runtime_persist_stop = asyncio.Event()
+        self._runtime_persist_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
         self._capacity_lock = threading.RLock()
         self._outgoing_sequence: int = 0
@@ -1383,6 +1388,10 @@ class ChatDynamicsPlugin(Star):
         self._web.register()
         self._web_apis_registered = self._web.registered
         await self._load_persisted_cooling()
+        await self._load_panel_runtime()
+        if self._runtime_persist_task is None or self._runtime_persist_task.done():
+            self._runtime_persist_stop.clear()
+            self._runtime_persist_task = self._create_background_task(self._panel_persistence_loop())
         if self._session_sweep_task is None or self._session_sweep_task.done():
             try:
                 self._session_sweep_task = self._create_background_task(self._session_sweeper())
@@ -1395,6 +1404,46 @@ class ChatDynamicsPlugin(Star):
             len(self.takeover_groups),
             len(self.exclude_groups),
         )
+
+    async def _load_panel_runtime(self) -> None:
+        from .core.runtime_persistence import restore_runtime_state
+
+        reader = getattr(self, "get_kv_data", None)
+        if not callable(reader):
+            return
+        try:
+            payload = reader(_KV_RUNTIME, {})
+            if inspect.isawaitable(payload):
+                payload = await payload
+            restore_runtime_state(self, payload)
+        except Exception as exc:
+            logger.warning("[ChatDynamics] Panel restore failed type=%s", type(exc).__name__)
+
+    async def _save_panel_runtime(self) -> None:
+        from .core.runtime_persistence import export_runtime_state
+
+        writer = getattr(self, "put_kv_data", None)
+        if not callable(writer):
+            return
+        async with self._runtime_persist_lock:
+            try:
+                payload = export_runtime_state(self)
+                result = writer(_KV_RUNTIME, payload)
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is False:
+                    raise RuntimeError("panel storage returned false")
+            except Exception as exc:
+                self._metric("panel_persist_failed")
+                logger.warning("[ChatDynamics] Panel save failed type=%s", type(exc).__name__)
+
+    async def _panel_persistence_loop(self) -> None:
+        while not self._shutting_down:
+            try:
+                await asyncio.wait_for(self._runtime_persist_stop.wait(), timeout=30.0)
+                break
+            except asyncio.TimeoutError:
+                await self._save_panel_runtime()
 
     def _schedule_persist_cooling(self) -> None:
         if self._shutting_down:
@@ -1481,6 +1530,10 @@ class ChatDynamicsPlugin(Star):
 
     async def terminate(self) -> None:
         self._shutting_down = True
+        self._runtime_persist_stop.set()
+        if self._runtime_persist_task is not None:
+            await asyncio.gather(self._runtime_persist_task, return_exceptions=True)
+            self._runtime_persist_task = None
         companion_close = getattr(getattr(self, "selflearning", None), "close", None)
         if callable(companion_close):
             await companion_close()
@@ -1534,6 +1587,7 @@ class ChatDynamicsPlugin(Star):
         self._embedding_tasks_by_session.clear()
         self._hook_tasks_by_session.clear()
         self._clear_all_native_contexts()
+        await self._save_panel_runtime()
         for session_id in list(self._sessions):
             self.arbiter.reset_session(session_id)
             self.vibe_analyzer.reset_session(session_id)
@@ -3188,6 +3242,7 @@ class ChatDynamicsPlugin(Star):
             ]
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            await self._save_panel_runtime()
             return
         task = None
         vibe_task: Optional[asyncio.Task] = None
@@ -3206,6 +3261,7 @@ class ChatDynamicsPlugin(Star):
         tasks = [candidate for candidate in tasks if candidate is not asyncio.current_task()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._save_panel_runtime()
 
     async def _cool_session_async(self, session_id: str, minutes: float) -> bool:
         key = self._resolve_session_key(session_id) or session_id

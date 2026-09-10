@@ -181,6 +181,8 @@ const els = {
   btnConfigReload: document.getElementById("btnConfigReload"),
   btnConfigApply: document.getElementById("btnConfigApply"),
   btnConfigSave: document.getElementById("btnConfigSave"),
+  configSearch: document.getElementById("configSearch"),
+  configResultCount: document.getElementById("configResultCount"),
 };
 
 let bridge = window.AstrBotPluginPage || null;
@@ -195,6 +197,32 @@ let configState = { schema: {}, stored: {}, effective: {}, mismatches: [] };
 let providerOptions = { chat: [], embedding: [] };
 let configDirty = false;
 let openGroups = new Set(CONFIG_GROUPS.filter((group) => group.open).map((group) => group.id));
+const VIEW_STORAGE_KEY = `${PLUGIN}:config-view:v1`;
+try {
+  const view = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY) || "null");
+  if (view && Array.isArray(view.openGroups)) openGroups = new Set(view.openGroups.filter((id) => typeof id === "string"));
+} catch (_) { /* Storage may be unavailable in embedded pages. */ }
+
+function persistView() {
+  try { localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ openGroups: [...openGroups] })); } catch (_) { /* Keep controls usable without storage. */ }
+}
+
+function filterConfigFields() {
+  const query = els.configSearch.value.trim().toLocaleLowerCase();
+  let count = 0;
+  els.configForm.querySelectorAll("details.config-group").forEach((group) => {
+    let matches = 0;
+    group.querySelectorAll(".config-field").forEach((field) => {
+      const visible = !query || field.dataset.search.includes(query);
+      field.hidden = !visible;
+      if (visible) matches += 1;
+    });
+    group.hidden = !matches;
+    group.open = query ? Boolean(matches) : openGroups.has(group.dataset.groupId);
+    count += matches;
+  });
+  els.configResultCount.textContent = query ? `找到 ${count} 项设置` : `共 ${count} 项设置 · 分组展开状态自动记住`;
+}
 
 function t(key, fallback) {
   if (bridge && typeof bridge.t === "function") {
@@ -379,7 +407,7 @@ function renderField(key, mismatchSet) {
   const value = configFieldValue(key);
   let control = "";
   if (type === "bool") {
-    control = `<label class="config-check"><input type="checkbox" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/> 启用</label>`;
+    control = `<span class="config-check"><input type="checkbox" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/> 启用</span>`;
   } else if (isProviderField(key, schema) && type === "string") {
     control = renderProviderSelect(key, value);
   } else if (type === "string" && Array.isArray(schema.options) && schema.options.length) {
@@ -398,7 +426,7 @@ function renderField(key, mismatchSet) {
   }
   const effectiveText =
     eff === undefined ? "—" : escapeHtml(typeof eff === "object" ? JSON.stringify(eff) : String(eff));
-  return `<label class="config-field${mismatched}${span}">
+  return `<label class="config-field${mismatched}${span}" data-search="${escapeHtml(`${title} ${key} ${hint}`.toLocaleLowerCase())}">
     <span class="config-title">${escapeHtml(title)}</span>
     <span class="config-key">${escapeHtml(key)}</span>
     ${control}
@@ -408,7 +436,7 @@ function renderField(key, mismatchSet) {
 }
 
 function rememberOpenGroups() {
-  if (!els.configForm) return;
+  if (!els.configForm || els.configSearch.value.trim() || !els.configForm.querySelector("details.config-group")) return;
   openGroups = new Set();
   els.configForm.querySelectorAll("details.config-group").forEach((node) => {
     if (node.open && node.dataset.groupId) openGroups.add(node.dataset.groupId);
@@ -463,7 +491,7 @@ function renderConfigForm(panel) {
   const groups = groupedKeys(keys);
   els.configForm.innerHTML = groups
     .map((group) => {
-      const isOpen = openGroups.has(group.id) || (openGroups.size === 0 && group.open);
+      const isOpen = openGroups.has(group.id);
       const mismatchCount = group.keys.filter((key) => mismatchSet.has(key)).length;
       const badge = mismatchCount
         ? `<span class="group-badge">${mismatchCount} 项不一致</span>`
@@ -484,6 +512,14 @@ function renderConfigForm(panel) {
     .join("");
 
   setConfigDirty(false);
+  els.configForm.querySelectorAll("details.config-group").forEach((group) => {
+    group.addEventListener("toggle", () => {
+      if (els.configSearch.value.trim()) return;
+      rememberOpenGroups();
+      persistView();
+    });
+  });
+  filterConfigFields();
   els.configForm.querySelectorAll("[data-config-key]").forEach((input) => {
     input.addEventListener("change", () => setConfigDirty(true));
     input.addEventListener("input", () => setConfigDirty(true));
@@ -552,6 +588,15 @@ async function applyConfigPanel() {
 }
 
 async function boot() {
+  els.configSearch.addEventListener("input", filterConfigFields);
+  for (const [id, expand] of [["btnExpandGroups", true], ["btnCollapseGroups", false]]) {
+    document.getElementById(id).addEventListener("click", () => {
+      els.configSearch.value = "";
+      openGroups = new Set(expand ? [...els.configForm.querySelectorAll("details.config-group")].map((group) => group.dataset.groupId) : []);
+      persistView();
+      filterConfigFields();
+    });
+  }
   els.pageTitle.textContent = t("pages.config.title", "插件参数配置");
   await wirePageNav("config");
   els.pageDesc.textContent = t(

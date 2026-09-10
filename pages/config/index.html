@@ -60,6 +60,11 @@
       </div>
 
       <main class="content">
+        <div class="config-toolbar">
+          <label class="config-search">查找设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
+          <div class="config-view-actions"><button type="button" class="button button-quiet" id="btnExpandGroups">全部展开</button><button type="button" class="button button-quiet" id="btnCollapseGroups">全部收起</button></div>
+          <p id="configResultCount" class="ops-note" role="status" aria-live="polite"></p>
+        </div>
         <p class="ops-note error hidden" id="configMismatch" role="status"></p>
         <div id="configForm" class="config-sections" aria-label="插件参数表单" aria-busy="true"></div>
       </main>
