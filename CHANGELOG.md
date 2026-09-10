@@ -2,6 +2,13 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.3.8 — LLM 话题聚合与自动标题
+
+- LLM 辅助覆盖模糊归属和拟新建话题，结合候选摘要及最近对话减少话题碎片；超时保留本地判断。
+- 每个活跃话题生成一次简短中文标题，后续消息沿用，归档后保留；重置期间的过期结果不会写回。
+- 场景回放显示生成标题，隐藏消息内容时仍使用匿名编号。
+- `topic_reranker_enabled` 默认开启；已有显式 false 配置保持关闭。复用 `topic_reranker_provider` 和 `topic_reranker_timeout`。
+
 ## v1.3.7 — 流式话题归属与人工纠错
 
 - 模糊消息先暂存，后续明确证据可回填，超时保持未知，避免污染正式话题。

@@ -201,7 +201,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.3.7",
+    "v1.3.8",
     "",
 )
 class ChatDynamicsPlugin(Star):
