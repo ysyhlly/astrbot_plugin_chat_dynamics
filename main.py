@@ -35,6 +35,7 @@ from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
 from .core.decision_gate import DynamicsDecisionGate
 from .core.embedding_adapter import EmbeddingAdapter
 from .core.thread_router import ThreadRouter, build_contextual_query
+from .core.topic_reranker import TopicReranker
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
@@ -229,7 +230,12 @@ class ChatDynamicsPlugin(Star):
             max_turn_chars=_MAX_TURN_CHARS,
         )
 
-        self.thread_router = ThreadRouter()
+        self.thread_router = ThreadRouter(
+            topic_window_seconds=runtime_config.topic_window_seconds,
+            topic_join_threshold=runtime_config.topic_join_threshold,
+            parent_window_seconds=runtime_config.parent_window_seconds,
+            parent_accept_threshold=runtime_config.parent_accept_threshold,
+        )
         self.addressivity_router = AddressivityRouter(
             bot_id="",
             bot_names=self.bot_names,
@@ -495,6 +501,11 @@ class ChatDynamicsPlugin(Star):
         cfg, warnings = parse_runtime_config(self.config)
         self._runtime_config = cfg
         self._apply_runtime_config(cfg, log_warnings=warnings)
+        self.thread_router.topic_resolver.window_seconds = cfg.topic_window_seconds
+        self.thread_router.topic_resolver.ambiguity_threshold = cfg.topic_join_threshold
+        self.thread_router.topic_resolver.join_threshold = max(0.58, cfg.topic_join_threshold + 0.10) if cfg.topic_join_threshold < 0.58 else cfg.topic_join_threshold
+        self.thread_router.parent_retriever.window_seconds = cfg.parent_window_seconds
+        self.thread_router.parent_retriever.accept_threshold = cfg.parent_accept_threshold
         self.addressivity_router.bot_names = set(self.bot_names)
         self.addressivity_router.strong_threshold = cfg.strong_addressivity_threshold
         self.addressivity_router.hover_threshold = cfg.safe_hover_threshold
@@ -625,6 +636,9 @@ class ChatDynamicsPlugin(Star):
             "decision_mode": getattr(cfg, "decision_mode", "legacy"),
             "conversation_router_enabled": getattr(cfg, "conversation_router_enabled", True),
             "routing_neural_timeout": getattr(cfg, "routing_neural_timeout", 0.5),
+            "topic_reranker_enabled": cfg.topic_reranker_enabled,
+            "topic_reranker_provider": cfg.topic_reranker_provider,
+            "topic_reranker_timeout": cfg.topic_reranker_timeout,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
             "decision_timeout": getattr(cfg, "decision_timeout", 8.0),
             "pipeline_mode": getattr(cfg, "pipeline_mode", PIPELINE_FILTER),
@@ -2074,6 +2088,15 @@ class ChatDynamicsPlugin(Star):
                 vector = self.embeddings.cached(query)
                 if vector is not None:
                     self._route_message(runtime, node)
+
+        if (getattr(self._runtime_config, "topic_reranker_enabled", False)
+                and not self.shadow_mode
+                and getattr(self._runtime_config, "conversation_router_enabled", True)):
+            reranker = TopicReranker(
+                LLMAdapter(self.context, configured_provider_id=self._runtime_config.topic_reranker_provider),
+                enabled=True, timeout_seconds=self._runtime_config.topic_reranker_timeout,
+            )
+            await self.thread_router.rerank_pending(runtime, node, reranker)
 
         last_bot_node = runtime.last_bot_node
         runtime.expire_hovers(now)

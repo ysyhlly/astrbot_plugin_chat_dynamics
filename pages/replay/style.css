@@ -67,6 +67,7 @@ html[data-theme="night"] .replay-block { color: #14252b; }
 .scene-events div { overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   .scene-events li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .gantt-heading, .gantt-label { position: static; }
 }
 
 .gantt-label { overflow-wrap: anywhere; line-height: 1.5; }
@@ -75,3 +76,7 @@ html[data-theme="night"] .replay-block { color: #14252b; }
 .scene-dialog::backdrop { background: rgb(10 20 25 / 55%); }
 .scene-dialog[open] { position: fixed; inset: 0; margin: auto; }
 .scene-dialog:not([open]) { display: none; }
+
+.annotation-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border, #ddd); }
+.annotation-row p { overflow-wrap: anywhere; margin: 0; }
+.annotation-row select { max-width: 100%; }

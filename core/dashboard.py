@@ -599,22 +599,33 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
         nodes = sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-80:]
         session_nodes[sid] = nodes
         for node in nodes:
-            topic = str(node.metadata.get("routing", {}).get("topic_id") or node.thread_id or node.msg_id)
+            routing = node.metadata.get("routing", {})
+            topic = str(routing.get("topic_id") or ("UNKNOWN" if routing else node.thread_id or node.msg_id))
             key = (sid, topic)
             if key not in groups:
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
-                    "topic_title": _truncate(node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}",
+                    "topic_title": "待确认 / 未知话题" if topic == "UNKNOWN" else (_truncate(node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}"),
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
-                    "events": [], "message_count": 0, "count": 0,
+                    "events": [], "messages": [], "message_count": 0, "count": 0,
                 }
             group = groups[key]
             group["end_ts"] = max(group["end_ts"], node.timestamp + wall_offset)
             group["message_count"] += 1
+            routing = node.metadata.get("routing", {})
+            group["messages"].append({
+                "msg_id": node.msg_id,
+                "text": _truncate(node.text, 240) if show_content else "消息内容已隐藏",
+                "topic_id": str(routing.get("topic_id") or "UNKNOWN"),
+                "confidence": routing.get("topic_confidence", 0),
+                "ambiguous": bool(routing.get("topic_ambiguous", routing.get("ambiguous", False))),
+                "topic_status": routing.get("topic_status", "committed"),
+                "candidates": routing.get("topic_candidates", routing.get("candidates", [])),
+            })
     for event in events:
         sid = str(event.get("session_id") or selected)
         candidates = {
-            str(node.metadata.get("routing", {}).get("topic_id") or node.thread_id or node.msg_id)
+            str(node.metadata.get("routing", {}).get("topic_id") or ("UNKNOWN" if node.metadata.get("routing") else node.thread_id or node.msg_id))
             for node in session_nodes.get(sid, [])
             if 0 <= float(event.get("ts") or 0) - (node.timestamp + wall_offset) <= 60
         }
@@ -699,6 +710,12 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         "events": ordered[-64:],
         "blocks": merge_replay_blocks(ordered[-64:]),
         "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
+        "archived_topics": [
+            {"session_id": sid, "topic_id": topic.topic_id,
+             "topic_title": _truncate(topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}
+            for sid, runtime in getattr(plugin, "_sessions", {}).items() if not selected or sid == selected
+            for topic in getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).values()
+        ],
         "topic_content_redacted": not bool(getattr(plugin, "console_show_message_content", False)),
         "speak_count": speak,
         "silent_count": silent,

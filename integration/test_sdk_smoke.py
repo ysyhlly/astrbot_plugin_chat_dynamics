@@ -160,6 +160,7 @@ async def test_real_sdk_plugin_contract_smoke():
         "ui_preferences",
         "providers",
         "replay",
+        "topic_annotations",
     }
     overview = await _overview_payload(plugin)
     assert overview["ok"] is True

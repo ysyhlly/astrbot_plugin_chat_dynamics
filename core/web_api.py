@@ -16,6 +16,7 @@ from .dashboard import (
     snapshot_sessions,
 )
 from .web_compat import error_response, json_response, query_value, request, request_json
+from .topic_annotations import TopicAnnotations
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.web_api")
 
@@ -97,6 +98,7 @@ class ConsoleWebAPI:
         self.registered = False
         self._registered_endpoints: set[str] = set()
         self._rate_buckets: Dict[tuple[str, str], list[float]] = {}
+        self.topic_annotations = TopicAnnotations(plugin)
 
     @staticmethod
     def _endpoint_key(route: str, methods: list[str]) -> str:
@@ -129,6 +131,8 @@ class ConsoleWebAPI:
             ("notebook", self.notebook_post, ["POST"], "群记忆小本写入/忘掉/静音"),
             ("read_air", self.read_air, ["GET"], "今日读空气摘要"),
             ("replay", self.replay, ["GET"], "场景回放色块时间轨"),
+            ("topic_annotations", self.annotations_get, ["GET"], "话题标注与混淆统计"),
+            ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -603,6 +607,32 @@ class ConsoleWebAPI:
         except Exception as exc:
             logger.error("[ChatDynamics] replay failed code=CD_REPLAY type=%s", type(exc).__name__)
             return _json_err("replay unavailable", 503)
+
+    async def annotations_get(self):
+        if (limited := self._rate_limit("GET", 60)) is not None:
+            return limited
+        session = (_query_param("session_key") or "").strip()
+        if not session or len(session) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key required", 400)
+        try:
+            data = await self.topic_annotations.read(session)
+            if not getattr(self.plugin, "console_show_message_content", False):
+                data["records"] = [{k: v for k, v in row.items() if k != "text"} for row in data["records"]]
+            return _json_ok(data)
+        except Exception:
+            return _json_err("annotations unavailable", 503)
+
+    async def annotations_post(self):
+        if (limited := self._rate_limit("POST", 20)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        try:
+            return _json_ok(await self.topic_annotations.save(await _json_body()))
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception:
+            return _json_err("annotation write failed", 503)
 
     async def notebook_get(self):
         if (limited := self._rate_limit("GET", 60)) is not None:

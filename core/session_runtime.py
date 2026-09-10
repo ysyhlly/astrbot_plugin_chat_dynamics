@@ -10,6 +10,7 @@ from typing import Any, Deque, Dict, Optional, Set
 from .debounce import DebounceResult
 from .graph import ConversationDAG, ConversationNode
 from .semantics import semantic_match
+from .topic_archive import TopicArchive
 
 
 @dataclass
@@ -24,6 +25,11 @@ class TopicState:
     created_at: float = 0.0
     exemplar_messages: list[tuple[str, float]] = field(default_factory=list)
     centroid_vector: Optional[list[float]] = None
+    recent_message_ids: list[str] = field(default_factory=list)
+    keywords: set[str] = field(default_factory=set)
+    interlocutor_affinity: dict[tuple[str, str], float] = field(default_factory=dict)
+    centroid_space: str = "hashed"
+    summary_excerpts: list[str] = field(default_factory=list)
 
     @property
     def last_activity(self) -> float:
@@ -47,12 +53,24 @@ class TopicState:
 
 
 @dataclass
+class PendingAssignment:
+    """Uncommitted evidence; never included in topic profiles."""
+
+    msg_id: str
+    candidates: list[tuple[float, str]] = field(default_factory=list)
+    created_at: float = 0.0
+    observed_ids: set[str] = field(default_factory=set)
+
+
+@dataclass
 class RoutingState:
     """Session-isolated routing state managing active topics."""
 
     topics: dict[str, TopicState] = field(default_factory=dict)
     last_bot_topic_id: Optional[str] = None
     last_topic_id: Optional[str] = None
+    pending_assignments: dict[str, PendingAssignment] = field(default_factory=dict)
+    archive: TopicArchive = field(default_factory=TopicArchive)
 
     @property
     def active_topics(self) -> dict[str, TopicState]:
@@ -60,6 +78,8 @@ class RoutingState:
 
     def clear(self) -> None:
         self.topics.clear()
+        self.pending_assignments.clear()
+        self.archive.clear()
         self.last_bot_topic_id = None
         self.last_topic_id = None
 
@@ -77,7 +97,15 @@ class RoutingState:
             for n in dag.get_recent_nodes(window_nodes)
             if 0 <= now - n.timestamp <= window_seconds
         }
+        for mid, pending in list(self.pending_assignments.items()):
+            if mid not in allowed or now - pending.created_at > 30.0:
+                self.pending_assignments.pop(mid, None)
+                node = dag.get_node(mid)
+                if node is not None:
+                    node.metadata.get("routing", {})["topic_status"] = "unknown"
         for key, topic in list(self.topics.items()):
+            if not any(mid in allowed for mid in topic.message_ids) or now - topic.updated_at > window_seconds:
+                self.archive.archive(topic, dag, now)
             topic.message_ids = [mid for mid in topic.message_ids if mid in allowed]
             if not topic.message_ids or (now - topic.updated_at > window_seconds):
                 del self.topics[key]
@@ -93,6 +121,7 @@ class RoutingState:
                 topic.updated_at = max(
                     dag.nodes[mid].timestamp for mid in topic.message_ids if mid in dag.nodes
                 )
+        self.archive.prune(now)
 
 
 @dataclass

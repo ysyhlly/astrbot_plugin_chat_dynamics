@@ -240,14 +240,17 @@ def test_tier1_addressee_resolver_vocative_cues():
 # ===========================================================================
 
 def test_tier2_contextual_query_expansion_boundaries():
-    """R2.2: Contextual query expansion borrows author's prior turn if <= 16 chars; raw text if > 16."""
+    """Candidate-local short context stays separate from the raw semantic query."""
     dag = ConversationDAG(session_id="query_test")
     # Substantive turn by Alice
     dag.add_message("m1", "Alice", "5090显卡功耗和发热测试结果", timestamp=10.0)
     # Alice short elliptical turn (<= 16 chars)
     short_turn = dag.add_message("m2", "Alice", "那怎么办？", timestamp=20.0)
     query_short = build_contextual_query(short_turn, dag)
-    assert query_short == "5090显卡功耗和发热测试结果\n那怎么办？"
+    assert query_short == short_turn.text
+    from astrbot_plugin_chat_dynamics.core.session_runtime import TopicState
+    candidate = TopicState("gpu", message_ids=["m1"])
+    assert "5090显卡功耗" in build_contextual_query(short_turn, dag, candidate)
 
     # Alice long turn (> 16 chars)
     long_turn = dag.add_message("m3", "Alice", "请问这个功耗墙设置多少瓦比较安全呢？", timestamp=30.0)
@@ -496,18 +499,17 @@ def test_scenario_2_bystander_interjection_not_addressed():
 
 
 def test_scenario_3_interleaved_qa_retrieval():
-    """Scenario 3: D: '风扇怎么设？' + interleaved gaming chatter + A: '默认' -> parent=D, topic=GPU.
-    
-    Topic coherence and parent QA retrieval in interleaved multi-topic chat.
-    """
+    """An unaddressed short answer amid parallel topics stays pending."""
     rt, router, _ = _setup_router_env()
 
-    # Calibrated deterministic semantic matcher double
-    def match(left, right):
-        gpu = any(w in left for w in ("5090", "风扇")) and any(w in right for w in ("5090", "风扇"))
-        game = "游戏" in left and "游戏" in right
-        return replace(semantic_match(left, right), score=0.95 if (gpu or game) else 0.02)
-    rt.dag.semantic_match_fn = match
+    from astrbot_plugin_chat_dynamics.core.embedding_adapter import EmbeddingAdapter
+    adapter = EmbeddingAdapter(enabled=True)
+    for text in ("5090温度有点高怎么办", "5090风扇曲线怎么设的？"):
+        adapter.remember(text, [1, 0, 0])
+    for text in ("今晚打游戏吗", "游戏可以啊几点？"):
+        adapter.remember(text, [0, 1, 0])
+    adapter.remember("我默认的", [0, 0, 1])
+    rt.dag.semantic_match_fn = adapter.match
 
     gpu_1, _ = _add_turn(rt, router, "a1", "Alice", "5090温度有点高怎么办", 1.0)
     game_1, _ = _add_turn(rt, router, "c1", "Charlie", "今晚打游戏吗", 2.0)
@@ -515,14 +517,13 @@ def test_scenario_3_interleaved_qa_retrieval():
     _add_turn(rt, router, "e1", "Eric", "游戏可以啊几点？", 4.0)
     ans, routing = _add_turn(rt, router, "a2", "Alice", "我默认的", 5.0)
 
-    assert build_contextual_query(ans, rt.dag).startswith(gpu_1.text)
-    assert routing.topic_id == gpu_1.metadata["routing"]["topic_id"]
-    assert routing.topic_id != game_1.metadata["routing"]["topic_id"]
-    assert routing.parent_message_id == "d1"
-    assert routing.addressee_ids == ["David"]
-    assert routing.bot_is_addressee is False
-    assert ans.edge_kinds.get("d1") == "inferred_reply"
-    assert "d1" in ans.parent_ids
+    assert build_contextual_query(ans, rt.dag) == ans.text
+    gpu_topic = rt.routing_state.topics[gpu_1.metadata["routing"]["topic_id"]]
+    context = build_contextual_query(ans, rt.dag, gpu_topic)
+    assert d_q.text in context and game_1.text not in context
+    assert routing.topic_id == "" and routing.topic_status == "pending"
+    assert not routing.parent_message_id and not routing.addressee_ids
+    assert not ans.parent_ids and ans.msg_id not in gpu_topic.message_ids
 
 
 def test_scenario_4_quote_human_with_explicit_bot_mention():
@@ -635,11 +636,13 @@ def test_scenario_9_concurrent_technical_topics_isolated():
     """
     rt, router, _ = _setup_router_env()
 
-    def tech_match(left, right):
-        py = any(w in left for w in ("Python", "asyncio", "gather")) and any(w in right for w in ("Python", "asyncio", "gather"))
-        net = any(w in left for w in ("OpenWrt", "DNSMasq", "dhcp", "路由器")) and any(w in right for w in ("OpenWrt", "DNSMasq", "dhcp", "路由器"))
-        return replace(semantic_match(left, right), score=0.92 if (py or net) else 0.03)
-    rt.dag.semantic_match_fn = tech_match
+    from astrbot_plugin_chat_dynamics.core.embedding_adapter import EmbeddingAdapter
+    adapter = EmbeddingAdapter(enabled=True)
+    for text in ("Python asyncio gather 并发任务异常退出", "gather 需要设置 return_exceptions=True 避免被取消"):
+        adapter.remember(text, [1, 0])
+    for text in ("路由器 OpenWrt 设置 DNSMasq 域名重定向", "修改 /etc/config/dhcp 配置文件即可"):
+        adapter.remember(text, [0, 1])
+    rt.dag.semantic_match_fn = adapter.match
 
     _, r_py1 = _add_turn(rt, router, "py1", "Alice", "Python asyncio gather 并发任务异常退出", 10.0)
     _, r_net1 = _add_turn(rt, router, "net1", "Bob", "路由器 OpenWrt 设置 DNSMasq 域名重定向", 12.0)

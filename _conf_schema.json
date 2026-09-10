@@ -349,6 +349,18 @@
     "default": true,
     "hint": "结合活跃话题、候选父消息和对话对象判断自然续聊，区分谈论机器人与向机器人提问。"
   },
+  "topic_reranker_enabled": {
+    "description": "启用模糊话题 LLM 复判", "type": "bool", "default": false,
+    "hint": "仅对无法确定的话题候选调用模型，失败时保留未知归属。"
+  },
+  "topic_reranker_provider": {
+    "description": "话题复判模型", "type": "string", "default": "",
+    "hint": "填写提供商 ID；留空使用当前会话模型。"
+  },
+  "topic_reranker_timeout": {
+    "description": "话题复判超时（秒）", "type": "float", "default": 3.0,
+    "slider": {"min": 0.1, "max": 10, "step": 0.1}
+  },
   "routing_neural_timeout": {
     "description": "模糊消息向量等待上限（秒）",
     "type": "float",

@@ -8,7 +8,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple
 
 from .graph import ConversationDAG, ConversationNode
-from .session_runtime import RoutingState, TopicState
+from .session_runtime import RoutingState as RoutingState, TopicState as TopicState
+from .topic_resolution import TopicResolver, build_contextual_query
+from .pending_topics import defer, reconcile
 
 WINDOW_SECONDS = 300.0
 WINDOW_NODES = 80
@@ -37,6 +39,9 @@ class RoutingInference:
 
     topic_id: str = ""
     topic_confidence: float = 0.0
+    topic_ambiguous: bool = False
+    topic_status: str = "committed"
+    topic_candidates: list[tuple[float, str]] = field(default_factory=list)
     parent_message_id: str = ""
     parent_confidence: float = 0.0
     addressee_ids: list[str] = field(default_factory=list)
@@ -50,145 +55,6 @@ class RoutingInference:
     ambiguous: bool = True
     evidence: list[str] = field(default_factory=list)
     possible_parent: str = ""
-
-
-def build_contextual_query(node: ConversationNode, dag: Any, max_len: int = 12) -> str:
-    """Short elliptical turns borrow only the author's recent substantive context."""
-    text = node.text.strip()
-    if len(text) > 16 or dag is None:
-        return text
-    is_elliptical = len(text) <= max_len or bool(_ELLIPTICAL_RE.search(text))
-    if not is_elliptical:
-        return text
-    for previous in reversed(dag.get_recent_nodes(WINDOW_NODES)):
-        if previous.msg_id == node.msg_id or not 0 < node.timestamp - previous.timestamp <= 90:
-            continue
-        if previous.user_id == node.user_id and len(previous.text.strip()) >= 8:
-            return previous.text.strip() + "\n" + text
-    return text
-
-
-def _lexical_similarity(text1: str, text2: str) -> float:
-    """Compute lexical token overlap supporting both English words and Chinese characters."""
-    tokens1 = set(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]", text1.lower()))
-    tokens2 = set(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]", text2.lower()))
-    if not tokens1 or not tokens2:
-        return 0.0
-    return len(tokens1 & tokens2) / max(1, len(tokens1))
-
-
-class TopicResolver:
-    """Resolves topic membership using 5-factor composite scoring and TTL expiration."""
-
-    def __init__(
-        self,
-        join_threshold: float = TOPIC_JOIN_THRESHOLD,
-        ambiguity_threshold: float = TOPIC_AMBIGUITY_THRESHOLD,
-        margin_threshold: float = TOPIC_MARGIN_THRESHOLD,
-        window_seconds: float = WINDOW_SECONDS,
-        max_exemplars: int = 8,
-    ):
-        self.join_threshold = join_threshold
-        self.ambiguity_threshold = ambiguity_threshold
-        self.margin_threshold = margin_threshold
-        self.window_seconds = window_seconds
-        self.max_exemplars = max_exemplars
-
-    @staticmethod
-    def remember(state: RoutingState, node: ConversationNode, topic_id: str) -> None:
-        """Assign turn to topic, removing prior assignment to prevent double-counting."""
-        for topic in state.topics.values():
-            if node.msg_id in topic.message_ids:
-                topic.message_ids.remove(node.msg_id)
-        topic = state.topics.setdefault(topic_id, TopicState(topic_id))
-        topic.message_ids.append(node.msg_id)
-        topic.participants.add(node.user_id)
-        topic.updated_at = max(topic.updated_at, node.timestamp)
-
-    def score_topic(
-        self,
-        node: ConversationNode,
-        dag: ConversationDAG,
-        topic: TopicState,
-        matches: dict[str, float],
-    ) -> float:
-        """Evaluate topic affinity with 5-factor composite equation."""
-        exemplars = [mid for mid in topic.message_ids[-self.max_exemplars:] if mid in matches]
-        if not exemplars:
-            return 0.0
-        past_nodes = [dag.nodes[mid] for mid in exemplars if mid in dag.nodes]
-        if not past_nodes:
-            return 0.0
-
-        # Factor 1: Semantic similarity (0.55)
-        sim = max(matches[mid] for mid in exemplars)
-
-        # Factor 2: Recency (0.15)
-        updated_at = max(n.timestamp for n in past_nodes)
-        recency = max(0.0, 1.0 - (node.timestamp - updated_at) / self.window_seconds)
-
-        # Factor 3: Participant continuity (0.15)
-        participants = {n.user_id for n in past_nodes}
-        participant = 1.0 if node.user_id in participants else 0.0
-
-        # Factor 4: Lexical overlap (0.10)
-        lexical = max(_lexical_similarity(node.text, n.text) for n in past_nodes)
-
-        # Factor 5: Conversational lineage (0.05)
-        lineage = 0.0
-        if node.reply_to_id and node.reply_to_id in topic.message_ids:
-            lineage = 1.0
-        elif any(u in participants for u in node.mentioned_users):
-            lineage = 0.5
-        elif any(n.thread_id == node.thread_id for n in past_nodes if node.thread_id):
-            lineage = 0.5
-
-        score = (
-            sim * 0.55
-            + recency * 0.15
-            + participant * 0.15
-            + lexical * 0.10
-            + lineage * 0.05
-        )
-        return round(score, 4)
-
-    def resolve(
-        self,
-        node: ConversationNode,
-        dag: ConversationDAG,
-        state: RoutingState,
-        matches: dict[str, float],
-        explicit_parent: Optional[ConversationNode] = None,
-    ) -> Tuple[str, float, bool, List[str], Optional[str], List[Tuple[float, str]]]:
-        """Resolves topic. Returns (topic_id, conf, is_ambiguous, evidence, second_topic, ranked_topics)."""
-        if explicit_parent is not None:
-            topic_id = (
-                explicit_parent.metadata.get("routing", {}).get("topic_id")
-                or explicit_parent.thread_id
-            )
-            return topic_id, 1.0, False, [], None, []
-
-        ranked: List[Tuple[float, str]] = []
-        for topic in state.topics.values():
-            score = self.score_topic(node, dag, topic, matches)
-            if score > 0.0:
-                ranked.append((score, topic.topic_id))
-
-        ranked.sort(reverse=True)
-        if not ranked:
-            return node.msg_id, 1.0, False, [], None, []
-
-        best_score, best_topic = ranked[0]
-        second_score = ranked[1][0] if len(ranked) > 1 else 0.0
-        second_topic = ranked[1][1] if len(ranked) > 1 else None
-        margin = best_score - second_score
-
-        if best_score >= self.join_threshold and margin >= self.margin_threshold:
-            return best_topic, best_score, False, ["topic_similarity"], second_topic, ranked
-        elif best_score >= self.ambiguity_threshold:
-            return best_topic, best_score, True, ["topic_ambiguous"], second_topic, ranked
-        else:
-            return node.msg_id, 1.0, False, [], None, ranked
 
 
 class ParentRetriever:
@@ -283,6 +149,8 @@ class ParentRetriever:
                 continue
             turn_distance += 1
             if candidate.user_id == node.user_id:
+                continue
+            if candidate.metadata.get("routing", {}).get("topic_status") in {"pending", "unknown"}:
                 continue
             cand_topic = (
                 candidate.metadata.get("routing", {}).get("topic_id")
@@ -565,6 +433,10 @@ class ThreadRouter:
             return result
 
         state = runtime.routing_state
+        previous_routing = node.metadata.get("routing", {})
+        if "topic_llm_rerank" in previous_routing.get("evidence", []):
+            return RoutingInference(**{key: value for key, value in previous_routing.items()
+                                       if key in RoutingInference.__dataclass_fields__})
         now = max(
             getattr(runtime, "last_activity", 0.0) or 0.0,
             dag.last_timestamp() if hasattr(dag, "last_timestamp") else 0.0,
@@ -621,6 +493,16 @@ class ThreadRouter:
             )
         )
         result.topic_id = topic_id
+        result.topic_ambiguous = is_ambiguous
+        result.topic_candidates = list(ranked_topics[:3])
+        if (topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
+                and (not ranked_topics or ranked_topics[0][0] < self.topic_resolver.ambiguity_threshold)):
+            archived = state.archive.retrieve(node, dag)
+            if archived is not None:
+                result.topic_id = archived.topic_id
+                topic_conf = archived.score
+                topic_evidence.append("topic_reopen")
+                state.archive.pop(archived.topic_id)
         result.topic_confidence = topic_conf
         for ev in topic_evidence:
             if ev not in result.evidence:
@@ -700,6 +582,7 @@ class ThreadRouter:
             pmid, pconf, ptopic = parent_override
             result.topic_id = ptopic
             result.topic_confidence = 0.78
+            result.topic_ambiguous = False
             result.parent_message_id = pmid
             result.parent_confidence = pconf
             if hasattr(dag, "link_inferred_reply"):
@@ -707,11 +590,16 @@ class ThreadRouter:
             else:
                 dag._link_parent(node.msg_id, pmid, kind="inferred_reply")
 
-        result.ambiguous = result.addressee_confidence < 0.72
+        if result.topic_ambiguous:
+            defer(state, node, result, ranked_topics)
+        else:
+            state.pending_assignments.pop(node.msg_id, None)
+            self._remember(state, node, result.topic_id, dag=dag)
+            state.last_topic_id = result.topic_id
+        result.ambiguous = result.topic_ambiguous or result.addressee_confidence < 0.72
         node.metadata["topic_id"] = result.topic_id
         node.metadata["routing"] = asdict(result)
-        self._remember(state, node, result.topic_id)
-        state.last_topic_id = result.topic_id
+        reconcile(state, dag, node, result, self._remember)
         if node.user_id == getattr(runtime, "bot_id", ""):
             state.last_bot_topic_id = result.topic_id
             if hasattr(runtime, "last_bot_node"):
@@ -763,6 +651,7 @@ class ThreadRouter:
         sync_result = self.route(runtime, node, bot_names=bot_names, timeout=timeout)
         if not sync_result.ambiguous or embedding_adapter is None or not getattr(embedding_adapter, "enabled", False):
             return sync_result
+
         dag = runtime.dag
         state = runtime.routing_state
         revision = getattr(runtime, "revision", None)
@@ -784,6 +673,37 @@ class ThreadRouter:
         except Exception as exc:
             logger.debug("[Router] Neural escalation timed out or failed (%s); using hashed fallback", type(exc).__name__)
             return sync_result
+
+    async def rerank_pending(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
+        from .topic_reranker import RerankCandidate
+
+        dag, state = runtime.dag, runtime.routing_state
+        snapshot = node.metadata.get("routing", {})
+        if not snapshot.get("topic_ambiguous") or snapshot.get("rerank_attempted"):
+            return
+        snapshot["rerank_attempted"] = True
+        revision, epoch = runtime.revision, runtime.epoch
+        candidates = [RerankCandidate(tid, state.topics[tid].label, tuple(
+            [build_contextual_query(node, dag, state.topics[tid])]
+        )) for _, tid in snapshot.get("topic_candidates", [])[:3] if tid in state.topics]
+        decision = await reranker.rerank(umo=runtime.umo, text=node.text,
+                                         candidates=candidates, ambiguous=True)
+        if (runtime.dag is not dag or runtime.routing_state is not state
+                or runtime.revision != revision or runtime.epoch != epoch
+                or dag.get_node(node.msg_id) is not node
+                or node.metadata.get("routing") is not snapshot
+                or node.msg_id not in state.pending_assignments):
+            return
+        topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
+        if not topic_id or (decision.choice != "NEW" and topic_id not in state.topics):
+            return
+        self._remember(state, node, topic_id, dag=dag)
+        state.pending_assignments.pop(node.msg_id, None)
+        snapshot.update(topic_id=topic_id, topic_ambiguous=False, topic_status="committed",
+                        topic_confidence=0.78, ambiguous=snapshot.get("addressee_confidence", 0.0) < 0.72)
+        snapshot["evidence"] = list(snapshot.get("evidence", [])) + ["topic_llm_rerank"]
+        node.metadata["topic_id"] = topic_id
+        state.last_topic_id = topic_id
 
     def observe_bot_message(self, runtime: Any, node: ConversationNode) -> RoutingInference:
         """Call only after successful delivery, when the bot node is in the DAG."""

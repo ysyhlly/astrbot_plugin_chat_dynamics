@@ -64,23 +64,30 @@ def test_subject_is_not_addressee_and_direct_name_call():
 
 def test_interleaved_topics_short_answer_retrieves_question():
     rt, router = setup()
-    # A deterministic embedding provider double supplies semantic evidence;
-    # routing still has to reconstruct topics, QA and the correct participant.
-    def match(left, right):
-        gpu = any(word in left for word in ("5090", "风扇")) and any(word in right for word in ("5090", "风扇"))
-        game = "游戏" in left and "游戏" in right
-        return replace(semantic_match(left, right), score=.95 if gpu or game else .02)
-    rt.dag.semantic_match_fn = match
+    from astrbot_plugin_chat_dynamics.core.embedding_adapter import EmbeddingAdapter
+    adapter = EmbeddingAdapter(enabled=True)
+    for text in ("5090温度有点高怎么办", "5090风扇曲线怎么设的？"):
+        adapter.remember(text, [1, 0, 0])
+    for text in ("今晚打游戏吗", "游戏可以啊几点？"):
+        adapter.remember(text, [0, 1, 0])
+    adapter.remember("我默认的", [0, 0, 1])
+    rt.dag.semantic_match_fn = adapter.match
     gpu, _ = add(rt, router, "a", "A", "5090温度有点高怎么办", 1)
     game, _ = add(rt, router, "c", "C", "今晚打游戏吗", 2)
     question, _ = add(rt, router, "d", "D", "5090风扇曲线怎么设的？", 3)
     add(rt, router, "e", "E", "游戏可以啊几点？", 4)
     answer, result = add(rt, router, "a2", "A", "我默认的", 5)
-    assert build_contextual_query(answer, rt.dag).startswith(gpu.text)
-    assert result.topic_id == gpu.metadata["routing"]["topic_id"]
-    assert result.topic_id != game.metadata["routing"]["topic_id"]
-    assert result.parent_message_id == question.msg_id
-    assert result.addressee_ids == ["D"]
+    assert build_contextual_query(answer, rt.dag) == answer.text
+    gpu_topic = rt.routing_state.topics[gpu.metadata["routing"]["topic_id"]]
+    contextual = build_contextual_query(answer, rt.dag, gpu_topic)
+    assert gpu.text in contextual and question.text in contextual
+    assert game.text not in contextual
+    assert question.metadata["routing"]["topic_id"] == gpu_topic.topic_id
+    # Without an explicit interlocutor the short answer cannot identify which
+    # parallel conversation it continues; retain it without polluting either.
+    assert result.topic_id == "" and result.topic_status == "pending"
+    assert not result.parent_message_id and not result.addressee_ids
+    assert answer.msg_id not in gpu_topic.message_ids
 
 
 def test_ambiguity_does_not_link_and_reroute_removes_old_inference():
@@ -151,41 +158,31 @@ def test_explicit_human_mention_wins_over_active_bot_followup():
     assert not result.bot_is_addressee
 
 
-def test_topic_resolver_5_factor_scoring_and_thresholds():
-    """Verify TopicResolver 5-factor scoring formula and join/ambiguity thresholds."""
-    resolver = TopicResolver(join_threshold=0.58, ambiguity_threshold=0.48, margin_threshold=0.06)
-    dag = ConversationDAG()
+def test_topic_resolver_profile_scoring_and_thresholds():
+    from astrbot_plugin_chat_dynamics.core.embedding_adapter import EmbeddingAdapter
+    resolver = TopicResolver()
+    adapter = EmbeddingAdapter(enabled=True)
+    dag = ConversationDAG(semantic_match_fn=adapter.match)
     dag.add_message("m1", "Alice", "Python 异步编程教程", timestamp=10.0)
-    topic = TopicState("topic_py", message_ids=["m1"], participants={"Alice"}, updated_at=10.0)
-
-    # 1. Incoming turn from Alice with high semantic similarity and lexical overlap
-    node = ConversationNode("m2", "Alice", "Python 异步任务异常", timestamp=20.0)
-    matches = {"m1": 0.90}
-    score = resolver.score_topic(node, dag, topic, matches)
-    # 0.90*0.55 + (1-10/300)*0.15 + 1.0*0.15 + lexical*0.10 + 0.0
-    assert score >= 0.58
-
-    # 2. Resolve topic membership
+    node = ConversationNode("m2", "Alice", "并发协程的学习资料", timestamp=20.0)
+    adapter.remember("Python 异步编程教程", [1, 0])
+    adapter.remember(node.text, [1, 0])
+    topic = TopicState("topic_py", message_ids=["m1"])
     state = RoutingState(topics={"topic_py": topic})
-    topic_id, conf, is_ambig, evidence, second, ranked = resolver.resolve(node, dag, state, matches)
-    assert topic_id == "topic_py"
-    assert conf >= 0.58
-    assert is_ambig is False
-    assert "topic_similarity" in evidence
+    topic_id, conf, ambiguous, evidence, _, _ = resolver.resolve(node, dag, state, {"m1": .95})
+    assert topic_id == "topic_py" and conf >= resolver.join_threshold
+    assert not ambiguous and "topic_profile" in evidence
+    assert topic.centroid_space.startswith("neural:")
+    assert topic.exemplar_messages and topic.recent_message_ids == ["m1"]
 
-    # 3. Ambiguous match within [0.48, 0.58)
-    node_ambig = ConversationNode("m3", "Bob", "异步任务处理", timestamp=20.0)
-    matches_ambig = {"m1": 0.55}
-    topic_id_a, conf_a, is_ambig_a, ev_a, _, _ = resolver.resolve(node_ambig, dag, state, matches_ambig)
-    assert is_ambig_a is True
-    assert "topic_ambiguous" in ev_a
+    # Equal topic evidence is ambiguous even when each candidate is strong.
+    state.topics["other"] = TopicState("other", message_ids=["m1"])
+    assert resolver.resolve(node, dag, state, {"m1": .95})[2]
 
-    # 4. Completely unrelated turn drops into a new topic root
-    node_unrelated = ConversationNode("m4", "Charlie", "今天天气真好", timestamp=20.0)
-    topic_id_u, conf_u, is_ambig_u, _, _, _ = resolver.resolve(node_unrelated, dag, state, {"m1": 0.05})
-    assert topic_id_u == "m4"
-    assert conf_u == 1.0
-    assert is_ambig_u is False
+    unrelated = ConversationNode("m4", "Charlie", "今天天气真好", timestamp=20.0)
+    adapter.remember(unrelated.text, [0, 1])
+    topic_id, _, ambiguous, _, _, _ = resolver.resolve(unrelated, dag, state, {"m1": .05})
+    assert topic_id == "m4" and not ambiguous
 
 
 def test_parent_retriever_6_factor_scoring_and_dual_similarity():
@@ -289,7 +286,8 @@ async def test_route_async_fast_path_and_timeout_fallback():
     )
     # Gracefully falls back to synchronous hashed inference without error
     assert timeout_result is not None
-    assert timeout_result.topic_id == "m2"
+    assert timeout_result.topic_id == ""
+    assert timeout_result.topic_status == "pending"
 
 
 def test_mock_runtime_safe_attribute_access():
