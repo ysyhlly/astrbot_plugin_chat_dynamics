@@ -783,7 +783,9 @@ async def test_async_reset_discards_pending_debounce_without_reinjecting_old_tur
 
 @pytest.mark.asyncio
 async def test_safe_hover_followup_is_re_evaluated_once():
-    plugin = _plugin({"base_thinking_delay": 0.0, "chars_per_second": 1000.0})
+    # This test counts reply generation only; topic LLM calls have their own tests.
+    plugin = _plugin({"base_thinking_delay": 0.0, "chars_per_second": 1000.0,
+                      "topic_reranker_enabled": False})
     plugin.pacer.min_typing_delay = 0.0
     plugin.pacer.max_typing_delay = 0.0
     key = _session_key("hover")
