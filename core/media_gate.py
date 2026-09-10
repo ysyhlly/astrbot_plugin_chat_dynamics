@@ -210,8 +210,9 @@ class MediaAirGate:
     def set_multimodal_available(self, available: Optional[bool]) -> None:
         self._multimodal_available = available
 
-    def multimodal_available(self) -> bool:
-        return bool(self._multimodal_available)
+    def multimodal_available(self) -> Optional[bool]:
+        """Keep unknown distinct from an explicitly unsupported provider."""
+        return self._multimodal_available
 
     def evaluate(
         self,

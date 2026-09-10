@@ -32,12 +32,15 @@ def reconcile(state, dag, current, result, remember):
             continue
         pending.observed_ids.add(current.msg_id)
         eligible = {tid for _, tid in pending.candidates}
-        if (current.reply_to_id == mid and result.topic_id in eligible
+        seed_confirmed = not eligible and "topic_not_formed" in prior.metadata.get("routing", {}).get("evidence", [])
+        if (current.reply_to_id == mid and (result.topic_id in eligible or seed_confirmed)
+                and bool(result.topic_id)
                 and not result.topic_ambiguous and current.timestamp - pending.created_at <= 30):
             remember(state, prior, result.topic_id, dag=dag)
             old = dict(prior.metadata.get("routing", {}))
             old.update(topic_id=result.topic_id, topic_confidence=result.topic_confidence,
                        topic_ambiguous=False, topic_status="committed")
+            old["ambiguous"] = float(old.get("addressee_confidence", 0.0) or 0.0) < 0.72
             old["evidence"] = list(old.get("evidence", [])) + ["pending_followup"]
             prior.metadata["routing"] = old
             prior.metadata["topic_id"] = result.topic_id

@@ -3,9 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- chat_dynamics_ui: shared first-paint bootstrap and account preference -->
-    <script src="./theme.js"></script>
     <meta name="color-scheme" content="light dark" />
+    <!-- Paint the document canvas before any external resource can delay navigation. -->
+    <style>
+      html { background: #f5f6f4; color-scheme: light; }
+      html[data-theme="night"] { background: #0b1419; color-scheme: dark; }
+    </style>
+    <script>
+      (() => {
+        const valid = value => value === "day" || value === "night";
+        const query = new URLSearchParams(location.search).get("ui");
+        let saved;
+        try { saved = localStorage.getItem("chat_dynamics_ui"); } catch {}
+        document.documentElement.dataset.theme = valid(query) ? query : valid(saved) ? saved : "day";
+      })();
+    </script>
+    <!-- chat_dynamics_ui: shared controls and account preference -->
+    <script src="./theme.js"></script>
     <title>场景回放</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
@@ -74,8 +88,9 @@
         </div>
         <p class="ops-note">横轴为时间，纵轴为群聊主题。点击色块查看开口情况和具体原因。短场景色块设有最小显示宽度，准确时间见详情。主题名称遵循聊天内容显示设置。</p>
         <div class="replay-rail" id="replayRail" role="group" aria-label="群聊主题场景"></div>
+        <p class="ops-note" id="unassignedNote" role="status" aria-live="polite"></p>
         <div class="empty-state hidden" id="railEmpty">
-          还没有色块。观察一段时间，或先到「今日读空气」看最近为什么没回。
+          目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。
         </div>
       </section>
 

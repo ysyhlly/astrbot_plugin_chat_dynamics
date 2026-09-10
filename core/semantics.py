@@ -15,6 +15,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 
@@ -54,17 +55,37 @@ SYNONYM_GROUPS: Tuple[Tuple[str, ...], ...] = (
     ("方案", "计划", "设计", "思路"),
 )
 
+# Bound retained chat text as well as entry count. Longer inputs are still
+# evaluated in full, but are not retained process-wide.
+_CACHE_SIZE = 512
+_CACHE_TEXT_LIMIT = 2048
+_ASCII_WORDS_RE = re.compile(r"[a-zA-Z0-9_]{2,}")
+_CJK_RUNS_RE = re.compile(r"[\u4e00-\u9fff]+")
+_WHITESPACE_RE = re.compile(r"\s+")
+_NEGATION_RE = re.compile(r"(?:不|没|没有|并非|不是|别)(?:太|很|那么)?$")
+_CONCEPT_PATTERNS = tuple(
+    (name, tuple(re.compile(re.escape(term)) for term in lexicon))
+    for name, lexicon in CONCEPT_LEXICONS.items()
+)
+
 
 def lexical_tokens(text: str) -> Set[str]:
     """ASCII words plus adjacent Chinese character bigrams for topical overlap."""
-    ascii_words = set(re.findall(r"[a-zA-Z0-9_]{2,}", (text or "").lower()))
-    cjk_runs = re.findall(r"[\u4e00-\u9fff]+", text or "")
+    text = text or ""
+    compute = _lexical_tokens if len(text) <= _CACHE_TEXT_LIMIT else _lexical_tokens.__wrapped__
+    return set(compute(text))
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _lexical_tokens(text: str) -> frozenset[str]:
+    ascii_words = set(_ASCII_WORDS_RE.findall(text.lower()))
+    cjk_runs = _CJK_RUNS_RE.findall(text)
     bigrams = {run[i : i + 2] for run in cjk_runs for i in range(len(run) - 1)}
-    return ascii_words | bigrams
+    return frozenset(ascii_words | bigrams)
 
 
 def _normalize(text: str) -> str:
-    return re.sub(r"\s+", "", (text or "").strip().lower())
+    return _WHITESPACE_RE.sub("", (text or "").strip().lower())
 
 
 def _char_ngrams(text: str) -> List[str]:
@@ -86,11 +107,18 @@ def _signed_index(token: str, dim: int = EMBED_DIM) -> Tuple[int, float]:
 
 def hashed_embedding(text: str, dim: int = EMBED_DIM) -> Tuple[float, ...]:
     """Deterministic hashing-trick embedding over tokens and character n-grams."""
+    text = text or ""
+    compute = _hashed_embedding if len(text) <= _CACHE_TEXT_LIMIT and 0 < dim <= 128 else _hashed_embedding.__wrapped__
+    return compute(text, dim)
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _hashed_embedding(text: str, dim: int) -> Tuple[float, ...]:
     vec = [0.0] * dim
     features: List[str] = list(lexical_tokens(text))
     features.extend(_char_ngrams(text))
+    lowered = text.lower()
     for group in SYNONYM_GROUPS:
-        lowered = (text or "").lower()
         if any(term in lowered for term in group):
             features.append("syn:" + group[0])
     if not features:
@@ -112,14 +140,21 @@ def cosine(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def concept_scores(text: str) -> Dict[str, float]:
+    text = text or ""
+    compute = _concept_scores if len(text) <= _CACHE_TEXT_LIMIT else _concept_scores.__wrapped__
+    return dict(compute(text))
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _concept_scores(text: str) -> Tuple[Tuple[str, float], ...]:
     lowered = (text or "").lower()
     scores: Dict[str, float] = {}
-    for name, lexicon in CONCEPT_LEXICONS.items():
+    for name, patterns in _CONCEPT_PATTERNS:
         hits = 0
-        for term in lexicon:
-            for match in re.finditer(re.escape(term), lowered):
+        for pattern in patterns:
+            for match in pattern.finditer(lowered):
                 prefix = lowered[max(0, match.start() - 4):match.start()]
-                if name in ("positive", "negative", "tense") and re.search(r"(?:不|没|没有|并非|不是|别)(?:太|很|那么)?$", prefix):
+                if name in ("positive", "negative", "tense") and _NEGATION_RE.search(prefix):
                     if name == "positive":
                         scores["negative"] = max(scores.get("negative", 0), 0.5)
                     continue
@@ -127,7 +162,7 @@ def concept_scores(text: str) -> Dict[str, float]:
                 break
         if hits:
             scores[name] = max(scores.get(name, 0), round(min(1.0, hits / 2.0), 4))
-    return scores
+    return tuple(scores.items())
 
 
 def classify_message(text: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:

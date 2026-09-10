@@ -82,7 +82,7 @@ def test_multimodal_lamp_covers_available_unavailable_and_unknown():
     assert dash._multimodal_lamp(NS(decision_gate=gate))["lamp"] == "不支持"
     gate = NS(media=NS(multimodal_available=Mock(side_effect=RuntimeError("probe"))))
     unknown = dash._multimodal_lamp(NS(decision_gate=gate))
-    assert unknown["lamp"] == "启发式"
+    assert unknown["lamp"] == "未检测"
     assert unknown["available"] is None
     assert dash._multimodal_lamp(NS(decision_gate=None))["available"] is None
 
@@ -300,17 +300,18 @@ def test_replay_topics_isolate_sessions_and_ambiguous_decisions():
     events = [{"session_id": "room-a", "ts": 11, "action": "speak"},
               {"session_id": "room-a", "ts": 21, "action": "silent"}]
     rows = dash.replay_topic_blocks(plugin, events, "room-a")
-    assert len(rows) == 3
+    assert len(rows) == 2
     assert all(row["session_id"] == "room-a" for row in rows)
     assert rows[0]["topic_title"] == "话题 1"
     assert rows[0]["events"][0]["association"] == "按时间关联"
-    assert rows[-1]["topic_title"] == "未关联主题"
+    assert rows[-1]["events"] == []
     plugin.console_show_message_content = True
     assert dash.replay_topic_blocks(plugin, [], "room-a")[0]["topic_title"] == "讨论部署问题"
 
 
 def test_replay_topics_convert_monotonic_nodes_to_wall_time():
-    node = NS(metadata={}, thread_id="topic", msg_id="m", timestamp=990, text="话题")
+    node = NS(metadata={"routing": {"topic_id": "topic", "topic_status": "committed"}},
+              thread_id="topic", msg_id="m", timestamp=990, text="话题")
     plugin = NS(dags={"room": NS(nodes={"m": node})},
                 time_service=NS(time=lambda: 1000, wall_time=lambda: 1800000000))
     event = {"session_id": "room", "ts": 1799999995, "action": "silent"}
@@ -320,6 +321,37 @@ def test_replay_topics_convert_monotonic_nodes_to_wall_time():
     assert rows[0]["end_ts"] == 1799999995
     assert rows[0]["events"][0]["association"] == "按时间关联"
     assert node.timestamp == 990
+
+
+def test_replay_leaves_unassigned_media_and_pending_messages_blank():
+    nodes = {
+        str(i): NS(metadata=metadata, thread_id="same-reply-thread", msg_id=str(i),
+                   timestamp=i, text="[图片]")
+        for i, metadata in enumerate([
+            {}, {"routing": {"topic_id": None}},
+            {"routing": {"topic_id": "UNKNOWN"}},
+            {"routing": {"topic_id": "candidate", "topic_status": "pending"}},
+        ])
+    }
+    plugin = NS(dags={"room": NS(nodes=nodes), "other": NS(nodes=nodes)})
+    event = {"session_id": "room", "ts": 5, "action": "silent"}
+    assert dash.replay_topic_blocks(plugin, [event], "room") == []
+    snapshot = dash.scene_replay_snapshot(plugin, session_key="room")
+    assert snapshot["topic_blocks"] == []
+    assert snapshot["unassigned_message_count"] == 4
+
+
+def test_unassigned_messages_prevent_false_temporal_event_association():
+    nodes = {
+        "a": NS(metadata={"routing": {"topic_id": "real", "topic_status": "committed"}},
+                timestamp=1, msg_id="a", text="连续讨论"),
+        "b": NS(metadata={"routing": {"topic_id": None}}, timestamp=2, msg_id="b", text="[图片]"),
+    }
+    rows = dash.replay_topic_blocks(NS(dags={"room": NS(nodes=nodes)}),
+                                    [{"session_id": "room", "ts": 3, "action": "silent"}], "room")
+    assert len(rows) == 1
+    assert rows[0]["message_count"] == 1
+    assert rows[0]["events"] == []
 # --------------------------------------------------------------------------- #
 
 
@@ -534,3 +566,14 @@ async def test_prepare_request_stopped_hook_raises_runtime_error(monkeypatch):
     install_host(monkeypatch, hook=stopping_hook)
     with pytest.raises(RuntimeError, match="native_request_stopped"):
         await native_request.prepare_request(FakeEvent(), "hi", [], [])
+
+
+def test_default_media_gate_is_unknown_not_unsupported():
+    from astrbot_plugin_chat_dynamics.core.media_gate import MediaAirGate
+    media = MediaAirGate()
+    assert media.multimodal_available() is None
+    assert dash._multimodal_lamp(NS(decision_gate=NS(media=media)))["lamp"] == "未检测"
+    media.set_multimodal_available(False)
+    assert media.multimodal_available() is False
+    media.set_multimodal_available(True)
+    assert media.multimodal_available() is True

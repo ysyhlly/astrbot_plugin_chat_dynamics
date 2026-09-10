@@ -3,9 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- chat_dynamics_ui: shared first-paint bootstrap and account preference -->
-    <script src="./theme.js"></script>
     <meta name="color-scheme" content="light dark" />
+    <!-- Paint the document canvas before any external resource can delay navigation. -->
+    <style>
+      html { background: #f5f6f4; color-scheme: light; }
+      html[data-theme="night"] { background: #0b1419; color-scheme: dark; }
+    </style>
+    <script>
+      (() => {
+        const valid = value => value === "day" || value === "night";
+        const query = new URLSearchParams(location.search).get("ui");
+        let saved;
+        try { saved = localStorage.getItem("chat_dynamics_ui"); } catch {}
+        document.documentElement.dataset.theme = valid(query) ? query : valid(saved) ? saved : "day";
+      })();
+    </script>
+    <!-- chat_dynamics_ui: shared controls and account preference -->
+    <script src="./theme.js"></script>
     <title>群聊动态控制台</title>
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />

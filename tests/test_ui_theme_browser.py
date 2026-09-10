@@ -75,6 +75,30 @@ def setup(context, state):
 
 
 @pytest.mark.parametrize("name", PAGES)
+@pytest.mark.parametrize("source", ["query", "storage", "day_override"])
+def test_theme_canvas_without_external_resources(browser, page_server, name, source):
+    """The navigation canvas must have its theme even before JS/CSS arrive."""
+    with browser.new_context() as context:
+        if source == "query":
+            context.add_init_script("Object.defineProperty(window, 'localStorage', {get() {throw new DOMException('sandbox', 'SecurityError')}})")
+        else:
+            context.add_init_script("localStorage.setItem('chat_dynamics_ui', 'night')")
+        page = context.new_page()
+        page.route("**/*.js", lambda route: route.abort())
+        page.route("**/*.css", lambda route: route.abort())
+        query = "?ui=night" if source == "query" else "?ui=day" if source == "day_override" else ""
+        page.goto(f"{page_server}/{name}/index.html{query}")
+        night = source != "day_override"
+        assert page.locator("html").get_attribute("data-theme") == ("night" if night else "day")
+        assert page.locator("html").evaluate("node => getComputedStyle(node).backgroundColor") == (
+            "rgb(11, 20, 25)" if night else "rgb(245, 246, 244)"
+        )
+        assert page.locator("html").evaluate("node => getComputedStyle(node).colorScheme") == (
+            "dark" if night else "light"
+        )
+
+
+@pytest.mark.parametrize("name", PAGES)
 @pytest.mark.parametrize("theme", ["day", "night"])
 def test_all_pages_share_theme_and_fit_mobile(browser, page_server, name, theme):
     with browser.new_context(viewport={"width": 1366, "height": 940}) as context:

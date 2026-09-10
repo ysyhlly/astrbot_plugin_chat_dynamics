@@ -321,6 +321,10 @@ class InterventionArbiter:
     def last_decision(self, session_id: str) -> Optional[ArbitrationResult]:
         return self._last_decisions.get(session_id)
 
+    def remember_decision(self, session_id: str, result: ArbitrationResult) -> ArbitrationResult:
+        """Record a final decision after orchestration applies gate policy."""
+        return self._remember(session_id, result)
+
     def _remember(self, session_id: str, result: ArbitrationResult) -> ArbitrationResult:
         self._last_decisions[session_id] = result
         return result

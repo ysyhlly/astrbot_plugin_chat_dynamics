@@ -15,7 +15,7 @@ import re
 import threading
 from collections import deque
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from .core.message_semantics import describe_message
 from typing import Any, List, Optional, Set
 
@@ -29,10 +29,10 @@ except ImportError as exc:
     ) from exc
 
 from .core.addressivity import AddressivityLevel, AddressivityRouter
-from .core.arbiter import InterventionArbiter
+from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
-from .core.decision_gate import DynamicsDecisionGate
+from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
 from .core.thread_router import ThreadRouter, build_contextual_query
 from .core.topic_reranker import TopicReranker
@@ -203,7 +203,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.3.9",
+    "v1.3.10",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -403,17 +403,23 @@ class ChatDynamicsPlugin(Star):
                 return {}
         return {}
 
+    def _validate_runtime_config(self, cfg: RuntimeConfig) -> None:
+        """Check host requirements before changing runtime state or saving to disk."""
+        if cfg.decision_mode == "persona_model" and hasattr(self, "persona_engine"):
+            if not self.persona_engine.bridge.check():
+                raise RuntimeError(self.persona_engine.bridge.diagnostic)
+
     def _apply_runtime_config(
         self,
         cfg: RuntimeConfig,
         *,
         log_warnings: tuple[str, ...] = (),
+        validated: bool = False,
     ) -> None:
+        if not validated:
+            self._validate_runtime_config(cfg)
         previous_shadow = getattr(self, "shadow_mode", False)
         previous_decision = getattr(self, "decision_mode", "legacy")
-        if cfg.decision_mode == "persona_model" and hasattr(self, "persona_engine"):
-            if not self.persona_engine.bridge.check():
-                raise RuntimeError(self.persona_engine.bridge.diagnostic)
         self.decision_mode = cfg.decision_mode
         if previous_decision != self.decision_mode and hasattr(self, "_sessions"):
             for session_id in list(self._sessions):
@@ -502,10 +508,13 @@ class ChatDynamicsPlugin(Star):
                 logger.warning("[ChatDynamics] code=CD_PROVIDER_COMPAT %s", warning)
                 self._config_warnings_seen.add(warning)
 
-    def _sync_runtime_from_config(self) -> None:
-        cfg, warnings = parse_runtime_config(self.config)
-        self._runtime_config = cfg
-        self._apply_runtime_config(cfg, log_warnings=warnings)
+    def _sync_runtime_from_config(
+        self, *, validated_config: Optional[tuple[RuntimeConfig, tuple[str, ...]]] = None,
+    ) -> None:
+        if getattr(self, "_config_save_in_progress", False):
+            return
+        cfg, warnings = validated_config or parse_runtime_config(self.config)
+        self._apply_runtime_config(cfg, log_warnings=warnings, validated=validated_config is not None)
         self.thread_router.topic_resolver.window_seconds = cfg.topic_window_seconds
         self.thread_router.topic_resolver.ambiguity_threshold = cfg.topic_join_threshold
         self.thread_router.topic_resolver.join_threshold = max(0.58, cfg.topic_join_threshold + 0.10) if cfg.topic_join_threshold < 0.58 else cfg.topic_join_threshold
@@ -539,6 +548,7 @@ class ChatDynamicsPlugin(Star):
                 link_threshold=cfg.neural_link_threshold,
             )
             self._registry.bind_semantic_match(self.embeddings.match)
+        self._runtime_config = cfg
 
     @property
     def time_service(self) -> TimeService:
@@ -799,8 +809,9 @@ class ChatDynamicsPlugin(Star):
             return {"items": store.due_anniversaries(umo)}
         raise ValueError(f"unknown notebook action: {action}")
 
-    def get_config_panel(self) -> dict[str, Any]:
-        self._sync_runtime_from_config()
+    def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
+        if refresh:
+            self._sync_runtime_from_config()
         stored = self._config_stored_values()
         effective = self.get_effective_config()
         mismatches = []
@@ -875,23 +886,41 @@ class ChatDynamicsPlugin(Star):
             field_schema = schema.get(key) if isinstance(schema.get(key), dict) else {}
             normalized[key] = self._normalize_config_update_value(key, value, field_schema)
         async with self._config_lock:
-            for key, value in normalized.items():
-                try:
-                    self.config[key] = value
-                except Exception as exc:
-                    raise RuntimeError(f"failed to set {key}: {type(exc).__name__}") from exc
-            saver = getattr(self.config, "save_config", None)
-            if not callable(saver):
-                saver = getattr(self, "save_config", None)
-            if callable(saver):
-                result = saver()
-                if inspect.isawaitable(result):
-                    result = await result
-                if result is False:
-                    raise RuntimeError("save_config returned false")
-            self._sync_runtime_from_config()
+            missing = object()
+            original = {key: self.config.get(key, missing) for key in normalized}
+            self._config_save_in_progress = True
+            try:
+                for key, value in normalized.items():
+                    try:
+                        self.config[key] = value
+                    except Exception as exc:
+                        raise RuntimeError(f"failed to set {key}: {type(exc).__name__}") from exc
+                candidate = parse_runtime_config(self.config)
+                self._validate_runtime_config(candidate[0])
+                saver = getattr(self.config, "save_config", None)
+                if not callable(saver):
+                    saver = getattr(self, "save_config", None)
+                if callable(saver):
+                    result = saver()
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if result is False:
+                        raise RuntimeError("save_config returned false")
+            except BaseException:
+                # Cancellation during an async save must restore live config too.
+                for key, previous in original.items():
+                    if self.config.get(key, missing) == previous:
+                        continue
+                    if previous is missing:
+                        del self.config[key]
+                    else:
+                        self.config[key] = previous
+                raise
+            finally:
+                self._config_save_in_progress = False
+            self._sync_runtime_from_config(validated_config=candidate)
             self._metric("config_saved")
-            return self.get_config_panel()
+            return self.get_config_panel(refresh=False)
 
 
     def _serialize_provider(self, provider: Any) -> dict[str, Any]:
@@ -988,6 +1017,7 @@ class ChatDynamicsPlugin(Star):
         if not callable(saver):
             saver = getattr(self, "save_config", None)
         saved = False
+        self._config_save_in_progress = True
         try:
             for key, value in values.items():
                 try:
@@ -998,6 +1028,8 @@ class ChatDynamicsPlugin(Star):
                 if current != value:
                     self.config[key] = value
                     changed[key] = value
+            candidate = parse_runtime_config(self.config)
+            self._validate_runtime_config(candidate[0])
             if callable(saver):
                 result = saver()
                 if inspect.isawaitable(result):
@@ -1005,7 +1037,7 @@ class ChatDynamicsPlugin(Star):
                 if result is False:
                     raise RuntimeError("save_config returned false")
                 saved = True
-        except Exception:
+        except BaseException:
             for key, previous in original.items():
                 try:
                     if previous is missing:
@@ -1018,10 +1050,13 @@ class ChatDynamicsPlugin(Star):
                         self.config[key] = previous
                 except Exception:
                     pass
+            self._config_save_in_progress = False
             self._sync_runtime_from_config()
             self._metric("preset_apply_failed")
             raise
-        self._sync_runtime_from_config()
+        finally:
+            self._config_save_in_progress = False
+        self._sync_runtime_from_config(validated_config=candidate)
         self._metric("preset_applied")
         return {"name": name, "changed": changed, "saved": saved}
 
@@ -1202,7 +1237,8 @@ class ChatDynamicsPlugin(Star):
 
     def _get_or_create_dag(self, session_id: str) -> ConversationDAG:
         runtime = self._get_or_create_runtime(session_id, group_id=session_id, umo=session_id)
-        assert runtime.dag is not None
+        if runtime.dag is None:
+            raise RuntimeError("session DAG is unavailable")
         return runtime.dag
 
     def _resolve_session_key(self, identifier: str) -> Optional[str]:
@@ -1363,13 +1399,14 @@ class ChatDynamicsPlugin(Star):
             return True
         if self._persona_mode() or not self._is_filter_mode():
             return False
-        if self._looks_like_strong_address(parsed, runtime) and has_understandable_media(parsed):
+        explicit = self._looks_like_strong_address(parsed, runtime)
+        if explicit and has_understandable_media(parsed):
             # Keep the original event so the host can extract Image/Record.
             return True
         text = (parsed.text or "").strip()
         if not text or self.debounce.check_incompleteness(text):
             return False
-        if not self._looks_like_strong_address(parsed, runtime):
+        if not explicit:
             return False
         stripped = text
         for name in self.bot_names:
@@ -1984,6 +2021,75 @@ class ChatDynamicsPlugin(Star):
         if model_turn is not None:
             await self.persona_engine.submit(runtime, model_turn)
 
+    @staticmethod
+    def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
+        """Stage gate state; actual quota accounting happens after successful send."""
+        runtime._pending_gate_skin = gate.skin
+        runtime._pending_gate_proactive = gate.proactive
+        runtime._pending_gate_rhythm = gate.rhythm
+        runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
+        runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
+        if gate.length_hint:
+            runtime.last_length_hint = gate.length_hint
+        if gate.delay_scale:
+            runtime.last_delay_scale = gate.delay_scale
+        runtime.last_rhythm_action = gate.rhythm.action if gate.rhythm is not None else ""
+
+    def _resolve_gate_result(
+        self, runtime: SessionRuntime, session_id: str, arb_res: ArbitrationResult,
+        gate: GateResult, now: float,
+    ) -> ArbitrationResult:
+        """Apply hard blocks, gate vetoes and explicit proactive exceptions in order."""
+        hard_block = bool(
+            arb_res.in_deep_cooling or arb_res.is_energy_asymmetric or arb_res.private_topic
+        )
+        whitelist_open = bool(
+            gate.should_speak
+            and not hard_block
+            and (
+                (gate.proactive is not None and bool(getattr(gate.proactive, "proactive", False)))
+                or (
+                    gate.rhythm is not None
+                    and gate.rhythm.allow
+                    and gate.rhythm.action
+                    in {
+                        "goodnight_reply",
+                        "wake_reply",
+                        "morning_hi",
+                        "day_share",
+                        "insomnia_line",
+                    }
+                )
+            )
+        )
+        if arb_res.should_speak and not gate.should_speak:
+            # WTS already authorized this turn. useful_proactive's idle vetoes
+            # (no gap / newcomer ambient-name) must not cancel that; manners,
+            # media, rhythm, deciding and quota still win.
+            if gate.reason_code in {"no_gap", "newcomer_caution"} and not hard_block:
+                self._commit_gate_result(runtime, gate)
+            else:
+                arb_res = replace(
+                    arb_res, should_speak=False,
+                    reason=f"{gate.reason_code}: {gate.reason_zh}",
+                )
+                self.arbiter.remember_decision(session_id, arb_res)
+        elif not arb_res.should_speak and whitelist_open:
+            arb_res = replace(
+                arb_res, should_speak=True,
+                willingness_score=max(float(arb_res.willingness_score or 0.0), arb_res.threshold),
+                reason=f"{gate.reason_code}: {gate.reason_zh}",
+            )
+            self.arbiter.remember_decision(session_id, arb_res)
+            self._commit_gate_result(runtime, gate)
+        elif not arb_res.should_speak:
+            self.decision_gate.note_arbiter_silence(session_id, arb_res.reason, now=now)
+        else:
+            # Will speak — remember hyped quota / intervene counts after pass.
+            self._commit_gate_result(runtime, gate)
+
+        return arb_res
+
     async def _on_turn_flushed_locked(self, result: DebounceResult) -> None:
         """Mutate a session after its state lock has been acquired."""
         if self._shutting_down:
@@ -2032,7 +2138,8 @@ class ChatDynamicsPlugin(Star):
             runtime.bot_id = parsed_last.self_id
 
         dag = runtime.dag
-        assert dag is not None
+        if dag is None:
+            raise RuntimeError("session DAG is unavailable")
         runtime.turn_sequence += 1
         turn_id = f"turn_{runtime.turn_sequence}_{user_id}"
         turn_nodes: List[ConversationNode] = []
@@ -2056,6 +2163,7 @@ class ChatDynamicsPlugin(Star):
                 metadata={
                     "turn_id": turn_id,
                     "turn_index": index,
+                    "topic_source_text": parsed.text or "",
                     "message_count": result.message_count,
                     "duration": result.duration,
                     "is_wake": parsed.is_at_or_wake,
@@ -2166,7 +2274,7 @@ class ChatDynamicsPlugin(Star):
         )
 
         if self._persona_mode():
-            explicit = any(self._looks_like_strong_address(p, runtime) for p in parsed_events)
+            explicit = explicit_platform
             if not explicit and is_request_supplement(runtime, user_id, now):
                 # Same-user addendum to a recent @/wake request is not ambient chatter.
                 explicit = True
@@ -2220,8 +2328,6 @@ class ChatDynamicsPlugin(Star):
             media_types.extend(list(getattr(pe, "media_component_types", None) or []))
             if getattr(pe, "outline", None):
                 outline_bits.append(str(pe.outline))
-            if getattr(pe, "has_media", False):
-                pass
         has_media_turn = any(bool(getattr(pe, "has_media", False)) for pe in parsed_events) or bool(media_types)
         quoted_bot = False
         try:
@@ -2257,103 +2363,7 @@ class ChatDynamicsPlugin(Star):
         runtime.last_manners = gate.manners.as_dict()
         runtime.last_media_gate = gate.media.as_dict() if gate.media is not None else {}
         runtime.request_media_understand = bool(gate.request_understand)
-        hard_block = bool(
-            arb_res.in_deep_cooling or arb_res.is_energy_asymmetric or arb_res.private_topic
-        )
-        whitelist_open = bool(
-            gate.should_speak
-            and not hard_block
-            and (
-                (gate.proactive is not None and bool(getattr(gate.proactive, "proactive", False)))
-                or (
-                    gate.rhythm is not None
-                    and gate.rhythm.allow
-                    and gate.rhythm.action
-                    in {
-                        "goodnight_reply",
-                        "wake_reply",
-                        "morning_hi",
-                        "day_share",
-                        "insomnia_line",
-                    }
-                )
-            )
-        )
-        if arb_res.should_speak and not gate.should_speak:
-            # WTS already authorized this turn. useful_proactive's idle vetoes
-            # (no gap / newcomer ambient-name) must not cancel that; manners,
-            # media, rhythm, deciding and quota still win.
-            if gate.reason_code in {"no_gap", "newcomer_caution"} and not hard_block:
-                runtime._pending_gate_skin = gate.skin
-                runtime._pending_gate_proactive = gate.proactive
-                runtime._pending_gate_rhythm = gate.rhythm
-                runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
-                runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-                if gate.length_hint:
-                    runtime.last_length_hint = gate.length_hint
-                if gate.delay_scale:
-                    runtime.last_delay_scale = gate.delay_scale
-                runtime.last_rhythm_action = gate.rhythm.action if gate.rhythm is not None else ""
-            else:
-                from .core.arbiter import ArbitrationResult as _AR
-
-                arb_res = _AR(
-                    should_speak=False,
-                    willingness_score=arb_res.willingness_score,
-                    threshold=arb_res.threshold,
-                    reason=f"{gate.reason_code}: {gate.reason_zh}",
-                    in_deep_cooling=arb_res.in_deep_cooling,
-                    is_energy_asymmetric=arb_res.is_energy_asymmetric,
-                    professionalism=arb_res.professionalism,
-                    topic_relevance=arb_res.topic_relevance,
-                    fatigue_penalty=arb_res.fatigue_penalty,
-                    question_value=arb_res.question_value,
-                    participation=arb_res.participation,
-                    private_topic=arb_res.private_topic,
-                )
-                self.arbiter._remember(session_id, arb_res)
-        elif not arb_res.should_speak and whitelist_open:
-            from .core.arbiter import ArbitrationResult as _AR
-
-            arb_res = _AR(
-                should_speak=True,
-                willingness_score=max(float(arb_res.willingness_score or 0.0), 0.6),
-                threshold=arb_res.threshold,
-                reason=f"{gate.reason_code}: {gate.reason_zh}",
-                in_deep_cooling=arb_res.in_deep_cooling,
-                is_energy_asymmetric=arb_res.is_energy_asymmetric,
-                professionalism=arb_res.professionalism,
-                topic_relevance=arb_res.topic_relevance,
-                fatigue_penalty=arb_res.fatigue_penalty,
-                question_value=arb_res.question_value,
-                participation=arb_res.participation,
-                private_topic=arb_res.private_topic,
-            )
-            self.arbiter._remember(session_id, arb_res)
-            runtime._pending_gate_skin = gate.skin
-            runtime._pending_gate_proactive = gate.proactive
-            runtime._pending_gate_rhythm = gate.rhythm
-            runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
-            runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-            if gate.length_hint:
-                runtime.last_length_hint = gate.length_hint
-            if gate.delay_scale:
-                runtime.last_delay_scale = gate.delay_scale
-            runtime.last_rhythm_action = gate.rhythm.action if gate.rhythm is not None else ""
-        elif not arb_res.should_speak:
-            self.decision_gate.note_arbiter_silence(session_id, arb_res.reason, now=now)
-        else:
-            # Will speak — remember hyped quota / intervene counts after pass.
-            runtime._pending_gate_skin = gate.skin
-            runtime._pending_gate_proactive = gate.proactive
-            runtime._pending_gate_rhythm = gate.rhythm
-            runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
-            runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-            if gate.length_hint:
-                runtime.last_length_hint = gate.length_hint
-            if gate.delay_scale:
-                runtime.last_delay_scale = gate.delay_scale
-            runtime.last_rhythm_action = gate.rhythm.action if gate.rhythm is not None else ""
+        arb_res = self._resolve_gate_result(runtime, session_id, arb_res, gate, now)
 
         if addressivity.level == AddressivityLevel.SAFE_HOVER:
             runtime.remember_hover(node, now)

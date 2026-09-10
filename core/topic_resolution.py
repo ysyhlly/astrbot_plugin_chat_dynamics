@@ -20,6 +20,20 @@ def is_elliptical(text: str) -> bool:
     return bool(_ELLIPTICAL.fullmatch(text.strip()))
 
 
+def can_start_topic(text: str) -> bool:
+    """Require content beyond a reaction, acknowledgement or dangling fragment."""
+    text = text.strip()
+    compact = re.sub(r"[\W_]+", "", text)
+    if len(compact) < 5 or is_elliptical(text) or _FILLER.fullmatch(text):
+        return False
+    return not bool(re.fullmatch(
+        r"(?:哈哈|呵呵|嘿嘿|嗯|哦|啊|额|呃)+|"
+        r"(?:那)?(?:确实|对的|是的|没错|好吧|好呀|好的|收到|知道了|明白了|原来如此|"
+        r"真的假的|笑死我了|不知道|我也是|还真是|这么说|然后呢|所以呢|算了吧)[啊呀呢吧了的]*",
+        compact,
+    ))
+
+
 def build_contextual_query(node: ConversationNode, dag: Any, candidate_topic: TopicState | None = None, max_len: int = 12) -> str:
     """Build candidate-local context for a reranker, never a pairwise similarity query.
 

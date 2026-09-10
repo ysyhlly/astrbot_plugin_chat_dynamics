@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from .sync_page_assets import check_page_assets
+except ImportError:  # direct ``python scripts/check_release.py`` execution
+    from sync_page_assets import check_page_assets
+
 
 _VERSION_RE = re.compile(r"^\s*version\s*:\s*['\"]?([^'\"\s]+)", re.MULTILINE)
 _REPO_RE = re.compile(r"^\s*repo\s*:\s*['\"]?(.*?)['\"]?\s*$", re.MULTILINE)
@@ -84,6 +89,8 @@ def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]
             errors.append(f"missing required path: {relative}")
         elif relative == "core" and not any(path.glob("*.py")):
             errors.append("core must contain Python runtime modules")
+
+    errors.extend(check_page_assets(root / "pages"))
 
     try:
         version, repo = _read_metadata(root)

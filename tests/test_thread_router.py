@@ -17,7 +17,7 @@ from astrbot_plugin_chat_dynamics.core.thread_router import (
 
 def setup():
     runtime = SessionRuntime("room", "room", "room", bot_id="bot", dag=ConversationDAG())
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     return runtime, router
 
 
@@ -244,9 +244,9 @@ def test_addressee_resolver_vocative_cues_and_demonstratives():
 @pytest.mark.asyncio
 async def test_route_async_fast_path_and_timeout_fallback():
     """Verify route_async returns immediately for unambiguous turns and falls back on timeout."""
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     dag = ConversationDAG()
-    node = dag.add_message("m1", "Alice", "你好", timestamp=10.0, mentioned_users=["bot"])
+    node = dag.add_message("m1", "Alice", "帮我检查服务器日志", timestamp=10.0, mentioned_users=["bot"])
     runtime = SimpleNamespace(dag=dag, routing_state=RoutingState(), bot_id="bot", last_bot_node=None)
 
     # 1. Fast-path: explicit mention is unambiguous -> returns immediately
@@ -290,9 +290,9 @@ async def test_route_async_fast_path_and_timeout_fallback():
 
 def test_mock_runtime_safe_attribute_access():
     """Verify route handles minimal mock runtime objects without raising AttributeError."""
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     dag = ConversationDAG()
-    node = dag.add_message("m1", "Alice", "test", timestamp=1.0)
+    node = dag.add_message("m1", "Alice", "test subject", timestamp=1.0)
     # Minimal namespace with only dag and routing_state
     runtime = SimpleNamespace(dag=dag, routing_state=RoutingState())
     inference = router.route(runtime, node)

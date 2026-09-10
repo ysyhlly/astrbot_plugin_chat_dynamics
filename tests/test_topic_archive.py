@@ -84,7 +84,7 @@ def test_router_prunes_and_reopens_old_topic_without_inferred_parent():
     dag = ConversationDAG(session_id="room")
     runtime = SessionRuntime(session_key="room", group_id="room", umo="test:GroupMessage:room",
                              bot_id="bot", dag=dag)
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     old = dag.add_message("old", "alice", TEXT, timestamp=10)
     old_result = router.route(runtime, old)
     new = dag.add_message("new", "bob", TEXT, timestamp=600)

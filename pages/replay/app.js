@@ -127,7 +127,11 @@ function selectBlock(index) {
 
 function renderRail(data) {
   archivedTopics = Array.isArray(data.archived_topics) ? data.archived_topics : [];
-  blocks = Array.isArray(data.topic_blocks) ? data.topic_blocks : [];
+  blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
+  const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
+  document.getElementById("unassignedNote").textContent = unassigned
+    ? `最近保留的消息中有 ${unassigned} 条尚未形成话题，留白展示。零散聊天、图片和表情包不会自动合成一个话题。`
+    : "尚未形成连续讨论的消息留白展示。群聊不需要时时刻刻都有话题。";
   els.railCounts.textContent = `${blocks.length} 个主题场景`;
   els.trackHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览最近判断";
   if (!blocks.length) {

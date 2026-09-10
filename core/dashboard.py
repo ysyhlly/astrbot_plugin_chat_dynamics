@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
 
 
 def _attr_int(obj: Any, key: str, default: int) -> int:
@@ -348,14 +351,15 @@ def _multimodal_lamp(plugin: Any) -> Dict[str, Any]:
     if media is not None and hasattr(media, "multimodal_available"):
         try:
             available = media.multimodal_available()
-        except Exception:
+        except Exception as exc:
+            logger.warning("multimodal_available failed: %s", type(exc).__name__)
             available = None
     if available is True:
         lamp, detail = "可用", "宿主可走多模态理解"
     elif available is False:
         lamp, detail = "不支持", "无视觉/听写时仅用门闩启发式，L2 安静降级"
     else:
-        lamp, detail = "启发式", "默认启发式门闩；未探测到多模态能力"
+        lamp, detail = "未检测", "尚未确认当前模型的视觉/语音能力，不代表不支持；实际处理由所选模型决定"
     return {"lamp": lamp, "detail": detail, "available": available}
 
 
@@ -442,8 +446,8 @@ def _read_air_summary(
             proactive_used = int(raw_used) if raw_used is not None else 0
             raw_cap = qs.get("proactive_cap")
             proactive_cap = int(raw_cap) if raw_cap is not None else hour_cap
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("quota_status failed: %s", type(exc).__name__)
     rhythm_gate = getattr(gate, "rhythm", None) if gate is not None else None
     rhythm_status = {
         "state": "awake",
@@ -454,8 +458,8 @@ def _read_air_summary(
         try:
             rhythm_status = dict(rhythm_gate.status(selected or "", now=None) or {})
             rhythm_status["enabled"] = bool(getattr(plugin, "daily_rhythm_enabled", True))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("rhythm.status failed: %s", type(exc).__name__)
     if rhythm_gate is not None and hasattr(rhythm_gate, "why_silent_rows"):
         try:
             for item in rhythm_gate.why_silent_rows(selected or "", limit=8):
@@ -464,8 +468,8 @@ def _read_air_summary(
                     "reason_code": item.get("reason_code") or "",
                     "ts": item.get("ts"),
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("rhythm.why_silent_rows failed: %s", type(exc).__name__)
     # de-dupe why by code+ts keeping order
     seen_why = set()
     deduped = []
@@ -580,6 +584,15 @@ def merge_replay_blocks(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return blocks
 
 
+def _replay_node_topic(node: Any) -> str:
+    """Only confirmed routing constitutes a topic; reply threads do not."""
+    routing = node.metadata.get("routing", {})
+    topic = str(routing.get("topic_id") or "")
+    if topic == "UNKNOWN" or routing.get("topic_status", "committed") != "committed":
+        return ""
+    return topic
+
+
 def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str) -> List[Dict[str, Any]]:
     """Group retained conversation nodes by session and routed topic.
 
@@ -600,12 +613,14 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
         session_nodes[sid] = nodes
         for node in nodes:
             routing = node.metadata.get("routing", {})
-            topic = str(routing.get("topic_id") or ("UNKNOWN" if routing else node.thread_id or node.msg_id))
+            topic = _replay_node_topic(node)
+            if not topic:
+                continue
             key = (sid, topic)
             if key not in groups:
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
-                    "topic_title": "待确认 / 未知话题" if topic == "UNKNOWN" else (_truncate(node.metadata.get("topic_title") or node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}"),
+                    "topic_title": _truncate(node.metadata.get("topic_title") or node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}",
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "messages": [], "message_count": 0, "count": 0,
                 }
@@ -625,18 +640,14 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     for event in events:
         sid = str(event.get("session_id") or selected)
         candidates = {
-            str(node.metadata.get("routing", {}).get("topic_id") or ("UNKNOWN" if node.metadata.get("routing") else node.thread_id or node.msg_id))
+            _replay_node_topic(node)
             for node in session_nodes.get(sid, [])
             if 0 <= float(event.get("ts") or 0) - (node.timestamp + wall_offset) <= 60
         }
         topic = next(iter(candidates)) if len(candidates) == 1 else ""
         key = (sid, topic)
-        if key not in groups:
-            groups[key] = {
-                "session_id": sid, "topic_id": topic, "topic_title": "未关联主题",
-                "start_ts": float(event.get("ts") or 0), "end_ts": float(event.get("ts") or 0),
-                "events": [], "message_count": 0, "count": 0,
-            }
+        if not topic or key not in groups:
+            continue
         group = groups[key]
         group["start_ts"] = min(group["start_ts"], float(event.get("ts") or 0))
         group["end_ts"] = max(group["end_ts"], float(event.get("ts") or 0))
@@ -666,8 +677,8 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
                         "session_id": selected or item.get("session_id") or "",
                     }
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("replay.why_silent_rows failed: %s", type(exc).__name__)
     seen: Set[tuple] = set()
     ordered: List[Dict[str, Any]] = []
     for item in sorted(events, key=lambda row: float(row.get("ts") or 0)):
@@ -700,7 +711,8 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
                     "group_id": row.get("group_id"),
                 }
             )
-    except Exception:
+    except Exception as exc:
+        logger.warning("replay.snapshot_sessions failed: %s", type(exc).__name__)
         sessions = []
     speak = sum(1 for item in ordered if item["action"] == "speak")
     silent = sum(1 for item in ordered if item["action"] != "speak")
@@ -710,6 +722,11 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         "events": ordered[-64:],
         "blocks": merge_replay_blocks(ordered[-64:]),
         "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
+        "unassigned_message_count": sum(
+            not _replay_node_topic(node)
+            for sid, dag in getattr(plugin, "dags", {}).items() if not selected or sid == selected
+            for node in sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-80:]
+        ),
         "archived_topics": [
             {"session_id": sid, "topic_id": topic.topic_id,
              "topic_title": _truncate(getattr(topic, "title", "") or topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}

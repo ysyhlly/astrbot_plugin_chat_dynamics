@@ -18,7 +18,7 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
             if (endpoint !== 'replay') return original(endpoint, params);
             return {ok:true,data:{sessions:[],speak_count:1,silent_count:6,
               topic_blocks:['speak','manners','media','rhythm','arbiter','proactive'].map((lane,i) => ({
-                topic_title:'聊天主题 '+i,message_count:2,lane,action:i ? 'silent':'speak',start_ts:1700000000+i*60,end_ts:1700000000+i*60,
+                topic_id:'topic-'+i,topic_title:'聊天主题 '+i,message_count:2,lane,action:i ? 'silent':'speak',start_ts:1700000000+i*60,end_ts:1700000000+i*60,
                 count:2,reason_zh:'场景原因 '+i,reason_code:lane,
                 events:[{ts:1700000000+i*60,reason_zh:'第一次具体判断 <安全文本>',session_id:'room-a'},
                         {ts:1700000005+i*60,reason_zh:'第二次具体判断',session_id:'room-a'}]
@@ -60,3 +60,27 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
         assert page.locator('#blockEvents li').count() == 0
         assert page.locator('#blockMeta').inner_text() == ''
         assert not errors
+
+
+def test_replay_unassigned_messages_remain_blank(browser, page_server, tmp_path):
+    with browser.new_context(viewport={"width": 390, "height": 900}) as context:
+        setup(context, {"ui": "day"})
+        context.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint !== 'replay') return original(endpoint, params);
+            return {ok:true,data:{sessions:[],unassigned_message_count:12,
+              topic_blocks:[{topic_id:'UNKNOWN',topic_title:'未知话题'},
+                            {topic_id:'candidate',topic_status:'pending',topic_title:'未形成'}]}};
+          };
+        """)
+        page = context.new_page()
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("document.querySelector('#unassignedNote').textContent.includes('12')")
+        assert page.locator('.replay-block').count() == 0
+        assert page.locator('#railEmpty').is_visible()
+        assert '留白' in page.locator('#railEmpty').inner_text()
+        assert page.locator('#railCounts').inner_text() == '0 个主题场景'
+        assert not page.locator('#detailDialog').is_visible()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(tmp_path / 'replay-blank.png'))

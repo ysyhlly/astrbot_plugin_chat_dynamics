@@ -184,7 +184,7 @@ async def test_cached_neural_match_requires_router_before_inferred_edge():
     from types import SimpleNamespace
     from astrbot_plugin_chat_dynamics.core.thread_router import ThreadRouter, RoutingState
     runtime = SimpleNamespace(dag=dag, routing_state=RoutingState(), bot_id="bot", last_bot_node=None)
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     router.route(runtime, first)
     routing = router.route(runtime, second)
     assert routing.topic_id == first.metadata["routing"]["topic_id"]
@@ -194,7 +194,7 @@ async def test_cached_neural_match_requires_router_before_inferred_edge():
 
 
 @pytest.mark.asyncio
-async def test_plugin_warmup_corrects_routing_after_neural_cache_fills():
+async def test_plugin_warmup_does_not_force_topic_before_dialogue_forms():
     from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import _plugin
 
     plugin = _plugin({"neural_embedding_enabled": True, "takeover_all": True})
@@ -211,9 +211,13 @@ async def test_plugin_warmup_corrects_routing_after_neural_cache_fills():
     plugin._route_message(runtime, second)
     await plugin._schedule_neural_embed(key, first)
     await plugin._schedule_neural_embed(key, second)
-    assert second.metadata["routing"]["topic_id"] == first.metadata["routing"]["topic_id"]
-    assert second.metadata["routing"]["parent_message_id"] == "a"
-    assert second.edge_kinds["a"] == "inferred_reply"
+    assert plugin.embeddings.cached(first.text) is not None
+    assert plugin.embeddings.cached(second.text) is not None
+    assert second.metadata["routing"]["topic_id"] == ""
+    assert first.metadata["routing"]["topic_id"] == ""
+    assert second.metadata["routing"]["topic_status"] == "unformed"
+    assert second.metadata["routing"]["parent_message_id"] == ""
+    assert "a" not in second.edge_kinds
     assert runtime.last_bot_node is None
     assert plugin.context.sent_messages == []
     await plugin.terminate()

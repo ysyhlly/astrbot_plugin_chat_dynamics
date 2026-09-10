@@ -91,7 +91,11 @@ def _json_err(message: str, status_code: int = 400, headers: Any = None):
 
 
 class ConsoleWebAPI:
-    """Registers and serves the official plugin-extension endpoints."""
+    """Serve endpoints behind the host's Dashboard/plugin-scope authorization.
+
+    Preference/navigation username checks require a per-user storage or signing
+    identity; a nonempty username alone does not assert administrator privileges.
+    """
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin

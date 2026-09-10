@@ -33,7 +33,7 @@
 
 ### 1.2 缺陷统计分布 (Defect Statistics)
 
-审计团队共挖掘并确证了 **44 项实质性缺陷与安全漏洞**。所有缺陷均完成代码级机理定位、影响评估，并配备了开箱即用的修复代码片段。其中 **11 项核心 Critical/High 缺陷**通过了 Challenger 自动化测试靶场的 100% 真实执行复现验证，并经司法取证审计员（Forensic Auditor）完成只读性与证据真实性核验。
+原报告列出 **44 项候选问题**，并记录 11 项 PoC。2026-09-11 复核撤回 DEF-SEC-06 的 Critical 与匿名网络攻击确证结论；以下统计保留原报告历史分布，不能作为当前已确证漏洞数量。其他条目保留原文，本次更正不重新背书其结论。
 
 #### 缺陷严重程度与审查维度交叉统计表
 
@@ -51,7 +51,7 @@
 1. **致命性消息静默丢弃与死锁 (DEF-LOGIC-01, DEF-ASYNC-04)**：当用户使用 `/dynamics_stop` 指令后，由于快路径（Fast-Path）合成结果遗漏缓冲代数元数据，导致后续所有点名提问 100% 被判定为过期脏数据并被静默丢弃；大模型准入控制使用无界 `asyncio.Semaphore`，在协程取消时发生许可泄漏，9 次取消即可导致群聊永久性死锁饥饿。
 2. **后台常驻协程隐式猝死 (DEF-ASYNC-01)**：全局空闲会话清理器 `_session_sweeper` 仅捕获 `CancelledError`，任意并发字典遍历异常将导致该后台任务永久退出且无看门狗拉起，造成进程生命周期内的内存无限泄漏。
 3. **跨平台 Windows NTFS 存储彻底失效 (DEF-ROB-01 / DEF-SEC-05)**：群聊记忆与心情模块在生成持久化文件名时允许包含冒号 `:`。在 Windows 操作系统（AstrBot 最主要部署平台之一）下，触发操作系统底层 `OSError: [Errno 22] Invalid argument`，导致数据 100% 无法落盘，每次重启后数据全部丢失。
-4. **控制台 Web API 全面未授权访问 (DEF-SEC-06, DEF-SEC-07)**：`ConsoleWebAPI` 暴露的 10 个管理端点（包括配置修改、DAG 会话重置、群聊强制冷却、记忆存取）完全缺乏身份认证与鉴权，网络攻击者可远程篡改配置、实施 3 小时禁言 DoS，或直接窃取群内近 16 条明文聊天内容与用户真实 ID。
+4. **Web API 认证结论更正 (DEF-SEC-06, DEF-SEC-07)**：AstrBot 4.27.5 的真实挂载具有宿主认证/权限依赖，原源码关键词扫描与 mock 方法调用不足以证明网络未授权访问；关联隐私攻击链同步撤回，详见 DEF-SEC-06。
 5. **双包阴影与供应链风险 (DEF-SEC-08)**：仓库内意外嵌套了同名子目录 `astrbot_plugin_chat_dynamics/astrbot_plugin_chat_dynamics/`（v1.3.1），导致测试套件导入过时代码产生“测试假阴性/假阳性”，且存在生产环境多实例单例分裂风险。
 
 ---
@@ -64,7 +64,7 @@
 | **DEF-ASYNC-01** | **Critical** | 异步并发 | `main.py:1363-1372`<br>`main.py:1190-1194` | `_session_sweeper` 未捕获常规异常导致后台 GC 任务静默猝死 | 实证复现 (100%) |
 | **DEF-ASYNC-04** | **Critical** | 异步并发 | `core/session_runtime.py:113, 126`<br>`core/persona_engine.py:336-340` | 模型准入计数信号量无界漂移与取消泄漏引发会话完全饥饿 | 实证复现 (100%) |
 | **DEF-ROB-01** | **Critical** | 鲁棒性/安全 | `core/mood_memory.py:19-21`<br>`core/group_memory.py:18-20` | Windows NTFS 保留字符 `:` 导致记忆文件写入抛出 OSError 且静默丢失 | 实证复现 (100%) |
-| **DEF-SEC-06** | **Critical** | 安全权限 | `core/web_api.py:186-340`<br>`core/web_api.py:540-576` | 控制台 Web API 核心管理端点完全缺乏身份认证与权限校验 | 实证复现 (100%) |
+| **DEF-SEC-06** | **撤回原 Critical** | 安全权限 | 宿主 `dashboard/api/plugins.py`、`api/auth.py` | 原报告遗漏真实宿主认证链；须区分 Dashboard JWT 与 plugin scope API key | 4.27.5 源码复核 |
 | **DEF-LOGIC-02** | **High** | 业务逻辑 | `core/vibe_analyzer.py:149-170` | 施密特触发器退出反转导致 5.0~7.0 MPM 区间模式高频震荡 | 实证复现 (100%) |
 | **DEF-LOGIC-03** | **High** | 业务逻辑 | `core/pacer.py:150-154, 173-184` | 句子切分 fallback 正则遗漏后行断言导致中文逗号分号被吞噬 | 静态确证 |
 | **DEF-LOGIC-06** | **High** | 业务逻辑 | `core/useful_proactive.py:480-493` | 悬空提问检测忽略 45s 内的群友有效回复导致机器人尴尬插嘴 | 静态确证 |
@@ -77,7 +77,7 @@
 | **DEF-ROB-03** | **High** | 鲁棒性 | `core/mood_memory.py:71-74`<br>`core/group_memory.py:63-66` | 非原子文件写入导致进程异常退出时产生 0 字节损坏文件与数据损毁 | 静态确证 |
 | **DEF-SEC-01** | **High** | 安全权限 | `main.py:3590-3607` | `/dynamics` 管理指令枚举类型比较失败绕过权限检查且在缺失属性时 Fail-Open | 实证复现 (100%) |
 | **DEF-SEC-03** | **High** | 安全权限 | `main.py:2164-2176, 2330-2336`<br>`core/llm_adapter.py:194` | 对话上下文换行未转义导致 Prompt 注入伪造 Bot 与管理员角色发话 | 实证复现 (100%) |
-| **DEF-SEC-07** | **High** | 安全权限 | `core/dashboard.py:99-105, 132-147`<br>`core/web_api.py:208-234` | 控制台 Dashboard 接口泄漏群内真实明文聊天记录与成员用户 ID | 静态确证 |
+| **DEF-SEC-07** | **待重新评估** | 安全权限 | `core/dashboard.py`、`core/web_api.py` | 原匿名泄露组合攻击的认证绕过前提已撤回 | 须按展示配置及真实授权边界验证 |
 | **DEF-SEC-08** | **High** | 供应链/打包 | 仓库根目录 vs `astrbot_plugin_chat_dynamics/` | 嵌套旧版本包目录导致 Python 导入阴影、测试失效与执行分裂 | 静态确证 |
 | **DEF-LOGIC-04** | **Medium** | 业务逻辑 | `core/incompleteness.py:36-40` | 中文连词正则误匹配名词性“结果”导致防抖窗口不必要延长 3 秒 | 静态确证 |
 | **DEF-LOGIC-05** | **Medium** | 业务逻辑 | `core/incompleteness.py:173-177` | 缩写单引号过滤缺失数字导致年代（`90's`）与身高（`5'10"`）被误判截断 | 静态确证 |
@@ -341,54 +341,14 @@
 
 ---
 
-#### 【DEF-SEC-06】控制台 Web API 核心管理端点完全缺乏身份认证与权限校验
-- **缺陷标识**: `DEF-SEC-06`
-- **严重等级**: **Critical**
-- **分类维度**: 安全合规与权限 (Security & Compliance)
-- **代码坐标**: `core/web_api.py:186-340` 与 `core/web_api.py:540-576`
-- **机理分析**:
-  1. `ConsoleWebAPI` 为 AstrBot Web 仪表盘提供了完整的 RESTful 接口。
-  2. 在 `core/web_api.py:368-370` 的 `page_nav` 接口中，开发者编写了明确的身份鉴权代码：
-     ```python
-     username = getattr(plugin_req, "username", None)
-     if not isinstance(username, str) or not username.strip():
-         return _json_err("unauthorized", 401)
-     ```
-  3. 然而，在其余 **10 个关键的管理与数据交互接口**中，没有任何身份鉴权逻辑：
-     - `GET /overview`（获取全局概览）
-     - `GET /sessions` 与 `GET /session`（获取会话详情与对话图谱）
-     - `POST /cool`（群聊强制冷却禁言）
-     - `POST /reset`（重置会话图谱与状态机）
-     - `GET /config`、`POST /config` 与 `POST /config/apply`（读取与保存配置）
-     - `GET /notebook` 与 `POST /notebook`（读取与修改群备忘录）
-     - `GET /read_air`（读取氛围数据）
-  4. 当未登录的 HTTP 请求进入时，`_request_identity()` 将其用户标记为 `"anonymous"`，并在无密码、无 Token、无 Session 校验的情况下直接予以放行并执行修改！
-- **触发场景与复现逻辑 (PoC)**:
-  - **实证结果**: 在 `verify_poc.py` 中，构造未携带任何凭证的匿名 HTTP 请求调用 `config_save`、`reset` 和 `cool`。10 个端点全部放行；成功将 `console_show_message_content` 修改为 `True`，并对指定群聊注入 180 分钟强制禁言。
-- **危害影响**: 局域网或公网任意攻击者可直接向 AstrBot 端口发起 HTTP POST 请求，任意篡改插件运行配置、擦除群聊记忆、对任意群实施长达 3 小时的接话 DoS 攻击，甚至开启敏感消息明文展示。
-- **修复方案**:
-  编写统一的鉴权装饰器或提取前置校验私有方法，并在所有管理端点入口严格阻断匿名调用：
-  ```python
-  # core/web_api.py:186
-  def _require_auth(self) -> Optional[Any]:
-      """Enforce authenticated admin session for all administrative routes."""
-      getter = getattr(request, "_get_current", None)
-      plugin_req = getter() if callable(getter) else None
-      username = (
-          getattr(plugin_req, "username", None)
-          if plugin_req is not None
-          else getattr(request, "username", None)
-      )
-      if not isinstance(username, str) or not username.strip() or username.strip().lower() == "anonymous":
-          return _json_err("unauthorized: administrative credentials required", 401)
-      return None
-
-  # 在所有接口入口统一增加校验拦截，例如 config_save:
-  async def config_save(self):
-      if (unauth := self._require_auth()) is not None:
-          return unauth
-      ...
-  ```
+#### 【DEF-SEC-06】更正：宿主认证链未纳入原审计
+- **状态**：撤回“全面未授权访问”的 Critical 判定；原匿名攻击 PoC 未证明真实宿主路由可被匿名访问。
+- **核验范围**：2026-09-11，本地 `.venv` 安装元数据为 AstrBot **4.27.5**；以下为该版本宿主源码证据，不外推其他版本，也不等同生产部署端到端安全验证。
+- **真实挂载链**：插件通过 `context.register_web_api` 注册。宿主 `astrbot/dashboard/api/plugins.py:1506-1512` 的旧 `/api/plug/{plugin_path}` 入口依赖 `require_dashboard_user`，且 `server.py:210-272` 对该路径先执行 JWT 校验，缺失凭证返回 401。新 `/api/v1/plugins/extensions/{plugin_path}` 的各方法（`api/plugins.py:379-421`）依赖 `ScopeDependency("plugin")`。
+- **身份边界**：`api/auth.py` 的 `require_scope` 接受有效 Dashboard JWT 或具备 `plugin`（或包含该权限）scope 的 API key；`_require_api_key_scope` 把后者 username 合成为 API-key 前缀加 key ID。两者均经 `_call_plugin_extension` 注入 `PluginRequest.username`，但不代表同一种账户或管理员角色。仅判断 username 非空既不能证明管理员授权，也不能替代宿主 scope 校验。
+- **原 PoC 限制**：已检查原 `.agents/teamwork_preview_challenger_2/verify_poc.py:197-236`：测试只用 `inspect.getsource` 搜索 `unauthorized/username/token` 三个关键词，随后直接调用 `mock_plugin.save_config_values`、`_reset_session_state_async`、`_cool_session_async`，没有发起 HTTP 请求，甚至没有调用真实 API 处理器。这不能确证任意网络攻击者匿名修改配置、清空会话或强制冷却。撤回原“10/10 全部放行”和远程匿名攻击的确证性描述。
+- **后续验证**：应在真实宿主挂载下覆盖无凭证、无效凭证、有效 Dashboard JWT、缺少/具备 plugin scope 的 API key，并另验页面资产 token、Origin/CSRF 与限流边界。该版本 `require_scope` 的 JWT 分支还需单独核验 token 类型隔离，不能据当前认证链就宣称全部安全。
+- **可靠方向**：明确插件继承宿主 plugin scope 的授权契约；若产品要求仅 Dashboard 管理员使用，应根据可信宿主认证上下文做身份类型/权限校验，不采用原报告仅凭 username 非空的 `require_admin_auth` 示例。
 
 ---
 
@@ -692,13 +652,13 @@
 
 ---
 
-#### 【DEF-SEC-07】控制台 Dashboard 接口泄漏群内真实明文聊天记录与成员用户 ID
+#### 【DEF-SEC-07】更正：敏感内容展示与匿名泄露需要区分
 - **缺陷标识**: `DEF-SEC-07`
-- **严重等级**: **High**
+- **状态**: 原匿名组合攻击前提撤回，严重等级待重新评估
 - **分类维度**: 安全合规与权限 (Security & Compliance)
 - **代码坐标**: `core/dashboard.py:99-105, 132-147` 与 `core/web_api.py:208-234`
 - **机理分析**:
-  与 `DEF-SEC-06` 组合后，未授权用户可调用 `POST /config` 开启 `console_show_message_content: true`，进而通过 `GET /session` 拖取指定群近 16 条完整明文消息、真实用户 ID 及艾特列表，严重侵犯用户隐私并违反数据保护合规要求。
+  原文依赖 DEF-SEC-06 的匿名访问前提，现撤回该组合攻击确证。敏感内容展示仍应按配置与授权边界验证，不能以已认证用户主动开启展示证明匿名泄露。
 - **修复方案**: 强化端点认证，敏感展示增加二次审计日志，脱敏非管理端点返回。
 
 ---
@@ -880,7 +840,7 @@
 
 ## 4. 实证 PoC 复现与验证综述 (Empirical Reproduction & Verification Summary)
 
-为贯彻“代码审查绝不依赖空想”的标准，Challenger 1 与 Challenger 2 团队分别针对核心业务逻辑、异步并发竞争、平台底层兼容与安全权限问题构建了独立的自动化实证靶场。全部 11 项实证靶场均在 Windows 11 + Python 3.12（AstrBot 真实依赖环境）下无损运行，取得了 **100% 成功复现率**。
+原报告记录 11 项实证靶场结果。复核发现 PoC-09 未覆盖 AstrBot 4.27.5 的真实宿主认证链，因此撤回“全部 11 项、100% 网络安全复现”的概括；其余历史 PoC 原样保留，未在本次更正中重新验证。
 
 司法取证审计员（Forensic Auditor）对上述测试脚本与源码无修改状态进行了第三方独立取证（见 `audit_integrity_report.md`，裁定为 **CLEAN**）。
 
@@ -896,7 +856,7 @@
 | **PoC-06** | **DEF-ASYNC-04**<br>信号量漂移与饥饿 | `.agents/teamwork_preview_challenger_1/test_def_async_04.py` | `python test_def_async_04.py` | `0` | 9 次取消泄漏全部可用许可导致**后续请求完全死锁**；异常释放使得许可数值**漂移至 25（超额 177%），背压失效**。 | **完全确证** |
 | **PoC-07** | **DEF-ROB-01**<br>NTFS 路径非法冒号 | `.agents/teamwork_preview_challenger_2/verify_poc.py` (POC 1) | `python verify_poc.py` | `0` | 写入 UMO 路径触发 `OSError: [Errno 22] Invalid argument`，磁盘创建文件为 0，**重启后记忆全部丢失**。 | **完全确证** |
 | **PoC-08** | **DEF-SEC-01**<br>指令鉴权 Fail-Open | `.agents/teamwork_preview_challenger_2/verify_poc.py` (POC 2) | `python verify_poc.py` | `0` | 字符串比较绕过过滤器；无属性事件跳过鉴权（Fail-Open）；属性为布尔值时调用抛出 `TypeError` 误伤管理员。 | **完全确证** |
-| **PoC-09** | **DEF-SEC-06**<br>Web API 缺失认证 | `.agents/teamwork_preview_challenger_2/verify_poc.py` (POC 3) | `python verify_poc.py` | `0` | 10/10 核心管理端点均无认证；成功以匿名身份修改配置、清空会话图谱并下发 180 分钟强制冷却禁言。 | **完全确证** |
+| **PoC-09** | **DEF-SEC-06** | 原源码关键词扫描及 mock 调用 | 未覆盖真实 API 或宿主认证链 | 不适用 | 无法证明网络匿名修改配置或重置/冷却会话 | **撤回原确证** |
 | **PoC-10** | **DEF-SEC-03**<br>Prompt 上下文注入 | `.agents/teamwork_preview_challenger_2/verify_poc.py` (POC 4) | `python verify_poc.py` | `0` | 2 条群消息合成出 4 轮对话，成功注入伪造的 `Bot:` 与 `User_admin:`；混合 JSON 导致定界符混淆。 | **完全确证** |
 | **PoC-11** | **DEF-ROB-02**<br>模型 Markdown 报错 | `.agents/teamwork_preview_challenger_2/verify_poc.py` (POC 5) | `python verify_poc.py` | `0` | 带有 ` ```json ` 围栏的文本触发 `JSONDecodeError`，fallback 决策使闲聊动作强制变为 `ignore`，**日常接话彻底哑火**。 | **完全确证** |
 
@@ -921,10 +881,10 @@
   - 统一测试套件的导入路径，使其精准指向待测的根目录或 `src/` 源码。
 
 ### 5.3 统一 Web API 身份认证与权限中间件
-当前 Web 接口呈现局部有鉴权、大部无鉴权的混乱状态。
+更正：AstrBot 4.27.5 的管理接口继承宿主认证链；处理器内部没有重复认证不等于网络端点匿名开放。
 - **建议方案**:
-  - 引入统一的 API 请求中间件（或函数装饰器 `@require_admin_auth`）；
-  - 强制校验 AstrBot 管理控制台派发的 Session Token 或管理员身份，严禁将未携带凭证的外部请求默认赋权为 `"anonymous"`；
+  - 在真实宿主入口验证认证和 scope，并明确允许 Dashboard JWT、plugin scope API key 中哪些身份；
+  - 若需要更严格的管理员策略，使用可信认证上下文；不得仅用非空 username 推断管理员角色；
   - 对于敏感信息（如用户聊天记录、群成员 ID）实施默认脱敏展示，仅在特权模式并记录合规审计日志后方可解密输出。
 
 ### 5.4 规范异步锁层级与准入信号量卫生

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
@@ -11,6 +12,8 @@ from .occasion_skin import OccasionClassifier, OccasionSkin, apply_occasion_to_w
 from .social_manners import MannersVerdict, SocialMannersGate
 from .daily_rhythm import DailyRhythmGate, DailyRhythmVerdict, is_goodnight_text
 from .useful_proactive import UsefulProactiveGate, UsefulProactiveVerdict
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.decision_gate")
 
 
 @dataclass(frozen=True)
@@ -438,8 +441,8 @@ class DynamicsDecisionGate:
         self.manners.reset_session(sid)
         try:
             self.occasion.reset_session(sid)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("occasion.reset_session failed: %s", type(exc).__name__)
 
     def note_spoke(
         self,
@@ -478,8 +481,8 @@ class DynamicsDecisionGate:
         if rhythm is not None:
             try:
                 self.rhythm.note_spoke(session_id, verdict=rhythm, now=now)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("rhythm.note_spoke failed: %s", type(exc).__name__)
 
     def note_arbiter_silence(self, session_id: str, reason: str, *, now: Optional[float] = None) -> None:
         zh = reason_to_zh(reason)

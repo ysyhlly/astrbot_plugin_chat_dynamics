@@ -60,7 +60,7 @@ def _setup_router_env(
         bot_id=bot_id,
         dag=dag,
     )
-    router = ThreadRouter()
+    router = ThreadRouter(require_intense_dialogue=False)
     addressivity = AddressivityRouter(bot_id=bot_id, bot_names=list(bot_names))
     return runtime, router, addressivity
 

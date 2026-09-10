@@ -9,8 +9,9 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 from .graph import ConversationDAG, ConversationNode
 from .session_runtime import RoutingState as RoutingState, TopicState as TopicState
-from .topic_resolution import TopicResolver, build_contextual_query
+from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic
 from .pending_topics import defer, reconcile
+from .topic_formation import discussion_burst, topic_text
 
 WINDOW_SECONDS = 300.0
 WINDOW_NODES = 80
@@ -398,7 +399,9 @@ class ThreadRouter:
         topic_join_threshold: float = TOPIC_AMBIGUITY_THRESHOLD,
         parent_window_seconds: float = PARENT_WINDOW_SECONDS,
         parent_accept_threshold: float = PARENT_ACCEPT_THRESHOLD,
+        require_intense_dialogue: bool = True,
     ):
+        self.require_intense_dialogue = require_intense_dialogue
         if topic_resolver is None:
             self.topic_resolver = TopicResolver(
                 window_seconds=topic_window_seconds,
@@ -434,7 +437,8 @@ class ThreadRouter:
 
         state = runtime.routing_state
         previous_routing = node.metadata.get("routing", {})
-        if "topic_llm_rerank" in previous_routing.get("evidence", []):
+        if (any(ev in previous_routing.get("evidence", []) for ev in ("topic_llm_rerank", "topic_burst_confirmed"))
+                and previous_routing.get("topic_id") in state.topics):
             return RoutingInference(**{key: value for key, value in previous_routing.items()
                                        if key in RoutingInference.__dataclass_fields__})
         now = max(
@@ -475,10 +479,30 @@ class ThreadRouter:
         if parent is None and node.mentioned_users and not node.reply_to_id:
             parent = next((n for n in reversed(recent) if n.user_id in node.mentioned_users), None)
 
-        query = build_contextual_query(node, dag)
+        burst = discussion_burst(dag, node, getattr(runtime, "bot_id", "")) if self.require_intense_dialogue else []
+        formation_allowed = not self.require_intense_dialogue or bool(burst)
+        formed_topic = ""
+        if burst:
+            existing = [n.metadata.get("routing", {}).get("topic_id") for n in burst]
+            formed_topic = next((tid for tid in existing if tid in state.topics), burst[0].msg_id)
+            for previous in burst:
+                if previous.msg_id == node.msg_id or previous.metadata.get("routing", {}).get("topic_id"):
+                    continue
+                self._remember(state, previous, formed_topic, dag=dag)
+                state.pending_assignments.pop(previous.msg_id, None)
+                prior = dict(previous.metadata.get("routing", {}))
+                prior.update(topic_id=formed_topic, topic_status="committed", topic_ambiguous=False,
+                             topic_confidence=0.75)
+                prior["ambiguous"] = float(prior.get("addressee_confidence", 0.0) or 0.0) < 0.72
+                prior["evidence"] = list(prior.get("evidence", [])) + ["topic_burst_confirmed"]
+                previous.metadata["routing"] = prior
+                previous.metadata["topic_id"] = formed_topic
+        query = topic_text(node)
         matches: dict[str, float] = {}
         for candidate in recent:
-            match = dag.semantic_match_fn(query, candidate.text)
+            if not can_start_topic(topic_text(candidate)):
+                continue
+            match = dag.semantic_match_fn(query, topic_text(candidate))
             sim = max(float(getattr(match, "score", 0.0) or 0.0), float(getattr(match, "embedding_cosine", 0.0) or 0.0))
             matches[candidate.msg_id] = max(0.0, min(1.0, sim))
 
@@ -492,10 +516,17 @@ class ThreadRouter:
                 explicit_parent=parent,
             )
         )
+        if formed_topic and topic_id == node.msg_id and "topic_boundary" not in topic_evidence:
+            topic_id, topic_conf, is_ambiguous = formed_topic, 0.75, False
+            topic_evidence.append("topic_burst_confirmed")
+        if topic_id == node.msg_id and not can_start_topic(topic_text(node)):
+            is_ambiguous = True
+            topic_conf = 0.0
+            topic_evidence.append("topic_not_formed")
         result.topic_id = topic_id
         result.topic_ambiguous = is_ambiguous
         result.topic_candidates = list(ranked_topics[:3])
-        if (topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
+        if (formation_allowed and topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
                 and (not ranked_topics or ranked_topics[0][0] < self.topic_resolver.ambiguity_threshold)):
             archived = state.archive.retrieve(node, dag)
             if archived is not None:
@@ -594,7 +625,15 @@ class ThreadRouter:
             else:
                 dag._link_parent(node.msg_id, pmid, kind="inferred_reply")
 
-        if result.topic_ambiguous:
+        if not formation_allowed:
+            result.topic_id = ""
+            result.topic_confidence = 0.0
+            result.topic_ambiguous = True
+            result.topic_status = "unformed"
+            result.evidence.append("topic_not_formed")
+            state.pending_assignments.pop(node.msg_id, None)
+            node.metadata.pop("topic_title", None)
+        elif result.topic_ambiguous:
             defer(state, node, result, ranked_topics)
         else:
             state.pending_assignments.pop(node.msg_id, None)
@@ -603,43 +642,20 @@ class ThreadRouter:
         result.ambiguous = result.topic_ambiguous or result.addressee_confidence < 0.72
         node.metadata["topic_id"] = result.topic_id
         node.metadata["routing"] = asdict(result)
-        reconcile(state, dag, node, result, self._remember)
+        if formation_allowed:
+            reconcile(state, dag, node, result, self._remember)
         if node.user_id == getattr(runtime, "bot_id", ""):
             state.last_bot_topic_id = result.topic_id
             if hasattr(runtime, "last_bot_node"):
                 runtime.last_bot_node = node
         state.prune(dag, now, window_seconds=self.topic_resolver.window_seconds)
 
-        # 5. Structured [Router] Diagnostic Logging
-        preview = (node.text or "").strip().replace("\n", " ")
-        if len(preview) > 30:
-            preview = preview[:27] + "..."
-        logger.info(
-            "[Router] msg_id=%s sender=%s text=%r | "
-            "topic=%s (conf=%.2f, ranked=%s) | "
-            "parent=%s (conf=%.2f, possible=%s, margin=%.2f, candidates=%s) | "
-            "addressee=%s (conf=%.2f, bot_is_addressee=%s, bot_conf=%.2f) | "
-            "subject=%s (subject_is_bot=%s) | "
-            "decision: ambiguous=%s evidence=%s",
-            node.msg_id,
-            node.user_id,
-            preview,
-            result.topic_id,
-            result.topic_confidence,
-            [(tid, round(s, 2)) for s, tid in ranked_topics[:3]],
-            result.parent_message_id or "none",
-            result.parent_confidence,
-            result.possible_parent or "none",
-            parent_margin,
-            [(mid, round(s, 2)) for s, mid in candidates[:3]],
-            result.addressee_ids,
-            result.addressee_confidence,
-            result.bot_is_addressee,
-            result.bot_addressee_confidence,
-            result.subject_user_ids,
-            result.subject_is_bot,
-            result.ambiguous,
-            result.evidence,
+        # Keep diagnostics useful without recording text or participant identifiers.
+        logger.debug(
+            "[Router] topic_conf=%.2f parent_conf=%.2f parent_margin=%.2f "
+            "addressee_conf=%.2f bot_is_addressee=%s ambiguous=%s",
+            result.topic_confidence, result.parent_confidence, parent_margin,
+            result.addressee_confidence, result.bot_is_addressee, result.ambiguous,
         )
         return result
 
@@ -683,6 +699,8 @@ class ThreadRouter:
 
         dag, state = runtime.dag, runtime.routing_state
         snapshot = node.metadata.get("routing", {})
+        if snapshot.get("topic_status") == "unformed":
+            return
         source_id = snapshot.get("topic_id", "")
         new_topic = source_id == node.msg_id
         if (not snapshot.get("topic_ambiguous") and not new_topic) or snapshot.get("rerank_attempted"):
@@ -716,6 +734,8 @@ class ThreadRouter:
                 or (not new_topic and node.msg_id not in state.pending_assignments)):
             return
         topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
+        if decision.choice == "NEW" and not can_start_topic(node.text):
+            return
         if not topic_id or (decision.choice != "NEW" and
                             (topic_id not in state.topics or topic_id not in {c.topic_id for c in candidates})):
             return

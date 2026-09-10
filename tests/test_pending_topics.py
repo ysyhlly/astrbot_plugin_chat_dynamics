@@ -16,7 +16,7 @@ class Resolver(TopicResolver):
 
 def setup():
     runtime = SessionRuntime("one", "g", "one", dag=ConversationDAG())
-    router = ThreadRouter(topic_resolver=Resolver())
+    router = ThreadRouter(topic_resolver=Resolver(), require_intense_dialogue=False)
     for mid in ("a", "b", "pending"):
         node = runtime.dag.add_message(mid, mid, "substantive topic " + mid, timestamp=len(runtime.dag.nodes)+1)
         router.route(runtime, node)
@@ -139,3 +139,40 @@ async def test_title_once_and_reset_guard():
             return "过期标题"
     await router.title_topic(rt, rt.dag.nodes["b"], ResetTitler())
     assert "topic_title" not in rt.dag.nodes["b"].metadata
+
+
+@pytest.mark.parametrize("text", ["嗯", "啊？", "好的好的", "哈哈哈哈哈哈哈", "真的假的", "这个呢", "然后呢", "没错没错"])
+def test_reactions_do_not_create_topics_or_titles(text):
+    rt = SessionRuntime("r", "g", "r", dag=ConversationDAG())
+    router = ThreadRouter(require_intense_dialogue=False)
+    node = rt.dag.add_message("one", "A", text, timestamp=1)
+    result = router.route(rt, node)
+    assert result.topic_status == "pending"
+    assert not result.topic_id
+    assert not rt.routing_state.topics
+
+
+@pytest.mark.asyncio
+async def test_llm_new_cannot_promote_unformed_fragment():
+    rt, router = setup()
+    node = rt.dag.add_message("fragment", "A", "这个呢", timestamp=4)
+    # Use the real resolver to enforce formation evidence.
+    router = ThreadRouter(require_intense_dialogue=False)
+    router.route(rt, node)
+    class Reranker:
+        async def rerank(self, **kwargs):
+            return SimpleNamespace(choice="NEW", topic_id="")
+    await router.rerank_pending(rt, node, Reranker())
+    assert node.metadata["routing"]["topic_status"] == "pending"
+    assert "fragment" not in rt.routing_state.topics
+
+
+def test_substantive_reply_can_confirm_pending_seed():
+    rt = SessionRuntime("r", "g", "r", dag=ConversationDAG())
+    router = ThreadRouter(require_intense_dialogue=False)
+    first = rt.dag.add_message("first", "A", "这个呢", timestamp=1)
+    router.route(rt, first)
+    second = rt.dag.add_message("second", "B", "显卡风扇曲线需要根据温度设置", timestamp=2, reply_to_id="first")
+    result = router.route(rt, second)
+    assert result.topic_id
+    assert first.metadata["routing"]["topic_id"] == result.topic_id
