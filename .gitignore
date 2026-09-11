@@ -20,6 +20,8 @@ env/
 Thumbs.db
 
 # Local-only work artifacts (never publish)
+output/
+.codex-remote-attachments/
 .agents/
 .codegraph/
 .omo/

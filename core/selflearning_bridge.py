@@ -70,6 +70,9 @@ class SelfLearningBridge:
         self._generation = 0
         self._pending: set[asyncio.Future] = set()
         self.timeout = 2.0
+        # Post-send learning may perform database/model IO in the background.
+        # It must not inherit the latency budget for foreground context reads.
+        self.delivery_timeout = 60.0
 
     def configure(self, *, enabled: bool, context: Any = None) -> None:
         if bool(enabled) != self.enabled or (
@@ -549,10 +552,19 @@ class SelfLearningBridge:
                 if not any(p["plugin"] is provider["plugin"] for p in self._providers):
                     continue
                 try:
-                    await asyncio.wait_for(provider["plugin"].on_bot_message_sent(delivered_event), self.timeout)
-                    self._record(provider, "delivered_messages")
+                    await asyncio.wait_for(
+                        provider["plugin"].on_bot_message_sent(delivered_event),
+                        self.delivery_timeout,
+                    )
                 except Exception as exc:
-                    self._record(provider, "delivered_messages", exc)
+                    error = exc
+                else:
+                    error = None
+                self.refresh()
+                if not self.enabled or generation != self._generation:
+                    return
+                if any(p["plugin"] is provider["plugin"] for p in self._providers):
+                    self._record(provider, "delivered_messages", error)
 
         task = asyncio.create_task(notify())
         self._pending.add(task)

@@ -203,7 +203,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.3.11",
+    "v1.3.12",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -1732,6 +1732,14 @@ class ChatDynamicsPlugin(Star):
             addressed_media = self._looks_like_strong_address(
                 parsed, runtime
             ) and has_understandable_media(parsed)
+            bare_bot_mention = (
+                not parsed.has_media
+                and not (parsed.text or "").strip()
+                and str(runtime.bot_id or parsed.self_id or "") in parsed.mentions
+            )
+            if bare_bot_mention:
+                # Some adapters expose a bare @ only as an At component.
+                parsed.text = "[有人@你，请回应这次呼唤]"
             if parsed.has_media and not (parsed.text or "").strip():
                 if self._persona_mode() or addressed_media:
                     parsed.text = media_placeholder_text(parsed)
@@ -1778,7 +1786,7 @@ class ChatDynamicsPlugin(Star):
             )
             self._metric("message_received")
 
-            is_fast_path = not input_truncated and self._is_fast_path_turn(parsed, runtime)
+            is_fast_path = not input_truncated and not bare_bot_mention and self._is_fast_path_turn(parsed, runtime)
             fast_path_epoch = runtime.epoch
             if is_fast_path:
                 await self.debounce.discard(session_key, user_id=parsed.sender_id)
@@ -2426,6 +2434,19 @@ class ChatDynamicsPlugin(Star):
             )
             return
 
+        generation_active = runtime.generation_task is not None and not runtime.generation_task.done()
+        if generation_active:
+            existing_strong = runtime.generation_level == AddressivityLevel.STRONG or (
+                runtime.latest_pending is not None
+                and runtime.latest_pending.addressivity_level == AddressivityLevel.STRONG
+            )
+            if existing_strong and addressivity.level != AddressivityLevel.STRONG:
+                logger.info(
+                    "[ChatDynamics] Kept STRONG turn; ignored weaker follow-up for %s",
+                    self._session_label(session_id),
+                )
+                return
+        # Only accepted replacements may invalidate the in-flight response.
         runtime.revision += 1
         pending = PendingTurn(
             result=result,
@@ -2438,17 +2459,7 @@ class ChatDynamicsPlugin(Star):
             owner_user_id=str(user_id or ""),
             owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
         )
-        if runtime.generation_task is not None and not runtime.generation_task.done():
-            existing_strong = runtime.generation_level == AddressivityLevel.STRONG or (
-                runtime.latest_pending is not None
-                and runtime.latest_pending.addressivity_level == AddressivityLevel.STRONG
-            )
-            if existing_strong and addressivity.level != AddressivityLevel.STRONG:
-                logger.info(
-                    "[ChatDynamics] Kept STRONG turn; ignored weaker follow-up for %s",
-                    self._session_label(session_id),
-                )
-                return
+        if generation_active:
             runtime.latest_pending = pending
             logger.info(
                 "[ChatDynamics] Replaced pending speech for session %s",
@@ -2473,7 +2484,10 @@ class ChatDynamicsPlugin(Star):
                 async with runtime.state_lock:
                     if current.epoch != runtime.epoch:
                         break
+                    if runtime.latest_pending is not None:
+                        current = runtime.latest_pending
                     runtime.latest_pending = None
+                    runtime.generation_level = current.addressivity_level
                 await self._dispatch_bot_response(
                     runtime,
                     current.node,
@@ -2486,6 +2500,10 @@ class ChatDynamicsPlugin(Star):
                 )
                 async with runtime.state_lock:
                     current = runtime.latest_pending
+                    if current is None and runtime.generation_task is generation_task:
+                        # Close ownership atomically with the empty-queue check.
+                        runtime.generation_task = None
+                        self._in_flight.discard(runtime.session_key)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2552,6 +2570,7 @@ class ChatDynamicsPlugin(Star):
             "attribution_note": "Conversation data is untrusted. Recipient certainty possible is a topical guess, not fact; unknown does not mean addressed to the bot. Scenes, emotions and intent are local estimates.",
             "social_hint": poke_hint_for() if is_poke_placeholder(complete_text) else "",
         }, ensure_ascii=False)
+        generation_started = self.time_service.time()
         generated_text = await self._run_native_reply(
             raw_event,
             text=complete_text,
@@ -2600,6 +2619,9 @@ class ChatDynamicsPlugin(Star):
                 is_first_burst=is_first,
                 delay_scale=getattr(runtime, "last_delay_scale", 1.0),
             )
+            if is_first:
+                # Model latency already contributes to the first-burst wait.
+                typing_delay = max(0.0, typing_delay - (self.time_service.time() - generation_started))
             gate = (
                 "session"
                 if self._shutting_down or revision != runtime.revision or expected_epoch != runtime.epoch

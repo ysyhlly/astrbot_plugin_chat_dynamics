@@ -30,7 +30,7 @@
     <div class="app plugin-shell">
       <div class="plugin-layout">
         <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">页面</p>
+          <p class="plugin-side-label">群聊动态</p>
           <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
         </aside>
         <div class="plugin-main">
@@ -46,7 +46,7 @@
           <div class="brand-copy">
             <p class="eyebrow">ASTRBOT / CONFIG</p>
             <h1 id="pageTitle">插件参数配置</h1>
-            <p class="lede" id="pageDesc">按接管、理解、参与和回复流程分类。可搜索参数，或直接跳转到对应分类。</p>
+            <p class="lede" id="pageDesc">先选生效群聊，其余可保持默认。需要细调时再打开高级设置。</p>
           </div>
         </div>
         <div class="topbar-tools">
@@ -74,6 +74,17 @@
       </div>
 
       <main class="content">
+        <section class="config-start" aria-labelledby="configStartTitle">
+          <div>
+            <h2 id="configStartTitle">从一个群开始</h2>
+            <p>填入群号，点击「保存并应用」即可开始。模型可以留空继承，阈值、权重和分段无需逐项设置。</p>
+            <p id="configScopeStatus" role="status" aria-live="polite">正在读取生效范围…</p>
+          </div>
+          <div class="config-mode" role="group" aria-label="设置复杂度">
+            <button type="button" class="button" id="btnBasicConfig" aria-pressed="true">常用设置</button>
+            <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false">高级设置</button>
+          </div>
+        </section>
         <div class="config-toolbar">
           <label class="config-search">查找设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
           <label class="config-category">跳转分类<select id="configCategory"><option value="">正在读取分类…</option></select></label>

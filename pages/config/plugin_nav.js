@@ -9,6 +9,15 @@ export const PLUGIN_PAGES = [
   { id: "replay", label: "场景回放" },
 ];
 
+const NAV_ICONS = {
+  console: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 17h7m-3.5-3.5v7"/>',
+  config: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/>',
+  today: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  manners: '<path d="M12 3v17M5 7h14M5 7l-3 7h6L5 7Zm14 0-3 7h6l-3-7ZM7 21h10"/>',
+  memory: '<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M3 7h4M3 12h4M3 17h4m9-10h-3m3 5h-3"/>',
+  replay: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 8 6 4-6 4V8Z"/>',
+};
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -169,7 +178,7 @@ export function mountPluginSideNav(currentId) {
 
   const current = String(currentId || "");
   root.innerHTML = PLUGIN_PAGES.map((page) => {
-    const label = escapeHtml(page.label);
+    const label = `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[page.id]}</svg><span>${escapeHtml(page.label)}</span>`;
     if (page.id === current) {
       return `<span class="plugin-side-item is-current" aria-current="page">${label}</span>`;
     }

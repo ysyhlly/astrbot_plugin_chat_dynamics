@@ -92,7 +92,6 @@ class AstrBotAgentBridge:
         cid = await mgr.get_curr_conversation_id(umo)
         conv = await mgr.get_conversation(umo, cid) if cid else None
         settings = self.context.get_config(umo=umo).get("provider_settings", {})
-        service = await sp.get_async(scope="umo", scope_id=umo, key="session_service_config", default={})
         resolver = getattr(self.context.persona_manager, "resolve_selected_persona", None)
         if callable(resolver):
             persona_id, persona, _, _ = await resolver(umo=umo, conversation_persona_id=getattr(conv, "persona_id", None),
@@ -100,6 +99,7 @@ class AstrBotAgentBridge:
         else:
             # Mirror 4.16 host order: session force > conversation > default.
             # "[%None]" is an explicit empty persona, not a missing value.
+            service = await sp.get_async(scope="umo", scope_id=umo, key="session_service_config", default={})
             persona_id = service.get("persona_id")
             if not persona_id:
                 persona_id = getattr(conv, "persona_id", None) if conv else None

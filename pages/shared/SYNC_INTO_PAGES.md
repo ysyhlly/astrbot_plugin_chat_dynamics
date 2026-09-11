@@ -24,4 +24,6 @@ done
 HTML should use `./base.css` (wire pages), `./shell.css`, `./plugin_nav.css`, `./style.css`.
 Daytime paper UI is the default (`data-ui-theme="day"`); canonical day/night tokens live in `theme.css`. The shared `theme.js` bootstrap reads `chat_dynamics_ui` when available, then restores the authenticated account preference via `ui_preferences`. Only explicit toggles save the account preference; initialization does not overwrite it. Signed navigation carries `ui` even when iframe storage/history is unavailable.
 JS imports `./api.js` / `./shell.js` / `./plugin_nav.js` (never `../shared`).
-Config live skin: `./style.css` + `./plugin_nav.css` only (no base.css).
+Config live skin: `./style.css` + `./plugin_nav.css` + `./theme.css` (no base.css).
+
+The six-page workspace uses the shared `theme.css` for typography, spacing, card surfaces, controls, day/night colors and responsive rules. Keep new visual rules here instead of adding a separate page palette. Shared navigation uses the same decorative SVG icon set and retains the existing signed navigation and theme preference behavior. At phone widths, diagnostic cards form one column and overview metrics form two columns; long provider identifiers wrap rather than overflowing. Page scripts, DOM IDs, forms and API contracts remain the source of existing behavior.

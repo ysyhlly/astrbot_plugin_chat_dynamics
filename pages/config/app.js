@@ -7,6 +7,19 @@ const CHAT_PROVIDER_KEYS = new Set([
   "decision_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
+const BASIC_HINTS = {
+  enable: "保持开启即可。关闭后，本插件不参与群聊处理。",
+  takeover_all: "通常保持关闭，先在下方填写一个群号。开启后对所有未排除的群生效。",
+  takeover_groups: "填写要启用的群号，多个群可用逗号或换行分隔。不填且未开启全部群时，插件不会介入。",
+  exclude_groups: "可选。这里的群始终排除，即使开启了全部群。",
+  bot_names: "可选。直接 @ 机器人无需填写；想用昵称点名时，再填写完整昵称。",
+  decision_mode: "通常使用规则模式即可。人设模式沿用当前人格，先调用模型判断是否参与，再生成回复，会增加一次模型调用。",
+  presence_knob: "保持默认即可。需要时调整参与分寸；是否主动发言仍由当前决策模式决定。",
+};
+const OPTION_LABELS = {
+  decision_mode: { legacy: "规则模式（默认）", persona_model: "人设模式（模型判断）" },
+  presence_knob: { ghost: "安静", sensible: "适度（默认）", lively: "活跃" },
+};
 
 const CONFIG_GROUPS = [
   {
@@ -17,13 +30,13 @@ const CONFIG_GROUPS = [
     "keys": [
       "enable",
       "shadow_mode",
-      "decision_mode",
       "pipeline_mode",
       "ambient_intervention",
       "takeover_all",
       "takeover_groups",
       "exclude_groups",
       "bot_names",
+      "decision_mode",
       "command_prefix"
     ]
   },
@@ -235,6 +248,9 @@ const els = {
   configSearch: document.getElementById("configSearch"),
   configCategory: document.getElementById("configCategory"),
   configResultCount: document.getElementById("configResultCount"),
+  configScopeStatus: document.getElementById("configScopeStatus"),
+  btnBasicConfig: document.getElementById("btnBasicConfig"),
+  btnAdvancedConfig: document.getElementById("btnAdvancedConfig"),
 };
 
 let bridge = window.AstrBotPluginPage || null;
@@ -248,32 +264,70 @@ async function wirePageNav(currentPage) {
 let configState = { schema: {}, stored: {}, effective: {}, mismatches: [] };
 let providerOptions = { chat: [], embedding: [] };
 let configDirty = false;
+let configMode = "basic";
 let openGroups = new Set(CONFIG_GROUPS.filter((group) => group.open).map((group) => group.id));
 const VIEW_STORAGE_KEY = `${PLUGIN}:config-view:v1`;
 try {
   const view = JSON.parse(localStorage.getItem(VIEW_STORAGE_KEY) || "null");
   if (view && Array.isArray(view.openGroups)) openGroups = new Set(view.openGroups.filter((id) => typeof id === "string"));
+  if (view?.mode === "advanced") configMode = "advanced";
 } catch (_) { /* Storage may be unavailable in embedded pages. */ }
 
 function persistView() {
-  try { localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ openGroups: [...openGroups] })); } catch (_) { /* Keep controls usable without storage. */ }
+  try { localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({ openGroups: [...openGroups], mode: configMode })); } catch (_) { /* Keep controls usable without storage. */ }
 }
 
 function filterConfigFields() {
   const query = els.configSearch.value.trim().toLocaleLowerCase();
+  const basic = configMode === "basic" && !query;
+  els.configForm.dataset.view = basic ? "basic" : "advanced";
+  els.btnBasicConfig.setAttribute("aria-pressed", String(configMode === "basic"));
+  els.btnAdvancedConfig.setAttribute("aria-pressed", String(configMode === "advanced"));
+  els.btnConfigApply.classList.toggle("hidden", basic && !configState.mismatches.length);
   let count = 0;
   els.configForm.querySelectorAll("details.config-group").forEach((group) => {
     let matches = 0;
     group.querySelectorAll(".config-field").forEach((field) => {
-      const visible = !query || group.dataset.search.includes(query) || field.dataset.search.includes(query);
+      const visible = query ? group.dataset.search.includes(query) || field.dataset.search.includes(query)
+        : !basic || field.dataset.basic === "true";
       field.hidden = !visible;
       if (visible) matches += 1;
     });
     group.hidden = !matches;
-    group.open = query ? Boolean(matches) : openGroups.has(group.dataset.groupId);
+    group.open = query || basic ? Boolean(matches) : openGroups.has(group.dataset.groupId);
+    if (!group.querySelector(".mismatched")) group.querySelector(".group-badge").textContent = `${matches} 项`;
     count += matches;
   });
-  els.configResultCount.textContent = query ? `找到 ${count} 项设置` : `共 ${count} 项设置 · 分组展开状态自动记住`;
+  els.configResultCount.textContent = query ? `在全部设置中找到 ${count} 项` : basic
+    ? `${count} 项常用设置 · 更多选项可搜索或切换到高级设置`
+    : `共 ${count} 项设置 · 分组展开状态自动记住`;
+}
+
+function setConfigMode(mode) {
+  rememberOpenGroups();
+  configMode = mode;
+  els.configSearch.value = "";
+  persistView();
+  filterConfigFields();
+}
+
+function updateScopeStatus() {
+  if (!Object.keys(configState.schema).length) return;
+  const value = (key) => {
+    const input = els.configForm.querySelector(`[data-config-key="${key}"]`);
+    if (configDirty && input) return input.type === "checkbox" ? input.checked : input.value;
+    return configState.effective[key] ?? configState.stored[key] ?? configState.schema[key]?.default;
+  };
+  const list = (raw) => Array.isArray(raw) ? raw : String(raw || "").split(/[\n,，]/).map(s => s.trim()).filter(Boolean);
+  const excluded = new Set(list(value("exclude_groups")).map(String));
+  const groups = [...new Set(list(value("takeover_groups")).map(String))].filter(id => !excluded.has(id));
+  let message = !value("enable") ? "插件已关闭。开启后再保存即可生效。"
+    : value("takeover_all") ? `对全部群生效${excluded.size ? `，排除 ${excluded.size} 个群` : ""}。`
+    : groups.length ? `对 ${groups.length} 个指定群生效。`
+    : "尚未选择有效群聊，请填写群号或开启「对全部群聊生效」。";
+  if (value("shadow_mode")) message += " 当前为观察模式，插件不会接管回复；可在高级设置中关闭。";
+  if (configState.mismatches.length && !configDirty) message += " 有已存设置尚未应用，以下表单可能与运行状态不同。";
+  els.configScopeStatus.textContent = `${configDirty ? "保存后" : "当前"}：${message}`;
 }
 
 function t(key, fallback) {
@@ -356,6 +410,7 @@ function setConfigDirty(dirty) {
     els.btnConfigSave.disabled = !configDirty;
     els.btnConfigSave.title = configDirty ? "保存并应用到运行时" : "没有未保存的修改";
   }
+  updateScopeStatus();
 }
 
 function isProviderField(key, schema) {
@@ -372,7 +427,7 @@ function providerListForKey(key) {
 function configFieldValue(key) {
   const schema = configState.schema[key] || {};
   const type = schema.type || "string";
-  const raw = configState.stored[key];
+  const raw = configState.stored[key] ?? schema.default;
   if (type === "bool") return Boolean(raw);
   if (type === "int") return Number.isFinite(Number(raw)) ? Number(raw) : Number(schema.default || 0);
   if (type === "float") return Number.isFinite(Number(raw)) ? Number(raw) : Number(schema.default || 0);
@@ -416,7 +471,7 @@ function collectConfigUpdates() {
     }
     if (type === "list") {
       updates[key] = String(input.value || "")
-        .split(/[\n,]/)
+        .split(/[\n,，]/)
         .map((part) => part.trim())
         .filter(Boolean);
       continue;
@@ -466,7 +521,7 @@ function renderField(key, mismatchSet) {
     control = `<select data-config-key="${escapeHtml(key)}">${schema.options
       .map(
         (opt) =>
-          `<option value="${escapeHtml(opt)}" ${String(value) === String(opt) ? "selected" : ""}>${escapeHtml(opt)}</option>`,
+          `<option value="${escapeHtml(opt)}" ${String(value) === String(opt) ? "selected" : ""}>${escapeHtml(OPTION_LABELS[key]?.[opt] || opt)}</option>`,
       )
       .join("")}</select>`;
   } else if (type === "list") {
@@ -478,16 +533,18 @@ function renderField(key, mismatchSet) {
   }
   const effectiveText =
     eff === undefined ? "—" : escapeHtml(typeof eff === "object" ? JSON.stringify(eff) : String(eff));
-  return `<label class="config-field${mismatched}${span}" data-search="${escapeHtml(`${title} ${key} ${hint}`.toLocaleLowerCase())}">
+  return `<label class="config-field${mismatched}${span}" data-basic="${Object.hasOwn(BASIC_HINTS, key)}" data-search="${escapeHtml(`${title} ${key} ${hint} ${BASIC_HINTS[key] || ""}`.toLocaleLowerCase())}">
     <span class="config-title">${escapeHtml(title)}</span>
     <span class="config-key">${escapeHtml(key)}</span>
     ${control}
     <span class="config-effective">生效：${effectiveText}</span>
-    ${hint ? `<span class="config-hint">${escapeHtml(hint)}</span>` : ""}
+    ${hint ? `<span class="config-hint config-detail-hint">${escapeHtml(hint)}</span>` : ""}
+    ${BASIC_HINTS[key] ? `<span class="config-hint config-basic-hint">${escapeHtml(BASIC_HINTS[key])}</span>` : ""}
   </label>`;
 }
 
 function rememberOpenGroups() {
+  if (configMode === "basic") return;
   if (!els.configForm || els.configSearch.value.trim() || !els.configForm.querySelector("details.config-group")) return;
   openGroups = new Set();
   els.configForm.querySelectorAll("details.config-group").forEach((node) => {
@@ -599,12 +656,14 @@ async function loadConfigPanel() {
   if (!els.configForm) return;
   els.configForm.setAttribute("aria-busy", "true");
   try {
-    await loadProviders();
-    const panel = await apiGet("config");
-    renderConfigForm(panel || {});
+    const [providers, panel] = await Promise.allSettled([loadProviders(), apiGet("config")]);
+    if (panel.status === "rejected") throw panel.reason;
+    renderConfigForm(panel.value || {});
     const chatN = providerOptions.chat.length;
     const embN = providerOptions.embedding.length;
-    setConfigNote(`已读取 · Chat ${chatN} · Embedding ${embN}`);
+    setConfigNote(providers.status === "rejected"
+      ? "配置已读取，模型列表暂时不可用；已保存的模型选择仍会保留。"
+      : `已读取 · ${chatN} 个聊天模型 · ${embN} 个向量模型（均可选）`);
   } catch (err) {
     setConfigNote((err && err.message) || "读取配置失败", true);
     els.configForm.setAttribute("aria-busy", "false");
@@ -644,12 +703,14 @@ async function applyConfigPanel() {
 }
 
 async function boot() {
+  els.btnBasicConfig.addEventListener("click", () => setConfigMode("basic"));
+  els.btnAdvancedConfig.addEventListener("click", () => setConfigMode("advanced"));
   els.configSearch.addEventListener("input", filterConfigFields);
   els.configCategory.addEventListener("change", () => {
     const id = els.configCategory.value;
     const group = [...els.configForm.querySelectorAll("details.config-group")].find((item) => item.dataset.groupId === id);
     if (!group) return;
-    els.configSearch.value = "";
+    setConfigMode("advanced");
     openGroups.add(id);
     persistView();
     filterConfigFields();
@@ -658,7 +719,7 @@ async function boot() {
   });
   for (const [id, expand] of [["btnExpandGroups", true], ["btnCollapseGroups", false]]) {
     document.getElementById(id).addEventListener("click", () => {
-      els.configSearch.value = "";
+      setConfigMode("advanced");
       openGroups = new Set(expand ? [...els.configForm.querySelectorAll("details.config-group")].map((group) => group.dataset.groupId) : []);
       persistView();
       filterConfigFields();
@@ -668,7 +729,7 @@ async function boot() {
   await wirePageNav("config");
   els.pageDesc.textContent = t(
     "pages.config.desc",
-    "按接管、理解、参与和回复流程分类。可搜索参数，或直接跳转到对应分类。",
+    "先选生效群聊，其余可保持默认。需要细调时再打开高级设置。",
   );
   if (bridge && typeof bridge.ready === "function") {
     try {

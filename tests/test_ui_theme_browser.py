@@ -119,7 +119,7 @@ def test_host_theme_updates_do_not_change_plugin_palette(browser, page_server, n
             assert result == {
                 "current": theme,
                 "background": "rgb(11, 20, 25)" if theme == "night" else "rgb(245, 246, 244)",
-                "text": "rgb(234, 243, 240)" if theme == "night" else "rgb(23, 42, 43)",
+                "text": "rgb(229, 238, 232)" if theme == "night" else "rgb(32, 51, 44)",
             }
         page.locator("#btnUiTheme").click()
         page.wait_for_function("document.querySelector('#uiThemeStatus').textContent === '已保存到账号'")
@@ -136,7 +136,7 @@ def test_all_pages_share_theme_and_fit_mobile(browser, page_server, name, theme)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(f"{page_server}/{name}/index.html")
         page.wait_for_function("document.querySelector('#uiThemeStatus')?.textContent === '已恢复账号偏好'")
-        expected = "rgb(234, 243, 240)" if theme == "night" else "rgb(23, 42, 43)"
+        expected = "rgb(229, 238, 232)" if theme == "night" else "rgb(32, 51, 44)"
         assert page.locator("body").evaluate("node => getComputedStyle(node).color") == expected
         for width in (1366, 390):
             page.set_viewport_size({"width": width, "height": 940})

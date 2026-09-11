@@ -8,7 +8,7 @@
   "active_group_mode": "活跃群聊",
   "content_redacted": "控制台正文：已脱敏",
   "pages.config.title": "插件参数配置",
-  "pages.config.desc": "按接管、理解、参与和回复流程分类。可搜索参数，或直接跳转到对应分类。",
+  "pages.config.desc": "先选生效群聊，其余可保持默认。需要细调时再打开高级设置。",
   "pages.today.title": "今日读空气",
   "pages.today.desc": "场合胶囊、存在感温度计与最近为什么没回（群主仪表盘首页）。",
   "pages.manners.title": "分寸台",

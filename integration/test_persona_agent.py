@@ -176,6 +176,29 @@ async def test_owned_agent_passes_request_guard_but_original_event_is_blocked(ho
 
 
 @pytest.mark.asyncio
+async def test_modern_persona_resolver_avoids_redundant_service_read(host_fixture, monkeypatch):
+    from astrbot.core import sp
+
+    ctx, event, _ = host_fixture
+    calls = []
+
+    async def resolve(**kwargs):
+        calls.append(kwargs)
+        return "quiet", ctx.persona_manager.personas_v3[0], None, None
+
+    async def unexpected_read(**kwargs):
+        pytest.fail("Bridge must delegate session persona lookup to the modern resolver")
+
+    monkeypatch.setattr(ctx.persona_manager, "resolve_selected_persona", resolve, raising=False)
+    monkeypatch.setattr(sp, "get_async", unexpected_read)
+    bridge = AstrBotAgentBridge(ctx)
+    snapshot = await bridge.snapshot(event)
+    assert snapshot.persona_id == "quiet"
+    assert await bridge.current(event, snapshot)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_real_persona_precedence_and_disabled_persona(host_fixture, monkeypatch):
     from astrbot.core import sp
 

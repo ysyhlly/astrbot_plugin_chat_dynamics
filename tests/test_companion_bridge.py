@@ -142,6 +142,88 @@ async def test_only_successful_owned_sends_are_learned_without_mutating_event(mo
 
 
 @pytest.mark.asyncio
+async def test_delivery_has_independent_budget_and_recovers_after_timeout():
+    from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import MockEvent
+
+    class Capture(API):
+        blocked = False
+        calls = 0
+        cancelled = False
+
+        async def on_bot_message_sent(self, event):
+            self.calls += 1
+            try:
+                if self.blocked:
+                    await asyncio.Event().wait()
+                else:
+                    await asyncio.sleep(0.03)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    companion = Capture()
+    bridge = SelfLearningBridge(context(metadata(companion)))
+    bridge.timeout = 0.001
+    event = MockEvent("request")
+    try:
+        bridge.note_delivered(event, "slow but successful")
+        await asyncio.gather(*tuple(bridge._pending))
+        assert bridge.snapshot()["status"] == "connected"
+        assert not companion.cancelled
+
+        companion.blocked = True
+        bridge.delivery_timeout = 0.01
+        bridge.note_delivered(event, "timeout")
+        await asyncio.gather(*tuple(bridge._pending))
+        assert companion.cancelled
+        assert bridge.snapshot()["providers"][0]["errors"] == {
+            "delivered_messages": "call_error:TimeoutError"
+        }
+        assert companion.calls == 2  # Side effects must never be retried.
+
+        companion.blocked = False
+        bridge.delivery_timeout = 1
+        bridge.note_delivered(event, "recovered")
+        await asyncio.gather(*tuple(bridge._pending))
+        assert bridge.snapshot()["status"] == "connected"
+        assert companion.calls == 3
+    finally:
+        await bridge.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["disable", "reload"])
+async def test_old_delivery_error_does_not_change_current_status(action):
+    from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import MockEvent
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class Capture(API):
+        async def on_bot_message_sent(self, event):
+            started.set()
+            await release.wait()
+            raise TimeoutError("private upstream detail")
+
+    bridge = SelfLearningBridge(context(metadata(Capture())))
+    try:
+        bridge.note_delivered(MockEvent("request"), "sent")
+        tasks = tuple(bridge._pending)
+        await asyncio.wait_for(started.wait(), 1)
+        if action == "disable":
+            bridge.configure(enabled=False)
+        else:
+            bridge.context = context(metadata(API()))
+        release.set()
+        await asyncio.gather(*tasks)
+        assert not bridge._errors
+        assert bridge.snapshot()["status"] == (
+            "missing" if action == "disable" else "connected"
+        )
+    finally:
+        await bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_delivery_callback_cancelled_on_unload():
     from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import MockEvent
     started, finished = asyncio.Event(), asyncio.Event()

@@ -287,6 +287,21 @@ html, body {
 @media (prefers-reduced-motion: reduce) { .config-group > summary::after { transition: none; } }
 
 /* Keep category navigation adjacent to search, with a full-width mobile picker. */
+.config-start { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding: 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.config-start h2 { margin: 0 0 10px; font-size: 20px; }
+.config-start p { margin: 8px 0; max-width: 66ch; color: var(--muted); line-height: 1.7; }
+#configScopeStatus { color: var(--text); font-weight: 500; }
+.config-mode { display: flex; flex-shrink: 0; gap: 8px; }
+.config-mode [aria-pressed="true"] { border-color: var(--cyan); background: var(--surface-soft); color: var(--text); }
+.config-basic-hint { display: none; }
+[data-view="basic"] .config-key, [data-view="basic"] .config-detail-hint,
+[data-view="basic"] .config-field:not(.mismatched) .config-effective { display: none; }
+[data-view="basic"] .config-basic-hint { display: block; }
+@media (max-width: 760px) {
+  .config-start { flex-direction: column; gap: 12px; padding: 18px; }
+  .config-mode { width: 100%; }
+  .config-mode .button { flex: 1; }
+}
 .config-category { display: grid; flex: 0 1 260px; gap: 6px; min-width: 0; font-size: 12px; color: var(--muted); }
 .config-category select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--input-bg); color: var(--text); font: inherit; font-size: 14px; }
 .config-toolbar { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
