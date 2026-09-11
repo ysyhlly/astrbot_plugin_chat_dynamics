@@ -284,6 +284,8 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "embedding_provider": str(getattr(getattr(plugin, "embeddings", None), "provider_id", "") or ""),
         "embedding_backend": str(getattr(getattr(plugin, "embeddings", None), "last_backend", "hashed") or "hashed"),
         "embedding_cache_size": int(getattr(getattr(plugin, "embeddings", None), "cache_len", 0) or 0),
+        "embedding_stats": (plugin.embeddings.snapshot_stats()
+                            if callable(getattr(getattr(plugin, "embeddings", None), "snapshot_stats", None)) else {}),
         "session_count": len(sessions),
         "live_count": live,
         "cooling_count": cooling,
@@ -618,6 +620,8 @@ def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     if not show_content:
         result["recipient"]["ids"] = []
         result["state"]["active_interlocutor"] = None
+        # A message identifier identifies its author too.
+        result["state"]["last_bot_message_id"] = None
         if isinstance(result["state"]["intervening_users"], list):
             result["state"]["intervening_users"] = len(result["state"]["intervening_users"])
     result["identifiers_redacted"] = not show_content
@@ -662,6 +666,10 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             group["messages"].append({
                 "msg_id": node.msg_id,
                 "decision_trace": _replay_decision_trace(node, show_content),
+                "context_stats": {key: value for key, value in node.metadata.get("context_stats", {}).items()
+                                  if key in {"current_characters", "background_characters", "current_messages",
+                                             "background_messages", "total_messages", "serialized_characters"}
+                                  and isinstance(value, int) and not isinstance(value, bool) and value >= 0},
                 "text": _truncate(node.text, 240) if show_content else "消息内容已隐藏",
                 "topic_id": str(routing.get("topic_id") or "UNKNOWN"),
                 "confidence": routing.get("topic_confidence", 0),

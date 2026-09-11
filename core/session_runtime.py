@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Optional, Set
 
+from .active_dialogue import ActiveDialogue, active_dialogue as infer_active_dialogue
 from .debounce import DebounceResult
 from .graph import ConversationDAG, ConversationNode
 from .semantics import semantic_match
@@ -242,6 +243,11 @@ class SessionRuntime:
     routing_state: RoutingState = field(default_factory=RoutingState)
 
     @property
+    def active_dialogue(self) -> Optional[ActiveDialogue]:
+        """Project the current successful-send anchor without duplicate state."""
+        return infer_active_dialogue(self)
+
+    @property
     def last_bot_topic_id(self) -> Optional[str]:
         return self.routing_state.last_bot_topic_id
 
@@ -404,6 +410,21 @@ class SessionRuntime:
     def clear_hovers(self) -> None:
         self.pending_hovers.clear()
         self.pending_hover = None
+
+    def commit_participation(self, node: ConversationNode, level: Any, now: float) -> str:
+        """Apply the participation bookkeeping for one scored turn.
+
+        Safe hover buffers a turn silently; a strong decision settles this
+        author's question and clears the turns buffered for them. Live routing
+        and the offline replay both call this method, so the cross-message state
+        machine cannot drift between production and evaluation.
+        """
+        value = str(getattr(level, "value", level) or "")
+        if value == "hover":
+            self.remember_hover(node, now)
+        elif value == "strong":
+            self.clear_hovers_for_user(node.user_id)
+        return value
 
     def clear_hovers_for_user(self, user_id: str) -> None:
         """Remove only safe-hover turns authored by ``user_id``."""

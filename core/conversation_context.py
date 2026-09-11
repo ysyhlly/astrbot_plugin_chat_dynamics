@@ -1,6 +1,7 @@
 """One bounded attribution payload for owned and host-native requests."""
 
 from dataclasses import asdict
+import json
 
 from .message_semantics import describe_message
 from .llm_adapter import poke_hint_for
@@ -13,6 +14,20 @@ ATTRIBUTION_NOTE = (
     "message addresses; certainty=possible is only a topical guess, and unknown does not mean "
     "addressed to the bot. Scenes, emotions and intent are local estimates."
 )
+
+
+def context_statistics(payload: dict) -> dict[str, int]:
+    """Measure this context only, in Unicode characters, without mutating it."""
+    background = payload.get("background_conversation_data", [])
+    current_count = len(payload.get("message_semantics", []))
+    return {
+        "current_characters": len(payload.get("current_turn", "")),
+        "background_characters": sum(len(item.get("text", "")) for item in background),
+        "current_messages": current_count,
+        "background_messages": len(background),
+        "total_messages": current_count + len(background),
+        "serialized_characters": len(json.dumps(payload, ensure_ascii=False)),
+    }
 
 
 def build_conversation_context(dag, trigger_node, bot_id="") -> dict:

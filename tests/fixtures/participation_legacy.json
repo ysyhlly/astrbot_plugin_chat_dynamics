@@ -1,0 +1,321 @@
+{
+  "mention": {
+    "score": 1.0,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Explicit @mention of bot (bot)"
+    ],
+    "topic_relevance": 1.0
+  },
+  "other_mention": {
+    "score": 0.15,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": "carol",
+    "reasons": [
+      "Explicit @mention of other user(s)"
+    ],
+    "topic_relevance": 0.0
+  },
+  "vocative": {
+    "score": 0.95,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Bot name 'bot' used as a vocative"
+    ],
+    "topic_relevance": 1.0
+  },
+  "reply_bot": {
+    "score": 0.98,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Explicit reply to bot message botmsg"
+    ],
+    "topic_relevance": 1.0
+  },
+  "canonical_bot": {
+    "score": 0.81,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Canonical recipient inference"
+    ],
+    "topic_relevance": 0.63
+  },
+  "canonical_human": {
+    "score": 0.15,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": "carol",
+    "reasons": [
+      "Canonical recipient inference"
+    ],
+    "topic_relevance": 0.63
+  },
+  "canonical_topic_ambiguous": {
+    "score": 0.81,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Canonical recipient inference"
+    ],
+    "topic_relevance": 0.63
+  },
+  "canonical_ambiguous": {
+    "score": 0.662,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": "bot",
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Router bot addressee confidence bonus (+0.16)"
+    ],
+    "topic_relevance": 0.63
+  },
+  "legacy_bot": {
+    "score": 0.91,
+    "level": "strong",
+    "is_bot_targeted": true,
+    "target_user_id": "bot",
+    "reasons": [
+      "Conversation routing identifies bot as addressee"
+    ],
+    "topic_relevance": 0.0
+  },
+  "legacy_human": {
+    "score": 0.15,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": "carol",
+    "reasons": [
+      "Conversation routing identifies another addressee"
+    ],
+    "topic_relevance": 0.0
+  },
+  "subject": {
+    "score": 0.2,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Bot is the subject, not the identified addressee"
+    ],
+    "topic_relevance": 0.0
+  },
+  "no_bot": {
+    "score": 0.2,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "No prior bot message in session context"
+    ],
+    "topic_relevance": 0.0
+  },
+  "no_bot_quote": {
+    "score": 0.05,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": "alice",
+    "reasons": [
+      "No prior bot message in session context",
+      "Human quote penalty (-0.15)"
+    ],
+    "topic_relevance": 0.0
+  },
+  "time_14.9": {
+    "score": 0.5,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (14.9s <= 15s)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "time_15": {
+    "score": 0.4,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Close temporal proximity (15.0s <= 45s)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "time_45": {
+    "score": 0.3,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Moderate temporal proximity (45.0s <= 120s)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "time_120": {
+    "score": 0.15,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Stale conversation gap (120.0s > 120s)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "human_quote": {
+    "score": 0.1,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": "alice",
+    "reasons": [
+      "Human quote penalty (-0.15)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "wake": {
+    "score": 0.65,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Platform wake flag without explicit @mention",
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output"
+    ],
+    "topic_relevance": 0.17
+  },
+  "divergence": {
+    "score": 0.3,
+    "level": "weak",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "3 intervening messages (thread divergence)"
+    ],
+    "topic_relevance": 0.17
+  },
+  "cue": {
+    "score": 0.65,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Contains continuation cue '细说'"
+    ],
+    "topic_relevance": 0.17
+  },
+  "overlap": {
+    "score": 0.65,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Lexical keyword overlap: ['alpha']"
+    ],
+    "topic_relevance": 1.0
+  },
+  "minor_overlap": {
+    "score": 0.55,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Minor keyword overlap: ['alpha']"
+    ],
+    "topic_relevance": 0.2
+  },
+  "embedding": {
+    "score": 0.55,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "High embedding cosine without surface overlap"
+    ],
+    "topic_relevance": 0.8
+  },
+  "routing_bonus": {
+    "score": 0.602,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Router bot addressee confidence bonus (+0.10)"
+    ],
+    "topic_relevance": 0.7
+  },
+  "active": {
+    "score": 0.62,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Active interlocutor dialogue continuation bonus (+0.12)"
+    ],
+    "topic_relevance": 0.45
+  },
+  "thread": {
+    "score": 0.58,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "Zero intervening messages since bot output",
+      "Shares explicit thread with last bot turn"
+    ],
+    "topic_relevance": 0.35
+  },
+  "hover": {
+    "score": 0.65,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "1 intervening messages",
+      "Follow-up resolves a pending safe-hover turn"
+    ],
+    "topic_relevance": 0.45
+  },
+  "hover_cap": {
+    "score": 0.58,
+    "level": "hover",
+    "is_bot_targeted": false,
+    "target_user_id": null,
+    "reasons": [
+      "Immediate temporal proximity (10.0s <= 15s)",
+      "3 intervening messages (thread divergence)",
+      "Follow-up resolves a pending safe-hover turn"
+    ],
+    "topic_relevance": 0.45
+  }
+}

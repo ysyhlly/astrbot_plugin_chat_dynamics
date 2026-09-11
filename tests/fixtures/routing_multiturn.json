@@ -1,0 +1,20 @@
+[
+  {"id":"interleaved_explicit_threads", "group":"explicit", "messages":[
+    {"user":"A","text":"显卡风扇怎么设置？","expected_topic":"hardware","expected_parent":null},
+    {"user":"B","text":"今晚打什么游戏？","expected_topic":"gaming","expected_parent":null},
+    {"user":"C","text":"显卡风扇可以用自动模式","reply_to":"0","expected_topic":"hardware","expected_parent":"0"},
+    {"user":"D","text":"今晚一起打游戏吧","reply_to":"1","expected_topic":"gaming","expected_parent":"1"},
+    {"user":"A","text":"群间，你看看显卡风扇设置","mentions":["bot"],"reply_to":"2","expected_topic":"hardware","expected_parent":"2"}
+  ],"expected":{"bot_targeted":true,"persona_addressed":true}},
+  {"id":"ambient_interleaving", "group":"ambient", "messages":[
+    {"user":"A","text":"今天午饭吃米饭","expected_topic":"lunch"},
+    {"user":"B","text":"周末去爬山吗","expected_topic":"travel"},
+    {"user":"C","text":"米饭配鱼不错","reply_to":"0","expected_topic":"lunch","expected_parent":"0"}
+  ],"expected":{"bot_targeted":false,"persona_addressed":false}},
+  {"id":"continuation_with_unlabeled_noise", "group":"continuation", "messages":[
+    {"user":"A","text":"显卡风扇怎么设置？","expected_topic":"hardware"},
+    {"user":"bot","text":"你试试自动模式","reply_to":"0","expected_topic":"hardware","expected_parent":"0"},
+    {"user":"B","text":"嗯","expected_topic":"UNKNOWN"},
+    {"user":"A","text":"那怎么办","reply_to":"1","expected_topic":"hardware","expected_parent":"1"}
+  ],"expected":{"bot_targeted":true,"persona_addressed":true}}
+]

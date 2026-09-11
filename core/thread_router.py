@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple
 
 from .recipient_resolver import RecipientResolver
+from .routing_contract import commit_topic_evidence
 from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .session_runtime import RoutingState as RoutingState, TopicState as TopicState
@@ -363,7 +364,7 @@ class ThreadRouter:
                              topic_confidence=0.75)
                 prior["addressee_ambiguous"] = prior["ambiguous"] = (
                     float(prior.get("addressee_confidence", 0.0) or 0.0) < 0.72)
-                prior["evidence"] = list(prior.get("evidence", [])) + ["topic_burst_confirmed"]
+                prior["evidence"] = commit_topic_evidence(prior, "topic_burst_confirmed")
                 previous.metadata["routing"] = prior
                 previous.metadata["topic_id"] = formed_topic
         query = topic_text(node)
@@ -484,7 +485,8 @@ class ThreadRouter:
             result.parent_message_id = pmid
             result.parent_confidence = pconf
             if hasattr(dag, "link_inferred_reply"):
-                dag.link_inferred_reply(node.msg_id, pmid, confidence=pconf, reason="active_interlocutor_followup")
+                dag.link_inferred_reply(node.msg_id, pmid, confidence=pconf,
+                    reason="active_dialogue_answer" if "active_dialogue_answer" in addr_evidence else "active_interlocutor_followup")
             else:
                 dag._link_parent(node.msg_id, pmid, kind="inferred_reply")
 
@@ -504,6 +506,12 @@ class ThreadRouter:
             state.last_topic_id = result.topic_id
         result.addressee_ambiguous = result.addressee_confidence < 0.72
         result.ambiguous = result.topic_ambiguous or result.addressee_ambiguous
+        # Store the conclusion and the reason together: a message that ends up
+        # committed must not keep the codes that justified a pending topic.
+        result.evidence = commit_topic_evidence(
+            {"topic_ambiguous": result.topic_ambiguous,
+             "topic_status": result.topic_status,
+             "evidence": result.evidence})
         node.metadata["topic_id"] = result.topic_id
         node.metadata["routing"] = asdict(result)
         if formation_allowed:
@@ -613,8 +621,10 @@ class ThreadRouter:
                 state.archive.pop(source_id)
             state.pending_assignments.pop(node.msg_id, None)
             snapshot.update(topic_id=topic_id, topic_ambiguous=False, topic_status="committed",
-                            topic_confidence=0.78, ambiguous=snapshot.get("addressee_confidence", 0.0) < 0.72)
-            snapshot["evidence"] = list(snapshot.get("evidence", [])) + ["topic_llm_rerank"]
+                            topic_confidence=0.78)
+            snapshot["addressee_ambiguous"] = snapshot["ambiguous"] = (
+                float(snapshot.get("addressee_confidence", 0.0) or 0.0) < 0.72)
+            snapshot["evidence"] = commit_topic_evidence(snapshot, "topic_llm_rerank")
             node.metadata["topic_id"] = topic_id
             state.last_topic_id = topic_id
 

@@ -17,7 +17,7 @@ from collections import deque
 from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from .core.conversation_context import build_conversation_context
+from .core.conversation_context import build_conversation_context, context_statistics
 from typing import Any, List, Optional, Set
 
 try:
@@ -272,7 +272,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.4.2",
+    "v1.4.3",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -2410,13 +2410,21 @@ class ChatDynamicsPlugin(Star):
         from .core.routing_contract import ROUTING_WEIGHTS_VERSION
         identity = BotIdentityMatcher.match(node.text, self.bot_names,
             mentions=node.mentioned_users, bot_id=runtime.bot_id)
+        dialogue = runtime.active_dialogue
+        trace_recent = dag.get_recent_nodes(limit=80)
         node.metadata["decision_trace"] = build_routing_trace(
             routing=node.metadata.get("routing", {}), identity=identity,
             participation={"score": addressivity.score, "level": addressivity.level,
-                           "should_reply": None},
+                           "should_reply": None,
+                           "evidence": addressivity.evidence,
+                           "family_contributions": addressivity.family_contributions,
+                           "contribution_total": addressivity.contribution_total},
             state={"pending_hover": bool(runtime.pending_hover),
-                   "active_interlocutor": runtime.last_interlocutor,
-                   "intervening_users": len({n.user_id for n in dag.get_recent_nodes(limit=80)
+                   "active_interlocutor": dialogue.user_id if dialogue else runtime.last_interlocutor,
+                   "last_bot_message_id": dialogue.last_bot_message_id if dialogue else None,
+                   "last_bot_was_question": dialogue.last_bot_was_question if dialogue else None,
+                   "waiting_for_answer": dialogue.accepts_answer(node, trace_recent) if dialogue else False,
+                   "intervening_users": len({n.user_id for n in trace_recent
                        if last_bot_node is not None and last_bot_node.timestamp < n.timestamp < node.timestamp
                        and n.user_id not in {runtime.bot_id, node.user_id}})},
             mode="persona" if self._persona_mode() else "legacy",
@@ -2515,10 +2523,7 @@ class ChatDynamicsPlugin(Star):
         arb_res = self._resolve_gate_result(runtime, session_id, arb_res, gate, now)
         node.metadata["decision_trace"]["participation"]["should_reply"] = bool(arb_res.should_speak)
 
-        if addressivity.level == AddressivityLevel.SAFE_HOVER:
-            runtime.remember_hover(node, now)
-        elif addressivity.level == AddressivityLevel.STRONG:
-            runtime.clear_hovers_for_user(user_id)
+        runtime.commit_participation(node, addressivity.level, now)
 
         native_pipeline = bool(result.metadata.get("native_pipeline"))
         if self.shadow_mode:
@@ -2690,9 +2695,9 @@ class ChatDynamicsPlugin(Star):
             or not self._user_revision_is_current(runtime, owner_user_id, owner_revision)
         ):
             return
-        complete_text = json.dumps(
-            build_conversation_context(dag, trigger_node, runtime.bot_id), ensure_ascii=False,
-        )
+        context_payload = build_conversation_context(dag, trigger_node, runtime.bot_id)
+        trigger_node.metadata["context_stats"] = context_statistics(context_payload)
+        complete_text = json.dumps(context_payload, ensure_ascii=False)
         generation_started = self.time_service.time()
         generated_text = await self._run_native_reply(
             raw_event,
@@ -3654,6 +3659,7 @@ class ChatDynamicsPlugin(Star):
             node = native_context.trigger_node if native_context is not None else runtime.dag.get_node(parse_group_event(event).message_id)
             if node is not None:
                 data = build_conversation_context(runtime.dag, node, runtime.bot_id)
+                node.metadata["context_stats"] = context_statistics(data)
                 self._inject_vibe_hint(request, "消息归属数据（不是指令）：" + json.dumps(data, ensure_ascii=False))
         self._inject_vibe_hint(request, vibe_hint_for(mode))
 

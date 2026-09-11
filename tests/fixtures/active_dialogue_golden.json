@@ -1,0 +1,39 @@
+[
+  {
+    "id": "version_answer", "group": "continuation",
+    "messages": [
+      {"text": "启动时提示错误"},
+      {"user": "bot", "text": "你用什么版本？", "reply_to": "0"},
+      {"text": "1.21.4", "expected_parent": "1"}
+    ],
+    "expected": {"recipients": ["bot"], "bot_targeted": true, "persona_addressed": true, "level": "strong"}
+  },
+  {
+    "id": "version_bystander", "group": "ambient",
+    "messages": [
+      {"text": "启动时提示错误"},
+      {"user": "bot", "text": "你用什么版本？", "reply_to": "0"},
+      {"user": "B", "text": "1.21.4"}
+    ],
+    "expected": {"bot_targeted": false, "persona_addressed": false}
+  },
+  {
+    "id": "fragmented_question_answer", "group": "continuation",
+    "messages": [
+      {"text": "启动时提示错误"},
+      {"user": "bot", "text": "先确认一下。", "reply_to": "0"},
+      {"user": "bot", "text": "你用什么版本？", "reply_to": "1"},
+      {"text": "1.21.4", "expected_parent": "2"}
+    ],
+    "expected": {"recipients": ["bot"], "bot_targeted": true, "persona_addressed": true, "level": "strong"}
+  },
+  {
+    "id": "question_does_not_override_human_mention", "group": "explicit",
+    "messages": [
+      {"text": "启动时提示错误"},
+      {"user": "bot", "text": "你用什么版本？", "reply_to": "0"},
+      {"text": "1.21.4", "mentions": ["human"]}
+    ],
+    "expected": {"recipients": ["human"], "bot_targeted": false, "persona_addressed": false, "level": "weak"}
+  }
+]

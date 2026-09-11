@@ -106,6 +106,15 @@ class EmbeddingAdapter:
         self._generation = 0
         self.last_error: str = ""
         self.last_backend: str = "hashed"
+        self._stats = dict(provider_calls=0, timeouts=0, failures=0,
+                           cache_hits=0, singleflight_joins=0, capacity_fallbacks=0,
+                           provider_unavailable=0)
+
+    def snapshot_stats(self) -> dict[str, int]:
+        """Lifetime counters and current occupancy; never expose retained text."""
+        return {**self._stats,
+                "inflight": sum(not task.done() for task in self._pending_tasks),
+                "cache_entries": len(self._cache)}
 
     def configure(
         self,
@@ -231,12 +240,14 @@ class EmbeddingAdapter:
             return None
         cached = self.cached(key)
         if cached is not None:
+            self._stats["cache_hits"] += 1
             self.last_backend = "neural"
             self.last_error = ""
             return cached
         inflight = self._inflight.get(key)
         if (inflight is not None and not inflight.done()
                 and getattr(inflight, "_embedding_generation", None) == self._generation):
+            self._stats["singleflight_joins"] += 1
             try:
                 return await asyncio.shield(inflight)
             except Exception:
@@ -244,6 +255,7 @@ class EmbeddingAdapter:
         # Same-text waiters join above even at capacity. Distinct bursts fall
         # back immediately instead of accumulating an unbounded task queue.
         if sum(not task.done() for task in self._pending_tasks) >= self.max_inflight:
+            self._stats["capacity_fallbacks"] += 1
             return None
         task = asyncio.create_task(self._embed_uncached(key, self._generation))
         task._embedding_generation = self._generation
@@ -266,12 +278,14 @@ class EmbeddingAdapter:
             return None
         provider = self.resolve_provider()
         if provider is None:
+            self._stats["provider_unavailable"] += 1
             self.last_backend = "hashed"
             self.last_error = "no embedding provider"
             return None
         try:
             raw = await asyncio.wait_for(self._call_provider(provider, text), timeout=self.timeout)
         except Exception as exc:
+            self._stats["timeouts" if isinstance(exc, TimeoutError) else "failures"] += 1
             if generation != self._generation:
                 return None
             self.last_backend = "hashed"
@@ -282,6 +296,7 @@ class EmbeddingAdapter:
             return None
         vector = _extract_vector(raw)
         if not vector:
+            self._stats["failures"] += 1
             self.last_backend = "hashed"
             self.last_error = "empty embedding"
             return None
@@ -292,10 +307,12 @@ class EmbeddingAdapter:
     async def _call_provider(self, provider: Any, text: str) -> Any:
         get_embedding = getattr(provider, "get_embedding", None)
         if callable(get_embedding):
+            self._stats["provider_calls"] += 1
             value = get_embedding(text)
             return await value if inspect.isawaitable(value) else value
         get_embeddings = getattr(provider, "get_embeddings", None)
         if callable(get_embeddings):
+            self._stats["provider_calls"] += 1
             value = get_embeddings([text])
             return await value if inspect.isawaitable(value) else value
         raise RuntimeError("Embedding provider has no get_embedding API")

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, List, Optional, Sequence, Tuple
 from .bot_identity import BotIdentityMatcher
+from .active_dialogue import active_dialogue
 from .graph import ConversationNode
 from .topic_identity import node_topic_id
 from .topic_resolution import is_elliptical
@@ -61,6 +62,7 @@ class RecipientResolver:
         """Resolves addressees and subject references based on the 6-tier precedence hierarchy."""
         bot_id = getattr(runtime, "bot_id", "")
         last_bot = getattr(runtime, "last_bot_node", None)
+        dialogue = active_dialogue(runtime)
         names = [str(n) for n in bot_names if str(n)]
         addressee_ids: List[str] = []
         addressee_confidence: float = 0.0
@@ -99,7 +101,9 @@ class RecipientResolver:
             if last_bot is not None and quoted_node.user_id != bot_id:
                 last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
                 trigger = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
-                interlocutor = trigger.user_id if trigger else getattr(runtime, "last_interlocutor", "")
+                if dialogue is not None and dialogue.last_user_message_id:
+                    trigger = dag.get_node(dialogue.last_user_message_id)
+                interlocutor = dialogue.user_id if dialogue is not None else (trigger.user_id if trigger else getattr(runtime, "last_interlocutor", ""))
                 bot_topic = node_topic_id(last_bot)
                 last_bot_ts = getattr(last_bot, "timestamp", 0.0)
                 elliptical = bool(re.fullmatch(r"\s*(?:那|这个|这样|这个呢|那这个呢|那怎么办|这个怎么办)[呢？?。!！]*\s*", node.text))
@@ -127,6 +131,15 @@ class RecipientResolver:
                 addressee_ids = [quoted_node.user_id]
                 addressee_confidence = 1.0
 
+        # An uninterrupted answer to the bot's own question is structural
+        # evidence, even for values like "1.21.4" with no semantic overlap.
+        elif (dialogue is not None and not subject_is_bot
+              and dialogue.accepts_answer(node, recent_nodes)):
+            addressee_ids = [bot_id]
+            addressee_confidence = 0.80
+            evidence.append("active_dialogue_answer")
+            parent_override = (dialogue.last_bot_message_id, 0.80, dialogue.topic_id)
+
         # Tier 3: Inferred Parent (from ParentRetriever)
         elif inferred_parent is not None and inferred_confidence >= 0.72:
             addressee_ids = [inferred_parent.user_id]
@@ -137,7 +150,7 @@ class RecipientResolver:
         elif not node.reply_to_id and last_bot is not None and bot_id:
             last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
             prior = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
-            interlocutor = prior.user_id if prior else getattr(runtime, "last_interlocutor", "")
+            interlocutor = dialogue.user_id if dialogue is not None else (prior.user_id if prior else getattr(runtime, "last_interlocutor", ""))
             bot_topic = node_topic_id(last_bot)
             last_bot_ts = getattr(last_bot, "timestamp", 0.0)
             competing = any(

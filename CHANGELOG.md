@@ -2,6 +2,19 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.4.3 — 参与策略拆分、等待回答状态与有状态回放
+
+- 参与评分从 `AddressivityRouter` 抽出为纯策略 `ParticipationPolicy`：适配器只采集身份、引用、时间、插话数量、语义匹配、线程与 hover 事实，策略不访问 DAG、时钟、模型或正文，也不重复调用身份与收件人推断。默认阈值、全部权重、理由文本与 0.28 hover 上限完全不变，抽取前的 29 组公共结果固化为 `participation_legacy.json`，行为等价由回归锁定。
+- 新增结构化证据账本 `Evidence(code, family, strength, source)`：记录实际加减分贡献，按 baseline / recipient / platform / temporal / dialogue / topic 六族求和，决策记录只导出已知 code、family、source 与有限数值。
+- 新增只读 `ActiveDialogue` 投影：从 `last_bot_node` 沿 Bot 分片链回溯最初的用户触发消息，记录 `last_bot_was_question`，不新增需要在发送、取消、重置、裁剪时同步的第二份可变状态。Bot 提问后，目标参与者的第一条不间断回答（60 秒内、无句末分隔、其间无人插话）作为结构性证据，可识别 `1.21.4` 这类无任何语义重叠的回答；明确 @ 他人仍在更早层级胜出，未发送的草稿不构成锚点。
+- 修复路由证据残留：话题被 burst、待定后续或 LLM 重排确认后，`topic_ambiguous` 与 `topic_not_formed` 会从 evidence 中移除，最终结论与最终理由不再互相矛盾；重排同时补齐 `addressee_ambiguous`，话题提交不改变收件人结论。
+- 回放评估改为有状态执行：逐条按生产顺序“过期缓冲 → 对已提交状态评分 → 提交本条决策”，复用 `SessionRuntime.commit_participation`；Bot 消息只作为锚点参与，不评分。报告新增逐条结果与实际状态（pending hover、对话对象、是否等待回答、中间发言者），trace 不再使用占位值。
+- 夹具支持逐条期望与确定性时间偏移（`at`），锁定跨消息边界：旁观者连续两句仍为 hover、同一批消息由对话对象发出则升为 strong、对话对象回答后第三方保持 hover、超过 TTL 的 hover 在评分前失效。
+- 新增话题与父消息指标：会话内相等关系比较（与标签命名无关）得出 Wrong Merge / Fragmentation 与精确率/召回率，Parent 精确匹配与覆盖率，候选列表另出 R@1/3/5；缺标签一律不计分，`--check` 只在有监督数据存在时约束；收件人混淆矩阵支持按场景分组并输出精确率/召回率。
+- 新增资源计数：Embedding 的 provider 调用、超时、失败、无 provider、缓存命中、单飞合并、超限回退与在途占用；上下文构建输出当前/背景/序列化字符数。两者都不包含正文、昵称或 provider 错误文本，也不进入 LLM 载荷。
+- 回放隐藏正文时一并脱敏 Bot 消息标识；决策记录补充 `waiting_for_answer`、`last_bot_was_question`、`last_bot_message_id`。
+- 新增文档：[参与策略](docs/participation_policy.md)、[路由证据一致性](docs/routing_evidence.md)、[资源观测](docs/routing_observability.md)。
+
 ## v1.4.2 — 收件人契约与话题歧义解耦
 
 - 话题歧义不再否决已明确的收件人：路由分别输出 `topic_ambiguous` 与 `addressee_ambiguous`，Addressivity、消息语义与参与判断只读取收件人歧义；旧快照按置信度兼容，聚合字段仅保留诊断与异步升级用途。

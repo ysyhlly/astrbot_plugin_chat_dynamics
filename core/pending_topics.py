@@ -1,4 +1,5 @@
 """Bounded deferred topic assignments with explicit follow-up evidence."""
+from .routing_contract import commit_topic_evidence
 from .session_runtime import PendingAssignment
 
 
@@ -50,7 +51,7 @@ def reconcile(state, dag, current, result, remember):
                        topic_ambiguous=False, topic_status="committed")
             old["addressee_ambiguous"] = old["ambiguous"] = (
                 float(old.get("addressee_confidence", 0.0) or 0.0) < 0.72)
-            old["evidence"] = list(old.get("evidence", [])) + ["pending_followup"]
+            old["evidence"] = commit_topic_evidence(old, "pending_followup")
             prior.metadata["routing"] = old
             prior.metadata["topic_id"] = result.topic_id
             state.pending_assignments.pop(mid, None)

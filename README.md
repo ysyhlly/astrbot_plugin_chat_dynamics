@@ -115,7 +115,8 @@ python scripts/check_release.py
 普通单元测试可能使用 SDK 替身；真实 SDK 契约测试与实际群适配器、媒体和 Dashboard 验收需分别进行。
 
 - [会话路由说明](docs/conversation-router.md)
-- [v1.4.2 群聊优化设计](docs/v1.4.2-group-chat-optimization.md) · [实施记录](docs/group_chat_optimization.md)
+- [群聊优化设计（v1.4.2 起，v1.4.3 续作）](docs/v1.4.2-group-chat-optimization.md) · [实施记录](docs/group_chat_optimization.md)
+- [参与策略与证据账本](docs/participation_policy.md) · [路由证据一致性](docs/routing_evidence.md) · [资源观测](docs/routing_observability.md)
 - [收件人回放评估](docs/routing_evaluation.md) · [人工标注](docs/recipient_annotations.md)
 - [话题优化评审](docs/topic_optimization.md) · [Embedding 行为与上限](docs/embedding_changes.md)
 - [记忆联动说明](docs/companion-integration-fix-2026-09-07.md)
