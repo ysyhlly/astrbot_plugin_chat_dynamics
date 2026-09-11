@@ -73,7 +73,8 @@ def _install_astrbot_test_double() -> None:
             return self
 
         def get_plain_text(self, *_args):
-            return "".join(item if isinstance(item, str) else getattr(item, "text", str(item)) for item in self.chain)
+            # References and media components do not contribute plain text.
+            return "".join(item if isinstance(item, str) else getattr(item, "text", "") for item in self.chain)
 
     class Reply:
         def __init__(self, id):
