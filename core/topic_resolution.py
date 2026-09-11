@@ -7,6 +7,7 @@ from collections import Counter
 from copy import copy
 from typing import Any
 
+from .topic_identity import node_topic_id
 from .graph import ConversationNode
 from .session_runtime import RoutingState, TopicState
 from .semantics import cosine, hashed_embedding, lexical_tokens
@@ -14,6 +15,12 @@ from .semantics import cosine, hashed_embedding, lexical_tokens
 _BOUNDARY = re.compile(r"^(?:对了|话说|顺便问一下|另外|换个话题|说到这个|by the way)", re.I)
 _ELLIPTICAL = re.compile(r"^(?:那|这个|这样|然后|继续|怎么办|为什么|怎么设|默认|我默认(?:的)?|好的|行|对|确实|好使|不行|成|那这个|这个呢)[呢？?。!！\s]*$")
 _FILLER = re.compile(r"^(?:哈+|嗯+|哦+|好的|好|ok|233+|[？?!！]+)$", re.I)
+
+_PROFILE_FIELDS = (
+    "centroid_vector", "centroid_space", "exemplar_messages", "summary_excerpts",
+    "recent_message_ids", "participants", "keywords", "interlocutor_affinity",
+    "updated_at", "label",
+)
 
 
 def is_elliptical(text: str) -> bool:
@@ -60,10 +67,14 @@ class TopicResolver:
 
     @staticmethod
     def remember(state: RoutingState, node: ConversationNode, topic_id: str, dag: Any = None) -> None:
+        changed = []
         for topic in state.topics.values():
             if node.msg_id in topic.message_ids:
                 topic.message_ids.remove(node.msg_id)
+                changed.append(topic)
         topic = state.topics.setdefault(topic_id, TopicState(topic_id))
+        if not any(existing is topic for existing in changed):
+            changed.append(topic)
         topic.message_ids.append(node.msg_id)
         if topic.generated_title:
             node.metadata["topic_title"] = topic.generated_title
@@ -72,7 +83,7 @@ class TopicResolver:
         if not topic.created_at:
             topic.created_at = node.timestamp
         if dag is not None:
-            for existing in state.topics.values():
+            for existing in changed:
                 TopicResolver.rebuild_profile(existing, dag)
 
     @staticmethod
@@ -82,7 +93,7 @@ class TopicResolver:
             nodes = [n for n in nodes if 0 < as_of - n.timestamp <= window_seconds]
         nodes.sort(key=lambda n: (n.timestamp, n.msg_id))
         substantive = [n for n in nodes if not is_elliptical(n.text) and not _FILLER.fullmatch(n.text.strip())]
-        vectors = [(n, hashed_embedding(n.text)) for n in substantive]
+        vectors = None
         space = "hashed"
         adapter = getattr(getattr(dag, "semantic_match_fn", None), "__self__", None)
         cached = getattr(adapter, "cached", None)
@@ -95,6 +106,27 @@ class TopicResolver:
             if dimension and all(v and len(v) == dimension and all(math.isfinite(x) for x in v) for _, v in neural):
                 vectors = neural
                 space = f"neural:{getattr(adapter, 'provider_id', '')}:{getattr(adapter, '_generation', 0)}:{dimension}"
+        # Fingerprint actual inputs: messages can be reassigned, evicted, edited,
+        # or receive routing evidence after ingestion; embeddings can warm up or
+        # be replaced without changing topic membership. Query time itself is
+        # irrelevant once the eligible node set and vector space are known.
+        signature = (
+            topic.generated_title, space,
+            tuple((n.msg_id, n.timestamp, n.text, n.user_id, n.reply_to_id,
+                   tuple(n.metadata.get("routing", {}).get("addressee_ids", [])),
+                   getattr(dag.nodes.get(n.reply_to_id), "user_id", None)) for n in nodes),
+            tuple(tuple(v) for _, v in vectors) if vectors is not None else (),
+        )
+        # Keep only a complete and a historical view per topic. The cache lives
+        # on session-owned topic state, so pruning/reset/unload drops it too.
+        cache = getattr(topic, "_profile_cache", [])
+        for key, profile in cache:
+            if key == signature:
+                for name, value in profile.items():
+                    setattr(topic, name, copy(value))
+                return nodes
+        if vectors is None:
+            vectors = [(n, hashed_embedding(n.text)) for n in substantive]
         centroid = [sum(v[i] for _, v in vectors) / len(vectors) for i in range(len(vectors[0][1]))] if vectors else []
         norm = math.sqrt(sum(v * v for v in centroid))
         topic.centroid_vector = [v / norm for v in centroid] if norm else None
@@ -102,8 +134,7 @@ class TopicResolver:
         # Central representatives, rather than the last arbitrary short turns.
         central = sorted(((cosine(v, topic.centroid_vector or []), n) for n, v in vectors), key=lambda x: (-x[0], x[1].msg_id))
         topic.exemplar_messages = [(n.msg_id, round(s, 4)) for s, n in central[:5]]
-        if central:
-            topic.summary_excerpts = [n.text.strip()[:320] for _, n in central[:4]]
+        topic.summary_excerpts = [n.text.strip()[:320] for _, n in central[:4]]
         topic.recent_message_ids = [n.msg_id for n in nodes[-2:]]
         topic.participants = {n.user_id for n in nodes}
         counts = Counter(token for n in substantive for token in lexical_tokens(n.text))
@@ -123,6 +154,13 @@ class TopicResolver:
             topic.updated_at = max(n.timestamp for n in nodes)
         if substantive:
             topic.label = topic.generated_title or substantive[0].text.strip()[:80]
+        else:
+            topic.label = topic.generated_title
+        profile = {name: copy(getattr(topic, name)) for name in _PROFILE_FIELDS
+                   if nodes or name != "updated_at"}
+        cache.append((signature, profile))
+        del cache[:-2]
+        topic._profile_cache = cache
         return nodes
 
     def score_topic(self, node, dag, topic, matches) -> float:
@@ -177,7 +215,7 @@ class TopicResolver:
         if explicit_parent is not None:
             routing = explicit_parent.metadata.get("routing", {})
             if routing.get("topic_status") not in {"pending", "unknown"}:
-                parent_topic = routing.get("topic_id") or explicit_parent.thread_id
+                parent_topic = node_topic_id(explicit_parent)
         boundary = self.boundary_score(node, ranked, explicit_parent)
         if boundary >= 0.75:
             return node.msg_id, boundary, False, ["topic_boundary"], None, ranked

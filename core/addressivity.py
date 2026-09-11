@@ -12,6 +12,7 @@ import re
 from enum import Enum
 from typing import Any, List, Optional, Set
 
+from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .semantics import lexical_tokens, semantic_match
 
@@ -279,12 +280,8 @@ class AddressivityRouter:
             or getattr(last_bot_node, "metadata", {}).get("trigger_user_id", "")
             or (getattr(runtime, "last_interlocutor", "") if runtime else "")
         )
-        node_topic = routing.get("topic_id") or node.metadata.get("topic_id", "")
-        bot_topic = (
-            last_bot_node.metadata.get("routing", {}).get("topic_id")
-            or last_bot_node.metadata.get("topic_id", "")
-            or last_bot_node.thread_id
-        )
+        node_topic = node_topic_id(node)
+        bot_topic = node_topic_id(last_bot_node)
         same_topic = bool(node_topic and bot_topic and node_topic == bot_topic)
         parent_continuity = bool(
             (node.reply_to_id and node.reply_to_id == last_bot_node.msg_id)
@@ -386,7 +383,7 @@ class AddressivityRouter:
         # Name occurrence alone describes a subject. A vocative requires a
         # standalone call, an imperative/question, or a second-person request.
         boundary = r"(?![A-Za-z0-9_])" if name.isascii() else ""
-        match = re.match(r"^\s*" + re.escape(name) + boundary + r"(.*)$", text, re.IGNORECASE)
+        match = re.match(r"^\s*(?:(?:喂|嗨|hi|hello)[，,\s]*)?" + re.escape(name) + boundary + r"(.*)$", text, re.IGNORECASE)
         if not match:
             return False
         tail = match.group(1)
@@ -394,7 +391,7 @@ class AddressivityRouter:
             return True
         tail = tail.lstrip(" \t,，:：!！")
         return bool(re.match(
-            r"(?:第[一二三四五六七八九十0-9]+[问个]|帮|请|能不能|能否|可以|在吗|你|怎么看|怎么做|为什么|继续|说说|讲讲|看一下|看图|看看|看下|早上好|你好|晚上好|"
+            r"(?:第[一二三四五六七八九十0-9]+[问个]|帮|请|能不能|能否|可以|在吗|在不在|出来|回答|查|算|你|怎么看|怎么做|为什么|继续|说说|讲讲|看一下|看图|看看|看下|早上好|你好|晚上好|"
             r"please\b|can\s+you\b|could\s+you\b|help\b|what\s+do\s+you\b)",
             tail, re.IGNORECASE))
 

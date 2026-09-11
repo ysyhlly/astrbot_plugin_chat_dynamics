@@ -234,6 +234,8 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "enabled": bool(plugin.enabled),
         "pipeline_mode": str(getattr(plugin, "pipeline_mode", "filter") or "filter"),
         "decision_mode": getattr(plugin, "decision_mode", "legacy"),
+        "persona_fallback": getattr(plugin, "_persona_fallback", ""),
+        "requested_decision_mode": getattr(plugin, "config", {}).get("decision_mode", "legacy"),
         "agent_bridge": getattr(getattr(getattr(plugin, "persona_engine", None), "bridge", None), "diagnostic", "not_checked"),
         "inactive_options": (["ambient_intervention", "vibe_llm_enabled", "vibe_provider", "WTS weights", "casual_emoji_enabled"]
                              if getattr(plugin, "decision_mode", "legacy") == "persona_model" else []),

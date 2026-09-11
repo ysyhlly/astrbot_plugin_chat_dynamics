@@ -49,6 +49,8 @@ const CONFIG_GROUPS = [
       "reply_provider",
       "decision_provider",
       "decision_timeout",
+      "reply_timeout",
+      "tool_agent_timeout",
       "vibe_provider",
       "provider"
     ]
@@ -65,6 +67,9 @@ const CONFIG_GROUPS = [
       "topic_reranker_timeout",
       "topic_window_seconds",
       "topic_join_threshold",
+      "topic_commit_threshold",
+      "topic_ambiguity_threshold",
+      "topic_margin_threshold",
       "parent_window_seconds",
       "parent_accept_threshold",
       "routing_neural_timeout"

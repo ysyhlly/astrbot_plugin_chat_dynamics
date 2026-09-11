@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from .topic_identity import node_topic_id
 from .semantics import classify_message, concept_scores
 
 
@@ -89,7 +90,7 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
                     break
     scenes, emotions = classify_message(node.text)
 
-    topic_id = str(routing.get("topic_id") or node.metadata.get("topic_id") or "")
+    topic_id = node_topic_id(node)
     topic_conf = float(routing.get("topic_confidence", 0.0) or 0.0)
     parent_mid = str(
         routing.get("parent_message_id")

@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from .agent_bridge import AstrBotAgentBridge, PersonaChanged
 from .llm_adapter import completion_text
 from .pacer import is_rhythm_short_act, scale_delay
+from .topic_identity import node_topic_id
 from .platform_bridge import chain_plain_text
 from .message_semantics import describe_message
 from .turn_decision import (
@@ -144,21 +145,14 @@ def turn_is_continuation(runtime: Any, turn: TurnContext, now: float) -> bool:
     if last_bot is None:
         return False
 
-    last_bot_meta = getattr(last_bot, "metadata", {}) or {}
-    prev_routing = last_bot_meta.get("routing", {}) if isinstance(last_bot_meta, dict) else {}
-    bot_topic = (
-        prev_routing.get("topic_id")
-        or getattr(getattr(runtime, "routing_state", None), "last_bot_topic_id", None)
-        or (last_bot_meta.get("topic_id") if isinstance(last_bot_meta, dict) else None)
-        or getattr(last_bot, "thread_id", "")
-    )
-    current_topic = routing.get("topic_id") or ""
+    bot_topic = node_topic_id(last_bot)
+    turn_node = _dag_node(runtime, turn.messages[-1].message_id) if turn.messages else None
+    current_topic = node_topic_id(turn_node)
     same_topic = bool(current_topic and bot_topic and current_topic == bot_topic)
 
     reply_to = getattr(turn, "reply_to", None) or getattr(getattr(turn, "node", None), "reply_to_id", None)
     inferred_parent = routing.get("parent_message_id", "")
     last_bot_id = getattr(last_bot, "msg_id", "")
-    turn_node = _dag_node(runtime, turn.messages[-1].message_id) if turn.messages else None
     if not reply_to and turn_node:
         reply_to = getattr(turn_node, "reply_to_id", None)
 
@@ -432,6 +426,7 @@ class PersonaEngine:
 
     def diagnostic(self, runtime, code: str, **extra) -> None:
         runtime.model_diagnostic = {"reason_code": code, **extra}
+        self.plugin._mark_panel_runtime_dirty()
 
     async def decide(self, item: ModelTurn, persona, state: str) -> TurnDecision:
         p, turn = self.plugin, item.context
@@ -464,26 +459,36 @@ class PersonaEngine:
             while True:
                 async with runtime.state_lock:
                     if not runtime.model_queue:
+                        if runtime.generation_task is task:
+                            runtime.generation_task = None
+                            p._in_flight.discard(runtime.session_key)
                         break
                     item = runtime.model_queue.popleft()
                     runtime.active_model_turn = item
                 try:
                     if self.valid(runtime, item):
-                        await self.process(runtime, item)
+                        # Final watchdog covers bridge/provider lookup, native
+                        # generation and delivery, not only the decision model.
+                        await asyncio.wait_for(self.process(runtime, item), timeout=p._runtime_config.tool_agent_timeout)
                 except asyncio.CancelledError:
                     raise
+                except asyncio.TimeoutError:
+                    self.diagnostic(runtime, "reply_timeout")
+                    p._metric("llm_reply_unavailable")
                 except PersonaChanged:
                     self.diagnostic(runtime, "persona_changed")
                 except Exception as exc:
                     self.diagnostic(runtime, "agent_failed", error_type=type(exc).__name__)
                 finally:
-                    runtime.active_model_turn = None
+                    if runtime.active_model_turn is item:
+                        runtime.active_model_turn = None
                     runtime.model_admission.release()
         finally:
-            async with runtime.state_lock:
-                if runtime.generation_task is task:
-                    runtime.generation_task = None
-                    p._in_flight.discard(runtime.session_key)
+            # This owner check and cleanup have no await: they are atomic on
+            # the event loop and cannot wait on a cancelling caller's lock.
+            if runtime.generation_task is task:
+                runtime.generation_task = None
+                p._in_flight.discard(runtime.session_key)
 
     async def process(self, runtime, item: ModelTurn) -> None:
         p, turn = self.plugin, item.context

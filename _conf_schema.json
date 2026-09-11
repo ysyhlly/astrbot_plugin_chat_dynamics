@@ -22,6 +22,18 @@
     "default": 8.0,
     "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
   },
+  "reply_timeout": {
+    "description": "回复模型总超时秒数",
+    "type": "float",
+    "default": 60.0,
+    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。超时取消请求并释放当前生成任务。"
+  },
+  "tool_agent_timeout": {
+    "description": "原生 Agent 总超时秒数",
+    "type": "float",
+    "default": 120.0,
+    "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。"
+  },
   "enable": {
     "description": "是否启用群聊动态过滤器",
     "type": "bool",
@@ -380,7 +392,7 @@
     "hint": "会话话题活跃窗口。超时无新消息的话题会被自动清理，避免历史话题错误复用。"
   },
   "topic_join_threshold": {
-    "description": "话题归属综合置信度阈值",
+    "description": "话题阈值兼容设置",
     "type": "float",
     "default": 0.48,
     "slider": {
@@ -388,7 +400,30 @@
       "max": 0.85,
       "step": 0.02
     },
-    "hint": "新消息匹配已有活跃话题的最低得分。高于此值且领先第二话题一定间隔（如 0.06）时归入该话题。"
+    "hint": "保留旧配置行为：作为歧义候选阈值；小于 0.58 时，确定归属阈值为 max(0.58, 此值 + 0.10)，否则等于此值。下方独立阈值非 0 时分别覆盖对应设置。"
+  },
+  "topic_commit_threshold": {
+    "description": "话题确定归属阈值",
+    "type": "float",
+    "default": 0.0,
+    "hint": "0 表示沿用兼容设置的旧映射；手动设置范围 0.30～0.95。匹配得分达到此值且满足领先间隔，才确定归入已有话题。"
+  },
+  "topic_ambiguity_threshold": {
+    "description": "话题歧义候选阈值",
+    "type": "float",
+    "default": 0.0,
+    "hint": "0 表示沿用话题阈值兼容设置；手动设置范围 0.30～0.95。控制需要保留并进一步判别的候选话题，不直接决定归属。"
+  },
+  "topic_margin_threshold": {
+    "description": "话题确定归属领先间隔",
+    "type": "float",
+    "default": 0.06,
+    "slider": {
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "最佳候选相对第二候选的最低得分差。与确定归属阈值同时满足，才接受话题归属。"
   },
   "parent_window_seconds": {
     "description": "候选父消息检索窗口（秒）",

@@ -154,6 +154,7 @@ async def test_enabling_shadow_mode_invalidates_inflight_generation():
     pending = asyncio.create_task(asyncio.sleep(60))
     runtime.generation_task = pending
     plugin.config["shadow_mode"] = True
+    plugin.refresh_config()
     assert plugin.is_group_takeover_enabled("shadow-transition") is True
     await asyncio.gather(pending, return_exceptions=True)
     assert pending.cancelled()

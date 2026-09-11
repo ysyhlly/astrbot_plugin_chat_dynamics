@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
@@ -10,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .persist import atomic_write_json, safe_umo
+from .persist import atomic_write_json, read_umo_json, safe_umo
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.mood_memory")
 
@@ -44,19 +43,16 @@ class MoodMemoryStore:
         key = _safe_umo(umo)
         if key in self._cache:
             return self._cache[key]
-        path = self._path(umo)
         data: Dict[str, Any] = {"peers": {}, "forgotten": {}, "mute_until": 0.0}
-        if path.exists():
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    data.update(raw)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("mood load failed type=%s", type(exc).__name__)
+        try:
+            data.update(read_umo_json(self.data_dir, "mood", umo))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mood load failed type=%s", type(exc).__name__)
         self._cache[key] = data
         return data
 
     def _save(self, umo: str, data: Dict[str, Any]) -> None:
+        data["umo"] = str(umo or "")
         key = _safe_umo(umo)
         self._cache[key] = data
         path = self._path(umo)

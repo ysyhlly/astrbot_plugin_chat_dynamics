@@ -553,10 +553,13 @@ async def test_model_failure_is_diagnosed_and_never_retried(model_plugin):
     await p.terminate()
 
 
-def test_model_mode_cannot_enable_without_host_bridge(monkeypatch):
+def test_model_mode_loads_in_legacy_without_host_bridge(monkeypatch):
     monkeypatch.setattr(AstrBotAgentBridge, "check", lambda self: False)
-    with pytest.raises(RuntimeError):
-        _plugin({"decision_mode": "persona_model"})
+    plugin = _plugin({"decision_mode": "persona_model"})
+    assert plugin.decision_mode == plugin._runtime_config.decision_mode == "legacy"
+    assert plugin.config["decision_mode"] == "persona_model"
+    assert plugin._persona_fallback
+    assert plugin.get_config_panel()["effective"]["decision_mode"] == "legacy"
 
 
 def test_console_marks_inactive_legacy_options(model_plugin):

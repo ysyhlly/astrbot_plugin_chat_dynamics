@@ -22,7 +22,7 @@ def defer(state, node, result, ranked):
 
 
 def reconcile(state, dag, current, result, remember):
-    """Only a direct follow-up with independently resolved topic can backfill."""
+    """Backfill from explicit or high-confidence, independently resolved follow-ups."""
     for mid, pending in list(state.pending_assignments.items()):
         if mid == current.msg_id or current.timestamp <= pending.created_at:
             continue
@@ -33,7 +33,15 @@ def reconcile(state, dag, current, result, remember):
         pending.observed_ids.add(current.msg_id)
         eligible = {tid for _, tid in pending.candidates}
         seed_confirmed = not eligible and "topic_not_formed" in prior.metadata.get("routing", {}).get("evidence", [])
-        if (current.reply_to_id == mid and (result.topic_id in eligible or seed_confirmed)
+        inferred_followup = (
+            not current.reply_to_id
+            and result.parent_message_id == mid
+            and result.parent_confidence >= 0.80
+            and "inferred_reply" in result.evidence
+            and result.topic_confidence >= 0.72
+            and result.topic_id in eligible
+        )
+        if ((current.reply_to_id == mid or inferred_followup) and (result.topic_id in eligible or seed_confirmed)
                 and bool(result.topic_id)
                 and not result.topic_ambiguous and current.timestamp - pending.created_at <= 30):
             remember(state, prior, result.topic_id, dag=dag)

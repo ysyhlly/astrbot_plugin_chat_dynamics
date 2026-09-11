@@ -489,3 +489,23 @@ def test_companion_status_shows_native_mode_and_call_failures(console_server, de
         else:
             assert "TimeoutError" in page.locator("#statPartnerHint").inner_text()
         browser.close()
+
+
+def test_persona_fallback_is_visible_and_updates_on_diagnostic_change(console_server):
+    with sync_playwright() as pw:
+        browser = _launch_browser(pw)
+        page = browser.new_page()
+        page.add_init_script("""
+            window.__overview = {enabled:true, decision_mode:'legacy', shadow_mode:false,
+                persona_fallback:'CD_AGENT_BRIDGE_UNAVAILABLE:missing_host_managers', sessions:[]};
+            window.AstrBotPluginPage = {t: (_key, fallback) => fallback,
+                apiGet: async endpoint => ({ok:true,data:endpoint === 'presets' ? {presets:{}} : window.__overview})};
+        """)
+        page.goto(console_server)
+        page.locator('#shadowState').filter(has_text='人设不可用，已切换规则模式').wait_for()
+        assert 'missing_host_managers' in page.locator('#shadowState').get_attribute('title')
+        page.evaluate("window.__overview.persona_fallback = ''")
+        page.locator('#btnRefresh').click()
+        page.wait_for_function("!document.querySelector('#shadowState').textContent.includes('人设不可用')")
+        assert page.locator('#shadowState').get_attribute('title') == ''
+        browser.close()

@@ -25,6 +25,7 @@ jobs:
       - run: python scripts/check_coverage.py --json artifacts/coverage.json
       - run: python -m compileall -q main.py core tests integration scripts
       - run: python -m ruff check main.py core tests integration scripts
+      - run: python -m mypy
       - run: python -c "import json; s=json.load(open('_conf_schema.json', encoding='utf-8')); assert s['pipeline_mode']['options'] == ['filter', 'exclusive']"
       - run: node --check pages/console/app.js
       - uses: actions/upload-artifact@v4

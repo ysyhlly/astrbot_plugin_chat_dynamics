@@ -7,6 +7,7 @@ methods are explicitly missing — never via a broad ``except``.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any
 
@@ -97,11 +98,15 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
+        reply_timeout: float = 60.0,
+        tool_agent_timeout: float = 120.0,
     ) -> None:
         self.context = context
         self.configured_provider_id = str(configured_provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
+        self.reply_timeout = reply_timeout
+        self.tool_agent_timeout = tool_agent_timeout
 
     def configure(
         self,
@@ -109,10 +114,14 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
+        reply_timeout: float = 60.0,
+        tool_agent_timeout: float = 120.0,
     ) -> None:
         self.configured_provider_id = str(provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
+        self.reply_timeout = reply_timeout
+        self.tool_agent_timeout = tool_agent_timeout
 
     def configured_provider(self, purpose: str = "reply") -> str:
         """Return the configured preference before UMO-specific resolution."""
@@ -153,6 +162,26 @@ class LLMAdapter:
         image_urls: list[str] | None = None,
         audio_urls: list[str] | None = None,
     ) -> str:
+        """Bound provider lookup and completion by one shared deadline."""
+        try:
+            return await asyncio.wait_for(
+                self._generate(prompt=prompt, umo=umo, system_prompt=system_prompt,
+                               purpose=purpose, image_urls=image_urls, audio_urls=audio_urls),
+                timeout=self.reply_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise LLMUnavailable(f"LLM reply timed out after {self.reply_timeout:g}s") from exc
+
+    async def _generate(
+        self,
+        *,
+        prompt: str,
+        umo: str,
+        system_prompt: str,
+        purpose: str = "reply",
+        image_urls: list[str] | None = None,
+        audio_urls: list[str] | None = None,
+    ) -> str:
         ctx = self.context
         if ctx is None:
             raise LLMUnavailable("AstrBot context is missing")
@@ -178,6 +207,23 @@ class LLMAdapter:
         )
 
     async def run_native_agent(
+        self,
+        event: Any,
+        prompt: str,
+        *,
+        umo: str = "",
+        vibe_hint: str = "",
+    ) -> str:
+        """Bound media, hooks, provider lookup, and tool execution together."""
+        try:
+            return await asyncio.wait_for(
+                self._run_native_agent(event, prompt, umo=umo, vibe_hint=vibe_hint),
+                timeout=self.tool_agent_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise LLMUnavailable(f"Native agent timed out after {self.tool_agent_timeout:g}s") from exc
+
+    async def _run_native_agent(
         self,
         event: Any,
         prompt: str,

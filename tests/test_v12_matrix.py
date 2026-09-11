@@ -579,6 +579,7 @@ async def test_plugin_shadow_transition_and_auxiliary_config_sync(monkeypatch):
             "chars_per_second": 40.0,
         }
     )
+    plugin.refresh_config()
     assert plugin.is_group_takeover_enabled("transition") is True
     await asyncio.gather(generation, vibe, embed, hook, return_exceptions=True)
     assert plugin.shadow_mode is True

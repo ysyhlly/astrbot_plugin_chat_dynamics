@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple
 
@@ -60,11 +61,16 @@ class RuntimeConfig:
     routing_neural_timeout: float = 0.5
     topic_window_seconds: float = 300.0
     topic_join_threshold: float = 0.48
+    topic_commit_threshold: float = 0.0
+    topic_ambiguity_threshold: float = 0.0
+    topic_margin_threshold: float = 0.06
     parent_window_seconds: float = 180.0
     parent_accept_threshold: float = 0.72
     decision_mode: str = "legacy"
     decision_provider_id: str = ""
     decision_timeout: float = 8.0
+    reply_timeout: float = 60.0
+    tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
     social_manners_enabled: bool = True
     relay_baton_enabled: bool = True
@@ -121,6 +127,7 @@ def _bool(value: Any, default: bool) -> bool:
 
 
 def _strings(value: Any) -> tuple[str, ...]:
+    source: Iterable[Any]
     if isinstance(value, str):
         source = value.split(",")
     elif isinstance(value, (list, tuple, set, frozenset)):
@@ -209,6 +216,8 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         decision_mode=str(_get(raw, "decision_mode", "legacy")) if _get(raw, "decision_mode", "legacy") in ("legacy", "persona_model") else "legacy",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),
+        reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
+        tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),
         enabled=_bool(_get(raw, "enable", True), True),
         pipeline_mode=mode,
         ambient_intervention=_bool(_get(raw, "ambient_intervention", False), False),
@@ -271,6 +280,17 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         ),
         topic_join_threshold=_number(
             raw, "topic_join_threshold", 0.48, lambda value: 0.30 <= value <= 0.85, warnings
+        ),
+        topic_commit_threshold=_number(
+            raw, "topic_commit_threshold", 0.0,
+            lambda value: value == 0 or 0.30 <= value <= 0.95, warnings,
+        ),
+        topic_ambiguity_threshold=_number(
+            raw, "topic_ambiguity_threshold", 0.0,
+            lambda value: value == 0 or 0.30 <= value <= 0.95, warnings,
+        ),
+        topic_margin_threshold=_number(
+            raw, "topic_margin_threshold", 0.06, lambda value: 0 <= value <= 0.5, warnings,
         ),
         parent_window_seconds=_number(
             raw, "parent_window_seconds", 180.0, lambda value: 30.0 <= value <= 600.0, warnings

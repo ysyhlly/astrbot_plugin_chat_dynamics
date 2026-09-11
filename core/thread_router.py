@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple
 
+from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .session_runtime import RoutingState as RoutingState, TopicState as TopicState
-from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic
+from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic, is_elliptical
 from .pending_topics import defer, reconcile
 from .topic_formation import discussion_burst, topic_text
 
@@ -32,6 +35,17 @@ _FILLER_RE = re.compile(
     r"^(?:哈+|[?？!！]+|嗯+|哦+|好的|好|ok|[hH]+|233+)$", re.IGNORECASE
 )
 _QUESTION_RE = re.compile(r"[?？]|怎么|如何|多少|几点|吗|能不能|可以吗|为啥|为什么")
+
+
+@asynccontextmanager
+async def _state_guard(runtime: Any):
+    """Serialize snapshots and commits, including lightweight runtime doubles."""
+    lock = getattr(runtime, "state_lock", None)
+    if lock is None:
+        yield
+    else:
+        async with lock:
+            yield
 
 
 @dataclass
@@ -80,6 +94,7 @@ class ParentRetriever:
         sim: float,
         is_primary_topic: bool,
         turn_distance: int,
+        participant_affinity: float = 0.5,
     ) -> float:
         """6-factor reranking: semantic, topic, qa_fit, temporal, turn, participant."""
         # Factor 1: Semantic fit (0.38)
@@ -108,7 +123,7 @@ class ParentRetriever:
         f_turn = max(0.0, 1.0 - 0.15 * turn_distance)
 
         # Factor 6: Participant continuity (0.05)
-        f_part = 0.5
+        f_part = max(0.0, min(1.0, participant_affinity))
 
         score = (
             f_sem * 0.38
@@ -141,6 +156,21 @@ class ParentRetriever:
         recent = recent_nodes if recent_nodes is not None else dag.get_recent_nodes(self.max_candidates)
         candidates: List[Tuple[float, str]] = []
 
+        # Count only observed platform interactions; inferred edges must not
+        # reinforce their own future confidence.
+        interactions: dict[tuple[str, str], float] = {}
+        for previous in recent:
+            if not 0 < node.timestamp - previous.timestamp <= self.window_seconds:
+                continue
+            targets = set(previous.mentioned_users)
+            quoted = dag.get_node(previous.reply_to_id) if previous.reply_to_id else None
+            if quoted is not None:
+                targets.add(quoted.user_id)
+            for target in targets:
+                if target and target != previous.user_id:
+                    pair = tuple(sorted((previous.user_id, target)))
+                    interactions[pair] = interactions.get(pair, 0.0) + 1.0
+
         turn_distance = 0
         for candidate in reversed(recent):
             if candidate.msg_id == node.msg_id:
@@ -151,13 +181,17 @@ class ParentRetriever:
             turn_distance += 1
             if candidate.user_id == node.user_id:
                 continue
-            if candidate.metadata.get("routing", {}).get("topic_status") in {"pending", "unknown"}:
+            candidate_routing = candidate.metadata.get("routing", {})
+            if candidate_routing.get("topic_status") == "unknown":
                 continue
-            cand_topic = (
-                candidate.metadata.get("routing", {}).get("topic_id")
-                or candidate.thread_id
-            )
-            if cand_topic not in target_topics:
+            cand_topic = node_topic_id(candidate)
+            if candidate_routing.get("topic_status") == "pending":
+                eligible = {tid for _, tid in candidate_routing.get("topic_candidates", [])}
+                # The current topic must already be independently resolved.
+                if is_ambiguous or primary_topic not in eligible:
+                    continue
+                cand_topic = primary_topic
+            if not cand_topic or cand_topic not in target_topics:
                 continue
 
             sim = matches.get(candidate.msg_id, 0.0)
@@ -167,6 +201,8 @@ class ParentRetriever:
                 sim=sim,
                 is_primary_topic=(cand_topic == primary_topic),
                 turn_distance=turn_distance,
+                participant_affinity=min(1.0, interactions.get(
+                    tuple(sorted((node.user_id, candidate.user_id))), 0.0) / 2.0),
             )
             candidates.append((score, candidate.msg_id))
 
@@ -184,45 +220,19 @@ class ParentRetriever:
 
 
 class AddresseeResolver:
-    """Precedence-driven addressee resolver for group chat conversation routing.
+    """Resolve mentions and direct name calls before quotes and inferred parents.
 
-    Implements a strict 6-tier precedence hierarchy:
-    1. Tier 1: Explicit Mention (@mention)
-    2. Tier 2: Explicit Platform Reply / Quote
-       (Special sub-case: Quoted Subject in Active Bot Dialogue)
-    3. Tier 3: Inferred Parent (Topological edge from ParentRetriever)
-    4. Tier 4: Active Interlocutor (Dialogue continuation fallback)
-    5. Tier 5: Turn-taking / Vocative Address (Direct name call cues)
-    6. Tier 6: Unknown / Ambient Broadcast
+    A quoted message can be the subject of a direct request to the bot. Without
+    an explicit recipient, bounded active-dialogue evidence provides a fallback.
     """
-
-    VOCATIVE_CUES: Tuple[str, ...] = (
-        "你", "帮", "看看", "看下", "回答", "为什么", "怎么看", "怎么做",
-        "请", "能", "能不能", "能否", "在吗", "在不在", "出来", "查", "算",
-    )
 
     @classmethod
     def is_vocative_call(cls, text: str, bot_names: Sequence[str]) -> bool:
         """Detect direct vocative address targeting bot while filtering 3rd-person subject remarks."""
-        if not text or not bot_names:
-            return False
-        cleaned = text.strip()
-        for name in bot_names:
-            if not name:
-                continue
-            name_str = str(name).strip()
-            if not name_str:
-                continue
-            # Third-person demonstrative prefix filter (e.g. "这个bot怎么老不回")
-            demonstrative = rf"(?:这(?:个)?|那(?:个)?|某个|哪(?:个)?|现在的|本群的)\s*{re.escape(name_str)}"
-            if re.search(demonstrative, cleaned, re.IGNORECASE):
-                continue
-            # Vocative address pattern: bot name at front, followed by vocative cues or standalone punctuation
-            cues_pat = "|".join(re.escape(cue) for cue in cls.VOCATIVE_CUES)
-            vocative_pattern = rf"^\s*(?:[喂嗨hihelloHIHELLO]+\s*[，,\s]*)?{re.escape(name_str)}[，,\s:：!！？?]*(?:{cues_pat}|$)"
-            if re.search(vocative_pattern, cleaned, re.IGNORECASE):
-                return True
-        return False
+        from .addressivity import AddressivityRouter
+
+        return any(AddressivityRouter._name_mentioned_in_text(str(name), text)
+                   for name in bot_names if name)
 
     @classmethod
     def is_subject_reference(cls, text: str, bot_names: Sequence[str]) -> bool:
@@ -283,6 +293,12 @@ class AddresseeResolver:
             addressee_confidence = 1.0
             evidence.append("explicit_mention")
 
+        # A direct name call can ask the bot to explain a quoted human message.
+        elif vocative_target and bot_id:
+            addressee_ids = [bot_id]
+            addressee_confidence = 0.95
+            evidence.append("direct_name_call")
+
         # Tier 2: Explicit Platform Reply / Quote
         elif quoted_node is not None:
             # Sub-case 2A: Quoted Subject in Active Bot Dialogue
@@ -290,26 +306,21 @@ class AddresseeResolver:
                 last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
                 trigger = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
                 interlocutor = trigger.user_id if trigger else getattr(runtime, "last_interlocutor", "")
-                last_bot_meta = getattr(last_bot, "metadata", {}) or {}
-                bot_topic = (
-                    last_bot_meta.get("routing", {}).get("topic_id")
-                    if isinstance(last_bot_meta, dict) else None
-                ) or getattr(last_bot, "thread_id", "")
+                bot_topic = node_topic_id(last_bot)
                 last_bot_ts = getattr(last_bot, "timestamp", 0.0)
                 elliptical = bool(re.fullmatch(r"\s*(?:那|这个|这样|这个呢|那这个呢|那怎么办|这个怎么办)[呢？?。!！]*\s*", node.text))
                 competing = any(
                     n.user_id not in {node.user_id, bot_id}
                     and n.timestamp > last_bot_ts
-                    and (
-                        (n.metadata.get("routing", {}).get("topic_id") if isinstance(n.metadata, dict) else None)
-                        or getattr(n, "thread_id", "")
-                    ) == bot_topic
+                    and (not bot_topic or node_topic_id(n) == bot_topic)
                     for n in recent_nodes
                 )
                 if (
                     elliptical
                     and interlocutor == node.user_id
-                    and topic_id == bot_topic
+                    and (bool(bot_topic and topic_id == bot_topic)
+                         or (not bot_topic and trigger is not None
+                             and trigger.reply_to_id == quoted_node.msg_id))
                     and 0 < node.timestamp - last_bot_ts <= 60
                     and not competing
                 ):
@@ -322,12 +333,6 @@ class AddresseeResolver:
                 addressee_ids = [quoted_node.user_id]
                 addressee_confidence = 1.0
 
-        # Tier 5 Check: Direct vocative call takes precedence if no explicit platform pointers
-        elif vocative_target and bot_id:
-            addressee_ids = [bot_id]
-            addressee_confidence = 0.95
-            evidence.append("direct_name_call")
-
         # Tier 3: Inferred Parent (from ParentRetriever)
         elif inferred_parent is not None and inferred_confidence >= 0.72:
             addressee_ids = [inferred_parent.user_id]
@@ -339,28 +344,27 @@ class AddresseeResolver:
             last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
             prior = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
             interlocutor = prior.user_id if prior else getattr(runtime, "last_interlocutor", "")
-            last_bot_meta = getattr(last_bot, "metadata", {}) or {}
-            bot_topic = (
-                last_bot_meta.get("routing", {}).get("topic_id")
-                if isinstance(last_bot_meta, dict) else None
-            ) or getattr(last_bot, "thread_id", "")
+            bot_topic = node_topic_id(last_bot)
             last_bot_ts = getattr(last_bot, "timestamp", 0.0)
             competing = any(
                 n.user_id not in {node.user_id, bot_id}
                 and n.timestamp > last_bot_ts
-                and (
-                    (n.metadata.get("routing", {}).get("topic_id") if isinstance(n.metadata, dict) else None)
-                    or getattr(n, "thread_id", "")
-                ) == bot_topic
+                and (not bot_topic or node_topic_id(n) == bot_topic)
                 for n in recent_nodes
             )
             followup = bool(re.search(r"然后|继续|那|这个|这样|怎么办|呢[？?]?$", node.text))
+            if not bot_topic:
+                # With no semantic topic, only a short continuation can borrow
+                # the active interlocutor; a new sentence containing "那" cannot.
+                followup = is_elliptical(node.text) or bool(re.fullmatch(
+                    r"\s*那(?:这个|怎么办|怎么做)[呢？?。!！\s]*", node.text))
             if (
                 interlocutor == node.user_id
                 and 0 < node.timestamp - last_bot_ts <= 60
                 and followup
                 and not competing
-                and (topic_id == bot_topic or not ranked_topics or ranked_topics[0][0] < 0.35)
+                and (bool(topic_id and bot_topic and topic_id == bot_topic)
+                     or not ranked_topics or ranked_topics[0][0] < 0.35)
             ):
                 addressee_ids = [bot_id]
                 addressee_confidence = 0.76
@@ -400,13 +404,19 @@ class ThreadRouter:
         parent_window_seconds: float = PARENT_WINDOW_SECONDS,
         parent_accept_threshold: float = PARENT_ACCEPT_THRESHOLD,
         require_intense_dialogue: bool = True,
+        topic_commit_threshold: float = 0.0,
+        topic_ambiguity_threshold: float = 0.0,
+        topic_margin_threshold: float = TOPIC_MARGIN_THRESHOLD,
     ):
         self.require_intense_dialogue = require_intense_dialogue
         if topic_resolver is None:
-            self.topic_resolver = TopicResolver(
+            self.topic_resolver = TopicResolver()
+            self.configure_topics(
                 window_seconds=topic_window_seconds,
-                ambiguity_threshold=topic_join_threshold,
-                join_threshold=max(0.58, topic_join_threshold + 0.10) if topic_join_threshold < 0.58 else topic_join_threshold,
+                legacy_threshold=topic_join_threshold,
+                commit_threshold=topic_commit_threshold,
+                ambiguity_threshold=topic_ambiguity_threshold,
+                margin_threshold=topic_margin_threshold,
             )
         else:
             self.topic_resolver = topic_resolver
@@ -420,6 +430,24 @@ class ThreadRouter:
             self.parent_retriever = parent_retriever
 
         self.addressee_resolver = addressee_resolver or AddresseeResolver()
+
+    def configure_topics(
+        self,
+        *,
+        window_seconds: float,
+        legacy_threshold: float,
+        commit_threshold: float = 0.0,
+        ambiguity_threshold: float = 0.0,
+        margin_threshold: float = TOPIC_MARGIN_THRESHOLD,
+    ) -> None:
+        """Apply the same legacy threshold mapping at startup and hot reload."""
+        self.topic_resolver.window_seconds = window_seconds
+        self.topic_resolver.ambiguity_threshold = ambiguity_threshold or legacy_threshold
+        self.topic_resolver.join_threshold = commit_threshold or (
+            max(TOPIC_JOIN_THRESHOLD, legacy_threshold + 0.10)
+            if legacy_threshold < TOPIC_JOIN_THRESHOLD else legacy_threshold
+        )
+        self.topic_resolver.margin_threshold = margin_threshold
 
     def route(
         self,
@@ -483,10 +511,10 @@ class ThreadRouter:
         formation_allowed = not self.require_intense_dialogue or bool(burst)
         formed_topic = ""
         if burst:
-            existing = [n.metadata.get("routing", {}).get("topic_id") for n in burst]
+            existing = [node_topic_id(n) for n in burst]
             formed_topic = next((tid for tid in existing if tid in state.topics), burst[0].msg_id)
             for previous in burst:
-                if previous.msg_id == node.msg_id or previous.metadata.get("routing", {}).get("topic_id"):
+                if previous.msg_id == node.msg_id or node_topic_id(previous):
                     continue
                 self._remember(state, previous, formed_topic, dag=dag)
                 state.pending_assignments.pop(previous.msg_id, None)
@@ -615,9 +643,10 @@ class ThreadRouter:
                 dag._link_parent(node.msg_id, inferred_candidate_parent.msg_id, kind="inferred_reply")
         elif parent_override is not None:
             pmid, pconf, ptopic = parent_override
-            result.topic_id = ptopic
-            result.topic_confidence = 0.78
-            result.topic_ambiguous = False
+            if ptopic:
+                result.topic_id = ptopic
+                result.topic_confidence = 0.78
+                result.topic_ambiguous = False
             result.parent_message_id = pmid
             result.parent_confidence = pconf
             if hasattr(dag, "link_inferred_reply"):
@@ -697,80 +726,109 @@ class ThreadRouter:
     async def rerank_pending(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
         from .topic_reranker import RerankCandidate
 
-        dag, state = runtime.dag, runtime.routing_state
-        snapshot = node.metadata.get("routing", {})
-        if snapshot.get("topic_status") == "unformed":
-            return
-        source_id = snapshot.get("topic_id", "")
-        new_topic = source_id == node.msg_id
-        if (not snapshot.get("topic_ambiguous") and not new_topic) or snapshot.get("rerank_attempted"):
-            return
-        revision, epoch = runtime.revision, runtime.epoch
-        topic_ids = [tid for _, tid in snapshot.get("topic_candidates", []) if tid != source_id]
-        topic_ids.extend(t.topic_id for t in sorted(state.topics.values(), key=lambda t: t.updated_at, reverse=True)
-                         if t.topic_id != source_id)
-        candidates = []
-        for tid in dict.fromkeys(topic_ids):
-            topic = state.topics.get(tid)
-            if topic is None:
-                continue
-            recent = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes
-                      and 0 < node.timestamp - dag.nodes[mid].timestamp <= self.topic_resolver.window_seconds]
-            if not recent:
-                continue
-            candidates.append(RerankCandidate(tid, topic.label, tuple(
-                f"{n.user_id}: {n.text}" for n in recent[-3:])))
-            if len(candidates) == 3:
-                break
-        if not candidates:
-            return
-        snapshot["rerank_attempted"] = True
+        async with _state_guard(runtime):
+            dag, state = runtime.dag, runtime.routing_state
+            if dag is None or dag.get_node(node.msg_id) is not node:
+                return
+            snapshot = node.metadata.get("routing", {})
+            if snapshot.get("topic_status") == "unformed":
+                return
+            source_id = snapshot.get("topic_id", "")
+            new_topic = source_id == node.msg_id
+            if (not snapshot.get("topic_ambiguous") and not new_topic) or snapshot.get("rerank_attempted"):
+                return
+            revision, epoch = getattr(runtime, "revision", None), getattr(runtime, "epoch", None)
+            topic_ids = [tid for _, tid in snapshot.get("topic_candidates", []) if tid != source_id]
+            topic_ids.extend(t.topic_id for t in sorted(state.topics.values(), key=lambda t: t.updated_at, reverse=True)
+                             if t.topic_id != source_id)
+            candidates = []
+            for tid in dict.fromkeys(topic_ids):
+                topic = state.topics.get(tid)
+                if topic is None:
+                    continue
+                recent = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes
+                          and 0 < node.timestamp - dag.nodes[mid].timestamp <= self.topic_resolver.window_seconds]
+                if not recent:
+                    continue
+                candidates.append(RerankCandidate(tid, topic.label, tuple(
+                    f"{n.user_id}: {n.text}" for n in recent[-3:])))
+                if len(candidates) == 3:
+                    break
+            if not candidates:
+                return
+            snapshot["rerank_attempted"] = True
         decision = await reranker.rerank(umo=runtime.umo, text=node.text,
                                          candidates=candidates, ambiguous=True)
-        if (runtime.dag is not dag or runtime.routing_state is not state
-                or runtime.revision != revision or runtime.epoch != epoch
-                or dag.get_node(node.msg_id) is not node
-                or node.metadata.get("routing") is not snapshot
-                or (not new_topic and node.msg_id not in state.pending_assignments)):
-            return
-        topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
-        if decision.choice == "NEW" and not can_start_topic(node.text):
-            return
-        if not topic_id or (decision.choice != "NEW" and
-                            (topic_id not in state.topics or topic_id not in {c.topic_id for c in candidates})):
-            return
-        self._remember(state, node, topic_id, dag=dag)
-        if source_id != topic_id and source_id in state.topics and not state.topics[source_id].message_ids:
-            state.topics.pop(source_id)
-            state.archive.pop(source_id)
-        state.pending_assignments.pop(node.msg_id, None)
-        snapshot.update(topic_id=topic_id, topic_ambiguous=False, topic_status="committed",
-                        topic_confidence=0.78, ambiguous=snapshot.get("addressee_confidence", 0.0) < 0.72)
-        snapshot["evidence"] = list(snapshot.get("evidence", [])) + ["topic_llm_rerank"]
-        node.metadata["topic_id"] = topic_id
-        state.last_topic_id = topic_id
+        async with _state_guard(runtime):
+            if (runtime.dag is not dag or runtime.routing_state is not state
+                    or getattr(runtime, "revision", None) != revision or getattr(runtime, "epoch", None) != epoch
+                    or dag.get_node(node.msg_id) is not node
+                    or node.metadata.get("routing") is not snapshot
+                    or (not new_topic and node.msg_id not in state.pending_assignments)):
+                return
+            topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
+            if decision.choice == "NEW" and not can_start_topic(node.text):
+                return
+            if not topic_id or (decision.choice != "NEW" and
+                                (topic_id not in state.topics or topic_id not in {c.topic_id for c in candidates})):
+                return
+            self._remember(state, node, topic_id, dag=dag)
+            if source_id != topic_id and source_id in state.topics and not state.topics[source_id].message_ids:
+                state.topics.pop(source_id)
+                state.archive.pop(source_id)
+            state.pending_assignments.pop(node.msg_id, None)
+            snapshot.update(topic_id=topic_id, topic_ambiguous=False, topic_status="committed",
+                            topic_confidence=0.78, ambiguous=snapshot.get("addressee_confidence", 0.0) < 0.72)
+            snapshot["evidence"] = list(snapshot.get("evidence", [])) + ["topic_llm_rerank"]
+            node.metadata["topic_id"] = topic_id
+            state.last_topic_id = topic_id
 
     async def title_topic(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
-        state, dag = runtime.routing_state, runtime.dag
-        topic_id = node.metadata.get("routing", {}).get("topic_id")
-        topic = state.topics.get(topic_id)
-        if topic is None or topic.title_attempted:
-            return
-        messages = [dag.nodes[mid].text for mid in topic.message_ids if mid in dag.nodes][-5:]
-        if not messages:
-            return
-        topic.title_attempted = True
-        revision, epoch = runtime.revision, runtime.epoch
-        title = await reranker.title(umo=runtime.umo, messages=messages)
-        if (not title or runtime.routing_state is not state or runtime.dag is not dag
-                or runtime.revision != revision or runtime.epoch != epoch
-                or state.topics.get(topic_id) is not topic):
-            return
-        topic.generated_title = title
-        topic.label = title
-        for mid in topic.message_ids:
-            if mid in dag.nodes:
-                dag.nodes[mid].metadata["topic_title"] = title
+        """Generate display metadata without holding the session lock during I/O."""
+        async with _state_guard(runtime):
+            state, dag = runtime.routing_state, runtime.dag
+            if dag is None or dag.get_node(node.msg_id) is not node:
+                return
+            snapshot = node.metadata.get("routing", {})
+            topic_id = snapshot.get("topic_id")
+            topic = state.topics.get(topic_id)
+            if (topic is None or topic.generated_title or topic.title_in_flight
+                    or time.monotonic() < topic.title_retry_at):
+                return
+            messages = [dag.nodes[mid].text for mid in topic.message_ids if mid in dag.nodes][-5:]
+            if not messages:
+                return
+            topic.title_attempted = True
+            topic.title_in_flight = True
+            revision, epoch = getattr(runtime, "revision", None), getattr(runtime, "epoch", None)
+        title = ""
+        failed = False
+        try:
+            title = await reranker.title(umo=runtime.umo, messages=messages)
+            failed = not bool(title)
+        except Exception as exc:
+            failed = True
+            logger.debug("[Router] Topic title unavailable (%s)", type(exc).__name__)
+        finally:
+            async with _state_guard(runtime):
+                topic.title_in_flight = False
+                if failed:
+                    topic.title_failures = min(topic.title_failures + 1, 5)
+                    topic.title_retry_at = time.monotonic() + min(300.0, 30.0 * 2 ** (topic.title_failures - 1))
+                if (title and runtime.routing_state is state and runtime.dag is dag
+                        and getattr(runtime, "revision", None) == revision
+                        and getattr(runtime, "epoch", None) == epoch
+                        and state.topics.get(topic_id) is topic
+                        and dag.get_node(node.msg_id) is node
+                        and node.metadata.get("routing") is snapshot
+                        and snapshot.get("topic_id") == topic_id):
+                    topic.generated_title = title
+                    topic.label = title
+                    topic.title_failures = 0
+                    topic.title_retry_at = 0.0
+                    for mid in topic.message_ids:
+                        if mid in dag.nodes:
+                            dag.nodes[mid].metadata["topic_title"] = title
 
     def observe_bot_message(self, runtime: Any, node: ConversationNode) -> RoutingInference:
         """Call only after successful delivery, when the bot node is in the DAG."""

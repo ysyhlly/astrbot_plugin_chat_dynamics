@@ -254,6 +254,8 @@ function overviewSnapshotFingerprint(data) {
     safe.pending_count,
     safe.shadow_mode,
     safe.decision_mode,
+    safe.persona_fallback,
+    safe.agent_bridge,
     safe.console_show_message_content,
     safe.presence_knob,
     JSON.stringify(safe.provider_resolution || {}),
@@ -333,6 +335,9 @@ function renderOverview(data) {
   if (safeData.decision_mode === "persona_model") {
     els.shadowState.textContent += " · 人设模型决策";
     els.shadowState.title = `Agent: ${safeData.agent_bridge || "未知"}；不参与决策的旧选项：${(safeData.inactive_options || []).join("、")}`;
+  } else if (safeData.persona_fallback) {
+    els.shadowState.textContent += " · 人设不可用，已切换规则模式";
+    els.shadowState.title = String(safeData.persona_fallback);
   } else {
     els.shadowState.title = "";
   }
@@ -658,7 +663,7 @@ function cssMode(mode) {
 }
 
 function escapeHtml(value) {
-  return String(value)
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

@@ -474,7 +474,8 @@ class ConversationDAG:
                 collected_ids.add(node.msg_id)
 
         result = [self.nodes[m_id] for m_id in collected_ids if m_id in self.nodes]
-        result.sort(key=lambda n: (n.timestamp, self.chronological_ids.index(n.msg_id) if n.msg_id in self.chronological_ids else 0))
+        order = {mid: index for index, mid in enumerate(self.chronological_ids)}
+        result.sort(key=lambda n: (n.timestamp, order.get(n.msg_id, 0)))
         return result[-max_nodes:] if len(result) > max_nodes else result
 
     def get_context_for_message(
@@ -513,7 +514,8 @@ class ConversationDAG:
             same_thread = bool(leaf.thread_id) and node.thread_id == leaf.thread_id
             if node.msg_id == leaf.msg_id or same_party or related_mention or same_turn or same_thread:
                 candidates.append(node)
-        candidates.sort(key=lambda n: (n.timestamp, self.chronological_ids.index(n.msg_id)))
+        order = {mid: index for index, mid in enumerate(self.chronological_ids)}
+        candidates.sort(key=lambda n: (n.timestamp, order.get(n.msg_id, 0)))
         return candidates[-max_nodes:]
 
     def get_recent_nodes(self, limit: int = 20) -> List[ConversationNode]:

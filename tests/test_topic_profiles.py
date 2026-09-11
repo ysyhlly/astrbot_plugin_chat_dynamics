@@ -15,6 +15,7 @@ def test_profile_rebuild_excludes_fillers_and_reassigned_message():
     TopicResolver.rebuild_profile(topic, dag)
     assert topic.centroid_vector is None
     assert topic.exemplar_messages == []
+    assert topic.summary_excerpts == []
 
 
 def test_candidate_context_does_not_borrow_unrelated_speaker_history():
@@ -101,4 +102,104 @@ def test_neural_centroid_requires_complete_same_dimension_cache():
     assert topic.centroid_space == 'hashed'
     adapter.configure(provider_id='replacement-model')
     resolver.score_topic(node, dag, topic, {'a': 0, 'b': 0})
+    assert topic.centroid_space == 'hashed'
+
+
+def test_unchanged_profile_reuses_vectors_across_query_timestamps(monkeypatch):
+    from astrbot_plugin_chat_dynamics.core import topic_resolution
+    calls = []
+    original = topic_resolution.hashed_embedding
+
+    def counted(text):
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(topic_resolution, 'hashed_embedding', counted)
+    dag = ConversationDAG()
+    dag.add_message('a', 'A', 'GPU cooling fan temperature', timestamp=1)
+    first = dag.add_message('b', 'B', 'GPU cooling advice', timestamp=2)
+    second = dag.add_message('c', 'B', 'GPU cooling advice', timestamp=3)
+    topic = TopicState('gpu', message_ids=['a'])
+    resolver = TopicResolver()
+    resolver.score_topic(first, dag, topic, {'a': 1})
+    resolver.score_topic(second, dag, topic, {'a': 1})
+    assert calls.count(dag.nodes['a'].text) == 1
+    assert len(topic._profile_cache) <= 2
+
+
+def test_remember_rebuilds_only_reassigned_topics(monkeypatch):
+    dag = ConversationDAG()
+    node = dag.add_message('a', 'A', 'GPU cooling fan temperature', timestamp=1)
+    state = RoutingState(topics={
+        'old': TopicState('old', message_ids=['a']),
+        'untouched': TopicState('untouched'),
+    })
+    calls = []
+    original = TopicResolver.rebuild_profile
+
+    def counted(topic, *args, **kwargs):
+        calls.append(topic.topic_id)
+        return original(topic, *args, **kwargs)
+
+    monkeypatch.setattr(TopicResolver, 'rebuild_profile', staticmethod(counted))
+    TopicResolver.remember(state, node, 'new', dag)
+    assert calls == ['old', 'new']
+    assert state.topics['old'].participants == set()
+    assert state.topics['new'].participants == {'A'}
+
+
+def test_profile_cache_tracks_content_routing_and_eviction():
+    dag = ConversationDAG()
+    parent = dag.add_message('parent', 'P', 'GPU cooling temperature', timestamp=1)
+    node = dag.add_message('a', 'A', 'Reduce fan temperature', timestamp=2)
+    topic = TopicState('gpu', message_ids=['a'])
+    TopicResolver.rebuild_profile(topic, dag)
+    node.reply_to_id = 'parent'
+    node.metadata['routing'] = {'addressee_ids': ['B']}
+    node.text = 'Travel itinerary planning'
+    TopicResolver.rebuild_profile(topic, dag)
+    assert topic.interlocutor_affinity == {('A', 'P'): 1, ('A', 'B'): 1}
+    assert topic.label == 'Travel itinerary planning'
+    parent.user_id = 'Q'
+    TopicResolver.rebuild_profile(topic, dag)
+    assert ('A', 'Q') in topic.interlocutor_affinity
+    del dag.nodes['a']
+    TopicResolver.rebuild_profile(topic, dag)
+    assert topic.participants == set()
+    assert topic.centroid_vector is None
+    assert topic.summary_excerpts == []
+
+
+def test_cached_historical_view_expires_without_rewinding_public_profile():
+    dag = ConversationDAG()
+    dag.add_message('a', 'A', 'GPU cooling temperature', timestamp=1)
+    future = dag.add_message('future', 'B', 'GPU cooling advice', timestamp=500)
+    query = dag.add_message('query', 'A', 'GPU cooling temperature', timestamp=2)
+    topic = TopicState('gpu', message_ids=['a', 'future'])
+    resolver = TopicResolver()
+    initial = resolver.score_topic(query, dag, topic, {'a': 1, 'future': 1})
+    assert initial > 0
+    assert resolver.score_topic(query, dag, topic, {'a': 1, 'future': 1}) == initial
+    query.timestamp = 400
+    assert resolver.score_topic(query, dag, topic, {'a': 1, 'future': 1}) == 0
+    assert topic.updated_at == future.timestamp
+    assert topic.recent_message_ids == ['a', 'future']
+    assert len(topic._profile_cache) <= 2
+
+
+def test_profile_cache_neural_warmup_same_dimension_update_and_query_fallback():
+    from astrbot_plugin_chat_dynamics.core.embedding_adapter import EmbeddingAdapter
+    adapter = EmbeddingAdapter(enabled=True, provider_id='model')
+    dag = ConversationDAG(semantic_match_fn=adapter.match)
+    node = dag.add_message('a', 'A', 'GPU cooling temperature', timestamp=1)
+    topic = TopicState('gpu', message_ids=['a'])
+    TopicResolver.rebuild_profile(topic, dag)
+    assert topic.centroid_space == 'hashed'
+    adapter.remember(node.text, [1, 0])
+    TopicResolver.rebuild_profile(topic, dag)
+    assert topic.centroid_vector == [1, 0]
+    adapter.remember(node.text, [0, 1])
+    TopicResolver.rebuild_profile(topic, dag)
+    assert topic.centroid_vector == [0, 1]
+    TopicResolver.rebuild_profile(topic, dag, query_text='uncached query')
     assert topic.centroid_space == 'hashed'

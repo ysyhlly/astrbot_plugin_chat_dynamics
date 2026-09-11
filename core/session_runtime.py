@@ -24,6 +24,9 @@ class TopicState:
     label: str = ""
     generated_title: str = ""
     title_attempted: bool = False
+    title_in_flight: bool = False
+    title_failures: int = 0
+    title_retry_at: float = 0.0
     created_at: float = 0.0
     exemplar_messages: list[tuple[str, float]] = field(default_factory=list)
     centroid_vector: Optional[list[float]] = None

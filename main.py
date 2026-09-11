@@ -14,6 +14,7 @@ import math
 import re
 import threading
 from collections import deque
+from copy import deepcopy
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from .core.message_semantics import describe_message
@@ -31,6 +32,7 @@ except ImportError as exc:
 from .core.addressivity import AddressivityLevel, AddressivityRouter
 from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
+from .core.data_paths import resolve_data_root
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
 from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
@@ -131,6 +133,51 @@ _METRIC_NAMES = (
     "preset_applied",
     "preset_apply_failed",
 )
+_DIRECT_RUNTIME_ATTRS = (
+    "enabled",
+    "pipeline_mode",
+    "ambient_intervention",
+    "takeover_all",
+    "provider_id",
+    "reply_provider_id",
+    "vibe_provider_id",
+    "command_prefix",
+    "vibe_llm_enabled",
+    "shadow_mode",
+    "console_show_message_content",
+    "presence_knob",
+    "social_manners_enabled",
+    "relay_baton_enabled",
+    "private_field_enabled",
+    "hyped_quota_enabled",
+    "media_image_gate_enabled",
+    "media_voice_gate_enabled",
+    "media_understand_reply_enabled",
+    "media_privacy_strict",
+    "deciding_detect_enabled",
+    "gap_fill_proactive_enabled",
+    "cold_memory_nudge_enabled",
+    "newcomer_caution_enabled",
+    "pace_align_enabled",
+    "proactive_quota_enabled",
+    "proactive_quota_per_hour",
+    "proactive_quota_per_topic",
+    "daily_rhythm_enabled",
+    "rhythm_morning_hi_enabled",
+    "rhythm_day_share_slots",
+    "rhythm_goodnight_text_quota",
+    "rhythm_sleep_after_winddown",
+    "rhythm_allow_self_sleep",
+    "rhythm_allow_wake",
+    "rhythm_insomnia_enabled",
+    "rhythm_force_sleep",
+    "rhythm_skip_morning_hi_tonight",
+    "mood_memory_enabled",
+    "slang_trial_enabled",
+    "group_memory_enabled",
+    "selflearning_integration",
+)
+
 _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "chat_dynamics_owned_send", default=None
 )
@@ -152,6 +199,27 @@ class _PokeJob:
     event: Any
     parsed: Any
     now: float
+
+
+@dataclass
+class _PreparedTurn:
+    """Local routing snapshot carried across optional model work."""
+
+    result: DebounceResult
+    runtime: SessionRuntime
+    dag: ConversationDAG
+    node: ConversationNode
+    turn_nodes: tuple[ConversationNode, ...]
+    parsed_events: tuple[Any, ...]
+    explicit_platform: bool
+    now: float
+    analysis_text: str
+    vibe_mode: GroupChatMode
+    telemetrics: Any
+    neural_ready: Any
+    epoch: int
+    revision: int
+    owner_revision: int
 
 
 @dataclass
@@ -203,7 +271,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.3.12",
+    "v1.4.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -235,6 +303,9 @@ class ChatDynamicsPlugin(Star):
         self.thread_router = ThreadRouter(
             topic_window_seconds=runtime_config.topic_window_seconds,
             topic_join_threshold=runtime_config.topic_join_threshold,
+            topic_commit_threshold=runtime_config.topic_commit_threshold,
+            topic_ambiguity_threshold=runtime_config.topic_ambiguity_threshold,
+            topic_margin_threshold=runtime_config.topic_margin_threshold,
             parent_window_seconds=runtime_config.parent_window_seconds,
             parent_accept_threshold=runtime_config.parent_accept_threshold,
         )
@@ -269,8 +340,7 @@ class ChatDynamicsPlugin(Star):
         )
         self.arbiter.on_cooling_changed = self._schedule_persist_cooling
 
-        data_root = _PluginPath(__file__).resolve().parent / "data" / "chat_dynamics"
-        data_root.mkdir(parents=True, exist_ok=True)
+        data_root = resolve_data_root(_PluginPath(__file__).resolve().parent / "data" / "chat_dynamics")
         self.selflearning = SelfLearningBridge(
             self.context, enabled=runtime_config.selflearning_integration
         )
@@ -289,39 +359,6 @@ class ChatDynamicsPlugin(Star):
         self.poke_policy = PokeReplyPolicy()
         self._poke_streaks: dict[tuple[str, str], tuple[int, float]] = {}
         self._poke_replied_ids: set[tuple[str, str]] = set()
-        self.presence_knob = runtime_config.presence_knob
-        self.social_manners_enabled = runtime_config.social_manners_enabled
-        self.relay_baton_enabled = runtime_config.relay_baton_enabled
-        self.private_field_enabled = runtime_config.private_field_enabled
-        self.hyped_quota_enabled = runtime_config.hyped_quota_enabled
-        self.media_image_gate_enabled = runtime_config.media_image_gate_enabled
-        self.media_voice_gate_enabled = runtime_config.media_voice_gate_enabled
-        self.media_understand_reply_enabled = runtime_config.media_understand_reply_enabled
-        self.media_privacy_strict = runtime_config.media_privacy_strict
-        self.deciding_detect_enabled = runtime_config.deciding_detect_enabled
-        self.gap_fill_proactive_enabled = runtime_config.gap_fill_proactive_enabled
-        self.cold_memory_nudge_enabled = runtime_config.cold_memory_nudge_enabled
-        self.newcomer_caution_enabled = runtime_config.newcomer_caution_enabled
-        self.pace_align_enabled = runtime_config.pace_align_enabled
-        self.proactive_quota_enabled = runtime_config.proactive_quota_enabled
-        self.proactive_quota_per_hour = runtime_config.proactive_quota_per_hour
-        self.proactive_quota_per_topic = runtime_config.proactive_quota_per_topic
-        self.daily_rhythm_enabled = runtime_config.daily_rhythm_enabled
-        self.rhythm_morning_hi_enabled = runtime_config.rhythm_morning_hi_enabled
-        self.rhythm_day_share_slots = runtime_config.rhythm_day_share_slots
-        self.rhythm_goodnight_text_quota = runtime_config.rhythm_goodnight_text_quota
-        self.rhythm_sleep_after_winddown = runtime_config.rhythm_sleep_after_winddown
-        self.rhythm_allow_self_sleep = runtime_config.rhythm_allow_self_sleep
-        self.rhythm_allow_wake = runtime_config.rhythm_allow_wake
-        self.rhythm_insomnia_enabled = runtime_config.rhythm_insomnia_enabled
-        self.rhythm_force_sleep = runtime_config.rhythm_force_sleep
-        self.rhythm_skip_morning_hi_tonight = runtime_config.rhythm_skip_morning_hi_tonight
-        self.mood_memory_enabled = runtime_config.mood_memory_enabled
-        self.slang_trial_enabled = runtime_config.slang_trial_enabled
-        self.group_memory_enabled = runtime_config.group_memory_enabled
-        self.selflearning_integration = runtime_config.selflearning_integration
-
-
         self.style_shaper = StyleShaper(
             strip_markdown_in_banter=runtime_config.strip_markdown_in_banter,
             casual_emoji_enabled=runtime_config.casual_emoji_enabled,
@@ -337,6 +374,8 @@ class ChatDynamicsPlugin(Star):
             configured_provider_id=self.provider_id,
             reply_provider_id=self.reply_provider_id,
             vibe_provider_id=self.vibe_provider_id,
+            reply_timeout=runtime_config.reply_timeout,
+            tool_agent_timeout=runtime_config.tool_agent_timeout,
         )
         self.embeddings = EmbeddingAdapter(
             self.context,
@@ -363,6 +402,8 @@ class ChatDynamicsPlugin(Star):
         self._cooling_persist_revision: int = 0
         self._cooling_persist_dirty: bool = False
         self._cooling_persist_event = asyncio.Event()
+        self._runtime_persist_revision = 1
+        self._runtime_persist_saved_revision = 0
         self._runtime_persist_task: Optional[asyncio.Task] = None
         self._runtime_persist_stop = asyncio.Event()
         self._runtime_persist_lock = asyncio.Lock()
@@ -378,7 +419,11 @@ class ChatDynamicsPlugin(Star):
         self._web_apis_registered = self._web.registered
         self.persona_engine = PersonaEngine(self)
         if self._persona_mode() and not self.persona_engine.bridge.check():
-            raise RuntimeError(self.persona_engine.bridge.diagnostic)
+            self._persona_fallback = self.persona_engine.bridge.diagnostic or "CD_AGENT_BRIDGE_UNAVAILABLE"
+            self._apply_runtime_config(replace(runtime_config, decision_mode="legacy"), validated=True)
+            self._runtime_config = replace(runtime_config, decision_mode="legacy")
+            logger.warning("[ChatDynamics] Persona unavailable; using legacy mode: %s", self._persona_fallback)
+        self._config_source_snapshot = self._config_snapshot()
         logger.info(
             "[ChatDynamics] Initialized ChatDynamicsPlugin pipeline_mode=%s",
             self.pipeline_mode,
@@ -424,51 +469,11 @@ class ChatDynamicsPlugin(Star):
         if previous_decision != self.decision_mode and hasattr(self, "_sessions"):
             for session_id in list(self._sessions):
                 self._invalidate_pending_generation(session_id)
-        self.enabled = cfg.enabled
-        self.pipeline_mode = cfg.pipeline_mode
-        self.ambient_intervention = cfg.ambient_intervention
-        self.takeover_all = cfg.takeover_all
+        for name in _DIRECT_RUNTIME_ATTRS:
+            setattr(self, name, getattr(cfg, name))
         self.takeover_groups = set(cfg.takeover_groups)
         self.exclude_groups = set(cfg.exclude_groups)
         self.bot_names = list(cfg.bot_names)
-        self.provider_id = cfg.provider_id
-        self.reply_provider_id = cfg.reply_provider_id
-        self.vibe_provider_id = cfg.vibe_provider_id
-        self.command_prefix = cfg.command_prefix
-        self.vibe_llm_enabled = cfg.vibe_llm_enabled
-        self.shadow_mode = cfg.shadow_mode
-        self.console_show_message_content = cfg.console_show_message_content
-        self.presence_knob = cfg.presence_knob
-        self.social_manners_enabled = cfg.social_manners_enabled
-        self.relay_baton_enabled = cfg.relay_baton_enabled
-        self.private_field_enabled = cfg.private_field_enabled
-        self.hyped_quota_enabled = cfg.hyped_quota_enabled
-        self.media_image_gate_enabled = cfg.media_image_gate_enabled
-        self.media_voice_gate_enabled = cfg.media_voice_gate_enabled
-        self.media_understand_reply_enabled = cfg.media_understand_reply_enabled
-        self.media_privacy_strict = cfg.media_privacy_strict
-        self.deciding_detect_enabled = cfg.deciding_detect_enabled
-        self.gap_fill_proactive_enabled = cfg.gap_fill_proactive_enabled
-        self.cold_memory_nudge_enabled = cfg.cold_memory_nudge_enabled
-        self.newcomer_caution_enabled = cfg.newcomer_caution_enabled
-        self.pace_align_enabled = cfg.pace_align_enabled
-        self.proactive_quota_enabled = cfg.proactive_quota_enabled
-        self.proactive_quota_per_hour = cfg.proactive_quota_per_hour
-        self.proactive_quota_per_topic = cfg.proactive_quota_per_topic
-        self.daily_rhythm_enabled = cfg.daily_rhythm_enabled
-        self.rhythm_morning_hi_enabled = cfg.rhythm_morning_hi_enabled
-        self.rhythm_day_share_slots = cfg.rhythm_day_share_slots
-        self.rhythm_goodnight_text_quota = cfg.rhythm_goodnight_text_quota
-        self.rhythm_sleep_after_winddown = cfg.rhythm_sleep_after_winddown
-        self.rhythm_allow_self_sleep = cfg.rhythm_allow_self_sleep
-        self.rhythm_allow_wake = cfg.rhythm_allow_wake
-        self.rhythm_insomnia_enabled = cfg.rhythm_insomnia_enabled
-        self.rhythm_force_sleep = cfg.rhythm_force_sleep
-        self.rhythm_skip_morning_hi_tonight = cfg.rhythm_skip_morning_hi_tonight
-        self.mood_memory_enabled = cfg.mood_memory_enabled
-        self.slang_trial_enabled = cfg.slang_trial_enabled
-        self.group_memory_enabled = cfg.group_memory_enabled
-        self.selflearning_integration = cfg.selflearning_integration
         if hasattr(self, "selflearning"):
             self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context)
         if hasattr(self, "mood_memory"):
@@ -497,6 +502,8 @@ class ChatDynamicsPlugin(Star):
                 cfg.provider_id,
                 reply_provider_id=cfg.reply_provider_id,
                 vibe_provider_id=cfg.vibe_provider_id,
+                reply_timeout=cfg.reply_timeout,
+                tool_agent_timeout=cfg.tool_agent_timeout,
             )
         for warning in log_warnings:
             if warning not in self._config_warnings_seen:
@@ -513,11 +520,19 @@ class ChatDynamicsPlugin(Star):
     ) -> None:
         if getattr(self, "_config_save_in_progress", False):
             return
+        if (validated_config is None and isinstance(self.config, dict)
+                and self.config == getattr(self, "_config_source_snapshot", None)):
+            return
+        source = self._config_snapshot()
+        if validated_config is None and source == getattr(self, "_config_source_snapshot", None):
+            return
         cfg, warnings = validated_config or parse_runtime_config(self.config)
         self._apply_runtime_config(cfg, log_warnings=warnings, validated=validated_config is not None)
-        self.thread_router.topic_resolver.window_seconds = cfg.topic_window_seconds
-        self.thread_router.topic_resolver.ambiguity_threshold = cfg.topic_join_threshold
-        self.thread_router.topic_resolver.join_threshold = max(0.58, cfg.topic_join_threshold + 0.10) if cfg.topic_join_threshold < 0.58 else cfg.topic_join_threshold
+        self.thread_router.configure_topics(
+            window_seconds=cfg.topic_window_seconds, legacy_threshold=cfg.topic_join_threshold,
+            commit_threshold=cfg.topic_commit_threshold, ambiguity_threshold=cfg.topic_ambiguity_threshold,
+            margin_threshold=cfg.topic_margin_threshold,
+        )
         self.thread_router.parent_retriever.window_seconds = cfg.parent_window_seconds
         self.thread_router.parent_retriever.accept_threshold = cfg.parent_accept_threshold
         self.addressivity_router.bot_names = set(self.bot_names)
@@ -549,6 +564,19 @@ class ChatDynamicsPlugin(Star):
             )
             self._registry.bind_semantic_match(self.embeddings.match)
         self._runtime_config = cfg
+        self._config_source_snapshot = source
+        self._persona_fallback = ""
+
+    def _config_snapshot(self) -> Any:
+        """Keep mutable lists detached so in-place host configuration edits are detected."""
+        try:
+            return deepcopy(dict(self.config))
+        except (TypeError, ValueError):
+            return deepcopy(self._config_stored_values())
+
+    def refresh_config(self) -> None:
+        """Apply a changed host configuration once, outside pure scope queries."""
+        self._sync_runtime_from_config()
 
     @property
     def time_service(self) -> TimeService:
@@ -583,10 +611,15 @@ class ChatDynamicsPlugin(Star):
             session_key, group_id=group_id, umo=umo, bot_id=bot_id
         )
         self._umo_by_session[runtime.session_key] = runtime.umo
+        self._mark_panel_runtime_dirty()
         return runtime
+
+    def _mark_panel_runtime_dirty(self) -> None:
+        self._runtime_persist_revision = getattr(self, "_runtime_persist_revision", 0) + 1
 
     def _metric(self, name: str, amount: int = 1) -> None:
         self._metrics[name] = self._metrics.get(name, 0) + amount
+        self._mark_panel_runtime_dirty()
 
     @staticmethod
     def _session_label(session_id: Any) -> str:
@@ -656,6 +689,13 @@ class ChatDynamicsPlugin(Star):
             "topic_reranker_timeout": cfg.topic_reranker_timeout,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
             "decision_timeout": getattr(cfg, "decision_timeout", 8.0),
+            "reply_timeout": cfg.reply_timeout,
+            "tool_agent_timeout": cfg.tool_agent_timeout,
+            "topic_commit_threshold": cfg.topic_commit_threshold,
+            "topic_ambiguity_threshold": cfg.topic_ambiguity_threshold,
+            "topic_margin_threshold": cfg.topic_margin_threshold,
+            "topic_join_threshold": cfg.topic_join_threshold,
+            "topic_window_seconds": cfg.topic_window_seconds,
             "pipeline_mode": getattr(cfg, "pipeline_mode", PIPELINE_FILTER),
             "ambient_intervention": bool(getattr(cfg, "ambient_intervention", False)),
             "takeover_all": bool(getattr(cfg, "takeover_all", False)),
@@ -1308,8 +1348,7 @@ class ChatDynamicsPlugin(Star):
         task.add_done_callback(_cleanup)
 
     def is_group_takeover_enabled(self, group_id: str) -> bool:
-        """Takeover is opt-in: empty whitelist does not capture every group."""
-        self._sync_runtime_from_config()
+        """Read applied scope only; an empty whitelist never captures every group."""
         if not self.enabled:
             return False
         if not group_id:
@@ -1453,16 +1492,20 @@ class ChatDynamicsPlugin(Star):
             if inspect.isawaitable(payload):
                 payload = await payload
             restore_runtime_state(self, payload)
+            self._runtime_persist_saved_revision = self._runtime_persist_revision
         except Exception as exc:
             logger.warning("[ChatDynamics] Panel restore failed type=%s", type(exc).__name__)
 
-    async def _save_panel_runtime(self) -> None:
+    async def _save_panel_runtime(self, *, force: bool = True) -> None:
         from .core.runtime_persistence import export_runtime_state
 
         writer = getattr(self, "put_kv_data", None)
         if not callable(writer):
             return
         async with self._runtime_persist_lock:
+            revision = self._runtime_persist_revision
+            if not force and revision == self._runtime_persist_saved_revision:
+                return
             try:
                 payload = export_runtime_state(self)
                 result = writer(_KV_RUNTIME, payload)
@@ -1470,6 +1513,7 @@ class ChatDynamicsPlugin(Star):
                     result = await result
                 if result is False:
                     raise RuntimeError("panel storage returned false")
+                self._runtime_persist_saved_revision = revision
             except Exception as exc:
                 self._metric("panel_persist_failed")
                 logger.warning("[ChatDynamics] Panel save failed type=%s", type(exc).__name__)
@@ -1480,7 +1524,7 @@ class ChatDynamicsPlugin(Star):
                 await asyncio.wait_for(self._runtime_persist_stop.wait(), timeout=30.0)
                 break
             except asyncio.TimeoutError:
-                await self._save_panel_runtime()
+                await self._save_panel_runtime(force=False)
 
     def _schedule_persist_cooling(self) -> None:
         if self._shutting_down:
@@ -1637,6 +1681,7 @@ class ChatDynamicsPlugin(Star):
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
         """Filter group chat with session-scoped state and bounded input."""
+        self.refresh_config()
         extra_prefixes = [self.command_prefix] if self.command_prefix not in ("/", "／") else None
         parsed = parse_group_event(event, command_prefixes=extra_prefixes)
         if not parsed.group_id:
@@ -1704,7 +1749,8 @@ class ChatDynamicsPlugin(Star):
             # user's already generated native tail.  This runs after the
             # message-ID dedupe so a repeated hook for the same event cannot
             # cancel the batch created by that event.
-            if self._looks_like_strong_address(parsed, runtime):
+            strong_address = self._looks_like_strong_address(parsed, runtime)
+            if strong_address:
                 runtime.invalidate_followups_for_user(parsed.sender_id)
 
             if getattr(parsed, "has_poke", False):
@@ -1729,9 +1775,7 @@ class ChatDynamicsPlugin(Star):
                 if not self.shadow_mode:
                     self._claim_poke_event(event)
 
-            addressed_media = self._looks_like_strong_address(
-                parsed, runtime
-            ) and has_understandable_media(parsed)
+            addressed_media = strong_address and has_understandable_media(parsed)
             bare_bot_mention = (
                 not parsed.has_media
                 and not (parsed.text or "").strip()
@@ -1991,7 +2035,7 @@ class ChatDynamicsPlugin(Star):
         await self.on_turn_flushed(result)
 
     async def on_turn_flushed(self, result: DebounceResult) -> None:
-        """Serialize one flushed turn against reset/cool/native hook state."""
+        """Prepare and commit under the session lock; await models outside it."""
         if self._shutting_down or not self.debounce.is_result_current(result):
             return
         runtime = self._sessions.get(result.session_id)
@@ -2016,7 +2060,17 @@ class ChatDynamicsPlugin(Star):
                 self._metric("stale_turn_ignored")
                 return
             runtime.touch(self.time_service.time())
-            model_turn = await self._on_turn_flushed_locked(result)
+            model_turn = self._prepare_turn_locked(result)
+        if isinstance(model_turn, _PreparedTurn):
+            prepared = model_turn
+            if not prepared.explicit_platform:
+                await self._enrich_turn(prepared)
+            async with runtime.state_lock:
+                if not self._prepared_turn_current(prepared):
+                    self._metric("stale_turn_ignored")
+                    return
+                model_turn = self._finish_turn_locked(prepared)
+                self._create_background_task(self._enrich_topic_background(prepared))
         if isinstance(model_turn, _PokeJob):
             await self._deliver_poke_reply(
                 runtime,
@@ -2098,7 +2152,7 @@ class ChatDynamicsPlugin(Star):
 
         return arb_res
 
-    async def _on_turn_flushed_locked(self, result: DebounceResult) -> None:
+    def _prepare_turn_locked(self, result: DebounceResult) -> _PreparedTurn | _PokeJob | None:
         """Mutate a session after its state lock has been acquired."""
         if self._shutting_down:
             return
@@ -2148,6 +2202,7 @@ class ChatDynamicsPlugin(Star):
         dag = runtime.dag
         if dag is None:
             raise RuntimeError("session DAG is unavailable")
+        self._mark_panel_runtime_dirty()
         runtime.turn_sequence += 1
         turn_id = f"turn_{runtime.turn_sequence}_{user_id}"
         turn_nodes: List[ConversationNode] = []
@@ -2243,32 +2298,93 @@ class ChatDynamicsPlugin(Star):
                 self._schedule_neural_embed(session_id, turn_node)
         explicit_platform = any(self._looks_like_strong_address(p, runtime) for p in parsed_events)
         routing = node.metadata.get("routing", {})
+        neural_ready = None
         if (task is not None and not explicit_platform
                 and getattr(self._runtime_config, "conversation_router_enabled", True)
                 and (routing.get("ambiguous") or len(node.text.strip()) <= 16)):
-            ready = getattr(task, "routing_ready", None)
-            if ready is not None:
-                timeout = float(getattr(self._runtime_config, "routing_neural_timeout", 0.5))
-                try:
-                    await asyncio.wait_for(ready.wait(), timeout=max(0.0, timeout))
-                except asyncio.TimeoutError:
-                    pass
-                # The warmup signals before taking this same state lock.
-                query = build_contextual_query(node, dag)
-                vector = self.embeddings.cached(query)
-                if vector is not None:
-                    self._route_message(runtime, node)
+            neural_ready = getattr(task, "routing_ready", None)
+        return _PreparedTurn(
+            result=result, runtime=runtime, dag=dag, node=node,
+            turn_nodes=tuple(turn_nodes), parsed_events=tuple(parsed_events),
+            explicit_platform=explicit_platform, now=now, analysis_text=analysis_text,
+            vibe_mode=vibe_mode, telemetrics=telemetrics, neural_ready=neural_ready,
+            epoch=runtime.epoch, revision=runtime.revision,
+            owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
+        )
 
-        if (getattr(self._runtime_config, "topic_reranker_enabled", False)
-                and not self.shadow_mode
-                and getattr(self._runtime_config, "conversation_router_enabled", True)):
-            reranker = TopicReranker(
-                LLMAdapter(self.context, configured_provider_id=self._runtime_config.topic_reranker_provider),
-                enabled=True, timeout_seconds=self._runtime_config.topic_reranker_timeout,
-            )
-            await self.thread_router.rerank_pending(runtime, node, reranker)
-            await self.thread_router.title_topic(runtime, node, reranker)
+    def _prepared_turn_current(self, turn: _PreparedTurn) -> bool:
+        runtime = turn.runtime
+        return bool(
+            not self._shutting_down
+            and self._sessions.get(turn.result.session_id) is runtime
+            and self.debounce.is_result_current(turn.result)
+            and runtime.epoch == turn.epoch
+            and runtime.revision == turn.revision
+            and runtime.user_revisions.get(str(turn.result.user_id or ""), 0) == turn.owner_revision
+            and runtime.dag is turn.dag
+            and turn.dag.get_node(turn.node.msg_id) is turn.node
+        )
 
+    def _topic_reranker(self) -> TopicReranker | None:
+        cfg = self._runtime_config
+        if (not cfg.topic_reranker_enabled or self.shadow_mode
+                or not cfg.conversation_router_enabled):
+            return None
+        return TopicReranker(
+            LLMAdapter(self.context, configured_provider_id=cfg.topic_reranker_provider),
+            enabled=True, timeout_seconds=cfg.topic_reranker_timeout,
+        )
+
+    async def _enrich_turn(self, turn: _PreparedTurn) -> None:
+        if turn.neural_ready is not None:
+            try:
+                await asyncio.wait_for(
+                    turn.neural_ready.wait(),
+                    timeout=max(0.0, float(self._runtime_config.routing_neural_timeout)),
+                )
+            except asyncio.TimeoutError:
+                pass
+        async with turn.runtime.state_lock:
+            if not self._prepared_turn_current(turn):
+                return
+            if turn.neural_ready is not None:
+                query = build_contextual_query(turn.node, turn.dag)
+                if self.embeddings.cached(query) is not None:
+                    self._route_message(turn.runtime, turn.node)
+            reranker = self._topic_reranker()
+        if reranker is not None:
+            await self.thread_router.rerank_pending(turn.runtime, turn.node, reranker)
+            self._mark_panel_runtime_dirty()
+
+    async def _enrich_topic_background(self, turn: _PreparedTurn) -> None:
+        """Optional display enrichment never delays a reply or outlives reset."""
+        self._track_hook_task(turn.result.session_id)
+        runtime = turn.runtime
+        async with runtime.state_lock:
+            if (self._shutting_down or self._sessions.get(turn.result.session_id) is not runtime
+                    or runtime.epoch != turn.epoch or runtime.dag is not turn.dag
+                    or turn.dag.get_node(turn.node.msg_id) is not turn.node):
+                return
+            reranker = self._topic_reranker()
+        if reranker is not None:
+            if turn.explicit_platform:
+                await self.thread_router.rerank_pending(runtime, turn.node, reranker)
+            async with runtime.state_lock:
+                if (self._shutting_down or runtime.epoch != turn.epoch
+                        or self._sessions.get(turn.result.session_id) is not runtime
+                        or runtime.dag is not turn.dag
+                        or turn.dag.get_node(turn.node.msg_id) is not turn.node):
+                    return
+            await self.thread_router.title_topic(runtime, turn.node, reranker)
+            self._mark_panel_runtime_dirty()
+
+    def _finish_turn_locked(self, turn: _PreparedTurn) -> Any:
+        result, runtime, dag, node = turn.result, turn.runtime, turn.dag, turn.node
+        session_id, user_id = result.session_id, result.user_id
+        turn_nodes, parsed_events = turn.turn_nodes, turn.parsed_events
+        explicit_platform, now = turn.explicit_platform, turn.now
+        analysis_text, vibe_mode, telemetrics = turn.analysis_text, turn.vibe_mode, turn.telemetrics
+        last_event = result.last_event
         last_bot_node = runtime.last_bot_node
         runtime.expire_hovers(now)
         addressivity = self.addressivity_router.compute_addressivity(
@@ -2512,17 +2628,12 @@ class ChatDynamicsPlugin(Star):
             # A reset/cool operation may have detached this task and allowed a
             # newer generation to start. Only the current owner may clear the
             # shared runtime fields used by that newer task.
-            async def _finish_generation() -> None:
-                async with runtime.state_lock:
-                    if runtime.generation_task is generation_task:
-                        runtime.generation_task = None
-                        runtime.latest_pending = None
-                        self._in_flight.discard(runtime.session_key)
-            try:
-                await _finish_generation()
-            except asyncio.CancelledError:
+            # Ownership cleanup has no suspension point: on this event loop it
+            # is atomic, including when reset holds state_lock while cancelling.
+            if runtime.generation_task is generation_task:
+                runtime.generation_task = None
+                runtime.latest_pending = None
                 self._in_flight.discard(runtime.session_key)
-                raise
             self._prune_idle_sessions(self.time_service.time())
 
     async def _dispatch_bot_response(
@@ -2856,11 +2967,13 @@ class ChatDynamicsPlugin(Star):
         await self._refresh_vibe_from_llm(session_id, text, now)
 
     def _route_message(self, runtime, node):
+        self._mark_panel_runtime_dirty()
         if not getattr(self._runtime_config, "conversation_router_enabled", True):
             return None
         return self.thread_router.route(runtime, node, bot_names=self.bot_names)
 
     def _observe_routed_bot(self, runtime, node):
+        self._mark_panel_runtime_dirty()
         if getattr(self._runtime_config, "conversation_router_enabled", True):
             self.thread_router.observe_bot_message(runtime, node)
 
@@ -3368,6 +3481,7 @@ class ChatDynamicsPlugin(Star):
             task.cancel()
 
     def _event_in_scope(self, event: Any) -> Optional[str]:
+        self.refresh_config()
         parsed = parse_group_event(event) if event is not None else None
         if parsed is None or not parsed.group_id:
             return None

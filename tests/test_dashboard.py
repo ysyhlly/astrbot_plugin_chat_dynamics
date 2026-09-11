@@ -155,9 +155,11 @@ def test_live_config_changes_takeover():
     plugin = ChatDynamicsPlugin(context=MockContext(), config=cfg)
     assert plugin.is_group_takeover_enabled("g1") is True
     cfg["enable"] = False
+    plugin.refresh_config()
     assert plugin.is_group_takeover_enabled("g1") is False
     cfg["enable"] = True
     cfg["takeover_all"] = False
+    plugin.refresh_config()
     assert plugin.is_group_takeover_enabled("g1") is False
 
 
