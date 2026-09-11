@@ -292,6 +292,24 @@ async def test_unload_cancels_model_and_waits(model_plugin):
     assert cancelled.is_set() and not bridge.requests and not p._background_tasks
 
 
+@pytest.mark.parametrize("wrapper", ["{}", "```json\n{}\n```", " \n```\r\n{}\r\n```\t"])
+def test_structured_decision_accepts_complete_json_fence(wrapper):
+    turn = TurnContext("s", "u", "hello", (MessageSnapshot("m", "u", ""),), (), 0, 0, 0, False)
+    payload = dict(action="reply", state="focused", target_message_ids=["m"], response_goal="test", length="brief", reason_code="test")
+    assert TurnDecision.parse(wrapper.format(json.dumps(payload)), turn).target_message_ids == ("m",)
+
+
+@pytest.mark.parametrize("wrapper", [
+    "Here is JSON: {}", "{} trailing", "```python\n{}\n```", "```json\n{}",
+    "```json\n{}\n``` trailing", "```\n```json\n{}\n```\n```", "{}\n{}",
+])
+def test_structured_decision_rejects_prose_incomplete_and_nested_fences(wrapper):
+    turn = TurnContext("s", "u", "hello", (MessageSnapshot("m", "u", ""),), (), 0, 0, 0, False)
+    payload = json.dumps(dict(action="reply", state="focused", target_message_ids=["m"], response_goal="test", length="brief", reason_code="test"))
+    with pytest.raises(ValueError):
+        TurnDecision.parse(wrapper.replace("{}", payload), turn)
+
+
 def test_structured_decision_rejects_unknown_targets():
     turn = TurnContext("s", "u", "hello", (MessageSnapshot("m", "u", ""),), (), 0, 0, 0, False)
     payload = dict(action="reply", state="focused", target_message_ids=["unknown"], response_goal="test", length="brief", reason_code="test")
@@ -307,8 +325,9 @@ def test_invalid_decision_protocol_cannot_drive_delivery(change):
     turn = TurnContext("s", "u", "hello", (MessageSnapshot("m", "u", ""),), (), 0, 0, 0, False)
     payload = dict(action="reply", state="focused", target_message_ids=["m"], response_goal="test", length="brief", reason_code="test")
     payload.update(change)
-    with pytest.raises(ValueError):
-        TurnDecision.parse(json.dumps(payload), turn)
+    for text in (json.dumps(payload), "```json\n" + json.dumps(payload) + "\n```"):
+        with pytest.raises(ValueError):
+            TurnDecision.parse(text, turn)
     with pytest.raises(ValueError):
         TurnDecision.parse(" " * 8193, turn)
 

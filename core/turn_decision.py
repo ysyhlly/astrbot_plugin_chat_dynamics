@@ -66,6 +66,10 @@ class TurnDecision:
     def parse(cls, text: str, turn: TurnContext) -> TurnDecision:
         if not isinstance(text, str) or len(text) > 8192:
             raise ValueError("decision_size")
+        # Tolerate one complete presentation fence, never extract JSON from prose.
+        fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", text.strip(), re.DOTALL)
+        if fenced is not None:
+            text = fenced.group(1)
         data = json.loads(text)
         fields = {"action", "state", "target_message_ids", "response_goal", "length", "reason_code"}
         if not isinstance(data, dict) or set(data) != fields:

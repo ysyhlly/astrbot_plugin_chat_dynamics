@@ -234,7 +234,7 @@ def test_goodnight_quota_waits_for_note_spoke():
     """evaluate() must not burn the goodnight quota before a real send."""
     rhythm = DailyRhythmGate()
     cfg = _cfg(rhythm_goodnight_text_quota=1)
-    now = 9_000_000.0
+    now = _stamp_at(23)
     first = rhythm.evaluate(
         session_id="q1",
         user_id="a",
@@ -275,7 +275,7 @@ def test_script3_first_wave_stays_winding_not_asleep():
     """首波回完仍收束中，不立刻已睡."""
     gate = DynamicsDecisionGate()
     cfg = _cfg(presence_knob="sensible")
-    now = 6_000_000.0
+    now = _stamp_at(23)
     res = gate.evaluate(
         session_id="w1",
         user_id="a",
@@ -302,7 +302,7 @@ def test_script4_cold_then_asleep_hot_delays():
     """群冷/多数歇后再已睡；热聊推迟."""
     rhythm = DailyRhythmGate()
     cfg = _cfg()
-    now = 7_000_000.0
+    now = _stamp_at(23)
     # Enter winding
     v1 = rhythm.evaluate(
         session_id="s4",
@@ -425,7 +425,7 @@ def test_script6_insomnia_default_off_and_cap_when_on():
     """睡不着默认不出现；若开最多一句."""
     rhythm = DailyRhythmGate()
     cfg_off = _cfg(rhythm_insomnia_enabled=False)
-    now = 9_000_000.0
+    now = _stamp_at(23)
     # Force late-night hour
     st = list(time.localtime(now))
     st[3] = 2
@@ -482,7 +482,7 @@ def test_hard_split_goodnight_never_jumps_to_asleep():
 def test_status_and_why_silent_codes_readable():
     rhythm = DailyRhythmGate()
     cfg = _cfg()
-    now = 11_000_000.0
+    now = _stamp_at(23)
     v = rhythm.evaluate(
         session_id="ui",
         user_id="a",
@@ -674,3 +674,70 @@ def test_allow_self_sleep_at_night_when_cold():
     )
     assert kept.state == STATE_AWAKE
     assert kept.allow is True
+
+
+def test_daytime_goodnight_does_not_start_sleep():
+    gate = DailyRhythmGate()
+    now = _stamp_at(14)
+    verdict = gate.evaluate(session_id="day", text="晚安", now=now, cfg=_cfg())
+    gate.note_spoke("day", verdict=verdict, now=now)
+    assert verdict.state == STATE_AWAKE
+    assert not verdict.consume_goodnight_quota
+    assert gate.evaluate(session_id="day", text="聊天", now=now + 3600, cfg=_cfg()).state == STATE_AWAKE
+
+
+def test_wake_grace_uses_real_transition_and_expires():
+    gate = DailyRhythmGate()
+    gate.evaluate(session_id="wake", text="晚安", now=_stamp_at(1), cfg=_cfg())
+    noon = _stamp_at(12)
+    verdict = gate.evaluate(session_id="wake", text="早安", now=noon, cfg=_cfg())
+    assert verdict.action == "morning_hi"
+    assert gate.status("wake", now=noon)["last_wake_at"] == noon
+    assert gate.status("wake", now=noon)["asleep_since"] == 0
+    assert gate.evaluate(session_id="wake", text="早安", now=noon + 3 * 3600, cfg=_cfg()).action == ""
+
+
+def test_timezone_config_validation():
+    cfg, warnings = parse_runtime_config({"rhythm_timezone": "Asia/Shanghai"})
+    assert cfg.rhythm_timezone == "Asia/Shanghai"
+    assert not warnings
+    cfg, warnings = parse_runtime_config({"rhythm_timezone": "Invalid/Timezone"})
+    assert cfg.rhythm_timezone == ""
+    assert any("rhythm_timezone" in warning for warning in warnings)
+
+
+def test_timezone_controls_night_midnight_and_year_rollover():
+    from datetime import datetime, timezone
+
+    gate = DailyRhythmGate()
+    cfg = _cfg(rhythm_timezone="Asia/Shanghai")
+    # 14:00 UTC is 22:00 Shanghai, independent of the server timezone.
+    night = datetime(2026, 12, 31, 14, tzinfo=timezone.utc).timestamp()
+    assert gate.evaluate(session_id="tz", text="晚安", now=night, cfg=cfg).state == STATE_WINDING_DOWN
+    assert gate.evaluate(session_id="tz", now=night + 60, cfg=cfg).state == STATE_WINDING_DOWN
+    midnight = night + 2 * 3600
+    assert gate.evaluate(session_id="tz", now=midnight, cfg=cfg).state == STATE_ASLEEP_AFTER_WIND
+    assert gate.status("tz", now=midnight)["state"] == STATE_ASLEEP_AFTER_WIND
+    assert gate._sessions["tz"].day_key == "20270101"
+    assert gate.evaluate(session_id="tz", text="早安", now=night + 10 * 3600, cfg=cfg).action == "morning_hi"
+
+
+def test_force_sleep_survives_daytime_status_poll():
+    gate = DailyRhythmGate()
+    noon = _stamp_at(12)
+    cfg = _cfg(rhythm_force_sleep=True)
+    assert gate.evaluate(session_id="forced", now=noon, cfg=cfg).state == STATE_ASLEEP_SELF
+    assert gate.status("forced", now=noon + 60)["state"] == STATE_ASLEEP_SELF
+    assert gate.evaluate(session_id="forced", now=noon + 120, cfg=_cfg()).state == STATE_AWAKE
+
+
+def test_iana_dst_changes_night_boundary_without_fixed_offset():
+    from datetime import datetime, timezone
+
+    gate = DailyRhythmGate()
+    cfg = _cfg(rhythm_timezone="America/New_York")
+    # The same UTC hour is 21:00 in winter and 22:00 in summer.
+    winter = datetime(2026, 1, 16, 2, tzinfo=timezone.utc).timestamp()
+    summer = datetime(2026, 7, 16, 2, tzinfo=timezone.utc).timestamp()
+    assert gate.evaluate(session_id="winter", text="晚安", now=winter, cfg=cfg).state == STATE_AWAKE
+    assert gate.evaluate(session_id="summer", text="晚安", now=summer, cfg=cfg).state == STATE_WINDING_DOWN

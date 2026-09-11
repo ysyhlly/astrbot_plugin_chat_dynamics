@@ -11,6 +11,8 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.daily_rhythm")
@@ -113,6 +115,9 @@ class _SessionRhythm:
     sid: str = ""
     state: str = STATE_AWAKE
     day_key: str = ""
+    timezone: str = ""
+    force_sleep: bool = False
+    last_wake_at: float = 0.0
     wind_started_at: float = 0.0
     wind_sleep_deadline: float = 0.0  # conservative 20–40min target
     goodnight_text_used: int = 0
@@ -152,11 +157,15 @@ def _node_ts(node: Any) -> float:
     return 0.0
 
 
-def _day_key(stamp: float) -> str:
+def _day_key(stamp: float, timezone: str = "") -> str:
+    if timezone:
+        return datetime.fromtimestamp(stamp, ZoneInfo(timezone)).strftime("%Y%m%d")
     return time.strftime("%Y%m%d", time.localtime(stamp))
 
 
-def _local_hour(stamp: float) -> int:
+def _local_hour(stamp: float, timezone: str = "") -> int:
+    if timezone:
+        return datetime.fromtimestamp(stamp, ZoneInfo(timezone)).hour
     return int(time.localtime(stamp).tm_hour)
 
 
@@ -307,7 +316,7 @@ class DailyRhythmGate:
         if not enabled:
             return DailyRhythmVerdict(True, "disabled", REASON["disabled"], state=STATE_AWAKE)
 
-        sess = self._ensure(sid, stamp)
+        sess = self._ensure(sid, stamp, timezone=str(getattr(cfg, "rhythm_timezone", "") or ""))
         presence = str(presence_knob or "sensible").lower()
         kind = str(occasion_kind or "neutral").lower()
         clean = (text or "").strip()
@@ -323,6 +332,11 @@ class DailyRhythmGate:
         share_slots = int(getattr(cfg, "rhythm_day_share_slots", 1) or 0) if cfg is not None else 1
         share_slots = max(0, min(2, share_slots))
         insomnia_on = bool(getattr(cfg, "rhythm_insomnia_enabled", False)) if cfg is not None else False
+
+        sess.force_sleep = force_sleep
+        # Wake before timers can replace the original overnight sleep timestamp.
+        if not force_sleep:
+            self._maybe_end_overnight_sleep(sess, stamp)
 
         # Advance timers / sleep transitions before acting on this turn.
         self._tick_sleep(
@@ -383,7 +397,7 @@ class DailyRhythmGate:
 
         # Detect goodnight → enter winding_down (HARD: never jump to asleep).
         # Quota is committed in note_spoke after a successful send.
-        if is_goodnight_text(clean):
+        if is_goodnight_text(clean) and (_local_hour(stamp, sess.timezone) >= 22 or _local_hour(stamp, sess.timezone) < 6):
             self._enter_winding(sess, stamp, heat=heat)
             if sess.goodnight_text_used < gn_quota and not sess.goodnight_replied:
                 sess.last_reason_code = "wind_goodnight_ok"
@@ -553,6 +567,8 @@ class DailyRhythmGate:
                 "last_reason_zh": sess.last_reason_zh,
                 "wind_started_at": sess.wind_started_at,
                 "asleep_since": sess.asleep_since,
+                "last_wake_at": sess.last_wake_at,
+                "timezone": sess.timezone,
                 "brief_wake_until": sess.brief_wake_until,
             }
         # Aggregate: prefer most "interesting" state among sessions.
@@ -606,12 +622,14 @@ class DailyRhythmGate:
 
     # --- internals ------------------------------------------------------------
 
-    def _ensure(self, sid: str, stamp: float) -> _SessionRhythm:
+    def _ensure(self, sid: str, stamp: float, *, timezone: Optional[str] = None) -> _SessionRhythm:
         sess = self._sessions.get(sid)
         if sess is None:
-            sess = _SessionRhythm(sid=sid, day_key=_day_key(stamp))
+            sess = _SessionRhythm(sid=sid, timezone=timezone or "", day_key=_day_key(stamp, timezone or ""))
             self._sessions[sid] = sess
-        day = _day_key(stamp)
+        if timezone is not None:
+            sess.timezone = timezone
+        day = _day_key(stamp, sess.timezone)
         if sess.day_key != day:
             sess.day_key = day
             sess.goodnight_text_used = 0
@@ -633,6 +651,8 @@ class DailyRhythmGate:
 
     def _enter_winding(self, sess: _SessionRhythm, stamp: float, *, heat: str) -> None:
         """HARD RULE: goodnight → winding_down only, never asleep_*."""
+        if 6 <= _local_hour(stamp, sess.timezone) < 22:
+            return
         if sess.state in ASLEEP_STATES:
             # Plain goodnight while asleep should not re-enter winding via this path.
             return
@@ -956,8 +976,10 @@ class DailyRhythmGate:
         midnight rollover (23:50 晚安 → next-day 08:00). Midnight itself must
         not abort winding_down / asleep.
         """
-        now_hour = _local_hour(stamp)
-        if now_hour < 6 or now_hour >= 23:
+        if sess.force_sleep:
+            return
+        now_hour = _local_hour(stamp, sess.timezone)
+        if now_hour < 6 or now_hour >= 22:
             return
         started = 0.0
         if sess.state in ASLEEP_STATES or sess.state == STATE_BRIEF_WAKE:
@@ -968,11 +990,8 @@ class DailyRhythmGate:
             return
         if not started:
             return
-        start_hour = _local_hour(started)
-        crossed_day = _day_key(started) != _day_key(stamp)
-        if not (start_hour >= 22 or start_hour < 6 or crossed_day):
-            return
         sess.state = STATE_AWAKE
+        sess.last_wake_at = stamp
         sess.asleep_since = 0.0
         sess.brief_wake_until = 0.0
         sess.wind_started_at = 0.0
@@ -983,10 +1002,10 @@ class DailyRhythmGate:
     @staticmethod
     def _in_morning_window(stamp: float, sess: _SessionRhythm) -> bool:
         # Atmosphere prop: local morning band OR first stretch after waking from sleep.
-        hour = _local_hour(stamp)
+        hour = _local_hour(stamp, sess.timezone)
         if 6 <= hour <= 11:
             return True
-        if sess.asleep_since and stamp - sess.asleep_since < 3 * 3600 and sess.state == STATE_AWAKE:
+        if sess.last_wake_at and 0 <= stamp - sess.last_wake_at < 3 * 3600 and sess.state == STATE_AWAKE:
             return True
         return False
 
@@ -995,9 +1014,9 @@ class DailyRhythmGate:
         # Extremely low probability + period hard cap (once/day already).
         if sess.insomnia_lines_today >= 1:
             return False
-        hour = _local_hour(stamp)
+        hour = _local_hour(stamp, sess.timezone)
         if hour < 1 or hour > 4:
             return False
         # Deterministic sparse roll ~2% in late night band.
-        digest = hashlib.sha1(f"insomnia:{sid}:{_day_key(stamp)}".encode()).hexdigest()
+        digest = hashlib.sha1(f"insomnia:{sid}:{_day_key(stamp, sess.timezone)}".encode()).hexdigest()
         return int(digest[:4], 16) % 100 < 2

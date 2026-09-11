@@ -7,7 +7,7 @@ import pytest
 from astrbot_plugin_chat_dynamics.core import data_paths
 from astrbot_plugin_chat_dynamics.core.group_memory import GroupMemoryNotebook
 from astrbot_plugin_chat_dynamics.core.mood_memory import MoodMemoryStore
-from astrbot_plugin_chat_dynamics.core.persist import legacy_safe_umo, safe_umo
+from astrbot_plugin_chat_dynamics.core.persist import legacy_safe_umo, read_umo_json, safe_umo
 
 
 @pytest.mark.parametrize('first,second', [
@@ -54,6 +54,35 @@ def test_wrong_owner_in_new_filename_is_never_loaded(tmp_path):
     store = GroupMemoryNotebook(tmp_path)
     store._path('room').write_text(json.dumps({'umo': 'other', 'mute_until': 999}), encoding='utf-8')
     assert store.list_all('room')['mute_until'] == 0
+
+
+@pytest.mark.parametrize('payload', [b'{broken', b'\xff', b'[]', b'null'])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_unreadable_session_state_uses_defaults_without_altering_file(tmp_path, caplog, payload, legacy):
+    token = legacy_safe_umo('room') if legacy else safe_umo('room')
+    path = tmp_path / f'notebook_{token}.json'
+    path.write_bytes(payload)
+    assert read_umo_json(tmp_path, 'notebook', 'room') == {}
+    assert GroupMemoryNotebook(tmp_path).list_all('room')['mute_until'] == 0
+    assert path.read_bytes() == payload
+    if payload in (b'{broken', b'\xff'):
+        assert 'using empty state' in caplog.text
+
+
+def test_session_read_error_does_not_restore_stale_legacy(tmp_path, monkeypatch, caplog):
+    from pathlib import Path
+
+    current = tmp_path / f'notebook_{safe_umo("room")}.json'
+    current.write_text('{}', encoding='utf-8')
+    legacy = tmp_path / f'notebook_{legacy_safe_umo("room")}.json'
+    legacy.write_text(json.dumps({'umo': 'room', 'mute_until': 999}), encoding='utf-8')
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError('denied')
+
+    monkeypatch.setattr(Path, 'read_text', denied)
+    assert read_umo_json(tmp_path, 'notebook', 'room') == {}
+    assert 'PermissionError' in caplog.text
 
 
 def test_host_directory_migration_keeps_source_and_existing_target(tmp_path, monkeypatch):

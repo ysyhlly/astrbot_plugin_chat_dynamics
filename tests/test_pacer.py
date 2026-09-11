@@ -44,6 +44,41 @@ def test_unpunctuated_long_text_is_split_into_at_most_three_bursts(pacer):
     assert max(map(len, fragments)) <= 120
 
 
+@pytest.mark.parametrize("separator", ["，", "；", ",", ";"])
+@pytest.mark.parametrize("max_fragments", [1, 2, 3])
+def test_fragmentation_preserves_clause_punctuation(pacer, separator, max_fragments):
+    text = separator.join(["这是一段需要完整保留的文字"] * 6)
+    fragments = pacer.shape_and_fragment(
+        text, GroupChatMode.CHILL_FADE, max_fragments=max_fragments,
+    )
+    assert 1 <= len(fragments) <= max_fragments
+    assert "".join(fragments) == text
+
+
+def test_merging_fragments_preserves_english_spaces(pacer):
+    text = "First comes preparation, then comes execution; finally check every result carefully"
+    assert pacer.shape_and_fragment(
+        text, GroupChatMode.CHILL_FADE, max_fragments=1,
+    ) == [text]
+
+
+def test_merging_sentence_chunks_does_not_insert_chinese_spaces(pacer):
+    text = "第一步先做好准备。第二步开始执行任务！第三步检查结果。第四步保存所有修改。"
+    fragments = pacer.shape_and_fragment(text, GroupChatMode.CHILL_FADE, max_fragments=2)
+    assert len(fragments) == 2
+    assert "".join(fragments) == text
+
+
+def test_size_boundary_keeps_colon(pacer):
+    text = "长" * 55 + "：" + "续" * 100
+    fragments = pacer.shape_and_fragment(
+        text, GroupChatMode.CHILL_FADE, max_fragment_chars=60,
+    )
+    assert len(fragments) == 3
+    assert fragments[0].endswith("：")
+    assert "".join(fragments) == text
+
+
 def test_optional_casual_emoji_is_deterministic_and_never_used_for_serious_mode():
     shaper = StyleShaper(casual_emoji_enabled=True)
     pacer = PacingShaper(style_shaper=shaper)

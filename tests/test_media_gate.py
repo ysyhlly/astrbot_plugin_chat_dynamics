@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
@@ -187,9 +188,10 @@ def test_uncertain_listens():
 
 def test_goodnight_sticker_still_enters_rhythm():
     gate = DynamicsDecisionGate()
-    cfg = parse_runtime_config({})[0]
+    cfg = parse_runtime_config({"rhythm_timezone": "Asia/Shanghai"})[0]
     result = gate.evaluate(
         session_id="gn-sticker",
+        now=datetime(2026, 9, 11, 15, tzinfo=timezone.utc).timestamp(),
         user_id="u1",
         text="晚安～",
         explicit=False,

@@ -163,6 +163,7 @@ _DIRECT_RUNTIME_ATTRS = (
     "proactive_quota_per_hour",
     "proactive_quota_per_topic",
     "daily_rhythm_enabled",
+    "rhythm_timezone",
     "rhythm_morning_hi_enabled",
     "rhythm_day_share_slots",
     "rhythm_goodnight_text_quota",
@@ -271,7 +272,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.4.0",
+    "v1.4.1",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -751,6 +752,7 @@ class ChatDynamicsPlugin(Star):
             "proactive_quota_enabled": bool(getattr(cfg, "proactive_quota_enabled", True)),
             "proactive_quota_per_hour": _effective_int(cfg, "proactive_quota_per_hour", 2),
             "proactive_quota_per_topic": _effective_int(cfg, "proactive_quota_per_topic", 1),
+            "rhythm_timezone": str(getattr(cfg, "rhythm_timezone", "") or ""),
             "daily_rhythm_enabled": bool(getattr(cfg, "daily_rhythm_enabled", True)),
             "rhythm_morning_hi_enabled": bool(getattr(cfg, "rhythm_morning_hi_enabled", True)),
             "rhythm_day_share_slots": _effective_int(cfg, "rhythm_day_share_slots", 1),

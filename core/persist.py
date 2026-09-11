@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 # Keep letters, digits, underscore, dot, dash, and @. Strip ':' so Windows
 # NTFS does not treat `platform:type:id` UMO tokens as alternate data streams.
 _SAFE_TOKEN = re.compile(r"[^\w.\-@]+")
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.persist")
 
 
 def safe_umo(umo: str) -> str:
@@ -35,11 +37,15 @@ def read_umo_json(data_dir: Path, prefix: str, umo: str) -> dict[str, Any]:
     for explicit recovery instead of copying another session's memories.
     """
     path = data_dir / f"{prefix}_{safe_umo(umo)}.json"
-    if not path.exists():
-        path = data_dir / f"{prefix}_{legacy_safe_umo(umo)}.json"
-    if not path.is_file() or path.is_symlink():
+    try:
+        if not path.exists():
+            path = data_dir / f"{prefix}_{legacy_safe_umo(umo)}.json"
+        if not path.is_file() or path.is_symlink():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to load session state from %s (%s); using empty state", path, type(exc).__name__)
         return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw, dict) and raw.get("umo") == str(umo or ""):
         return raw
     return {}

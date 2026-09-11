@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple
@@ -93,6 +94,7 @@ class RuntimeConfig:
     proactive_quota_per_hour: int = 2
     proactive_quota_per_topic: int = 1
     daily_rhythm_enabled: bool = True
+    rhythm_timezone: str = ""
     rhythm_morning_hi_enabled: bool = True
     rhythm_day_share_slots: int = 1
     rhythm_goodnight_text_quota: int = 1
@@ -212,7 +214,16 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         warnings.append(f"pipeline_mode is invalid; using {PIPELINE_FILTER}")
         mode = PIPELINE_FILTER
 
+    rhythm_timezone = str(_get(raw, "rhythm_timezone", "") or "").strip()
+    if rhythm_timezone:
+        try:
+            ZoneInfo(rhythm_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            warnings.append("rhythm_timezone is invalid or unavailable; using system local timezone")
+            rhythm_timezone = ""
+
     config = RuntimeConfig(
+        rhythm_timezone=rhythm_timezone,
         decision_mode=str(_get(raw, "decision_mode", "legacy")) if _get(raw, "decision_mode", "legacy") in ("legacy", "persona_model") else "legacy",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),

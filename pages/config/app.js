@@ -197,6 +197,7 @@ const CONFIG_GROUPS = [
     "open": false,
     "keys": [
       "daily_rhythm_enabled",
+      "rhythm_timezone",
       "rhythm_morning_hi_enabled",
       "rhythm_day_share_slots",
       "rhythm_goodnight_text_quota",

@@ -144,13 +144,23 @@ class PacingShaper:
 
         # Split on sentence boundaries, newlines, or transitional conjunctions
         # Patterns for splitting: \n+, [。？！?!]+, or comma-conjunction phrases
-        chunks = re.split(r"(?<=[。？！\n?!])\s*", adapted_text)
-        chunks = [c.strip() for c in chunks if c.strip()]
+        def split_preserving_boundaries(pattern: str) -> List[str]:
+            chunks = []
+            start = 0
+            for match in re.finditer(pattern, adapted_text):
+                chunks.append(adapted_text[start : match.end()])
+                start = match.end()
+            if start < len(adapted_text):
+                chunks.append(adapted_text[start:])
+            return chunks
+
+        # Keep separators until finalization so recombining chunks preserves
+        # both Chinese punctuation and the original English word spacing.
+        chunks = split_preserving_boundaries(r"[。？！?!]\s*|\n+")
 
         if len(chunks) <= 1:
             # Fallback: split on semicolon or comma if chunk is very long
-            chunks = re.split(r"[；;，,]\s*", adapted_text)
-            chunks = [c.strip() for c in chunks if c.strip()]
+            chunks = split_preserving_boundaries(r"[；;，,]\s*")
 
         expanded: List[str] = []
         for chunk in chunks:
@@ -160,8 +170,11 @@ class PacingShaper:
                 split_at = max(candidates)
                 if split_at < int(target_chars * 0.6):
                     split_at = target_chars
-                expanded.append(chunk[:split_at].strip())
-                chunk = chunk[split_at:].strip(" ，,；;：:")
+                else:
+                    # The chosen delimiter belongs to the preceding chunk.
+                    split_at += 1
+                expanded.append(chunk[:split_at])
+                chunk = chunk[split_at:]
             if chunk:
                 expanded.append(chunk)
         chunks = expanded
@@ -177,7 +190,7 @@ class PacingShaper:
                 len(current) + len(c) < min_fragment_chars
                 or len(fragments) >= (max_fragments - 1)
             ):
-                current = f"{current} {c}"
+                current += c
             else:
                 fragments.append(current)
                 current = c
@@ -188,7 +201,7 @@ class PacingShaper:
         # Cap at max_fragments
         if len(fragments) > max_fragments:
             head = fragments[: max_fragments - 1]
-            tail = " ".join(fragments[max_fragments - 1 :])
+            tail = "".join(fragments[max_fragments - 1 :])
             fragments = head + [tail]
 
         return finalize(fragments)

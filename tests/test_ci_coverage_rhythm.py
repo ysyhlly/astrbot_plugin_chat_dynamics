@@ -192,16 +192,16 @@ def test_insomnia_roll_gate_bounds_and_determinism():
     # Quota already spent today -> no roll at all.
     assert dr.DailyRhythmGate._insomnia_roll("any", late, NS(insomnia_lines_today=1)) is False
     # Outside the 01:00-04:59 band -> no roll.
-    assert dr.DailyRhythmGate._insomnia_roll("any", _stamp(9), NS(insomnia_lines_today=0)) is False
+    assert dr.DailyRhythmGate._insomnia_roll("any", _stamp(9), NS(insomnia_lines_today=0, timezone="")) is False
     # In-band roll is deterministic per sid.
     sid = _roll_true_sid(late)
-    assert dr.DailyRhythmGate._insomnia_roll(sid, late, NS(insomnia_lines_today=0)) is True
-    assert dr.DailyRhythmGate._insomnia_roll(sid, late, NS(insomnia_lines_today=0)) is True
+    assert dr.DailyRhythmGate._insomnia_roll(sid, late, NS(insomnia_lines_today=0, timezone="")) is True
+    assert dr.DailyRhythmGate._insomnia_roll(sid, late, NS(insomnia_lines_today=0, timezone="")) is True
     # A non-winning sid stays False in-band.
     loser = "ci-roll-zz"
     while int(hashlib.sha1(f"insomnia:{loser}:{time.strftime('%Y%m%d', time.localtime(late))}".encode()).hexdigest()[:4], 16) % 100 < 2:
         loser += "x"
-    assert dr.DailyRhythmGate._insomnia_roll(loser, late, NS(insomnia_lines_today=0)) is False
+    assert dr.DailyRhythmGate._insomnia_roll(loser, late, NS(insomnia_lines_today=0, timezone="")) is False
 
 
 def test_insomnia_enabled_ambient_line_only_when_roll_hits():
@@ -399,7 +399,7 @@ def test_enter_winding_again_with_hot_heat_pushes_deadline_out():
 def test_winding_with_sleep_after_wind_disabled_never_sleeps():
     gate = dr.DailyRhythmGate()
     cfg = NS(rhythm_sleep_after_winddown=False)
-    now = _stamp(13)
+    now = _stamp(23)
     v = gate.evaluate(session_id="nsw", user_id="u1", text="晚安", now=now, telemetrics=_tele(0.5))
     gate.note_spoke("nsw", verdict=v, now=now)
     later = gate.evaluate(session_id="nsw", user_id="u2", text="……", cfg=cfg, now=now + 50 * 60, telemetrics=_tele(0.2))
@@ -543,7 +543,7 @@ def test_morning_window_wake_grace_applies_outside_clock_band():
     noon = _stamp(12)
     sess = gate._ensure("wg", noon)
     sess.state = dr.STATE_AWAKE
-    sess.asleep_since = noon - 2 * 3600  # woke recently, still in grace
+    sess.last_wake_at = noon - 2 * 3600  # woke recently, still in grace
     v = gate.evaluate(session_id="wg", user_id="u1", text="早安", now=noon, telemetrics=_tele(1.0))
     assert v.action == "morning_hi"
     assert v.morning_hi is True

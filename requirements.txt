@@ -1,1 +1,2 @@
-# No third-party runtime dependencies. AstrBot provides the plugin SDK.
+# IANA timezone database, including Windows hosts without system tzdata.
+tzdata>=2024.1

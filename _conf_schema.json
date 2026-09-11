@@ -628,6 +628,12 @@
     "default": true,
     "hint": "氛围向作息：日间可早安/少量分享；夜晚收束中≠已睡。非真实日历。"
   },
+  "rhythm_timezone": {
+    "description": "今日作息时区",
+    "type": "string",
+    "default": "",
+    "hint": "填写 IANA 时区（如 Asia/Shanghai）；留空沿用服务器本地时区。无效值回退本地时区并告警。"
+  },
   "rhythm_morning_hi_enabled": {
     "description": "醒来可早安",
     "type": "bool",
