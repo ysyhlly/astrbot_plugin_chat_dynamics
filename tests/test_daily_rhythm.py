@@ -112,7 +112,7 @@ def test_script2_ten_goodnights_quota():
     """十人连续晚安最多 1～2 次文字."""
     gate = DynamicsDecisionGate()
     cfg = _cfg(presence_knob="sensible", rhythm_goodnight_text_quota=1)
-    now = 5_000_000.0
+    now = _stamp_at(23)
     spoke = 0
     for i in range(10):
         res = gate.evaluate(
@@ -349,7 +349,7 @@ def test_script5_asleep_plain_gn_no_wake_at_can_brief_wake():
     """已睡串晚安不吵醒；@可短醒一次再睡."""
     gate = DynamicsDecisionGate()
     cfg = _cfg(presence_knob="sensible", rhythm_allow_wake=True)
-    now = 8_000_000.0
+    now = _stamp_at(23)
     # Force into asleep via rhythm internals
     r = gate.rhythm
     v = r.evaluate(
@@ -465,7 +465,7 @@ def test_script6_insomnia_default_off_and_cap_when_on():
 def test_hard_split_goodnight_never_jumps_to_asleep():
     rhythm = DailyRhythmGate()
     cfg = _cfg()
-    now = 10_000_000.0
+    now = _stamp_at(23)
     v = rhythm.evaluate(
         session_id="hard",
         user_id="a",
