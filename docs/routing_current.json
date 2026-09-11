@@ -1,0 +1,1158 @@
+{
+  "schema_version": 1,
+  "clock": 1000,
+  "neural": false,
+  "configuration": {
+    "require_intense_dialogue": false,
+    "clock": 1000,
+    "neural": false,
+    "strong_threshold": 0.7,
+    "hover_threshold": 0.4,
+    "time_decay_half_life": 45.0
+  },
+  "config_hash": "e0fa0cce75f6b5bd6ed8ea49197e06deea7d619ce68c9ae0c35e1ae706efa1c9",
+  "weights_version": "recipient-v2",
+  "fixture_hash": "cf68b21cf1d2453775b5c6092c33d226c77ce3eaad13e371b5e9d1eb42e16000",
+  "confusion": {
+    "legacy": {
+      "tp": 8,
+      "fp": 0,
+      "tn": 6,
+      "fn": 0
+    },
+    "persona": {
+      "tp": 8,
+      "fp": 0,
+      "tn": 6,
+      "fn": 0
+    }
+  },
+  "total": 14,
+  "failed": 0,
+  "results": [
+    {
+      "id": "human_and_vocative",
+      "actual": {
+        "recipients": [
+          "bot",
+          "human"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "human",
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": 1.0,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "human",
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "bot_and_human_mentions",
+      "actual": {
+        "recipients": [
+          "bot",
+          "human"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "bot",
+              "human"
+            ],
+            "bot_targeted": true,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "mention",
+            "mention": true,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 1.0,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "bot",
+              "human"
+            ],
+            "bot_targeted": true,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "mention",
+            "mention": true,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "name_substring",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "weak"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.2,
+            "level": "weak",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "single_character_vocative",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.95,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "single_character_substring",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "weak"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.2,
+            "level": "weak",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "bystander_short_followup",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "hover"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.65,
+            "level": "hover",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "active_short_followup",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.78,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.76,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.76,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.78,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.76,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "topic_ambiguity",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.95,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "subject_reference",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "weak"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "subject",
+            "mention": false,
+            "vocative": false,
+            "subject": true
+          },
+          "participation": {
+            "score": 0.2,
+            "level": "weak",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "subject",
+            "mention": false,
+            "vocative": false,
+            "subject": true
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "human_mention",
+      "actual": {
+        "recipients": [
+          "human"
+        ],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "weak"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "human"
+            ],
+            "bot_targeted": false,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.15,
+            "level": "weak",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "",
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "recipient": {
+            "ids": [
+              "human"
+            ],
+            "bot_targeted": false,
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "subject_and_vocative",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": true
+          },
+          "participation": {
+            "score": 0.95,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": true
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "english_name_boundary",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false,
+        "level": "weak"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.2,
+            "level": "weak",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 1.0,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [],
+            "bot_targeted": false,
+            "confidence": 0.0,
+            "ambiguous": true
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "human_quote_bot_vocative",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.7130000000000001,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.95,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.7130000000000001,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.95,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "vocative",
+            "mention": false,
+            "vocative": true,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    },
+    {
+      "id": "intervening_user_followup",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true,
+        "level": "strong"
+      },
+      "failures": {},
+      "traces": {
+        "legacy": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.78,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.76,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": 0.76,
+            "level": "strong",
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "legacy",
+          "weights_version": "recipient-v2"
+        },
+        "persona": {
+          "routing_schema_version": 2,
+          "topic": {
+            "topic_id": "0",
+            "confidence": 0.78,
+            "ambiguous": false
+          },
+          "recipient": {
+            "ids": [
+              "bot"
+            ],
+            "bot_targeted": true,
+            "confidence": 0.76,
+            "ambiguous": false
+          },
+          "identity": {
+            "bot_reference": "none",
+            "mention": false,
+            "vocative": false,
+            "subject": false
+          },
+          "participation": {
+            "score": null,
+            "level": null,
+            "should_reply": null
+          },
+          "state": {
+            "pending_hover": false,
+            "active_interlocutor": "",
+            "intervening_users": null
+          },
+          "mode": "persona",
+          "weights_version": "recipient-v2"
+        }
+      }
+    }
+  ]
+}

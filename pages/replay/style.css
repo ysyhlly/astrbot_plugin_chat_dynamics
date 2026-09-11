@@ -80,3 +80,9 @@ html[data-ui-theme="night"] .replay-block { color: #14252b; }
 .annotation-row { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border, #ddd); }
 .annotation-row p { overflow-wrap: anywhere; margin: 0; }
 .annotation-row select { max-width: 100%; }
+
+.recipient-editor { display: grid; gap: 8px; border: 1px solid var(--line); padding: 12px; }
+.recipient-editor[open] > label, .recipient-editor[open] > input, .recipient-editor[open] > select { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; }
+.recipient-editor summary { cursor: pointer; }
+
+.decision-trace { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; font-size: 12px; }

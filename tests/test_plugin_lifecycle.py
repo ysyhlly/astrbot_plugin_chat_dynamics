@@ -12,6 +12,7 @@ Validates:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import pytest
@@ -482,6 +483,33 @@ async def test_terminate_discards_pending_without_llm():
     await vc.advance(10.0)
     assert plugin.context.llm_prompts == []
     assert ev.replies_sent == []
+
+
+@pytest.mark.parametrize("text, at_or_wake, expected", [
+    # A platform wake still enters debounce when almost no content follows the name.
+    ("小助手还没说完", True, False),
+    ("小助手等我一下", True, False),
+    ("小助手", True, False),
+    ("小助手别说了", True, False),
+    # Enough content after the name keeps the fast path, addressed or not.
+    ("小助手刚才没说完的事", True, True),
+    # Real addressed turns keep the fast path.
+    ("小助手，这个方案怎么改？", True, True),
+    ("小助手你帮我看看这段代码", True, True),
+    ("这个方案怎么改？", True, True),
+    # A direct name call is address evidence on its own.
+    ("小助手你帮我看看这段代码", False, True),
+    # Ambiguous chatter without any address evidence stays buffered.
+    ("今晚打不打游戏", False, False),
+])
+def test_fast_path_measures_content_after_leading_name(text, at_or_wake, expected):
+    plugin = _plugin()
+    plugin.pipeline_mode = "filter"
+    runtime = plugin._get_or_create_runtime(_session_key("fast"), group_id="fast", umo="fast", bot_id="bot_42")
+    parsed = SimpleNamespace(poke_at_bot=False, is_at_or_wake=at_or_wake, has_media=False,
+                             media_component_types=(), outline="", mentions=[], self_id="bot_42",
+                             reply_to_id=None, text=text)
+    assert plugin._is_fast_path_turn(parsed, runtime) is expected
 
 
 @pytest.mark.asyncio

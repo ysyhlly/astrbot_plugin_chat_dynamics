@@ -192,6 +192,7 @@ class SemanticMatch:
     concept_affinity: float
     score: float
     shared_scenes: Tuple[str, ...]
+    backend: str = "hashed"
 
     def should_link(self, threshold: float = 0.42) -> bool:
         if self.score >= threshold:

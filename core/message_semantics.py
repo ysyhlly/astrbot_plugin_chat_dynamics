@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from .routing_contract import addressee_is_ambiguous
 from .topic_identity import node_topic_id
 from .semantics import classify_message, concept_scores
 
@@ -31,6 +32,8 @@ class MessageSemantics:
     bot_addressee_confidence: float = 0.0
     routing_ambiguous: bool = False
     routing_evidence: tuple[str, ...] = ()
+    topic_ambiguous: bool = False
+    addressee_ambiguous: bool = False
 
     @property
     def inferred_parent_id(self) -> str:
@@ -58,14 +61,12 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
             routing = {}
     parent = dag.get_node(node.reply_to_id) if node.reply_to_id else None
     quoted_author = str(parent.user_id) if parent is not None and parent.msg_id != node.msg_id else ""
-    if mentions:
-        recipients, basis, certainty = mentions, "mention", "explicit"
-    elif routing.get("addressee_ids"):
+    if routing.get("addressee_ids"):
         recipients = tuple(str(uid) for uid in routing["addressee_ids"])
         basis = "routing"
         evidence = str(routing.get("parent_message_id") or "")
         conf = float(routing.get("addressee_confidence", 0.0) or 0.0)
-        is_ambiguous = bool(routing.get("ambiguous", False))
+        is_ambiguous = bool(addressee_is_ambiguous(routing))
         if routing.get("explicit_mention"):
             certainty, basis = "explicit", "mention"
         elif routing.get("explicit_reply") and not routing.get("bot_is_addressee"):
@@ -74,6 +75,8 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
             certainty = "probable"
         else:
             certainty = "possible"
+    elif mentions:
+        recipients, basis, certainty = mentions, "mention", "explicit"
     elif node.reply_to_id:
         evidence, basis = node.reply_to_id, "reply"
         if quoted_author:
@@ -126,4 +129,6 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
                             bot_is_addr,
                             bot_addr_conf,
                             is_ambig,
-                            rout_ev)
+                            rout_ev,
+                            bool(routing.get("topic_ambiguous", False)),
+                            addressee_is_ambiguous(routing, certainty not in {"explicit", "probable"}))

@@ -8,10 +8,11 @@ an ambiguous Safe Hover zone (0.4 - 0.7) where messages are silently buffered.
 from __future__ import annotations
 
 import logging
-import re
 from enum import Enum
 from typing import Any, List, Optional, Set
 
+from .bot_identity import BotIdentityMatcher
+from .routing_contract import addressee_is_ambiguous
 from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .semantics import lexical_tokens, semantic_match
@@ -106,6 +107,26 @@ class AddressivityRouter:
         names = set(bot_names) if bot_names is not None else self.bot_names
         reasons: List[str] = []
 
+        routing = node.metadata.get("routing") or {}
+        if hasattr(routing, "__dataclass_fields__"):
+            from dataclasses import asdict
+            routing = asdict(routing)
+        if not isinstance(routing, dict):
+            routing = {}
+        # The v2 resolver owns recipients. Legacy fallback remains for disabled
+        # routing and callers supplying nodes without a routing snapshot.
+        if routing.get("routing_schema_version") == 2:
+            recipients = routing.get("addressee_ids") or []
+            if recipients and not addressee_is_ambiguous(routing):
+                targeted = b_id in recipients
+                confidence = float(routing.get("bot_addressee_confidence" if targeted else "addressee_confidence", 0.0) or 0.0)
+                return AddressivityScore(
+                    max(self.strong_threshold, confidence) if targeted else 0.15,
+                    AddressivityLevel.STRONG if targeted else AddressivityLevel.WEAK,
+                    targeted, b_id if targeted else recipients[0],
+                    ["Canonical recipient inference"],
+                    float(routing.get("topic_confidence", 0.0) or 0.0))
+
         # 1. Check direct message attributes
         # Rule 1a: Explicit @mention of bot id or any configured nickname
         mention_hits = self._matching_mentions(node.mentioned_users, b_id, names)
@@ -122,17 +143,10 @@ class AddressivityRouter:
 
         # A human mention is a stronger recipient signal than a nickname or quote.
         other_mentions = [u for u in node.mentioned_users if u != b_id]
-        if other_mentions:
+        if other_mentions and not BotIdentityMatcher.match(node.text, names).vocative:
             return AddressivityScore(0.15, AddressivityLevel.WEAK, False,
                                      other_mentions[0], ["Explicit @mention of other user(s)"])
 
-        routing = node.metadata.get("routing") or {}
-        if not isinstance(routing, dict):
-            if hasattr(routing, "__dataclass_fields__"):
-                from dataclasses import asdict
-                routing = asdict(routing)
-            else:
-                routing = {}
         for name in names:
             if self._name_mentioned_in_text(name, node.text):
                 return AddressivityScore(0.95, AddressivityLevel.STRONG, True, b_id,
@@ -145,7 +159,7 @@ class AddressivityRouter:
 
         confidence = float(routing.get("bot_addressee_confidence", 0.0) or 0.0)
         if (routing.get("bot_is_addressee") and confidence >= 0.72
-                and not routing.get("ambiguous", False)):
+                and not addressee_is_ambiguous(routing)):
             return AddressivityScore(max(self.strong_threshold, min(0.94, confidence)),
                                      AddressivityLevel.STRONG, True, b_id,
                                      ["Conversation routing identifies bot as addressee"],
@@ -153,7 +167,7 @@ class AddressivityRouter:
         recipients = routing.get("addressee_ids") or []
         if (recipients and b_id not in recipients
                 and float(routing.get("addressee_confidence", 0.0) or 0.0) >= 0.72
-                and not routing.get("ambiguous", False)):
+                and not addressee_is_ambiguous(routing)):
             return AddressivityScore(0.15, AddressivityLevel.WEAK, False, recipients[0],
                                      ["Conversation routing identifies another addressee"])
         if routing.get("subject_is_bot") and not routing.get("bot_is_addressee"):
@@ -367,33 +381,7 @@ class AddressivityRouter:
     @staticmethod
     def _name_mentioned_in_text(name: str, text: str) -> bool:
         """Match a bot nickname without substring traps like bot⊂both / 助手⊂助手席."""
-        if not name or not text:
-            return False
-        name = name.strip()
-        if not name:
-            return False
-
-        # @name with a token boundary after it
-        at_pat = r"@" + re.escape(name) + r"(?:\b|$|[\s,，。！？!?:：])"
-        if re.search(at_pat, text, flags=re.IGNORECASE):
-            return True
-
-        if re.search(r"[\u4e00-\u9fff]", name) and len(name) < 2:
-            return False
-        # Name occurrence alone describes a subject. A vocative requires a
-        # standalone call, an imperative/question, or a second-person request.
-        boundary = r"(?![A-Za-z0-9_])" if name.isascii() else ""
-        match = re.match(r"^\s*(?:(?:喂|嗨|hi|hello)[，,\s]*)?" + re.escape(name) + boundary + r"(.*)$", text, re.IGNORECASE)
-        if not match:
-            return False
-        tail = match.group(1)
-        if not tail.strip(" \t,，。!！?？:："):
-            return True
-        tail = tail.lstrip(" \t,，:：!！")
-        return bool(re.match(
-            r"(?:第[一二三四五六七八九十0-9]+[问个]|帮|请|能不能|能否|可以|在吗|在不在|出来|回答|查|算|你|怎么看|怎么做|为什么|继续|说说|讲讲|看一下|看图|看看|看下|早上好|你好|晚上好|"
-            r"please\b|can\s+you\b|could\s+you\b|help\b|what\s+do\s+you\b)",
-            tail, re.IGNORECASE))
+        return BotIdentityMatcher.is_vocative(name, text)
 
     @staticmethod
     def _tokenize(text: str) -> Set[str]:

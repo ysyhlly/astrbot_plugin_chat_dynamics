@@ -1,0 +1,16 @@
+[
+  {"id":"human_and_vocative","messages":[{"text":"@小明 群间你怎么看？","mentions":["human"]}],"expected":{"recipients":["bot","human"],"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"bot_and_human_mentions","messages":[{"text":"一起看看","mentions":["bot","human"]}],"expected":{"recipients":["bot","human"],"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"name_substring","bot_names":["助手"],"messages":[{"text":"助手席怎么拆？"}],"expected":{"bot_targeted":false,"persona_addressed":false,"level":"weak"}},
+  {"id":"single_character_vocative","bot_names":["卡"],"messages":[{"text":"卡，你怎么看？"}],"expected":{"recipients":["bot"],"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"single_character_substring","bot_names":["卡"],"messages":[{"text":"显卡怎么安装？"}],"expected":{"bot_targeted":false,"persona_addressed":false,"level":"weak"}},
+  {"id":"bystander_short_followup","messages":[{"text":"怎么设置风扇？"},{"text":"你试试自动模式","user":"bot","reply_to":"0"},{"text":"真的假的","user":"B"}],"expected":{"bot_targeted":false,"persona_addressed":false,"level":"hover"}},
+  {"id":"active_short_followup","messages":[{"text":"怎么设置风扇？"},{"text":"你试试自动模式","user":"bot","reply_to":"0"},{"text":"那怎么办"}],"expected":{"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"topic_ambiguity","force_topic_ambiguous":true,"messages":[{"text":"群间你怎么看？"}],"expected":{"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"subject_reference","messages":[{"text":"群间刚才说的方案不太对"}],"expected":{"bot_targeted":false,"persona_addressed":false,"level":"weak"}},
+  {"id":"human_mention","messages":[{"text":"你怎么看？","mentions":["human"]}],"expected":{"recipients":["human"],"bot_targeted":false,"persona_addressed":false,"level":"weak"}},
+  {"id":"subject_and_vocative","messages":[{"text":"群间刚才的方案不对，群间，你再看看？"}],"expected":{"recipients":["bot"],"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"english_name_boundary","bot_names":["bot"],"messages":[{"text":"both options look good"}],"expected":{"bot_targeted":false,"persona_addressed":false,"level":"weak"}},
+  {"id":"human_quote_bot_vocative","messages":[{"user":"human","text":"这个方案怎么样？"},{"text":"群间，你怎么看？","reply_to":"0"}],"expected":{"recipients":["bot"],"bot_targeted":true,"persona_addressed":true,"level":"strong"}},
+  {"id":"intervening_user_followup","messages":[{"text":"怎么设置风扇？"},{"text":"你试试自动模式","user":"bot","reply_to":"0"},{"text":"晚上有人打游戏吗？","user":"B"},{"text":"那怎么办"}],"expected":{"bot_targeted":true,"persona_addressed":true,"level":"strong"}}
+]

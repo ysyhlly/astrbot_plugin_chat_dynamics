@@ -21,6 +21,7 @@ jobs:
       - run: python -m pytest tests -q --junitxml=artifacts/junit-unit.xml --cov=astrbot_plugin_chat_dynamics.main --cov=astrbot_plugin_chat_dynamics.core --cov-report=json:artifacts/coverage.json
       # The host bridge must be exercised by the actual SDK, not mirrored SDK doubles.
       - run: python -m pip install "AstrBot==4.27.5"
+      - run: python scripts/evaluate_routing.py --check --output artifacts/routing.json
       - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 python -m pytest integration -q --cov=astrbot_plugin_chat_dynamics.main --cov=astrbot_plugin_chat_dynamics.core --cov-append --cov-report=json:artifacts/coverage.json --cov-report=xml:artifacts/coverage.xml --cov-report=term --cov-fail-under=90
       - run: python scripts/check_coverage.py --json artifacts/coverage.json
       - run: python -m compileall -q main.py core tests integration scripts
@@ -45,7 +46,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m playwright install --with-deps chromium
       - run: mkdir -p artifacts
-      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py -q --junitxml=artifacts/junit-browser.xml
+      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py tests/test_topic_annotations_browser.py tests/test_replay_gantt_browser.py -q --junitxml=artifacts/junit-browser.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

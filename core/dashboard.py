@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+
+from .routing_trace import build_routing_trace
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
@@ -595,6 +597,33 @@ def _replay_node_topic(node: Any) -> str:
     return topic
 
 
+def _replay_decision_trace(node: Any, show_content: bool) -> dict:
+    """Export only schema fields; never expose arbitrary node metadata."""
+    source = node.metadata.get("decision_trace", {})
+    source = source if isinstance(source, dict) else {}
+    def section(key):
+        return source.get(key) if isinstance(source.get(key), dict) else {}
+    topic, recipient = section("topic"), section("recipient")
+    routing = dict(node.metadata.get("routing", {}))
+    for old, new in (("topic_id", "topic_id"), ("confidence", "topic_confidence"), ("ambiguous", "topic_ambiguous")):
+        if old in topic:
+            routing[new] = topic[old]
+    for old, new in (("ids", "addressee_ids"), ("bot_targeted", "bot_is_addressee"),
+                     ("confidence", "addressee_confidence"), ("ambiguous", "addressee_ambiguous")):
+        if old in recipient:
+            routing[new] = recipient[old]
+    result = build_routing_trace(routing=routing, identity=section("identity"),
+        participation=section("participation"), state=section("state"),
+        mode=source.get("mode", "legacy"), weights_version=source.get("weights_version", "default"))
+    if not show_content:
+        result["recipient"]["ids"] = []
+        result["state"]["active_interlocutor"] = None
+        if isinstance(result["state"]["intervening_users"], list):
+            result["state"]["intervening_users"] = len(result["state"]["intervening_users"])
+    result["identifiers_redacted"] = not show_content
+    return result
+
+
 def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str) -> List[Dict[str, Any]]:
     """Group retained conversation nodes by session and routed topic.
 
@@ -632,6 +661,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             routing = node.metadata.get("routing", {})
             group["messages"].append({
                 "msg_id": node.msg_id,
+                "decision_trace": _replay_decision_trace(node, show_content),
                 "text": _truncate(node.text, 240) if show_content else "消息内容已隐藏",
                 "topic_id": str(routing.get("topic_id") or "UNKNOWN"),
                 "confidence": routing.get("topic_confidence", 0),

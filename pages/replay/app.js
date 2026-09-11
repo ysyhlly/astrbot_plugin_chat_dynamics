@@ -58,6 +58,63 @@ let annotationRevision = 0;
 let annotationData = null;
 const ERROR_LABELS = { correct: "判断正确", topic_merge: "不同话题被合并", topic_split: "同话题被拆分", wrong_assignment: "选错已有话题", premature_assignment: "过早归类", reopen_miss: "遗漏历史话题", unknown: "无法判断" };
 
+const RECIPIENT_ERRORS = { correct: "判断正确", missed_bot: "漏判 Bot", false_bot: "误判为对 Bot 说", wrong_recipient: "收件人错误", missing_recipient: "遗漏收件人", subject_confusion: "混淆提及与称呼", unknown: "无法判断" };
+const RECIPIENT_BOOLS = { recipient_correct: "收件人判断正确", bot_targeted: "在对 Bot 说话", expected_reply: "Bot 应该回复" };
+function traceView(trace) {
+  if (!trace || trace.routing_schema_version !== 2) return '<p class="ops-note">暂无决策记录</p>';
+  const yesNo = value => value === true ? "是" : value === false ? "否" : "待决";
+  const recipient = trace.recipient || {}, topic = trace.topic || {}, participation = trace.participation || {};
+  const ids = trace.identifiers_redacted ? "ID 已隐藏" : (recipient.ids || []).join(", ") || "未确定";
+  const summary = `收件人：${ids} · 对 Bot：${yesNo(recipient.bot_targeted)} · 话题歧义：${yesNo(topic.ambiguous)} · 收件人歧义：${yesNo(recipient.ambiguous)} · 参与：${participation.level || "待决"} · 应回复：${yesNo(participation.should_reply)}`;
+  return `<p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
+}
+
+function recipientEditor(index) {
+  const select = (key, label, options) => `<label for="recipient-${key}-${index}">${label}</label><select id="recipient-${key}-${index}" data-recipient="${key}"><option value="">未标注</option>${options}</select>`;
+  return `<details class="recipient-editor"><summary>收件人与回复纠错（可选）</summary>${Object.entries(RECIPIENT_BOOLS).map(([key, label]) => select(key, label, '<option value="true">是</option><option value="false">否</option>')).join("")}
+    ${["recipient_ids", "subject_ids"].map(key => `<label for="recipient-${key}-${index}">${key === "recipient_ids" ? "收件人 ID" : "被讨论对象 ID"}</label><input id="recipient-${key}-${index}" data-recipient="${key}" type="text" aria-describedby="recipient-help-${index}" placeholder="多个 ID 用逗号分隔">`).join("")}
+    <p id="recipient-help-${index}" class="ops-note">留空表示未标注；输入 [] 表示没有对象。每项最多 256 字符，最多 64 项。</p>
+    ${select("recipient_error_type", "收件人错误类型", Object.entries(RECIPIENT_ERRORS).map(([key, label]) => `<option value="${key}">${label}</option>`).join(""))}</details><p data-saved-annotation class="ops-note"></p>`;
+}
+function applyAnnotationData(data, block, prefill = false) {
+  annotationData = data;
+  annotationMetrics.textContent = `已标注 ${data.metrics.total} 条 · 收件人标注 ${data.recipient_metrics?.total || 0} 条 · ${Object.entries(data.metrics.error_counts).map(([key, count]) => `${ERROR_LABELS[key] || key} ${count}`).join(" · ")}。${data.metrics.sample_note}`;
+  (block.messages || []).forEach((message, index) => {
+    const row = annotationMessages.children[index];
+    const record = (data.records || []).find(item => item.msg_id === message.msg_id);
+    if (!row || !record) return;
+    const descriptions = Object.entries(RECIPIENT_BOOLS).filter(([key]) => typeof record[key] === "boolean").map(([key, label]) => `${label}：${record[key] ? "是" : "否"}`);
+    for (const [key, label] of [["recipient_ids", "收件人"], ["subject_ids", "讨论对象"]]) {
+      if (Array.isArray(record[key])) descriptions.push(`${label}：${record[key].join(", ") || "无"}`);
+    }
+    if (record.recipient_error_type) descriptions.push(RECIPIENT_ERRORS[record.recipient_error_type] || record.recipient_error_type);
+    row.querySelector("[data-saved-annotation]").textContent = `已保存：话题 ${record.expected_topic}${descriptions.length ? " · " + descriptions.join(" · ") : ""}`;
+    if (prefill && !row.dataset.dirty) {
+      const target = row.querySelector("[data-target]");
+      target.value = record.error_type === "correct" ? "CORRECT" : record.expected_topic;
+      if (!target.value) target.value = "CORRECT";
+      if (record.error_type !== "correct") row.querySelector("[data-error]").value = record.error_type;
+      row.querySelectorAll("[data-recipient]").forEach(input => {
+        const value = record[input.dataset.recipient];
+        input.value = Array.isArray(value) ? value.length ? value.join(", ") : "[]" : value === undefined ? "" : String(value);
+      });
+    }
+  });
+}
+function recipientValues(row) {
+  const result = {};
+  row.querySelectorAll("[data-recipient]").forEach(input => {
+    const key = input.dataset.recipient, value = input.value.trim();
+    if (!value) return;
+    if (key.endsWith("_ids")) {
+      const ids = value === "[]" ? [] : [...new Set(value.split(/[,，]/).map(id => id.trim()).filter(Boolean))];
+      if (ids.length > 64 || ids.some(id => id.length > 256)) throw new Error("ID 最多 64 项，每项最多 256 字符。");
+      result[key] = ids;
+    } else result[key] = key in RECIPIENT_BOOLS ? value === "true" : value;
+  });
+  return result;
+}
+
 async function renderAnnotations(block) {
   const revision = ++annotationRevision;
   annotationData = null;
@@ -69,7 +126,7 @@ async function renderAnnotations(block) {
   annotationMessages.innerHTML = (block.messages || []).map((message, index) => {
     const targetId = `annotation-target-${index}`;
     const errorId = `annotation-error-${index}`;
-    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="CORRECT">判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select><button type="button" class="button" data-annotate="${index}">保存标注</button></div>`;
+    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="CORRECT">判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}">保存标注</button></div>`;
   }).join("");
   (block.messages || []).forEach((message, index) => {
     if (!Array.isArray(message.candidates) || !message.candidates.length) return;
@@ -81,8 +138,7 @@ async function renderAnnotations(block) {
   try {
     const data = await apiGet("topic_annotations", { session_key: block.session_id });
     if (revision !== annotationRevision) return;
-    annotationData = data;
-    annotationMetrics.textContent = `已标注 ${data.metrics.total} 条 · ${Object.entries(data.metrics.error_counts).map(([key, count]) => `${ERROR_LABELS[key] || key} ${count}`).join(" · ")}。${data.metrics.sample_note}`;
+    applyAnnotationData(data, block, true);
   } catch (err) {
     if (revision === annotationRevision) annotationStatus.textContent = err.message || "标注读取失败";
   }
@@ -201,7 +257,13 @@ async function savePresence(value) {
 
 async function boot() {
   renderNav("replay");
+  const markDirty = event => {
+    const row = event.target.closest(".annotation-row");
+    if (row) row.dataset.dirty = "true";
+  };
+  annotationMessages.addEventListener("input", markDirty);
   annotationMessages.addEventListener("change", event => {
+    markDirty(event);
     if (!event.target.matches("[data-target]")) return;
     const row = event.target.closest(".annotation-row");
     row.querySelector("[data-error]").value = event.target.value === "UNKNOWN" ? "premature_assignment" : event.target.value === "NEW" ? "topic_merge" : "wrong_assignment";
@@ -218,13 +280,13 @@ async function boot() {
     const revision = annotationRevision;
     button.disabled = true;
     try {
-      await apiPost("topic_annotations", { session_key: block.session_id, msg_id: message.msg_id, expected_topic: expected, error_type: error });
+      await apiPost("topic_annotations", { session_key: block.session_id, msg_id: message.msg_id, expected_topic: expected, error_type: error, ...recipientValues(row) });
       if (revision !== annotationRevision) return;
       const data = await apiGet("topic_annotations", { session_key: block.session_id });
       if (revision !== annotationRevision) return;
-      annotationData = data;
+      applyAnnotationData(data, block);
       annotationStatus.textContent = "已保存标注。";
-      annotationMetrics.textContent = `已标注 ${data.metrics.total} 条 · ${Object.entries(data.metrics.error_counts).map(([key, count]) => `${ERROR_LABELS[key] || key} ${count}`).join(" · ")}。${data.metrics.sample_note}`;
+
     } catch (err) {
       if (revision === annotationRevision) annotationStatus.textContent = err.message || "标注保存失败";
     } finally { button.disabled = false; }

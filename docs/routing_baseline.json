@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "clock": 1000,
+  "neural": false,
+  "configuration": {
+    "require_intense_dialogue": false
+  },
+  "confusion": {
+    "legacy": {
+      "tp": 5,
+      "fp": 0,
+      "tn": 6,
+      "fn": 3
+    },
+    "persona": {
+      "tp": 5,
+      "fp": 0,
+      "tn": 6,
+      "fn": 3
+    }
+  },
+  "total": 14,
+  "failed": 3,
+  "results": [
+    {
+      "id": "human_and_vocative",
+      "actual": {
+        "recipients": [
+          "human"
+        ],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {
+        "recipients": {
+          "expected": [
+            "bot",
+            "human"
+          ],
+          "actual": [
+            "human"
+          ]
+        },
+        "bot_targeted": {
+          "expected": true,
+          "actual": false
+        },
+        "persona_addressed": {
+          "expected": true,
+          "actual": false
+        }
+      }
+    },
+    {
+      "id": "bot_and_human_mentions",
+      "actual": {
+        "recipients": [
+          "bot",
+          "human"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true
+      },
+      "failures": {}
+    },
+    {
+      "id": "name_substring",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "single_character_vocative",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {
+        "recipients": {
+          "expected": [
+            "bot"
+          ],
+          "actual": []
+        },
+        "bot_targeted": {
+          "expected": true,
+          "actual": false
+        },
+        "persona_addressed": {
+          "expected": true,
+          "actual": false
+        }
+      }
+    },
+    {
+      "id": "single_character_substring",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "bystander_short_followup",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "active_short_followup",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true
+      },
+      "failures": {}
+    },
+    {
+      "id": "topic_ambiguity",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true
+      },
+      "failures": {}
+    },
+    {
+      "id": "subject_reference",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "human_mention",
+      "actual": {
+        "recipients": [
+          "human"
+        ],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "subject_and_vocative",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {
+        "recipients": {
+          "expected": [
+            "bot"
+          ],
+          "actual": []
+        },
+        "bot_targeted": {
+          "expected": true,
+          "actual": false
+        },
+        "persona_addressed": {
+          "expected": true,
+          "actual": false
+        }
+      }
+    },
+    {
+      "id": "english_name_boundary",
+      "actual": {
+        "recipients": [],
+        "bot_targeted": false,
+        "persona_addressed": false
+      },
+      "failures": {}
+    },
+    {
+      "id": "human_quote_bot_vocative",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true
+      },
+      "failures": {}
+    },
+    {
+      "id": "intervening_user_followup",
+      "actual": {
+        "recipients": [
+          "bot"
+        ],
+        "bot_targeted": true,
+        "persona_addressed": true
+      },
+      "failures": {}
+    }
+  ]
+}

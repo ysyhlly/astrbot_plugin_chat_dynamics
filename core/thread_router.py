@@ -9,10 +9,11 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple
 
+from .recipient_resolver import RecipientResolver
 from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .session_runtime import RoutingState as RoutingState, TopicState as TopicState
-from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic, is_elliptical
+from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic
 from .pending_topics import defer, reconcile
 from .topic_formation import discussion_burst, topic_text
 
@@ -52,6 +53,7 @@ async def _state_guard(runtime: Any):
 class RoutingInference:
     """Comprehensive outcome of conversation topology and addressee inference."""
 
+    routing_schema_version: int = 2
     topic_id: str = ""
     topic_confidence: float = 0.0
     topic_ambiguous: bool = False
@@ -67,6 +69,8 @@ class RoutingInference:
     bot_addressee_confidence: float = 0.0
     explicit_reply: bool = False
     explicit_mention: bool = False
+    addressee_ambiguous: bool = True
+    # Legacy aggregate retained for diagnostics and async escalation only.
     ambiguous: bool = True
     evidence: list[str] = field(default_factory=list)
     possible_parent: str = ""
@@ -219,172 +223,8 @@ class ParentRetriever:
         return None, best_score, margin, [], best_mid, candidates
 
 
-class AddresseeResolver:
-    """Resolve mentions and direct name calls before quotes and inferred parents.
-
-    A quoted message can be the subject of a direct request to the bot. Without
-    an explicit recipient, bounded active-dialogue evidence provides a fallback.
-    """
-
-    @classmethod
-    def is_vocative_call(cls, text: str, bot_names: Sequence[str]) -> bool:
-        """Detect direct vocative address targeting bot while filtering 3rd-person subject remarks."""
-        from .addressivity import AddressivityRouter
-
-        return any(AddressivityRouter._name_mentioned_in_text(str(name), text)
-                   for name in bot_names if name)
-
-    @classmethod
-    def is_subject_reference(cls, text: str, bot_names: Sequence[str]) -> bool:
-        """Check if message discusses or refers to the bot in the third person."""
-        if not text or not bot_names:
-            return False
-        lowered = text.lower()
-        for name in bot_names:
-            if not name:
-                continue
-            name_str = str(name).strip().lower()
-            if not name_str:
-                continue
-            if name_str.isascii() and re.match(r"^[a-zA-Z0-9_-]+$", name_str):
-                pattern = rf"(?<![a-zA-Z0-9]){re.escape(name_str)}(?![a-zA-Z0-9])"
-                if re.search(pattern, lowered):
-                    return True
-            else:
-                if name_str in lowered:
-                    return True
-        return False
-
-    def resolve(
-        self,
-        node: ConversationNode,
-        dag: Any,
-        runtime: Any,
-        topic_id: str,
-        quoted_node: Optional[ConversationNode] = None,
-        inferred_parent: Optional[ConversationNode] = None,
-        inferred_confidence: float = 0.0,
-        ranked_topics: Sequence[Tuple[float, str]] = (),
-        recent_nodes: Sequence[ConversationNode] = (),
-        bot_names: Sequence[str] = (),
-    ) -> Tuple[List[str], float, bool, float, List[str], bool, List[str], Optional[Tuple[str, float, str]]]:
-        """Resolves addressees and subject references based on the 6-tier precedence hierarchy."""
-        bot_id = getattr(runtime, "bot_id", "")
-        last_bot = getattr(runtime, "last_bot_node", None)
-        names = [str(n) for n in bot_names if str(n)]
-        addressee_ids: List[str] = []
-        addressee_confidence: float = 0.0
-        evidence: List[str] = []
-        parent_override: Optional[Tuple[str, float, str]] = None
-
-        # Subject reference analysis
-        subject_is_bot = self.is_subject_reference(node.text, names)
-        subject_user_ids = [bot_id] if (subject_is_bot and bot_id) else []
-        vocative_target = self.is_vocative_call(node.text, names)
-
-        # Tier 1: Explicit Mention (@mention) or Platform Wake
-        is_wake = bool(getattr(node, "metadata", {}) and node.metadata.get("is_wake"))
-        if (is_wake or (node.mentioned_users and bot_id in node.mentioned_users)) and bot_id:
-            addressee_ids = [bot_id]
-            addressee_confidence = 1.0
-            evidence.append("explicit_mention" if node.mentioned_users else "platform_wake")
-        elif node.mentioned_users:
-            addressee_ids = list(dict.fromkeys(node.mentioned_users))
-            addressee_confidence = 1.0
-            evidence.append("explicit_mention")
-
-        # A direct name call can ask the bot to explain a quoted human message.
-        elif vocative_target and bot_id:
-            addressee_ids = [bot_id]
-            addressee_confidence = 0.95
-            evidence.append("direct_name_call")
-
-        # Tier 2: Explicit Platform Reply / Quote
-        elif quoted_node is not None:
-            # Sub-case 2A: Quoted Subject in Active Bot Dialogue
-            if last_bot is not None and quoted_node.user_id != bot_id:
-                last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
-                trigger = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
-                interlocutor = trigger.user_id if trigger else getattr(runtime, "last_interlocutor", "")
-                bot_topic = node_topic_id(last_bot)
-                last_bot_ts = getattr(last_bot, "timestamp", 0.0)
-                elliptical = bool(re.fullmatch(r"\s*(?:那|这个|这样|这个呢|那这个呢|那怎么办|这个怎么办)[呢？?。!！]*\s*", node.text))
-                competing = any(
-                    n.user_id not in {node.user_id, bot_id}
-                    and n.timestamp > last_bot_ts
-                    and (not bot_topic or node_topic_id(n) == bot_topic)
-                    for n in recent_nodes
-                )
-                if (
-                    elliptical
-                    and interlocutor == node.user_id
-                    and (bool(bot_topic and topic_id == bot_topic)
-                         or (not bot_topic and trigger is not None
-                             and trigger.reply_to_id == quoted_node.msg_id))
-                    and 0 < node.timestamp - last_bot_ts <= 60
-                    and not competing
-                ):
-                    addressee_ids = [bot_id]
-                    addressee_confidence = 0.78
-                    evidence.append("quoted_subject_active_interlocutor")
-
-            # Sub-case 2B: Standard Platform Reply
-            if not addressee_ids:
-                addressee_ids = [quoted_node.user_id]
-                addressee_confidence = 1.0
-
-        # Tier 3: Inferred Parent (from ParentRetriever)
-        elif inferred_parent is not None and inferred_confidence >= 0.72:
-            addressee_ids = [inferred_parent.user_id]
-            addressee_confidence = inferred_confidence
-            evidence.append("inferred_reply")
-
-        # Tier 4: Active Interlocutor Dialogue Continuation Fallback
-        elif not node.reply_to_id and last_bot is not None and bot_id:
-            last_bot_reply_to = getattr(last_bot, "reply_to_id", None)
-            prior = dag.get_node(last_bot_reply_to) if (last_bot_reply_to and dag) else None
-            interlocutor = prior.user_id if prior else getattr(runtime, "last_interlocutor", "")
-            bot_topic = node_topic_id(last_bot)
-            last_bot_ts = getattr(last_bot, "timestamp", 0.0)
-            competing = any(
-                n.user_id not in {node.user_id, bot_id}
-                and n.timestamp > last_bot_ts
-                and (not bot_topic or node_topic_id(n) == bot_topic)
-                for n in recent_nodes
-            )
-            followup = bool(re.search(r"然后|继续|那|这个|这样|怎么办|呢[？?]?$", node.text))
-            if not bot_topic:
-                # With no semantic topic, only a short continuation can borrow
-                # the active interlocutor; a new sentence containing "那" cannot.
-                followup = is_elliptical(node.text) or bool(re.fullmatch(
-                    r"\s*那(?:这个|怎么办|怎么做)[呢？?。!！\s]*", node.text))
-            if (
-                interlocutor == node.user_id
-                and 0 < node.timestamp - last_bot_ts <= 60
-                and followup
-                and not competing
-                and (bool(topic_id and bot_topic and topic_id == bot_topic)
-                     or not ranked_topics or ranked_topics[0][0] < 0.35)
-            ):
-                addressee_ids = [bot_id]
-                addressee_confidence = 0.76
-                evidence.append("active_interlocutor_followup")
-                parent_override = (getattr(last_bot, "msg_id", ""), 0.76, bot_topic)
-
-        # Final synthesis
-        bot_is_addressee = bool(bot_id and bot_id in addressee_ids)
-        bot_addressee_confidence = addressee_confidence if bot_is_addressee else 0.0
-
-        return (
-            addressee_ids,
-            addressee_confidence,
-            bot_is_addressee,
-            bot_addressee_confidence,
-            subject_user_ids,
-            subject_is_bot,
-            evidence,
-            parent_override,
-        )
+# Public compatibility import for existing integrations.
+AddresseeResolver = RecipientResolver
 
 
 class ThreadRouter:
@@ -521,7 +361,8 @@ class ThreadRouter:
                 prior = dict(previous.metadata.get("routing", {}))
                 prior.update(topic_id=formed_topic, topic_status="committed", topic_ambiguous=False,
                              topic_confidence=0.75)
-                prior["ambiguous"] = float(prior.get("addressee_confidence", 0.0) or 0.0) < 0.72
+                prior["addressee_ambiguous"] = prior["ambiguous"] = (
+                    float(prior.get("addressee_confidence", 0.0) or 0.0) < 0.72)
                 prior["evidence"] = list(prior.get("evidence", [])) + ["topic_burst_confirmed"]
                 previous.metadata["routing"] = prior
                 previous.metadata["topic_id"] = formed_topic
@@ -596,16 +437,7 @@ class ThreadRouter:
                 inferred_candidate_score = p_conf
 
         # 3. Addressee Resolution
-        (
-            addressee_ids,
-            addressee_conf,
-            bot_is_addressee,
-            bot_addressee_conf,
-            subject_user_ids,
-            subject_is_bot,
-            addr_evidence,
-            parent_override,
-        ) = self.addressee_resolver.resolve(
+        recipient = self.addressee_resolver.infer(
             node=node,
             dag=dag,
             runtime=runtime,
@@ -618,12 +450,14 @@ class ThreadRouter:
             bot_names=bot_names,
         )
 
-        result.addressee_ids = addressee_ids
-        result.addressee_confidence = addressee_conf
-        result.bot_is_addressee = bot_is_addressee
-        result.bot_addressee_confidence = bot_addressee_conf
-        result.subject_user_ids = subject_user_ids
-        result.subject_is_bot = subject_is_bot
+        result.addressee_ids = list(recipient.recipient_ids)
+        result.addressee_confidence = recipient.confidence
+        result.bot_is_addressee = recipient.bot_targeted
+        result.bot_addressee_confidence = recipient.bot_confidence
+        result.subject_user_ids = list(recipient.subject_user_ids)
+        result.subject_is_bot = recipient.bot_is_subject
+        addr_evidence = recipient.evidence
+        parent_override = recipient.parent_override
         for ev in addr_evidence:
             if ev not in result.evidence:
                 result.evidence.append(ev)
@@ -668,7 +502,8 @@ class ThreadRouter:
             state.pending_assignments.pop(node.msg_id, None)
             self._remember(state, node, result.topic_id, dag=dag)
             state.last_topic_id = result.topic_id
-        result.ambiguous = result.topic_ambiguous or result.addressee_confidence < 0.72
+        result.addressee_ambiguous = result.addressee_confidence < 0.72
+        result.ambiguous = result.topic_ambiguous or result.addressee_ambiguous
         node.metadata["topic_id"] = result.topic_id
         node.metadata["routing"] = asdict(result)
         if formation_allowed:

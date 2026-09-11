@@ -91,6 +91,7 @@ class EmbeddingAdapter:
         cache_size: int = 512,
         link_threshold: float = 0.78,
         timeout: float = 8.0,
+        max_inflight: int = 8,
     ) -> None:
         self.context = context
         self.enabled = bool(enabled)
@@ -98,8 +99,10 @@ class EmbeddingAdapter:
         self.cache_size = max(32, int(cache_size))
         self.link_threshold = float(link_threshold)
         self.timeout = max(1.0, float(timeout))
+        self.max_inflight = max(1, int(max_inflight))
         self._cache: OrderedDict[str, Tuple[float, ...]] = OrderedDict()
         self._inflight: dict[str, asyncio.Task] = {}
+        self._pending_tasks: set[asyncio.Task] = set()
         self._generation = 0
         self.last_error: str = ""
         self.last_backend: str = "hashed"
@@ -123,7 +126,7 @@ class EmbeddingAdapter:
             self._cache.clear()
             self.last_backend = "hashed"
             self.last_error = ""
-            for task in self._inflight.values():
+            for task in self._pending_tasks:
                 task.cancel()
         if enabled is not None:
             self.enabled = bool(enabled)
@@ -186,12 +189,13 @@ class EmbeddingAdapter:
             concept_affinity=base.concept_affinity,
             score=score,
             shared_scenes=base.shared_scenes,
+            backend="neural",
         )
 
     def should_link(self, match: SemanticMatch) -> bool:
         if match.should_link():
             return True
-        return self.last_backend == "neural" and match.embedding_cosine >= self.link_threshold
+        return match.backend == "neural" and match.embedding_cosine >= self.link_threshold
 
     def resolve_provider(self) -> Any:
         ctx = self.context
@@ -237,10 +241,16 @@ class EmbeddingAdapter:
                 return await asyncio.shield(inflight)
             except Exception:
                 return None
-        task = asyncio.create_task(self._embed_uncached(key))
+        # Same-text waiters join above even at capacity. Distinct bursts fall
+        # back immediately instead of accumulating an unbounded task queue.
+        if sum(not task.done() for task in self._pending_tasks) >= self.max_inflight:
+            return None
+        task = asyncio.create_task(self._embed_uncached(key, self._generation))
         task._embedding_generation = self._generation
         self._inflight[key] = task
+        self._pending_tasks.add(task)
         def release(completed: asyncio.Task) -> None:
+            self._pending_tasks.discard(completed)
             if self._inflight.get(key) is completed:
                 self._inflight.pop(key, None)
 
@@ -251,8 +261,9 @@ class EmbeddingAdapter:
             if self._inflight.get(key) is task and task.done():
                 self._inflight.pop(key, None)
 
-    async def _embed_uncached(self, text: str) -> Optional[Tuple[float, ...]]:
-        generation = self._generation
+    async def _embed_uncached(self, text: str, generation: int) -> Optional[Tuple[float, ...]]:
+        if generation != self._generation:
+            return None
         provider = self.resolve_provider()
         if provider is None:
             self.last_backend = "hashed"
@@ -261,6 +272,8 @@ class EmbeddingAdapter:
         try:
             raw = await asyncio.wait_for(self._call_provider(provider, text), timeout=self.timeout)
         except Exception as exc:
+            if generation != self._generation:
+                return None
             self.last_backend = "hashed"
             self.last_error = type(exc).__name__
             logger.debug("[ChatDynamics] Neural embedding failed code=CD_EMBED_FAILED type=%s", type(exc).__name__)

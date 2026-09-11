@@ -48,7 +48,8 @@ def reconcile(state, dag, current, result, remember):
             old = dict(prior.metadata.get("routing", {}))
             old.update(topic_id=result.topic_id, topic_confidence=result.topic_confidence,
                        topic_ambiguous=False, topic_status="committed")
-            old["ambiguous"] = float(old.get("addressee_confidence", 0.0) or 0.0) < 0.72
+            old["addressee_ambiguous"] = old["ambiguous"] = (
+                float(old.get("addressee_confidence", 0.0) or 0.0) < 0.72)
             old["evidence"] = list(old.get("evidence", [])) + ["pending_followup"]
             prior.metadata["routing"] = old
             prior.metadata["topic_id"] = result.topic_id

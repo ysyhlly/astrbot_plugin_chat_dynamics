@@ -574,6 +574,13 @@ class PersonaEngine:
                 )
         except Exception:
             gate = None
+        # Complete the trace only after the model decision and participation gates.
+        for message in item.context.messages:
+            node = _dag_node(runtime, message.message_id)
+            trace = getattr(node, "metadata", {}).get("decision_trace")
+            if isinstance(trace, dict) and isinstance(trace.get("participation"), dict):
+                trace["participation"]["should_reply"] = decision.action != "ignore"
+
         self.diagnostic(runtime, decision.reason_code, action=decision.action, state=decision.state,
                         target_message_ids=list(decision.target_message_ids), length=decision.length,
                         latency_ms=round((now - started) * 1000), shadow=item.shadow)

@@ -169,15 +169,15 @@ class TopicResolver:
         self.rebuild_profile(topic, dag)
         topic = copy(topic)
         nodes = self.rebuild_profile(topic, dag, exclude_id=node.msg_id, as_of=node.timestamp, window_seconds=self.window_seconds, query_text=node.text)
-        nodes = [n for n in nodes if 0 < node.timestamp - n.timestamp <= self.window_seconds]
         if not nodes:
             return 0.0
         # All semantic terms use the original message. Context copied from a
         # candidate must never become semantic evidence for that same candidate.
-        query_vector = hashed_embedding(node.text)
         if topic.centroid_space.startswith("neural:"):
             adapter = dag.semantic_match_fn.__self__
             query_vector = adapter.cached(node.text) or ()
+        else:
+            query_vector = hashed_embedding(node.text)
         centroid = cosine(query_vector, topic.centroid_vector or [])
         allowed = {n.msg_id for n in nodes}
         exemplar = max((matches.get(mid, 0.0) for mid, _ in topic.exemplar_messages[:self.max_exemplars] if mid in allowed), default=0.0)
