@@ -61,6 +61,8 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
             routing = {}
     parent = dag.get_node(node.reply_to_id) if node.reply_to_id else None
     quoted_author = str(parent.user_id) if parent is not None and parent.msg_id != node.msg_id else ""
+    if parent is None and node.reply_to_id and node.reply_to_id != node.msg_id:
+        quoted_author = str(node.metadata.get("quoted_author_id") or "")
     if routing.get("addressee_ids"):
         recipients = tuple(str(uid) for uid in routing["addressee_ids"])
         basis = "routing"

@@ -181,6 +181,71 @@ async def test_invalid_decision_fallback_only_for_explicit_request(model_plugin,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["at", "quote", "human_quote", "at_human_quote"])
+@pytest.mark.parametrize("invalid_decision", [False, True])
+async def test_persona_explicit_at_and_evicted_quote(model_plugin, kind, invalid_decision):
+    from .test_plugin_lifecycle import At, Reply
+
+    p, bridge = model_plugin
+    quote = Reply("evicted-bot-message")
+    quote.sender_id = "bot_42" if kind == "quote" else "another-user"
+    components = ([At("bot_42")] if kind in {"at", "at_human_quote"} else [])
+    if kind != "at":
+        components.append(quote)
+    captured = []
+    original = p.context.llm_generate
+
+    async def decide(**kwargs):
+        payload = json.loads(kwargs["prompt"])
+        if "conversation" in payload:
+            captured.append(payload["conversation"])
+            if invalid_decision:
+                return SimpleNamespace(completion_text="not json")
+        return await original(**kwargs)
+
+    p.context.llm_generate = decide
+    event = MockEvent("请继续解释刚才的做法", components=components)
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert len(captured) == 1
+        conversation = captured[0]
+        addressed = kind != "human_quote"
+        assert conversation["explicit"] is addressed
+        semantics = conversation["messages"][0]["semantics"]
+        assert semantics["bot_is_addressee"] is addressed
+        assert semantics["recipient_ids"] == (["bot_42"] if addressed else ["another-user"])
+        if kind != "at":
+            assert semantics["quoted_author_id"] == quote.sender_id
+        if addressed:
+            assert bridge.requests and event.replies_sent
+        elif invalid_decision:
+            assert not bridge.requests and not event.replies_sent
+        runtime = p._sessions[event.unified_msg_origin]
+        assert runtime.dag.get_node(quote.id) is None
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["", "在吗"])
+async def test_persona_bare_and_short_at_reaches_reply(model_plugin, text):
+    from .test_plugin_lifecycle import At
+
+    p, bridge = model_plugin
+    event = MockEvent(text, components=[At("bot_42")])
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert bridge.requests and event.replies_sent
+        assert bridge.requests[0][0]["conversation"]["explicit"]
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
 async def test_shadow_decides_without_agent_or_state_mutation(model_plugin):
     p, bridge = model_plugin
     p.config["shadow_mode"] = True
@@ -505,6 +570,42 @@ async def test_ambient_opening_budget(model_plugin):
     assert len(p.decision_calls) == 3 and len(bridge.requests) == 2
     assert p._sessions[event.unified_msg_origin].model_diagnostic["reason_code"] == "ambient_budget"
     await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_lively_policy_reaches_model_and_doubles_opening_budget(model_plugin):
+    p, bridge = model_plugin
+    try:
+        for i in range(5):
+            if i == 2:
+                await p.save_config_values({"presence_knob": "lively"})
+            event = MockEvent("聊聊今天的趣事", sender_id=str(i), message_id=str(i))
+            await p.on_group_message(event)
+            await flush(p, event)
+            await drain(p)
+        policies = [json.loads(call["prompt"])["participation_policy"] for call in p.decision_calls]
+        assert [policy["presence_knob"] for policy in policies] == ["sensible"] * 2 + ["lively"] * 3
+        assert len(bridge.requests) == 4
+        runtime = p._sessions[event.unified_msg_origin]
+        assert runtime.model_diagnostic["reason_code"] == "ambient_budget"
+        assert len(runtime.ambient_openings) == 4
+
+        addressed = MockEvent("帮我解释一下", message_id="direct", is_at_or_wake_command=True)
+        await p.on_group_message(addressed)
+        await flush(p, addressed)
+        await drain(p)
+        assert len(bridge.requests) == 5 and len(runtime.ambient_openings) == 4
+
+        # Switching back does not clear already used quota.
+        await p.save_config_values({"presence_knob": "sensible"})
+        ambient = MockEvent("聊聊今天的趣事", sender_id="new-user", message_id="six")
+        await p.on_group_message(ambient)
+        await flush(p, ambient)
+        await drain(p)
+        assert len(bridge.requests) == 5
+        assert runtime.model_diagnostic["reason_code"] == "ambient_budget"
+    finally:
+        await p.terminate()
 
 
 @pytest.mark.asyncio

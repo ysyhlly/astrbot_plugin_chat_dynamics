@@ -381,6 +381,13 @@
     "slider": {"min": 0, "max": 2, "step": 0.1},
     "hint": "仅启用神经向量时生效；明确 @ 或引用不等待。超时使用本地证据，0 表示不等待。"
   },
+  "replay_message_limit": {
+    "description": "每会话回放消息上限",
+    "type": "int",
+    "default": 500,
+    "slider": {"min": 80, "max": 500, "step": 20},
+    "hint": "场景回放每个会话最多展示的最近消息数，包含已归属和未归属消息。实际受会话图谱 500 条及一小时保留期限制；调小只减少展示，不删除已保存消息。"
+  },
   "topic_window_seconds": {
     "description": "活跃话题保留时间（秒）",
     "type": "float",
@@ -491,7 +498,7 @@
       "sensible",
       "lively"
     ],
-    "hint": "隐身(ghost)：尽量少开口；懂事(sensible)：默认；活跃(lively)：更愿意轻接。立即生效。"
+    "hint": "隐身(ghost)：主要回应点名；懂事(sensible)：按需参与；活跃(lively)：更主动参与公开讨论。人设决策会读取档位，懂事/活跃每会话每分钟最多主动加入 2/4 次，明确点名与自然续聊不占此额度；仍遵守冷却、作息和对话边界。立即生效。"
   },
   "social_manners_enabled": {
     "description": "启用社交分寸总开关",

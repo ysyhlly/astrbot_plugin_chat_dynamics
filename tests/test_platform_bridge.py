@@ -32,6 +32,21 @@ class Reply:
         self.id = id
 
 
+@pytest.mark.parametrize("sender,expected", [("bot", "bot"), (42, "42"), (0, ""), (None, "")])
+def test_reply_sender_survives_without_local_history(sender, expected):
+    quote = Reply("old-message")
+    quote.sender_id = sender
+    parsed = parse_group_event(FakeEvent("继续说", comps=[quote]))
+    assert parsed.reply_to_id == "old-message"
+    assert parsed.reply_sender_id == expected
+
+
+def test_self_quote_does_not_supply_recipient_identity():
+    quote = Reply("m1")
+    quote.sender_id = "bot"
+    assert parse_group_event(FakeEvent("继续说", comps=[quote])).reply_sender_id == ""
+
+
 class FakeEvent:
     def __init__(
         self,

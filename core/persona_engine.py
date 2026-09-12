@@ -13,6 +13,7 @@ from .pacer import is_rhythm_short_act, scale_delay
 from .topic_identity import node_topic_id
 from .platform_bridge import chain_plain_text
 from .message_semantics import describe_message
+from .presence_policy import participation_policy
 from .turn_decision import (
     DECISION_INSTRUCTIONS, MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
@@ -438,7 +439,7 @@ class PersonaEngine:
                 response = await p.context.llm_generate(
                     chat_provider_id=provider_id,
                     system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
-                    prompt=decision_prompt(turn, state, item.observations),
+                    prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
                 )
                 return TurnDecision.parse(completion_text(response), turn)
         try:
@@ -504,7 +505,8 @@ class PersonaEngine:
         continuation = turn_is_continuation(runtime, turn, now)
         addressed = turn_is_addressed(runtime, turn, now)
         opening = not addressed and not continuation
-        if opening and len(runtime.ambient_openings) >= 2:
+        opening_limit = participation_policy(p._runtime_config.presence_knob)["ambient_openings_per_minute"]
+        if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:
             decision = replace(decision, action="ignore", reason_code="ambient_budget")
         # Social manners + occasion skin (persona path): quiet degrade, never raise.
         # Quotas are committed only after a successful send, never on observe/fail.

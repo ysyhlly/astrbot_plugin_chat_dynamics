@@ -697,6 +697,7 @@ class ChatDynamicsPlugin(Star):
             "topic_margin_threshold": cfg.topic_margin_threshold,
             "topic_join_threshold": cfg.topic_join_threshold,
             "topic_window_seconds": cfg.topic_window_seconds,
+            "replay_message_limit": cfg.replay_message_limit,
             "pipeline_mode": getattr(cfg, "pipeline_mode", PIPELINE_FILTER),
             "ambient_intervention": bool(getattr(cfg, "ambient_intervention", False)),
             "takeover_all": bool(getattr(cfg, "takeover_all", False)),
@@ -1431,6 +1432,8 @@ class ChatDynamicsPlugin(Star):
         if parsed.reply_to_id and runtime.dag is not None:
             parent = runtime.dag.get_node(parsed.reply_to_id)
             if parent is not None and bot_id and parent.user_id == bot_id:
+                return True
+            if parent is None and bot_id and getattr(parsed, "reply_sender_id", "") == str(bot_id):
                 return True
         return False
 
@@ -2239,6 +2242,7 @@ class ChatDynamicsPlugin(Star):
                     "duration": result.duration,
                     "is_wake": parsed.is_at_or_wake,
                     "actual_mentions": actual_mentions,
+                    "quoted_author_id": getattr(parsed, "reply_sender_id", ""),
                     "platform_message_id": bool(parsed.message_id),
                 },
             )

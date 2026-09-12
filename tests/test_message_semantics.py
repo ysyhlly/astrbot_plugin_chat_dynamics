@@ -30,6 +30,21 @@ def test_missing_reply_resolves_without_cross_session_lookup():
     assert describe_message(node, dag).recipient_ids == ("alice",)
 
 
+def test_cached_quote_author_wins_over_platform_fallback():
+    from types import SimpleNamespace
+    from astrbot_plugin_chat_dynamics.core.recipient_resolver import RecipientResolver
+
+    dag = ConversationDAG()
+    parent = dag.add_message("a", "alice", "hello", timestamp=1)
+    node = dag.add_message("b", "bob", "继续", timestamp=2, reply_to_id="a",
+                           metadata={"quoted_author_id": "bot"})
+    result = RecipientResolver().infer(node=node, dag=dag,
+        runtime=SimpleNamespace(bot_id="bot"), topic_id="", quoted_node=parent)
+    assert result.recipient_ids == ("alice",)
+    assert not result.bot_targeted
+    assert describe_message(node, dag, "bot").quoted_author_id == "alice"
+
+
 def test_mentions_unknown_and_semantic_guesses():
     dag = ConversationDAG()
     a = dag.add_message("a", "alice", "代码接口报错了", timestamp=1)

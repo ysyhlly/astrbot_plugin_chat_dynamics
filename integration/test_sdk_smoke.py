@@ -41,6 +41,23 @@ from astrbot_plugin_chat_dynamics.core.platform_bridge import (  # noqa: E402
 from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin  # noqa: E402
 
 
+def test_real_reply_component_preserves_quote_author():
+    from types import SimpleNamespace
+    from astrbot.api.message_components import At, Reply
+    from astrbot_plugin_chat_dynamics.core.platform_bridge import parse_group_event
+
+    event = SimpleNamespace(
+        message_str="请继续解释", message_id="new-message",
+        get_group_id=lambda: "group", get_sender_id=lambda: "user",
+        get_self_id=lambda: "42",
+        get_messages=lambda: [Reply(id="old-message", sender_id=42), At(qq="42")],
+    )
+    parsed = parse_group_event(event)
+    assert parsed.reply_to_id == "old-message"
+    assert parsed.reply_sender_id == "42"
+    assert parsed.mentions == ["42"]
+
+
 class SmokeContext:
     def __init__(self) -> None:
         self.routes: list[tuple[str, Any, list[str], str]] = []

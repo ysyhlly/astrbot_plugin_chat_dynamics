@@ -84,6 +84,7 @@ class ParsedEvent:
     has_poke: bool = False
     poke_target_id: str = ""
     poke_at_bot: bool = False
+    reply_sender_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -324,6 +325,17 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
 
     outline = str(_safe_call(event, "get_message_outline", "") or "")
     comps = _extract_components(event)
+    reply_sender_id = ""
+    for comp in comps:
+        if _comp_type_name(comp).lower() != "reply":
+            continue
+        rid = getattr(comp, "id", None)
+        if rid is None:
+            rid = getattr(comp, "message_id", None)
+        if str(rid) != reply_to_id or reply_to_id == message_id:
+            continue
+        sender = str(getattr(comp, "sender_id", "") or "")
+        reply_sender_id = sender if sender not in {"0", "None"} else ""
     media_component_types: List[str] = []
     poke_target_id = ""
     has_poke = False
@@ -362,6 +374,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         text=text,
         mentions=mentions,
         reply_to_id=reply_to_id,
+        reply_sender_id=reply_sender_id,
         unified_msg_origin=umo,
         is_at_or_wake=is_at,
         is_command=is_command_like(text, command_prefixes)

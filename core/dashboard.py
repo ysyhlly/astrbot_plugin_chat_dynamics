@@ -628,6 +628,10 @@ def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     return result
 
 
+def _replay_message_limit(plugin: Any) -> int:
+    return max(80, min(500, _attr_int(getattr(plugin, "_runtime_config", None), "replay_message_limit", 500)))
+
+
 def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str) -> List[Dict[str, Any]]:
     """Group retained conversation nodes by session and routed topic.
 
@@ -636,6 +640,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     """
     groups: Dict[tuple, Dict[str, Any]] = {}
     session_nodes: Dict[str, list] = {}
+    message_limit = _replay_message_limit(plugin)
     show_content = bool(getattr(plugin, "console_show_message_content", False))
     clock = getattr(plugin, "time_service", None)
     # DAG nodes use monotonic time; social/rhythm decisions use wall time.
@@ -644,7 +649,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     for sid, dag in getattr(plugin, "dags", {}).items():
         if selected and sid != selected:
             continue
-        nodes = sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-80:]
+        nodes = sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-message_limit:]
         session_nodes[sid] = nodes
         for node in nodes:
             routing = node.metadata.get("routing", {})
@@ -756,17 +761,21 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         sessions = []
     speak = sum(1 for item in ordered if item["action"] == "speak")
     silent = sum(1 for item in ordered if item["action"] != "speak")
+    message_limit = _replay_message_limit(plugin)
+    retained_nodes = [
+        node
+        for sid, dag in getattr(plugin, "dags", {}).items() if not selected or sid == selected
+        for node in sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-message_limit:]
+    ]
     return {
         "session_key": selected,
         "presence_knob": str(getattr(plugin, "presence_knob", "sensible") or "sensible"),
         "events": ordered[-64:],
         "blocks": merge_replay_blocks(ordered[-64:]),
         "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
-        "unassigned_message_count": sum(
-            not _replay_node_topic(node)
-            for sid, dag in getattr(plugin, "dags", {}).items() if not selected or sid == selected
-            for node in sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-80:]
-        ),
+        "message_limit": message_limit,
+        "retained_message_count": len(retained_nodes),
+        "unassigned_message_count": sum(not _replay_node_topic(node) for node in retained_nodes),
         "archived_topics": [
             {"session_id": sid, "topic_id": topic.topic_id,
              "topic_title": _truncate(getattr(topic, "title", "") or topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}

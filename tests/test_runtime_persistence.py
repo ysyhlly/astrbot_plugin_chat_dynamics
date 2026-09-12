@@ -50,6 +50,27 @@ def test_roundtrip_rebases_clocks_and_preserves_isolation(monkeypatch):
     assert restored._metrics['received'] == 7
 
 
+def test_replay_keeps_500_messages_after_restart(monkeypatch):
+    from astrbot_plugin_chat_dynamics.core.dashboard import replay_topic_blocks
+
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(600)
+    runtime = source._registry.get_or_create('room', group_id='room', umo='room')
+    for index in range(500):
+        runtime.dag.add_message(str(index), 'user', 'retained', timestamp=100 + index,
+                               metadata={'routing': {'topic_id': 'topic'}})
+    snapshot = json.loads(json.dumps(export_runtime_state(source)))
+    target = plugin(700)
+    restore_runtime_state(target, snapshot)
+    restored = target._registry.get('room')
+    # Same wall-clock instant, new monotonic epoch.
+    display = SimpleNamespace(dags={'room': restored.dag}, console_show_message_content=False)
+    blocks = replay_topic_blocks(display, [], 'room')
+    assert blocks[0]['message_count'] == 500
+    assert blocks[0]['messages'][0]['msg_id'] == '0'
+    assert blocks[0]['messages'][-1]['msg_id'] == '499'
+
+
 def test_corruption_unknown_versions_and_cross_umo_are_ignored(monkeypatch):
     monkeypatch.setattr(codec.time, 'time', lambda: 1000)
     target = plugin(10)

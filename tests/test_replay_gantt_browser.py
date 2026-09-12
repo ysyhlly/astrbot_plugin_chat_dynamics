@@ -120,3 +120,36 @@ def test_replay_filters_topics_without_network_reload(browser, page_server):
         page.locator('.replay-block').click()
         assert page.locator('#detailTitle').inner_text() == 'Breakfast'
         assert page.evaluate('window.replayReads') == 1
+
+
+def test_replay_500_message_detail_on_mobile(browser, page_server):
+    with browser.new_context(viewport={"width": 390, "height": 900}) as context:
+        setup(context, {"ui": "night"})
+        context.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint === 'replay') return {ok:true,data:{sessions:[],message_limit:500,retained_message_count:500,
+              topic_blocks:[{session_id:'room',topic_id:'topic',topic_title:'Long discussion',message_count:500,
+                start_ts:1700000000,end_ts:1700000500,events:[],messages:Array.from({length:500},(_,i)=>({
+                  msg_id:String(i),text:'Message '+i,topic_id:'topic',confidence:1,ambiguous:false
+                }))}]}};
+            if (endpoint === 'topic_annotations') return {ok:true,data:{records:[],metrics:{total:0,error_counts:{},sample_note:''}}};
+            return original(endpoint, params);
+          };
+        """)
+        page = context.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(f'{page_server}/replay/index.html?ui=night')
+        page.wait_for_selector('.replay-block')
+        assert page.locator('#summaryMessages').inner_text() == '500'
+        assert '当前回看 500 条' in page.locator('#trackHint').inner_text()
+        page.locator('.replay-block').click()
+        assert page.locator('.annotation-row').count() == 500
+        last = page.locator('.annotation-row').last
+        last.scroll_into_view_if_needed()
+        assert 'Message 499' in last.inner_text()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.keyboard.press('Escape')
+        assert not page.locator('#detailDialog').is_visible()
+        assert not errors

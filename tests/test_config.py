@@ -8,6 +8,17 @@ from pathlib import Path
 from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
 
 
+def test_replay_limit_is_bounded_by_stored_history_capacity():
+    for value in (80, 250, 500):
+        cfg, _ = parse_runtime_config({"replay_message_limit": value})
+        assert cfg.replay_message_limit == value
+    for value in (0, 79, 501, float("inf"), "invalid"):
+        cfg, warnings = parse_runtime_config({"replay_message_limit": value})
+        assert cfg.replay_message_limit == 500
+        if value != "invalid":
+            assert any("replay_message_limit" in warning for warning in warnings)
+
+
 def test_routing_config_bounds_and_legacy_defaults():
     cfg, warnings = parse_runtime_config({"routing_neural_timeout": float("nan")})
     assert cfg.conversation_router_enabled is True

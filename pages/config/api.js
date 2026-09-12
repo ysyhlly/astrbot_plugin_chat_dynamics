@@ -11,7 +11,7 @@ export const PRESENCE_LABEL = {
 export const PRESENCE_PREVIEW = {
   ghost: "尽量少开口，没点名就旁听。",
   sensible: "懂场合再接话，默认推荐。",
-  lively: "更愿意轻接整活与闲聊。",
+  lively: "主动参与公开讨论。人设模式每会话每分钟最多主动加入 4 次，点名与自然续聊不占额度。",
 };
 
 export const OCCASION_LABEL = {

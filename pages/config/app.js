@@ -67,6 +67,7 @@ const CONFIG_GROUPS = [
       "topic_reranker_provider",
       "topic_reranker_timeout",
       "topic_window_seconds",
+      "replay_message_limit",
       "topic_join_threshold",
       "topic_commit_threshold",
       "topic_ambiguity_threshold",

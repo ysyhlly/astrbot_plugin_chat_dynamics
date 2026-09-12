@@ -202,6 +202,9 @@ function renderRail(data) {
     : "尚未形成连续讨论的消息留白展示。群聊不需要时时刻刻都有话题。";
   els.railCounts.textContent = `${blocks.length} 个主题场景`;
   els.trackHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览最近判断";
+  if (Number.isInteger(data.message_limit) && Number.isInteger(data.retained_message_count)) {
+    els.trackHint.textContent += ` · 当前回看 ${data.retained_message_count} 条 · 每会话最多 ${data.message_limit} 条`;
+  }
   if (!blocks.length) {
     els.replayRail.innerHTML = "";
     els.railEmpty.classList.remove("hidden");

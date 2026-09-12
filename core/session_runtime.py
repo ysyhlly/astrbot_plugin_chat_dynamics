@@ -12,6 +12,7 @@ from .debounce import DebounceResult
 from .graph import ConversationDAG, ConversationNode
 from .semantics import semantic_match
 from .topic_archive import TopicArchive
+from .presence_policy import MAX_AMBIENT_OPENINGS
 
 
 @dataclass
@@ -233,7 +234,7 @@ class SessionRuntime:
     user_revisions: Dict[str, int] = field(default_factory=dict)
     interaction_state: str = "observing"
     model_diagnostic: Dict[str, Any] = field(default_factory=dict)
-    ambient_openings: Deque[float] = field(default_factory=lambda: deque(maxlen=2))
+    ambient_openings: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_AMBIENT_OPENINGS))
     tool_executions: Deque[dict] = field(default_factory=lambda: deque(maxlen=32))
     last_interlocutor: str = ""
     last_model_send: float = 0.0

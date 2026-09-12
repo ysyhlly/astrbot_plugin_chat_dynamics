@@ -131,6 +131,13 @@ class RecipientResolver:
                 addressee_ids = [quoted_node.user_id]
                 addressee_confidence = 1.0
 
+        # Platform quote identity survives restart / DAG eviction. Do not
+        # invent a parent node or its text, timestamp, or topic from this ID.
+        elif node.reply_to_id and node.metadata.get("quoted_author_id"):
+            addressee_ids = [str(node.metadata["quoted_author_id"])]
+            addressee_confidence = 1.0
+            evidence.append("explicit_reply")
+
         # An uninterrupted answer to the bot's own question is structural
         # evidence, even for values like "1.21.4" with no semantic overlap.
         elif (dialogue is not None and not subject_is_bot
