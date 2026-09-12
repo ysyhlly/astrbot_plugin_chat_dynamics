@@ -6,7 +6,7 @@ import pytest
 from .test_ui_theme_browser import ROOT, browser as browser, page_server as page_server, setup
 
 
-@pytest.mark.parametrize("width,theme", [(1366, "day"), (1366, "night"), (390, "day"), (390, "night")])
+@pytest.mark.parametrize("width,theme", [(1366, "day"), (1366, "night"), (375, "day"), (375, "night")])
 def test_config_categories_navigation_and_save(browser, page_server, width, theme):
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     with browser.new_context(viewport={"width": width, "height": 900}) as context:
@@ -46,3 +46,25 @@ def test_config_categories_navigation_and_save(browser, page_server, width, them
         page.wait_for_function("window.__savedConfig?.topic_window_seconds === 240")
         assert set(page.evaluate("Object.keys(window.__savedConfig)")) == set(schema)
         assert not errors
+
+
+def test_config_directory_dirty_revert_and_empty_search(browser, page_server):
+    with browser.new_context(viewport={"width": 1440, "height": 1000}) as context:
+        setup(context, {"ui": "day"})
+        page = context.new_page()
+        page.goto(f"{page_server}/config/index.html")
+        page.wait_for_selector("[data-config-key]")
+        page.locator('[data-category="routing"]').click()
+        control = page.locator('[data-config-key="topic_window_seconds"]')
+        initial = control.input_value()
+        control.fill("241")
+        assert "1 项未保存" in page.locator("#actionTitle").inner_text()
+        assert control.locator("..").get_attribute("data-dirty") == "true"
+        control.fill(initial)
+        assert page.locator("#btnConfigSave").is_disabled()
+        page.locator("#configSearch").fill("no-such-config-xyz")
+        assert page.locator("#configEmpty").is_visible()
+        page.locator("#btnClearSearch").click()
+        assert page.locator("#configEmpty").is_hidden()
+        assert page.locator("#configSearch").input_value() == ""
+        assert page.locator("#configSearch").evaluate("node => node === document.activeElement")

@@ -21,9 +21,9 @@
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
     <title>插件参数配置</title>
-    <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="grain" aria-hidden="true"></div>
@@ -35,35 +35,22 @@
         </aside>
         <div class="plugin-main">
       <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / CONFIG</p>
-            <h1 id="pageTitle">插件参数配置</h1>
-            <p class="lede" id="pageDesc">先选生效群聊，其余可保持默认。需要细调时再打开高级设置。</p>
-          </div>
+        <div class="brand-copy">
+          <p class="eyebrow">WORKSPACE / SETTINGS</p>
+          <h1 id="pageTitle">参数配置</h1>
+          <p class="lede" id="pageDesc">定义参与范围，调整每一次回应。</p>
         </div>
         <div class="topbar-tools">
           <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
-          <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
-            <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
-            </span>
+          <div class="connection-state" role="status" aria-live="polite">
+            <span class="status-dot" id="linkLamp" aria-hidden="true"></span><span id="linkLabel">连接中</span>
           </div>
         </div>
       </header>
 
       <div class="action-bar" role="region" aria-label="配置操作">
         <div class="action-copy">
-          <strong id="actionTitle">未修改</strong>
+          <strong id="actionTitle">所有修改已保存</strong>
           <p class="ops-note" id="configNote" role="status" aria-live="polite"></p>
         </div>
         <div class="action-buttons">
@@ -76,23 +63,33 @@
       <main class="content">
         <section class="config-start" aria-labelledby="configStartTitle">
           <div>
-            <h2 id="configStartTitle">从一个群开始</h2>
-            <p>填入群号，点击「保存并应用」即可开始。模型可以留空继承，阈值、权重和分段无需逐项设置。</p>
+            <p class="eyebrow">运行范围</p>
+            <h2 id="configStartTitle">先从一个群聊开始</h2>
             <p id="configScopeStatus" role="status" aria-live="polite">正在读取生效范围…</p>
           </div>
-          <div class="config-mode" role="group" aria-label="设置复杂度">
-            <button type="button" class="button" id="btnBasicConfig" aria-pressed="true">常用设置</button>
-            <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false">高级设置</button>
-          </div>
+          <p class="scope-guide">选择群聊后即可保存。模型留空时沿用默认设置，细节参数可以稍后调整。</p>
         </section>
+        <div class="settings-workspace">
+          <aside class="settings-index" aria-label="设置目录">
+            <div class="config-mode" role="group" aria-label="设置复杂度">
+              <button type="button" class="button" id="btnBasicConfig" aria-pressed="true">常用</button>
+              <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false">全部</button>
+            </div>
+            <p class="index-label">设置分类</p>
+            <nav id="configCategoryNav" aria-label="配置分类导航"></nav>
+          </aside>
+          <div class="settings-editor">
         <div class="config-toolbar">
-          <label class="config-search">查找设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
-          <label class="config-category">跳转分类<select id="configCategory"><option value="">正在读取分类…</option></select></label>
+          <label class="config-search">搜索全部设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
+          <label class="config-category">快速跳转<select id="configCategory"><option value="">正在读取分类…</option></select></label>
           <div class="config-view-actions"><button type="button" class="button button-quiet" id="btnExpandGroups">全部展开</button><button type="button" class="button button-quiet" id="btnCollapseGroups">全部收起</button></div>
           <p id="configResultCount" class="ops-note" role="status" aria-live="polite"></p>
         </div>
         <p class="ops-note error hidden" id="configMismatch" role="status"></p>
+        <div id="configEmpty" class="search-empty hidden" role="status"><h2>没有匹配的设置</h2><p>试试更短的关键词，或搜索参数名称。</p><button type="button" class="button" id="btnClearSearch">清除搜索</button></div>
         <div id="configForm" class="config-sections" aria-label="插件参数表单" aria-busy="true"></div>
+          </div>
+        </div>
       </main>
         </div>
       </div>

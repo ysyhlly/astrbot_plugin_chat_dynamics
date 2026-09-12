@@ -285,7 +285,7 @@ class EmbeddingAdapter:
         try:
             raw = await asyncio.wait_for(self._call_provider(provider, text), timeout=self.timeout)
         except Exception as exc:
-            self._stats["timeouts" if isinstance(exc, TimeoutError) else "failures"] += 1
+            self._stats["timeouts" if isinstance(exc, asyncio.TimeoutError) else "failures"] += 1
             if generation != self._generation:
                 return None
             self.last_backend = "hashed"

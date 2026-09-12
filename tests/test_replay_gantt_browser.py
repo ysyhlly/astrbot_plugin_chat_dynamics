@@ -33,6 +33,11 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
         assert page.locator('.gantt-track').count() == 6
         assert len(set(page.locator('.replay-block').evaluate_all(
             "nodes => nodes.map(node => getComputedStyle(node).backgroundColor)"))) == 6
+        for width in (1366, 375):
+            page.set_viewport_size({"width": width, "height": 1000})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.screenshot(path=str(tmp_path / f'replay-workspace-{theme}-{width}.png'), full_page=True)
+        page.set_viewport_size({"width": 1366, "height": 1000})
         page.locator('[data-index="0"]').click()
         assert page.locator('#detailDialog').is_visible()
         assert page.locator('#detailTitle').inner_text() == '聊天主题 0'
@@ -44,7 +49,7 @@ def test_replay_gantt_details(browser, page_server, theme, tmp_path):
         page.locator('[data-index="1"]').focus()
         page.keyboard.press('Enter')
         assert page.locator('#detailTitle').inner_text() == '聊天主题 1'
-        for width in (1366, 390):
+        for width in (1366, 375):
             page.set_viewport_size({"width": width, "height": 1000})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             assert page.locator('.replay-block').evaluate_all("""nodes => nodes.every(node => {
@@ -84,3 +89,34 @@ def test_replay_unassigned_messages_remain_blank(browser, page_server, tmp_path)
         assert not page.locator('#detailDialog').is_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path / 'replay-blank.png'))
+
+
+def test_replay_filters_topics_without_network_reload(browser, page_server):
+    with browser.new_context(viewport={"width": 1100, "height": 900}) as context:
+        setup(context, {"ui": "day"})
+        context.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.replayReads = 0;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint !== 'replay') return original(endpoint, params);
+            window.replayReads++;
+            return {ok:true,data:{sessions:[],topic_blocks:[
+              {topic_id:'a',topic_title:'Breakfast',message_count:2,start_ts:1700000000,end_ts:1700000010,events:[{action:'speak'}]},
+              {topic_id:'b',topic_title:'Travel',message_count:3,start_ts:1700000010,end_ts:1700000020,events:[{action:'silent'}]}
+            ]}};
+          };
+        """)
+        page = context.new_page()
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("document.querySelectorAll('.replay-block').length === 2")
+        assert page.locator('#summaryMessages').inner_text() == '5'
+        page.locator('#topicSearch').fill('Travel')
+        assert page.locator('.replay-block').count() == 1
+        page.locator('#decisionFilter').select_option('speak')
+        assert page.locator('.replay-block').count() == 0
+        assert page.locator('#railEmpty').is_visible()
+        page.locator('#topicSearch').fill('')
+        assert page.locator('.replay-block').count() == 1
+        page.locator('.replay-block').click()
+        assert page.locator('#detailTitle').inner_text() == 'Breakfast'
+        assert page.evaluate('window.replayReads') == 1

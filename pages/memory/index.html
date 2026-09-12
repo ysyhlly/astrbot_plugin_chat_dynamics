@@ -19,95 +19,84 @@
       })();
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
-    <script src="./theme.js"></script>
+    <script src="./theme.js">
+</script>
     <title>记忆小本</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
-    <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
-    <div class="app wire-app plugin-shell">
-      <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
-        <div class="plugin-main">
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / MEMORY</p>
-            <h1>记忆小本</h1>
-            <p class="lede">纪念日 · 约定 · 试用梗。默认不展示隐私原文；可忘掉 / 今晚别提。</p>
-          </div>
-        </div>
-        <div class="topbar-tools">
-          <div class="connection-state" role="status" aria-live="polite">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
-            <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
-            </span>
-          </div>
-          <button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
-        </div>
-      </header>
-
-      <section class="wire-card">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">SESSION</p>
-            <h2>选择群会话</h2>
-          </div>
-        </div>
-        <div class="field-grid">
-          <label for="sessionSelect">UMO / session
-            <select id="sessionSelect"></select>
-          </label>
-        </div>
-        <div class="chip-row" style="margin-top:10px">
-          <button type="button" class="button" id="btnMuteTonight" disabled>今晚别提</button>
-          <button type="button" class="button button-quiet" id="btnLoad" disabled>重新加载</button>
-        </div>
-        <p class="ops-note" id="sessionNote" role="status" aria-live="polite"></p>
-      </section>
-
-      <section class="wire-card">
-        <div class="tabs" role="tablist" aria-label="记忆分类">
-          <button type="button" class="tab" role="tab" data-tab="anniversaries" aria-selected="true">纪念日</button>
-          <button type="button" class="tab" role="tab" data-tab="reminders" aria-selected="false">约定</button>
-          <button type="button" class="tab" role="tab" data-tab="slang" aria-selected="false">试用梗</button>
-        </div>
-        <div id="listHost" class="memory-list" aria-live="polite"></div>
-        <div class="empty-state hidden" id="listEmpty">这个分类还是空的。</div>
-      </section>
-
-      <section class="wire-card" id="addPanel">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">WRITE</p>
-            <h2 id="addTitle">手写记一条</h2>
-          </div>
-        </div>
-        <form id="addForm" class="field-grid">
-          <div id="addFields"></div>
-          <button type="submit" class="button button-primary" id="btnAdd" disabled>记一条</button>
-        </form>
-        <p class="ops-note" id="addNote" role="status" aria-live="polite"></p>
-      </section>
-        </div>
-      </div>
-    </div>
-    <script type="module" src="./app.js"></script>
-  </body>
+<div class="app wire-app plugin-shell">
+<div class="plugin-layout">
+<aside class="plugin-side" aria-label="插件页面">
+<p class="plugin-side-label">群聊动态</p>
+<nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航">
+</nav>
+</aside>
+<main class="plugin-main memory-workspace">
+<header class="topbar">
+<div class="brand-copy">
+<p class="eyebrow">CHAT DYNAMICS / MEMORY</p>
+<h1 id="pageTitle">记忆小本</h1>
+<p class="lede" id="pageDesc">按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。</p>
+</div>
+<div class="topbar-tools">
+<div class="connection-state" role="status" aria-live="polite">
+<span class="status-dot" id="linkLamp" aria-hidden="true">
+</span>
+<span id="linkLabel">正在连接</span>
+</div>
+<button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+</div>
+</header>
+<section class="wire-card session-toolbar">
+<label for="sessionSelect">当前会话<select id="sessionSelect">
+</select>
+</label>
+<div class="session-actions">
+<button type="button" class="button" id="btnMuteTonight" disabled>10 小时不提记忆</button>
+<button type="button" class="button button-quiet" id="btnLoad" disabled>重新加载</button>
+</div>
+<p class="ops-note" id="sessionNote" role="status" aria-live="polite">
+</p>
+</section>
+<div class="notebook-workspace">
+<section class="wire-card notebook-browser">
+<div class="card-heading">
+<h2>已记下的事</h2>
+<span class="card-note" id="memoryCount">0 条</span>
+</div>
+<div class="tabs" role="tablist" aria-label="记忆分类">
+<button type="button" class="tab" id="tab-anniversaries" role="tab" data-tab="anniversaries" aria-selected="true" aria-controls="memoryResults">纪念日</button>
+<button type="button" class="tab" id="tab-reminders" role="tab" data-tab="reminders" aria-selected="false" aria-controls="memoryResults" tabindex="-1">约定</button>
+<button type="button" class="tab" id="tab-slang" role="tab" data-tab="slang" aria-selected="false" aria-controls="memoryResults" tabindex="-1">试用梗</button>
+</div>
+<div id="memoryResults" role="tabpanel" aria-labelledby="tab-anniversaries">
+<div id="listHost" class="memory-list" aria-live="polite">
+</div>
+<div class="empty-state hidden" id="listEmpty">这个分类还是空的。</div>
+</div>
+</section>
+<section class="wire-card notebook-editor" id="addPanel">
+<p class="eyebrow">新增记录</p>
+<h2 id="addTitle">手写记一条</h2>
+<p class="section-copy">为当前会话添加一条公共记忆。</p>
+<form id="addForm" class="field-grid">
+<div id="addFields">
+</div>
+<button type="submit" class="button button-primary" id="btnAdd" disabled>保存记录</button>
+</form>
+<p class="ops-note" id="addNote" role="status" aria-live="polite">
+</p>
+</section>
+</div>
+</main>
+</div>
+</div>
+<script type="module" src="./app.js">
+</script>
+</body>
 </html>

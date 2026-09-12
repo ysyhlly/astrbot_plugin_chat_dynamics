@@ -52,10 +52,7 @@ const els = {
   socialChips: document.getElementById("socialChips"),
   mediaChips: document.getElementById("mediaChips"),
   chipNote: document.getElementById("chipNote"),
-  dangerNote: document.getElementById("dangerNote"),
   btnRefresh: document.getElementById("btnRefresh"),
-  btnClearMemory: document.getElementById("btnClearMemory"),
-  btnResetManners: document.getElementById("btnResetManners"),
 };
 
 let stored = {};
@@ -82,9 +79,7 @@ function renderChips(host, defs) {
       const warn = chip.warn ? " warn" : "";
       return `<button type="button" class="chip${warn}" data-key="${escapeHtml(chip.key)}" data-warn="${
         chip.warn ? "1" : "0"
-      }" aria-pressed="${on ? "true" : "false"}" title="${escapeHtml(chip.blurb || "")}">${escapeHtml(
-        chip.label
-      )}</button>`;
+      }" aria-pressed="${on ? "true" : "false"}" title="${escapeHtml(chip.blurb || "")}"><span class="setting-copy"><strong>${escapeHtml(chip.label)}</strong><small>${escapeHtml(chip.blurb || "")}</small></span><span class="switch-state" aria-hidden="true">${on ? "已开启" : "已关闭"}</span></button>`;
     })
     .join("");
 }
@@ -117,8 +112,10 @@ async function saveConfig(patch, noteEl) {
     const panel = await apiPost("config", { config: patch });
     stored = { ...(panel.stored || panel.effective || stored), ...patch };
     if (noteEl) noteEl.textContent = "已保存并应用到运行时。";
+    const focusedKey = document.activeElement?.dataset.key;
     renderChips(els.socialChips, SOCIAL_CHIPS);
     renderChips(els.mediaChips, MEDIA_CHIPS);
+    if (focusedKey) document.querySelector(`[data-key="${focusedKey}"]`)?.focus();
   } catch (err) {
     if (noteEl) noteEl.textContent = (err && err.message) || "保存失败";
   } finally {
@@ -155,12 +152,6 @@ async function boot() {
   els.socialChips.addEventListener("click", onChipClick);
   els.mediaChips.addEventListener("click", onChipClick);
   els.btnRefresh.addEventListener("click", () => void loadConfig());
-  els.btnClearMemory.addEventListener("click", () => {
-    window.confirm("后端尚未提供一键清空；请到记忆页逐条忘掉。");
-  });
-  els.btnResetManners.addEventListener("click", () => {
-    window.confirm("后端尚未提供一键重置分寸；请手动把芯片调回默认。");
-  });
   await loadConfig();
 }
 

@@ -40,6 +40,7 @@ const els = {
 let online = false;
 let selectedUmo = storageGet(UMO_KEY, "");
 let busy = false;
+let refreshRevision = 0;
 
 function setTonightEnabled(ok) {
   for (const id of ["btnGhostTonight", "btnSensibleTonight", "btnLivelyTonight"]) {
@@ -99,9 +100,13 @@ function renderThermo(air) {
   const ratio = Number(t.intervene_ratio);
   const pct = Number.isFinite(ratio) ? Math.round(ratio * 100) : intervene + quiet ? Math.round((intervene / (intervene + quiet)) * 100) : 0;
   els.thermoFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  els.thermoFill.parentElement.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, pct))));
   els.thermoQuiet.textContent = `安静 ${quiet}`;
   els.thermoIntervene.textContent = `插话 ${intervene}`;
   const knob = air.presence_knob || t.target || "sensible";
+  ["ghost", "sensible", "lively"].forEach((value, index) => {
+    els[["btnGhostTonight", "btnSensibleTonight", "btnLivelyTonight"][index]].setAttribute("aria-pressed", String(value === knob));
+  });
   const used = Number(air.proactive_used ?? t.proactive_used ?? 0);
   const cap = Number(air.proactive_cap ?? t.proactive_cap ?? 0);
   const quota =
@@ -131,9 +136,12 @@ function renderDecisions(air) {
 }
 
 async function refresh() {
+  const revision = ++refreshRevision;
+  setTonightEnabled(false);
   try {
     const params = selectedUmo ? { umo: selectedUmo } : {};
     const air = await apiGet("read_air", params);
+    if (revision !== refreshRevision) return;
     online = true;
     setLink(els, true, "已连接");
     fillSessionSelect(els.sessionSelect, air.sessions || [], selectedUmo);
@@ -143,7 +151,15 @@ async function refresh() {
     renderDecisions(air);
     setTonightEnabled(true);
   } catch (err) {
+    if (revision !== refreshRevision) return;
     online = false;
+    els.partnerSheet.innerHTML = "";
+    els.occasionCapsule.textContent = "暂无数据";
+    els.knobTarget.textContent = "目标：—";
+    els.thermoFill.style.width = "0%";
+    els.thermoFill.parentElement.setAttribute("aria-valuenow", "0");
+    els.thermoQuiet.textContent = "安静 —";
+    els.thermoIntervene.textContent = "插话 —";
     setLink(els, false, (err && err.message) || "离线");
     setTonightEnabled(false);
     els.oneLiner.textContent = "读空气暂时不可用，请稍后刷新。";
@@ -155,7 +171,7 @@ async function refresh() {
 async function savePresence(value) {
   if (!online || busy) return;
   busy = true;
-  els.tonightNote.textContent = "正在保存今晚分寸…";
+  els.tonightNote.textContent = "正在保存全局参与档位…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
     els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」。`;

@@ -2,6 +2,16 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.5.0 — 面板重写：双图层主题与标签工作区
+
+- 六个面板页（console/config/today/manners/memory/replay）重写为双图层样式：`pages/shared/base.css` 收敛为无颜色的纯结构原语，`pages/shared/theme.css` 成为唯一 token 与组件层。新 day/night 调色板（day 背景 `#f5f6f4` / 正文 `#202e26` / 主色绿 `#286548`；night `#0b1419` / `#e8eee8`），旧遗留变量（`--panel`、`--stat-bg`、`--page-wash` 等）统一映射到语义变量，移除纸张纹理，字体栈改为 `Segoe UI Variable Text` 优先。新色值由主题浏览器测试锁定。
+- 控制台改为三标签工作区：会话工作台、运行策略、互联诊断以 `role="tab"` 视图切换（页面私有 `pages/console/workspace.js`），面板保持挂载以免轮询丢失输入，支持方向键 / Home / End 键盘导航与 `aria-selected` 同步；console `style.css` 从约 1690 行精简到 133 行。
+- today / manners / memory 重写为统一的次级工作区：`wire-card` 卡片布局、会话选择器、参与旋钮按钮、纪念簿标签页（纪念日 / 提醒 / 黑话试验）。新增浏览器契约测试覆盖三页 × day/night × 1366/375 无溢出、夜色卡片底色、旋钮写入与过期读取保护、分寸开关键盘操作与保存提示、纪念簿增忘 / 草稿加载 / 标签方向键导航 / 过期会话响应不回灌。
+- `base.css` 纳入全员同步清单（console 不再例外），`sync_page_assets.py` 与发布校验同步更新；`SYNC_INTO_PAGES.md` 说明改为六页发布。
+- 响应式收紧：≤600px 概览指标两列、≤360px 单列；console 320px、各页 1366/375 宽度下无横向溢出，触摸目标保持 ≥44px。config 分类页断言宽度调整为 375px 并补充脏值回退与空搜索用例；replay 甘特图新增窄屏响应式检查与无网络重载下的客户端话题过滤用例；console 相关浏览器测试补齐标签页导航步骤。
+- 视觉修复：分寸台空的保存提示条不再以悬浮胶囊形式遮挡「社交与作息」卡片；today/manners/memory 的观察会话下拉在窄屏占满整行，选项文本不再被裁剪。
+- 修复 Embedding 资源计数在 Python 3.10 及以下把超时记为普通失败的问题（`asyncio.TimeoutError` 与内建 `TimeoutError` 在 3.11 才合并）；测试用 `VirtualClock.advance` 现在会等完成级联沉降并触发窗口内迟注册的定时器，端到端与场景回归在本机 Python 3.10 上恢复稳定。
+
 ## v1.4.3 — 参与策略拆分、等待回答状态与有状态回放
 
 - 参与评分从 `AddressivityRouter` 抽出为纯策略 `ParticipationPolicy`：适配器只采集身份、引用、时间、插话数量、语义匹配、线程与 hover 事实，策略不访问 DAG、时钟、模型或正文，也不重复调用身份与收件人推断。默认阈值、全部权重、理由文本与 0.28 hover 上限完全不变，抽取前的 29 组公共结果固化为 `participation_legacy.json`，行为等价由回归锁定。

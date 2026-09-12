@@ -131,19 +131,34 @@ class VirtualClock(TimeService):
 
         target_time = self._current_time + seconds
 
-        while self._timer_heap and self._timer_heap[0][0] <= target_time:
-            next_wake_time = self._timer_heap[0][0]
-            self._current_time = next_wake_time
+        # Completion cascades (asyncio.wait_for waiters, done-callback chains)
+        # need several loop iterations before a task registers its next timer,
+        # so keep firing and settling until the window is exhausted and quiet.
+        stall = 0
+        fired = 0
+        while True:
+            if self._timer_heap and self._timer_heap[0][0] <= target_time:
+                next_wake_time = self._timer_heap[0][0]
+                self._current_time = next_wake_time
 
-            # Collect and resolve all timers ready at this exact virtual timestamp
-            ready_futures: List[asyncio.Future] = []
-            while self._timer_heap and self._timer_heap[0][0] <= next_wake_time:
-                _, _, fut = heapq.heappop(self._timer_heap)
-                if not fut.done():
-                    ready_futures.append(fut)
+                # Collect and resolve all timers ready at this exact virtual timestamp
+                ready_futures: List[asyncio.Future] = []
+                while self._timer_heap and self._timer_heap[0][0] <= next_wake_time:
+                    _, _, fut = heapq.heappop(self._timer_heap)
+                    if not fut.done():
+                        ready_futures.append(fut)
 
-            for fut in ready_futures:
-                fut.set_result(None)
+                for fut in ready_futures:
+                    fut.set_result(None)
+
+                fired += 1
+                if fired > 10000:
+                    break
+                stall = 0
+            else:
+                stall += 1
+                if stall >= 8:
+                    break
 
             # Yield control to the event loop so awakened tasks can execute and schedule subsequent steps
             await asyncio.sleep(0)

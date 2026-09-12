@@ -35,17 +35,23 @@ let tab = "anniversaries";
 let notebook = { anniversaries: [], reminders: [], slang_trials: [], mute_until: 0 };
 let online = false;
 let busy = false;
+let notebookRevision = 0;
 
 function setEnabled() {
-  const ok = online && Boolean(selectedUmo);
+  const ok = online && Boolean(selectedUmo) && !busy;
   els.btnAdd.disabled = !ok;
   els.btnMuteTonight.disabled = !ok;
   els.btnLoad.disabled = !ok;
+  els.sessionSelect.disabled = busy;
+  els.btnRefresh.disabled = busy;
+  document.querySelectorAll(".tab").forEach((node) => { node.disabled = busy; });
 }
 
 function paintTabs() {
   document.querySelectorAll(".tab").forEach((node) => {
-    node.setAttribute("aria-selected", node.getAttribute("data-tab") === tab ? "true" : "false");
+    const selected = node.getAttribute("data-tab") === tab;
+    node.setAttribute("aria-selected", String(selected));
+    node.tabIndex = selected ? 0 : -1;
   });
 }
 
@@ -84,12 +90,13 @@ function softText(value, fallback = "（已记一条）") {
 
 function renderList() {
   paintTabs();
-  paintAddForm();
+  document.getElementById("memoryResults").setAttribute("aria-labelledby", `tab-${tab}`);
   let rows = [];
   if (tab === "anniversaries") rows = notebook.anniversaries || [];
   else if (tab === "reminders") rows = notebook.reminders || [];
   else rows = notebook.slang_trials || [];
 
+  document.getElementById("memoryCount").textContent = `${rows.length} 条`;
   if (!selectedUmo) {
     els.listHost.innerHTML = "";
     els.listEmpty.classList.remove("hidden");
@@ -162,6 +169,7 @@ async function loadSessions() {
 }
 
 async function loadNotebook() {
+  const revision = ++notebookRevision;
   if (!selectedUmo) {
     notebook = { anniversaries: [], reminders: [], slang_trials: [], mute_until: 0 };
     renderList();
@@ -169,7 +177,9 @@ async function loadNotebook() {
     return;
   }
   try {
-    notebook = await apiGet("notebook", { umo: selectedUmo });
+    const result = await apiGet("notebook", { umo: selectedUmo });
+    if (revision !== notebookRevision) return;
+    notebook = result;
     online = true;
     setLink(els, true, "已连接");
     const mute = Number(notebook.mute_until || 0);
@@ -177,6 +187,10 @@ async function loadNotebook() {
       ? `今晚别提生效中 · 至 ${formatTs(mute)} · 会话 ${redactId(selectedUmo)}`
       : `已加载 · 会话 ${redactId(selectedUmo)}（正文默认脱敏展示）`;
   } catch (err) {
+    if (revision !== notebookRevision) return;
+    online = false;
+    notebook = { anniversaries: [], reminders: [], slang_trials: [] };
+    setLink(els, false, "读取失败");
     els.sessionNote.textContent = (err && err.message) || "读取失败";
   }
   setEnabled();
@@ -186,6 +200,7 @@ async function loadNotebook() {
 async function mutate(action, payload = {}) {
   if (!selectedUmo || busy) return;
   busy = true;
+  setEnabled();
   try {
     await apiPost("notebook", { action, umo: selectedUmo, ...payload });
     await loadNotebook();
@@ -193,6 +208,7 @@ async function mutate(action, payload = {}) {
     els.addNote.textContent = (err && err.message) || "操作失败";
   } finally {
     busy = false;
+    setEnabled();
   }
 }
 
@@ -201,6 +217,7 @@ async function onAdd(event) {
   if (!selectedUmo || busy) return;
   const fd = new FormData(els.addForm);
   busy = true;
+  setEnabled();
   els.addNote.textContent = "写入中…";
   try {
     if (tab === "anniversaries") {
@@ -237,6 +254,7 @@ async function onAdd(event) {
     els.addNote.textContent = (err && err.message) || "写入失败";
   } finally {
     busy = false;
+    setEnabled();
   }
 }
 
@@ -267,12 +285,26 @@ async function boot() {
     node.addEventListener("click", () => {
       tab = node.getAttribute("data-tab") || "anniversaries";
       els.addNote.textContent = "";
+      paintAddForm();
       renderList();
+    });
+    node.addEventListener("keydown", (event) => {
+      const tabs = [...document.querySelectorAll(".tab")];
+      const index = tabs.indexOf(node);
+      const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+      if (next < 0) return;
+      event.preventDefault();
+      tabs[next].click();
+      tabs[next].focus();
     });
   });
   els.sessionSelect.addEventListener("change", () => {
     selectedUmo = els.sessionSelect.value || "";
     storageSet(UMO_KEY, selectedUmo);
+    notebook = { anniversaries: [], reminders: [], slang_trials: [] };
+    paintAddForm();
+    renderList();
+    setEnabled();
     void loadNotebook();
   });
   els.btnRefresh.addEventListener("click", async () => {
@@ -283,6 +315,7 @@ async function boot() {
   els.btnMuteTonight.addEventListener("click", () => void mutate("mute_tonight", { hours: 10 }));
   els.addForm.addEventListener("submit", onAdd);
   els.listHost.addEventListener("click", onListClick);
+  paintAddForm();
   await loadSessions();
   await loadNotebook();
 }

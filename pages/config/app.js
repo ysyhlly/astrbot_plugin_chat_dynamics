@@ -304,8 +304,9 @@ function filterConfigFields() {
     if (!group.querySelector(".mismatched")) group.querySelector(".group-badge").textContent = `${matches} 项`;
     count += matches;
   });
+  document.getElementById("configEmpty").classList.toggle("hidden", count > 0);
   els.configResultCount.textContent = query ? `在全部设置中找到 ${count} 项` : basic
-    ? `${count} 项常用设置 · 更多选项可搜索或切换到高级设置`
+    ? `${count} 项常用设置 · 更多选项可搜索或切换到全部设置`
     : `共 ${count} 项设置 · 分组展开状态自动记住`;
 }
 
@@ -331,7 +332,7 @@ function updateScopeStatus() {
     : value("takeover_all") ? `对全部群生效${excluded.size ? `，排除 ${excluded.size} 个群` : ""}。`
     : groups.length ? `对 ${groups.length} 个指定群生效。`
     : "尚未选择有效群聊，请填写群号或开启「对全部群聊生效」。";
-  if (value("shadow_mode")) message += " 当前为观察模式，插件不会接管回复；可在高级设置中关闭。";
+  if (value("shadow_mode")) message += " 当前为观察模式，插件不会接管回复；可在全部设置中关闭。";
   if (configState.mismatches.length && !configDirty) message += " 有已存设置尚未应用，以下表单可能与运行状态不同。";
   els.configScopeStatus.textContent = `${configDirty ? "保存后" : "当前"}：${message}`;
 }
@@ -410,13 +411,27 @@ function setConfigNote(message, isError = false) {
 function setConfigDirty(dirty) {
   configDirty = Boolean(dirty);
   if (els.actionTitle) {
-    els.actionTitle.textContent = configDirty ? "有未保存修改" : "未修改";
+    els.actionTitle.textContent = configDirty ? "有未保存修改" : "所有修改已保存";
   }
   if (els.btnConfigSave) {
     els.btnConfigSave.disabled = !configDirty;
     els.btnConfigSave.title = configDirty ? "保存并应用到运行时" : "没有未保存的修改";
   }
+  document.querySelector(".action-bar").dataset.dirty = String(configDirty);
   updateScopeStatus();
+}
+
+function updateEditedFields() {
+  let count = 0;
+  els.configForm.querySelectorAll("[data-config-key]").forEach(input => {
+    const initial = configFieldValue(input.dataset.configKey);
+    const current = input.type === "checkbox" ? input.checked : input.value;
+    const changed = String(initial) !== String(current);
+    input.closest(".config-field").dataset.dirty = String(changed);
+    if (changed) count += 1;
+  });
+  setConfigDirty(count > 0);
+  if (count) els.actionTitle.textContent = `${count} 项未保存修改`;
 }
 
 function isProviderField(key, schema) {
@@ -608,6 +623,8 @@ function renderConfigForm(panel) {
   els.configCategory.innerHTML = '<option value="">选择设置分类…</option>' + groups.map((group) =>
     `<option value="${escapeHtml(group.id)}">${escapeHtml(group.title)} · ${group.keys.length} 项</option>`).join("");
   els.configCategory.value = groups.some((group) => group.id === selectedCategory) ? selectedCategory : "";
+  document.getElementById("configCategoryNav").innerHTML = groups.map(group =>
+    `<button type="button" class="category-link" data-category="${escapeHtml(group.id)}">${escapeHtml(group.title)}<span>${group.keys.length}</span></button>`).join("");
   els.configForm.innerHTML = groups
     .map((group) => {
       const isOpen = openGroups.has(group.id);
@@ -640,8 +657,8 @@ function renderConfigForm(panel) {
   });
   filterConfigFields();
   els.configForm.querySelectorAll("[data-config-key]").forEach((input) => {
-    input.addEventListener("change", () => setConfigDirty(true));
-    input.addEventListener("input", () => setConfigDirty(true));
+    input.addEventListener("change", updateEditedFields);
+    input.addEventListener("input", updateEditedFields);
   });
 }
 
@@ -709,6 +726,17 @@ async function applyConfigPanel() {
 }
 
 async function boot() {
+  document.getElementById("btnClearSearch").addEventListener("click", () => {
+    els.configSearch.value = "";
+    filterConfigFields();
+    els.configSearch.focus();
+  });
+  document.getElementById("configCategoryNav").addEventListener("click", event => {
+    const button = event.target.closest("[data-category]");
+    if (!button) return;
+    els.configCategory.value = button.dataset.category;
+    els.configCategory.dispatchEvent(new Event("change"));
+  });
   els.btnBasicConfig.addEventListener("click", () => setConfigMode("basic"));
   els.btnAdvancedConfig.addEventListener("click", () => setConfigMode("advanced"));
   els.configSearch.addEventListener("input", filterConfigFields);
@@ -716,6 +744,7 @@ async function boot() {
     const id = els.configCategory.value;
     const group = [...els.configForm.querySelectorAll("details.config-group")].find((item) => item.dataset.groupId === id);
     if (!group) return;
+    document.querySelectorAll("[data-category]").forEach(button => button.setAttribute("aria-current", String(button.dataset.category === id)));
     setConfigMode("advanced");
     openGroups.add(id);
     persistView();
@@ -731,21 +760,21 @@ async function boot() {
       filterConfigFields();
     });
   }
-  els.pageTitle.textContent = t("pages.config.title", "插件参数配置");
+  els.pageTitle.textContent = t("pages.config.title", "参数配置");
   await wirePageNav("config");
   els.pageDesc.textContent = t(
     "pages.config.desc",
-    "先选生效群聊，其余可保持默认。需要细调时再打开高级设置。",
+    "定义参与范围，调整每一次回应。",
   );
   if (bridge && typeof bridge.ready === "function") {
     try {
       await withTimeout(bridge.ready());
-      setLink(true, "Bridge 已连接");
+      setLink(true, "已连接");
     } catch (_err) {
-      setLink(false, "Bridge 超时");
+      setLink(false, "连接超时");
     }
   } else {
-    setLink(false, "直连 / 本地预览");
+    setLink(false, "本地预览");
   }
   els.btnConfigReload.addEventListener("click", () => {
     void loadConfigPanel();

@@ -1,4 +1,5 @@
 import { renderIntegrations } from "./integrations.js";
+import { mountWorkspace } from "./workspace.js";
 
 const PLUGIN = "astrbot_plugin_chat_dynamics";
 const MODE_LABEL = {
@@ -198,6 +199,10 @@ function updateManagementControls() {
   els.btnPreset.disabled = !overviewOnline || !presetsLoaded || Boolean(presetsLoadInFlight) || busy;
   els.presetSelect.disabled = !overviewOnline || !presetsLoaded || Boolean(presetsLoadInFlight) || busy;
   els.btnRetryDetail.disabled = !selectedId || detailLoading || busy;
+  if (els.btnPresence) els.btnPresence.disabled = !overviewOnline || busy;
+  if (els.presenceSelect) els.presenceSelect.disabled = !overviewOnline || busy;
+  if (els.btnNotebookLoad) els.btnNotebookLoad.disabled = !overviewOnline || busy;
+  if (els.notebookUmo) els.notebookUmo.disabled = !overviewOnline || busy;
   updateBusyState();
 }
 
@@ -1009,8 +1014,9 @@ async function resetSelected() {
 
 
 async function boot() {
+  mountWorkspace();
   els.pageTitle.textContent = t("pages.console.title", "群聊动态控制台");
-  els.pageDesc.textContent = t("pages.console.desc", "按 UMO 会话监视群聊氛围、冷却与对话图谱。");
+  els.pageDesc.textContent = t("pages.console.desc", "看见每一场对话，掌握机器人的参与节奏。");
   await wirePageNav("console");
   if (bridge && typeof bridge.ready === "function") {
     try {
@@ -1100,6 +1106,7 @@ async function applyPresenceKnob() {
   const value = els.presenceSelect.value;
   if (!["ghost", "sensible", "lively"].includes(value)) return;
   operationInFlight = true;
+  updateManagementControls();
   if (els.presenceNote) els.presenceNote.textContent = "正在应用分寸旋钮…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
@@ -1109,6 +1116,7 @@ async function applyPresenceKnob() {
     if (els.presenceNote) els.presenceNote.textContent = (err && err.message) || "保存失败";
   } finally {
     operationInFlight = false;
+    updateManagementControls();
   }
 }
 
@@ -1120,6 +1128,8 @@ async function loadNotebookLite() {
     return;
   }
   operationInFlight = true;
+  updateManagementControls();
+  if (els.notebookPreview) els.notebookPreview.textContent = "";
   if (els.notebookNote) els.notebookNote.textContent = "正在读取小本…";
   try {
     const data = await apiGet("notebook", { umo });
@@ -1142,6 +1152,7 @@ async function loadNotebookLite() {
     if (els.notebookPreview) els.notebookPreview.textContent = "";
   } finally {
     operationInFlight = false;
+    updateManagementControls();
   }
 }
 

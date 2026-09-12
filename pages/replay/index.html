@@ -20,12 +20,12 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title>场景回放</title>
+    <title>会话回放</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
-    <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="grain" aria-hidden="true"></div>
@@ -38,17 +38,10 @@
         <div class="plugin-main">
       <header class="topbar">
         <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
           <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / REPLAY</p>
-            <h1>场景回放</h1>
-            <p class="lede">按聊天主题回看群聊进展，点选主题查看开口情况和判断详情。</p>
+            <p class="eyebrow">会话工作台 / REPLAY</p>
+            <h1>会话回放</h1>
+            <p class="lede">沿时间线回看讨论，理解每一次回复与安静。</p>
           </div>
         </div>
         <div class="topbar-tools">
@@ -63,30 +56,27 @@
         </div>
       </header>
 
-      <section class="wire-card" aria-label="群选择">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">SCENE</p>
-            <h2>回放哪一群</h2>
-          </div>
-          <span class="card-note" id="trackHint">点色块看人话原因</span>
-        </div>
-        <div class="field-grid">
-          <label for="sessionSelect">当前群 / 会话
-            <select id="sessionSelect"></select>
-          </label>
-        </div>
+      <section class="replay-summary" aria-label="回放摘要">
+        <div><span>已形成主题</span><strong id="summaryTopics">—</strong><small>当前回放范围</small></div>
+        <div><span>关联消息</span><strong id="summaryMessages">—</strong><small>主题内保留的消息</small></div>
+        <div><span>开口 / 安静</span><strong id="summaryDecisions">—</strong><small>主题内的判断记录</small></div>
+      </section>
+      <section class="wire-card replay-controls" aria-label="回放筛选">
+        <label for="sessionSelect">会话范围<select id="sessionSelect"></select></label>
+        <label for="topicSearch">查找主题<input id="topicSearch" type="search" placeholder="输入主题关键词" autocomplete="off" /></label>
+        <label for="decisionFilter">参与情况<select id="decisionFilter"><option value="all">全部主题</option><option value="speak">有开口记录</option><option value="silent">没有开口记录</option></select></label>
+        <span class="card-note" id="trackHint">正在读取回放</span>
       </section>
 
       <section class="wire-card" aria-labelledby="railTitle">
         <div class="card-heading">
           <div>
-            <p class="eyebrow">COLOR RAIL</p>
-            <h2 id="railTitle">主题时间轨</h2>
+            <p class="eyebrow">TIMELINE</p>
+            <h2 id="railTitle">主题时间线</h2>
           </div>
           <span class="card-note" id="railCounts">主题 —</span>
         </div>
-        <p class="ops-note">横轴为时间，纵轴为群聊主题。点击色块查看开口情况和具体原因。短场景色块设有最小显示宽度，准确时间见详情。主题名称遵循聊天内容显示设置。</p>
+        <p class="ops-note">每一行是一段讨论。选择时间块，查看判断记录与消息标注。短场景以最小宽度显示，准确起止时间见详情。</p>
         <div class="replay-rail" id="replayRail" role="group" aria-label="群聊主题场景"></div>
         <p class="ops-note" id="unassignedNote" role="status" aria-live="polite"></p>
         <div class="empty-state hidden" id="railEmpty">
@@ -97,15 +87,15 @@
       <dialog class="wire-card scene-dialog" id="detailDialog" aria-labelledby="detailTitle">
         <div class="card-heading">
           <div>
-            <p class="eyebrow">WHY</p>
-            <h2 id="detailTitle">这块在说什么</h2>
+            <p class="eyebrow">SCENE DETAIL</p>
+            <h2 id="detailTitle">主题详情</h2>
           </div>
           <button type="button" class="button button-quiet" id="btnCloseDetail">关闭详情</button>
         </div>
         <p class="one-liner" id="blockDetail">点时间轨上的色块。</p>
         <p class="ops-note" id="blockMeta"></p>
         <ol class="scene-events" id="blockEvents" aria-label="场景中的逐次判断" aria-live="polite"></ol>
-        <section aria-labelledby="annotationTitle">
+        <section class="annotation-section" aria-labelledby="annotationTitle">
           <h3 id="annotationTitle">话题与收件人纠错</h3>
           <p class="ops-note">标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。</p>
           <div id="annotationMessages"></div>
@@ -113,10 +103,10 @@
           <p id="annotationMetrics" class="ops-note"></p>
           <button type="button" class="button" id="btnExportAnnotations">导出标注 JSON</button>
         </section>
-        <div class="tonight-actions" aria-label="顺着感觉调分寸">
-          <button type="button" class="button" id="btnGhostTonight" disabled>今晚隐身</button>
-          <button type="button" class="button" id="btnSensibleTonight" disabled>今晚懂事</button>
-          <button type="button" class="button button-primary" id="btnLivelyTonight" disabled>今晚活跃一点</button>
+        <div class="tonight-actions" aria-label="调整参与程度">
+          <button type="button" class="button" id="btnGhostTonight" disabled>设为隐身</button>
+          <button type="button" class="button" id="btnSensibleTonight" disabled>设为懂事</button>
+          <button type="button" class="button button-primary" id="btnLivelyTonight" disabled>设为活跃</button>
         </div>
         <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
       </dialog>

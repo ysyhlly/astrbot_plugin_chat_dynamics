@@ -21,13 +21,14 @@
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
     <title>群聊动态控制台</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
-    <link rel="stylesheet" href="./refinement.css" />
+
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
+    <a class="skip-link" href="#consoleContent">跳到工作区</a>
     <div class="app plugin-shell">
       <div class="plugin-layout">
         <aside class="plugin-side" aria-label="插件页面">
@@ -35,54 +36,27 @@
           <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
         </aside>
         <div class="plugin-main">
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / OBSERVATORY</p>
-            <h1 id="pageTitle">群聊动态控制台</h1>
-            <p class="lede" id="pageDesc">按 UMO 会话监视群聊氛围、冷却与对话图谱。</p>
-          </div>
-        </div>
-
-        <div class="topbar-tools">
-          <a class="integration-jump" href="#integrationPanel">接口面板 ↗</a>
-          <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
-
-          <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
-            <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
-            </span>
-          </div>
-          <div class="clock-state">
-            <span class="tool-label">页面时间</span>
-            <time id="clock">--:--:--</time>
-          </div>
-          <button type="button" class="button button-quiet" id="btnRefresh" aria-label="刷新总览与会话详情">
-            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
-              <path d="M20 11a8 8 0 0 0-14.8-3.8L3 10m0 0V5.5M3 10h4.5M4 13a8 8 0 0 0 14.8 3.8L21 14m0 0v4.5M21 14h-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-            <span>刷新</span>
-          </button>
-        </div>
-      </header>
-
-      <div class="content">
-        <section class="overview-section" aria-labelledby="overviewTitle">
+          <header class="topbar">
+            <div class="brand-copy">
+              <p class="eyebrow">CHAT DYNAMICS / WORKSPACE</p>
+              <h1 id="pageTitle">群聊动态控制台</h1>
+              <p class="lede" id="pageDesc">看见每一场对话，掌握机器人的参与节奏。</p>
+            </div>
+            <div class="topbar-tools">
+              <div class="connection-state" role="status" aria-live="polite"><span id="linkLamp" class="status-dot" aria-hidden="true"></span><span id="linkLabel">正在连接</span></div>
+              <div class="clock-state"><span class="tool-label">本地时间</span><time id="clock">--:--:--</time></div>
+              <button class="button button-quiet" id="btnRefresh" type="button">刷新数据</button>
+              <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
+            </div>
+          </header>
+          <main id="consoleContent" tabindex="-1">
+<section class="overview-section" aria-labelledby="overviewTitle">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">LIVE SNAPSHOT</p>
+              <p class="eyebrow">SYSTEM STATUS</p>
               <h2 id="overviewTitle">系统概览</h2>
             </div>
-            <p class="section-caption">每 5 秒同步一次 · 页面隐藏时暂停轮询</p>
+            <p class="section-caption">每 5 秒同步 · 隐藏页面时暂停</p>
           </div>
           <div class="stats" aria-label="总览">
             <article class="stat">
@@ -112,74 +86,13 @@
             </article>
           </div>
         </section>
-
-        <section class="integration-panel" id="integrationPanel" aria-labelledby="integrationTitle">
-          <div class="integration-header">
-            <div><p class="eyebrow">CONNECTIONS / SELF LEARNING</p><h2 id="integrationTitle">自学习互联</h2>
-              <p class="integration-subtitle">记忆、关系与群聊表达，在回复前汇入主模型。</p></div>
-            <span class="integration-badge" id="integrationStatus" role="status" aria-live="polite">等待诊断</span>
-          </div>
-          <div class="integration-metrics" aria-label="接口发现统计">
-            <div><strong id="integrationProviderCount">—</strong><span>已发现搭档</span></div>
-            <div><strong id="integrationCount">—</strong><span>已发现直连方法</span></div>
-            <div><strong>11</strong><span>支持的兼容方法名</span></div>
-          </div>
-          <div class="integration-capabilities" id="integrationCapabilities"></div>
-          <div class="integration-providers" id="integrationProviders"></div>
-          <p class="integration-empty" id="integrationEmpty">正在读取接口诊断…</p>
-          <p class="integration-footnote" id="integrationNote">这里显示接入方式，不展示记忆正文。</p>
-        </section>
-
-        <section class="control-strip" aria-label="运行策略与预设">
-          <article class="policy-card">
-            <div class="card-heading">
-              <div>
-                <p class="eyebrow">RUNTIME POLICY</p>
-                <h2>运行策略</h2>
-              </div>
-              <span class="quiet-mark" aria-hidden="true"></span>
+            <div class="workspace-navigation" role="tablist" aria-label="控制台工作区">
+              <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions">会话工作台</button>
+              <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy">运行策略</button>
+              <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations">互联诊断</button>
             </div>
-            <strong class="policy-value" id="shadowState">—</strong>
-            <div class="policy-details">
-              <span id="privacyState">—</span>
-              <span id="providerState">Provider：—</span>
-              <span id="mannersState">社交分寸：—</span>
-              <span id="mediaGateState">媒体门闩：—</span>
-            </div>
-          </article>
-
-          <article class="preset-card config-card" id="configPanel">
-            <div class="card-heading">
-              <div>
-                <p class="eyebrow">PRESET · CONFIG</p>
-                <h2>预设与参数</h2>
-              </div>
-              <span class="card-note">详细参数见独立配置页</span>
-            </div>
-            <div class="preset-form">
-              <label for="presetSelect">推荐预设</label>
-              <div class="control-row">
-                <select id="presetSelect" aria-describedby="presetNote">
-                  <option value="">选择预设</option>
-                </select>
-                <button type="button" class="button button-primary" id="btnPreset" disabled>应用</button>
-              </div>
-            </div>
-            <p class="ops-note" id="presetNote" role="status" aria-live="polite"></p>
-            <p class="config-migrate-note">完整参数编辑请打开插件页「插件参数配置」。分寸/记忆/媒体开关也在配置页。</p>
-          </article>
-
-          <p class="ops-note metric-note" id="metricState" role="status" aria-live="polite"></p>
-          <details class="diagnostic-drawer" id="shadowDecisions">
-            <summary>
-              <span>最近观察决策</span>
-              <span class="summary-hint">次级诊断</span>
-            </summary>
-            <ol id="shadowDecisionList"></ol>
-          </details>
-        </section>
-
-        <section class="onboarding hidden" id="onboarding" aria-labelledby="onboardingTitle">
+            <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions">
+<section class="onboarding hidden" id="onboarding" aria-labelledby="onboardingTitle">
           <div class="onboarding-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" focusable="false">
               <path d="M12 3.5v17M3.5 12h17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
@@ -195,9 +108,7 @@
               <li>确认指标正常后关闭观察模式</li>
             </ol>
           </div>
-        </section>
-
-        <section class="workspace" aria-label="会话观测工作区">
+        </section><section class="workspace" aria-label="会话观测工作区">
           <aside class="rail" aria-labelledby="sessionTitle">
             <div class="rail-header">
               <div>
@@ -222,7 +133,7 @@
             </ul>
           </aside>
 
-          <main class="board" id="board" aria-live="off">
+          <div class="board" id="board" aria-live="off">
             <div class="empty-board" id="emptyBoard">
               <div class="empty-symbol" aria-hidden="true">
                 <svg viewBox="0 0 52 52" width="46" height="46" focusable="false">
@@ -320,10 +231,58 @@
                 <p class="ops-note" id="opsNote" role="status" aria-live="polite"></p>
               </section>
             </div>
-          </main>
+          </div>
         </section>
+            </section>
+            <section id="view-policy" role="tabpanel" aria-labelledby="tab-policy" hidden>
+<section class="control-strip" aria-label="运行策略与预设">
+          <article class="policy-card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">RUNTIME POLICY</p>
+                <h2>运行策略</h2>
+              </div>
+              <span class="quiet-mark" aria-hidden="true"></span>
+            </div>
+            <strong class="policy-value" id="shadowState">—</strong>
+            <div class="policy-details">
+              <span id="privacyState">—</span>
+              <span id="providerState">Provider：—</span>
+              <span id="mannersState">社交分寸：—</span>
+              <span id="mediaGateState">媒体门闩：—</span>
+            </div>
+          </article>
 
-        <details class="diagnostic-drawer" id="readAirPanel">
+          <article class="preset-card config-card" id="configPanel">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">PRESET · CONFIG</p>
+                <h2>预设与参数</h2>
+              </div>
+              <span class="card-note">详细参数见独立配置页</span>
+            </div>
+            <div class="preset-form">
+              <label for="presetSelect">推荐预设</label>
+              <div class="control-row">
+                <select id="presetSelect" aria-describedby="presetNote">
+                  <option value="">选择预设</option>
+                </select>
+                <button type="button" class="button button-primary" id="btnPreset" disabled>应用</button>
+              </div>
+            </div>
+            <p class="ops-note" id="presetNote" role="status" aria-live="polite"></p>
+            <p class="config-migrate-note">完整参数编辑请打开插件页「插件参数配置」。分寸/记忆/媒体开关也在配置页。</p>
+          </article>
+
+          <p class="ops-note metric-note" id="metricState" role="status" aria-live="polite"></p>
+          <details class="diagnostic-drawer" id="shadowDecisions">
+            <summary>
+              <span>最近观察决策</span>
+              <span class="summary-hint">次级诊断</span>
+            </summary>
+            <ol id="shadowDecisionList"></ol>
+          </details>
+        </section>        <details class="diagnostic-drawer" id="readAirPanel" open>
           <summary>
             <span>读空气 · 分寸 · 群记忆</span>
             <span class="summary-hint">次级面板，默认收起 · 完整仪表盘见侧栏今日/分寸/记忆</span>
@@ -388,8 +347,26 @@
             </div>
           </div>
         </details>
-
-      </div>
+            </section>
+            <section id="view-integrations" role="tabpanel" aria-labelledby="tab-integrations" hidden>
+<section class="integration-panel" id="integrationPanel" aria-labelledby="integrationTitle">
+          <div class="integration-header">
+            <div><p class="eyebrow">CONNECTIONS / SELF LEARNING</p><h2 id="integrationTitle">自学习互联</h2>
+              <p class="integration-subtitle">记忆、关系与群聊表达，在回复前汇入主模型。</p></div>
+            <span class="integration-badge" id="integrationStatus" role="status" aria-live="polite">等待诊断</span>
+          </div>
+          <div class="integration-metrics" aria-label="接口发现统计">
+            <div><strong id="integrationProviderCount">—</strong><span>已发现搭档</span></div>
+            <div><strong id="integrationCount">—</strong><span>已发现直连方法</span></div>
+            <div><strong>11</strong><span>支持的兼容方法名</span></div>
+          </div>
+          <div class="integration-capabilities" id="integrationCapabilities"></div>
+          <div class="integration-providers" id="integrationProviders"></div>
+          <p class="integration-empty" id="integrationEmpty">正在读取接口诊断…</p>
+          <p class="integration-footnote" id="integrationNote">这里显示接入方式，不展示记忆正文。</p>
+        </section>
+            </section>
+          </main>
         </div>
       </div>
     </div>

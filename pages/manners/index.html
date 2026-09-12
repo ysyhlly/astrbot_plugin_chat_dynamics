@@ -19,126 +19,87 @@
       })();
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
-    <script src="./theme.js"></script>
+    <script src="./theme.js">
+</script>
     <title>分寸台</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
-    <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
-    <div class="app wire-app plugin-shell">
-      <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
-        <div class="plugin-main">
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / MANNERS</p>
-            <h1>分寸台</h1>
-            <p class="lede">隐身—懂事—活跃，以及社交/媒体分寸芯片。高级参数仍在配置页。</p>
-          </div>
-        </div>
-        <div class="topbar-tools">
-          <div class="connection-state" role="status" aria-live="polite">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
-            <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
-            </span>
-          </div>
-          <button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
-        </div>
-      </header>
-
-      <section class="wire-card" aria-labelledby="presenceTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">PRESENCE KNOB</p>
-            <h2 id="presenceTitle">存在感旋钮</h2>
-          </div>
-        </div>
-        <div class="presence-slider">
-          <input id="presenceRange" type="range" min="0" max="2" step="1" value="1" aria-valuetext="懂事" />
-          <div class="presence-marks">
-            <span data-v="ghost">隐身</span>
-            <span data-v="sensible" class="active">懂事</span>
-            <span data-v="lively">活跃</span>
-          </div>
-          <p class="one-liner" id="presencePreview">懂场合再接话，默认推荐。</p>
-          <button type="button" class="button button-primary" id="btnSavePresence" disabled>保存分寸</button>
-          <p class="ops-note" id="presenceNote" role="status" aria-live="polite"></p>
-        </div>
-      </section>
-
-      <section class="wire-card" aria-labelledby="socialTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">SOCIAL CHIPS</p>
-            <h2 id="socialTitle">社交分寸</h2>
-          </div>
-        </div>
-        <div class="chip-row" id="socialChips"></div>
-      </section>
-
-      <section class="wire-card" aria-labelledby="mediaTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">MEDIA CHIPS</p>
-            <h2 id="mediaTitle">媒体门闩</h2>
-          </div>
-          <span class="card-note">理解接话默认关</span>
-        </div>
-        <div class="chip-row" id="mediaChips"></div>
-        <p class="ops-note" id="chipNote" role="status" aria-live="polite"></p>
-      </section>
-
-      <section class="wire-card">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">ADVANCED</p>
-            <h2>高级参数</h2>
-          </div>
-        </div>
-        <details>
-          <summary>不在此展开 40+ Schema 字段</summary>
-          <p class="advanced-note">
-            防抖、Provider、WTS、Embedding 等请到侧栏「插件参数配置」修改。
-            本页只动分寸旋钮与常用芯片，避免把群主仪表盘压成控制台。
-          </p>
-        </details>
-      </section>
-
-      <section class="wire-card danger-zone" aria-labelledby="dangerTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">DANGER</p>
-            <h2 id="dangerTitle">危险区</h2>
-          </div>
-        </div>
-        <div class="chip-row">
-          <button type="button" class="button button-danger" id="btnClearMemory" disabled title="后端尚未提供一键清空">清空记忆小本</button>
-          <button type="button" class="button button-danger" id="btnResetManners" disabled title="后端尚未提供重置分寸">重置分寸默认</button>
-        </div>
-        <p class="ops-note" id="dangerNote">暂无后端一键清空/重置接口；请用记忆页单项忘掉，或到配置页改开关。二次确认位已预留。</p>
-      </section>
-
-      <p class="quiet-console-link">观测台仍是「群聊动态控制台」· UMO 会话监控未迁移。</p>
-        </div>
-      </div>
-    </div>
-    <script type="module" src="./app.js"></script>
-  </body>
+<div class="app wire-app plugin-shell">
+<div class="plugin-layout">
+<aside class="plugin-side" aria-label="插件页面">
+<p class="plugin-side-label">群聊动态</p>
+<nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航">
+</nav>
+</aside>
+<main class="plugin-main manners-workspace">
+<header class="topbar">
+<div class="brand-copy">
+<p class="eyebrow">CHAT DYNAMICS / MANNERS</p>
+<h1 id="pageTitle">分寸台</h1>
+<p class="lede" id="pageDesc">调整所有会话的参与方式。开关即时保存，参与档位需点击应用。</p>
+</div>
+<div class="topbar-tools">
+<div class="connection-state" role="status" aria-live="polite">
+<span class="status-dot" id="linkLamp" aria-hidden="true">
+</span>
+<span id="linkLabel">正在连接</span>
+</div>
+<button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+</div>
+</header>
+<div class="scope-banner">
+<strong>全局设置</strong>
+<span>以下设置作用于所有会话；单个会话的记忆操作请在记忆小本中进行。</span>
+</div>
+<section class="wire-card presence-card" aria-labelledby="presenceTitle">
+<div>
+<p class="eyebrow">参与方式</p>
+<h2 id="presenceTitle">给聊天留多少空间</h2>
+<p class="one-liner" id="presencePreview">懂场合再接话，默认推荐。</p>
+</div>
+<div class="presence-slider">
+<label for="presenceRange" class="section-copy">全局存在感</label>
+<input id="presenceRange" type="range" min="0" max="2" step="1" value="1" aria-valuetext="懂事"/>
+<div class="presence-marks">
+<span data-v="ghost">隐身</span>
+<span data-v="sensible" class="active">懂事</span>
+<span data-v="lively">活跃</span>
+</div>
+<button type="button" class="button button-primary" id="btnSavePresence" disabled>应用参与档位</button>
+<p class="ops-note" id="presenceNote" role="status" aria-live="polite">
+</p>
+</div>
+</section>
+<section class="wire-card" aria-labelledby="socialTitle">
+<div class="card-heading">
+<h2 id="socialTitle">社交与作息</h2>
+<span class="card-note">点击开关即时保存</span>
+</div>
+<div class="settings-grid" id="socialChips">
+</div>
+</section>
+<section class="wire-card" aria-labelledby="mediaTitle">
+<div class="card-heading">
+<h2 id="mediaTitle">图片与语音</h2>
+<span class="card-note">理解接话默认关闭</span>
+</div>
+<div class="settings-grid" id="mediaChips">
+</div>
+</section>
+<p class="ops-note save-feedback" id="chipNote" role="status" aria-live="polite"></p>
+<section class="wire-card">
+<h2>继续管理</h2>
+<p class="section-copy">模型、防抖与其他详细参数在侧栏「插件参数配置」中。需要管理某个会话的纪念日、约定或试用梗，请打开「记忆小本」。</p>
+</section>
+</main>
+</div>
+</div>
+<script type="module" src="./app.js">
+</script>
+</body>
 </html>

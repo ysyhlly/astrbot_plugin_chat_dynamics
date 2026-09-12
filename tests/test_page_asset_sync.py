@@ -41,5 +41,5 @@ def test_check_reports_missing_source_or_copy(tmp_path):
 
 def test_console_specific_assets_are_not_managed(tmp_path):
     pages = _pages(tmp_path)
-    (pages / "console" / "base.css").write_bytes(b"console-specific")
+    (pages / "console" / "style.css").write_bytes(b"console-specific")
     assert check_page_assets(pages) == []

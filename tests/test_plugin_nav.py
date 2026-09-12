@@ -22,7 +22,8 @@ def test_daytime_rules_do_not_hardcode_night_fills():
     assert "background: rgba(7, 16, 23, 0.35)" not in base
     assert "background: rgba(7, 16, 23, 0.28)" not in base
     assert "rgba(7, 16, 23, 0.36)" not in base
-    assert "background: var(--input-bg)" in base
+    theme = (PAGES / "shared" / "theme.css").read_text(encoding="utf-8")
+    assert "background:var(--input-bg)" in theme
     shell = (PAGES / "shared" / "shell.css").read_text(encoding="utf-8")
     assert "rgba(18, 36, 45, 0.98)" not in shell
     assert "var(--panel-grad" in shell
@@ -30,9 +31,10 @@ def test_daytime_rules_do_not_hardcode_night_fills():
 
 def test_daytime_ui_is_default_and_night_tokens_remain():
     base = (PAGES / "shared" / "base.css").read_text(encoding="utf-8")
-    assert "--bg: #f3efe6" in base
-    assert 'html[data-ui-theme="night"]' in base
-    assert "--bg: #071017" in base
+    theme = (PAGES / "shared" / "theme.css").read_text(encoding="utf-8")
+    assert "--bg:#f5f6f4" in theme
+    assert 'html[data-ui-theme="night"]' in theme
+    assert "--bg:#0b1419" in theme
     nav_js = (PAGES / "shared" / "plugin_nav.js").read_text(encoding="utf-8")
     assert "chat_dynamics_ui" in nav_js
     assert "export function applyUi" in nav_js

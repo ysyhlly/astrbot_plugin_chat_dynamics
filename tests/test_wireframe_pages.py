@@ -37,9 +37,13 @@ def test_shared_assets_exist():
     shared = PAGES / "shared"
     for name in ("base.css", "shell.css", "api.js", "shell.js"):
         assert (shared / name).is_file()
-    # Shared base is a console-style reuse, not a new skin.
+    # Dual-layer split: base.css holds color-free structural primitives,
+    # theme.css is the single token + component layer.
     base = (shared / "base.css").read_text(encoding="utf-8")
-    assert "--bg:" in base and "--cyan:" in base
+    theme = (shared / "theme.css").read_text(encoding="utf-8")
+    assert "--bg:" in theme and "--cyan:" in theme
+    assert "--bg:" not in base and "--cyan:" not in base
+    assert "display:grid" in base
 
 
 def test_console_not_replaced_and_has_side_nav():

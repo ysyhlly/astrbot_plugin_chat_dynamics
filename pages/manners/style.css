@@ -1,1 +1,35 @@
-/* manners — reuse shared shell; no new palette */
+.wire-card{min-width:0;padding:24px;margin:0;border:1px solid var(--line,#dce3df);border-radius:8px;background:var(--surface,#fff);box-shadow:none}
+.plugin-main{display:flex;flex-direction:column;gap:20px}
+.card-heading{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
+.card-heading h2{margin:0}
+.section-copy,.card-note{color:var(--muted,#69756e);font-size:13px;line-height:1.7}
+.session-toolbar{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+.session-toolbar label{display:grid;gap:8px;min-width:240px;flex:1}
+.session-toolbar select{width:100%}
+.session-toolbar .ops-note{flex-basis:100%;margin:0}
+.ops-note:empty{display:none}
+.one-liner{line-height:1.8}
+.session-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:640px){.wire-card{padding:18px}
+.card-heading{align-items:flex-start;flex-direction:column}
+.session-toolbar label{min-width:0;flex-basis:100%}
+}
+
+.scope-banner{display:flex;gap:20px;padding:16px 20px;border-left:3px solid var(--cyan,#23634f);background:var(--surface,#fff);font-size:13px;line-height:1.7}
+.scope-banner strong{white-space:nowrap}
+.presence-card{display:grid;grid-template-columns:1fr 1fr;gap:40px}
+.presence-slider{width:100%;margin:0}
+.presence-slider input{width:100%;margin:20px 0;accent-color:var(--cyan,#23634f)}
+.presence-marks{display:flex;justify-content:space-between;margin-bottom:24px}
+.presence-marks .active{color:var(--cyan,#23634f);font-weight:700}
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+.settings-grid .chip{display:flex;align-items:center;justify-content:space-between;gap:20px;text-align:left;border:0;border-bottom:1px solid var(--line,#dce3df);border-radius:0;background:transparent;color:var(--text,#24342c);padding:18px 0;white-space:normal}
+.setting-copy{display:grid;gap:5px}
+.setting-copy small{color:var(--muted,#69756e);line-height:1.6;font-weight:400}
+.switch-state{font-size:12px;flex-shrink:0;border:1px solid var(--line,#dce3df);padding:4px 10px;border-radius:5px}
+.chip[aria-pressed="true"] .switch-state{color:var(--cyan,#23634f);background:var(--cyan-soft,#e7f0eb);border-color:var(--cyan,#23634f)}
+.save-feedback:not(:empty){position:sticky;bottom:20px;padding:14px 20px;background:var(--surface,#fff);border:1px solid var(--line,#dce3df);border-radius:8px}
+@media(max-width:800px){.presence-card,.settings-grid{grid-template-columns:1fr}
+.scope-banner{flex-direction:column;gap:6px}
+}
+

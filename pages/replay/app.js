@@ -47,6 +47,7 @@ let online = false;
 let selectedUmo = storageGet(UMO_KEY, "");
 let busy = false;
 let blocks = [];
+let replayData = null;
 let archivedTopics = [];
 let selectedIndex = -1;
 let refreshRevision = 0;
@@ -122,7 +123,7 @@ async function renderAnnotations(block) {
   annotationStatus.textContent = "";
   annotationMetrics.textContent = "";
   if (!block) return;
-  const topics = [...blocks, ...archivedTopics].filter(b => b.session_id === block.session_id && b.topic_id && b.topic_id !== "UNKNOWN");
+  const topics = [...(replayData?.topic_blocks || blocks), ...archivedTopics].filter(b => b.session_id === block.session_id && b.topic_id && b.topic_id !== "UNKNOWN");
   annotationMessages.innerHTML = (block.messages || []).map((message, index) => {
     const targetId = `annotation-target-${index}`;
     const errorId = `annotation-error-${index}`;
@@ -175,15 +176,26 @@ function selectBlock(index) {
   const events = Array.isArray(block.events) && block.events.length ? block.events : [];
   els.blockEvents.innerHTML = events.map(event => `<li><time>${escapeHtml(formatTs(event.ts))}</time><div><strong>${escapeHtml(event.reason_zh || "未记录具体原因")}</strong><span>${escapeHtml([event.action === "speak" ? "开口" : "安静", LANE_ZH[event.lane] || "", event.association || "", event.session_id ? `会话 ${redactId(event.session_id)}` : "", event.reason_code || ""].filter(Boolean).join(" · "))}</span></div></li>`).join("");
   if (!speak) {
-    els.tonightNote.textContent = "若觉得这段太安静，可用下面的分寸旋钮松一点。";
+    els.tonightNote.textContent = "这段主题没有开口记录。可按需要调整全局参与程度。";
   } else {
-    els.tonightNote.textContent = "若觉得这段太吵，可调到懂事或隐身。";
+    els.tonightNote.textContent = "参与程度会应用于全局会话，可按需要调整。";
   }
 }
 
 function renderRail(data) {
+  replayData = data;
   archivedTopics = Array.isArray(data.archived_topics) ? data.archived_topics : [];
   blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
+  const allBlocks = blocks;
+  const query = document.getElementById("topicSearch").value.trim().toLocaleLowerCase();
+  const decision = document.getElementById("decisionFilter").value;
+  const speaks = block => (block.events || []).some(event => event.action === "speak");
+  const events = allBlocks.flatMap(block => block.events || []);
+  document.getElementById("summaryTopics").textContent = allBlocks.length;
+  document.getElementById("summaryMessages").textContent = allBlocks.reduce((sum, block) => sum + (Number(block.message_count) || 0), 0);
+  document.getElementById("summaryDecisions").textContent = `${events.filter(event => event.action === "speak").length} / ${events.filter(event => event.action !== "speak").length}`;
+  blocks = allBlocks.filter(block => (!query || (block.topic_title || "").toLocaleLowerCase().includes(query)) && (decision === "all" || (decision === "speak" ? speaks(block) : !speaks(block))));
+  els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : "目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。";
   const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
   document.getElementById("unassignedNote").textContent = unassigned
     ? `最近保留的消息中有 ${unassigned} 条尚未形成话题，留白展示。零散聊天、图片和表情包不会自动合成一个话题。`
@@ -233,6 +245,9 @@ async function refresh() {
     setTonightEnabled(false);
     els.replayRail.innerHTML = "";
     blocks = [];
+    replayData = null;
+    for (const id of ["summaryTopics", "summaryMessages", "summaryDecisions"]) document.getElementById(id).textContent = "—";
+    els.railEmpty.textContent = "回放暂时不可用，请检查连接后刷新。";
     selectBlock(-1);
     els.railCounts.textContent = "主题 —";
     els.railEmpty.classList.remove("hidden");
@@ -257,6 +272,8 @@ async function savePresence(value) {
 
 async function boot() {
   renderNav("replay");
+  document.getElementById("topicSearch").addEventListener("input", () => { if (replayData) renderRail(replayData); });
+  document.getElementById("decisionFilter").addEventListener("change", () => { if (replayData) renderRail(replayData); });
   const markDirty = event => {
     const row = event.target.closest(".annotation-row");
     if (row) row.dataset.dirty = "true";

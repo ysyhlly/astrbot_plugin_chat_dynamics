@@ -1,7 +1,35 @@
-/* today page — only layout glue; visual language from shared/base.css */
-.tonight-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+.wire-card{min-width:0;padding:24px;margin:0;border:1px solid var(--line,#dce3df);border-radius:8px;background:var(--surface,#fff);box-shadow:none}
+.plugin-main{display:flex;flex-direction:column;gap:20px}
+.card-heading{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
+.card-heading h2{margin:0}
+.section-copy,.card-note{color:var(--muted,#69756e);font-size:13px;line-height:1.7}
+.session-toolbar{display:flex;flex-wrap:wrap;gap:16px;align-items:center}
+.session-toolbar label{display:grid;gap:8px;min-width:240px;flex:1}
+.session-toolbar select{width:100%}
+.session-toolbar .ops-note{flex-basis:100%;margin:0}
+.ops-note:empty{display:none}
+.one-liner{line-height:1.8}
+.session-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:640px){.wire-card{padding:18px}
+.card-heading{align-items:flex-start;flex-direction:column}
+.session-toolbar label{min-width:0;flex-basis:100%}
 }
+
+.overview-grid,.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.atmosphere{display:flex;flex-direction:column;justify-content:center;min-height:290px;border-top:3px solid var(--cyan,#23634f)}
+.capsule{display:block;background:none;border:0;padding:24px 0 4px;font-size:30px;color:var(--cyan,#23634f)}
+.capsule .conf{font-size:13px;display:block;margin-top:10px}
+.thermo-track{height:12px;background:var(--line,#e5ebe7);border-radius:3px;overflow:hidden;margin:24px 0 10px}
+.thermo-fill{height:100%;background:var(--cyan,#23634f);width:0;transition:width .25s}
+.thermo-labels{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
+.tonight-actions{display:flex;gap:8px;margin:12px 0}
+.tonight-actions .button[aria-pressed="true"]{background:var(--cyan,#23634f);color:white}
+.decision-list{list-style:none;padding:0;margin:0}
+.decision-list li{display:grid;gap:6px;padding:16px 0;border-bottom:1px solid var(--line,#dce3df)}
+.decision-list .meta,.partner-row .meta{color:var(--muted,#69756e);font-size:12px}
+.partner-row{display:grid;grid-template-columns:100px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line,#dce3df)}
+.partner-row .meta{display:block}
+.empty-state{padding:36px 16px;text-align:center}
+@media(max-width:900px){.overview-grid,.detail-grid{grid-template-columns:1fr}
+}
+

@@ -163,11 +163,14 @@ def test_console_loads_redacted_state_and_applies_preset(console_server, persona
                 });
             """)
         page.goto(console_server)
+        page.locator("#tab-policy").click()
         page.get_by_text("观察模式 · 不产生副作用").wait_for()
         page.get_by_text("控制台正文：已脱敏").wait_for()
         if persona_mode:
             page.get_by_text("人设模型决策", exact=False).wait_for()
+            page.locator("#tab-sessions").click()
             page.locator("#traceMeta").filter(has_text="relevant_request").wait_for()
+            page.locator("#tab-policy").click()
             assert "125ms" in page.locator("#traceMeta").inner_text().lower()
         screenshot_dir = os.environ.get("BROWSER_SCREENSHOT_DIR")
         if screenshot_dir:
@@ -354,14 +357,12 @@ def test_console_responsive_layout_wraps_long_umo_and_keeps_controls_usable(
             first_channel.wait_for(state="visible")
             first_channel.click()
             page.locator("#roomView").wait_for(state="visible")
-            page.locator("#providerState").wait_for(state="visible")
             _capture_screenshot(page, viewport_name)
             _assert_no_horizontal_overflow(page)
             _assert_touch_target(page, "#btnRefresh")
             _assert_touch_target(page, "#btnCool")
             _assert_touch_target(page, "#btnReset")
             assert page.locator("#roomId").inner_text().count("session-key-") >= 1
-            assert page.locator("#providerState").inner_text().count("provider-") >= 1
             first_channel_box = first_channel.bounding_box()
             assert first_channel_box is not None
             assert first_channel_box["height"] <= 180
@@ -375,6 +376,9 @@ def test_console_responsive_layout_wraps_long_umo_and_keeps_controls_usable(
             assert all(stage_states.nth(index).is_visible() for index in range(stage_states.count()))
             assert all(stage_states.nth(index).inner_text() in {"活跃", "待命"} for index in range(stage_states.count()))
             assert all("：" in (stage_states.nth(index).get_attribute("aria-label") or "") for index in range(stage_states.count()))
+            page.locator("#tab-policy").click()
+            page.locator("#providerState").wait_for(state="visible")
+            assert page.locator("#providerState").inner_text().count("provider-") >= 1
         finally:
             browser.close()
 
@@ -481,7 +485,7 @@ def test_companion_status_shows_native_mode_and_call_failures(console_server, de
             };
         """)
         page.goto(console_server)
-        page.locator("#readAirPanel > summary").click()
+        page.locator("#tab-policy").click()
         page.locator("#statPartner").get_by_text(lamp, exact=True).wait_for()
         assert "LivingMemory" in page.locator("#statPartnerHint").inner_text()
         if detail == "native_hooks":
@@ -502,6 +506,7 @@ def test_persona_fallback_is_visible_and_updates_on_diagnostic_change(console_se
                 apiGet: async endpoint => ({ok:true,data:endpoint === 'presets' ? {presets:{}} : window.__overview})};
         """)
         page.goto(console_server)
+        page.locator('#tab-policy').click()
         page.locator('#shadowState').filter(has_text='人设不可用，已切换规则模式').wait_for()
         assert 'missing_host_managers' in page.locator('#shadowState').get_attribute('title')
         page.evaluate("window.__overview.persona_fallback = ''")

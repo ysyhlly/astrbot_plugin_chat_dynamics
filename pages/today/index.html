@@ -19,120 +19,102 @@
       })();
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
-    <script src="./theme.js"></script>
+    <script src="./theme.js">
+</script>
     <title>今日读空气</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
-    <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <div class="grain" aria-hidden="true"></div>
-    <div class="app wire-app plugin-shell">
-      <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
-        <div class="plugin-main">
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48" width="42" height="42" focusable="false">
-              <path d="M8 12.5h32M8 24h32M8 35.5h20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <circle cx="35.5" cy="35.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-              <path d="m33.5 35.5 1.4 1.4 2.7-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </div>
-          <div class="brand-copy">
-            <p class="eyebrow">ASTRBOT / TODAY</p>
-            <h1 id="pageTitle">今日读空气</h1>
-            <p class="lede" id="pageDesc">群主仪表盘：场合、存在感与为什么没回（默认脱敏）。</p>
-          </div>
-        </div>
-        <div class="topbar-tools">
-          <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
-            <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
-            </span>
-          </div>
-          <button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
-        </div>
-      </header>
-
-      <section class="wire-card" aria-label="群与搭档">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">GROUP · PARTNER</p>
-            <h2>群选择与搭档灯</h2>
-          </div>
-        </div>
-        <div class="field-grid">
-          <label for="sessionSelect">当前群 / 会话
-            <select id="sessionSelect"></select>
-          </label>
-        </div>
-        <div class="partner-sheet" id="partnerSheet" style="margin-top:12px" aria-live="polite"></div>
-        <p class="quiet-console-link">需要 UMO 监控请打开侧栏「群聊动态控制台」。</p>
-      </section>
-
-      <section class="wire-card" aria-labelledby="occasionTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">OCCASION</p>
-            <h2 id="occasionTitle">场合胶囊</h2>
-          </div>
-          <span class="card-note" id="emptyHint"></span>
-        </div>
-        <div id="occasionCapsule" class="capsule">—</div>
-        <p class="one-liner" id="oneLiner">加载中…</p>
-      </section>
-
-      <section class="wire-card" aria-labelledby="thermoTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">PRESENCE</p>
-            <h2 id="thermoTitle">存在感温度计</h2>
-          </div>
-          <span class="card-note" id="knobTarget">目标：—</span>
-        </div>
-        <div class="thermometer" aria-label="安静 vs 插话">
-          <div class="thermo-track" title="插话占比">
-            <div class="thermo-fill" id="thermoFill" style="width:0%"></div>
-          </div>
-          <div class="thermo-labels">
-            <span id="thermoQuiet">安静 —</span>
-            <span id="thermoIntervene">插话 —</span>
-          </div>
-        </div>
-        <div class="tonight-actions" aria-label="一键今晚">
-          <button type="button" class="button" id="btnGhostTonight" disabled>今晚隐身</button>
-          <button type="button" class="button" id="btnSensibleTonight" disabled>今晚懂事</button>
-          <button type="button" class="button button-primary" id="btnLivelyTonight" disabled>今晚活跃一点</button>
-          <button type="button" class="button button-quiet" id="btnMuteTonight" disabled>今晚别提记忆</button>
-        </div>
-        <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
-      </section>
-
-      <section class="wire-card" aria-labelledby="whyTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">WHY SILENT</p>
-            <h2 id="whyTitle">最近为什么没回</h2>
-          </div>
-          <span class="card-note">人话原因 · 无原文</span>
-        </div>
-        <ul class="decision-list" id="decisionList"></ul>
-        <div class="empty-state hidden" id="decisionEmpty">
-          还没有决策记录。可先到侧栏「分寸台」调存在感，或观察一段时间。
-        </div>
-      </section>
-        </div>
-      </div>
-    </div>
-    <script type="module" src="./app.js"></script>
-  </body>
+<div class="app wire-app plugin-shell">
+<div class="plugin-layout">
+<aside class="plugin-side" aria-label="插件页面">
+<p class="plugin-side-label">群聊动态</p>
+<nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航">
+</nav>
+</aside>
+<main class="plugin-main today-workspace">
+<header class="topbar">
+<div class="brand-copy">
+<p class="eyebrow">CHAT DYNAMICS / TODAY</p>
+<h1 id="pageTitle">今日读空气</h1>
+<p class="lede" id="pageDesc">了解当下氛围，查看参与情况与最近的决策。</p>
+</div>
+<div class="topbar-tools">
+<div class="connection-state" role="status" aria-live="polite">
+<span class="status-dot" id="linkLamp" aria-hidden="true">
+</span>
+<span id="linkLabel">正在连接</span>
+</div>
+<button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+</div>
+</header>
+<section class="wire-card session-toolbar">
+<label for="sessionSelect">观察会话<select id="sessionSelect">
+</select>
+</label>
+<span class="card-note" id="emptyHint">
+</span>
+</section>
+<div class="overview-grid">
+<section class="wire-card atmosphere" aria-labelledby="occasionTitle">
+<p class="eyebrow">当前氛围</p>
+<h2 id="occasionTitle">此刻，群里怎么样</h2>
+<div id="occasionCapsule" class="capsule">—</div>
+<p class="one-liner" id="oneLiner">正在读取氛围…</p>
+</section>
+<section class="wire-card" aria-labelledby="thermoTitle">
+<div class="card-heading">
+<h2 id="thermoTitle">参与概况</h2>
+<span class="card-note" id="knobTarget">目标：—</span>
+</div>
+<p class="section-copy">安静旁听与主动插话的当前比例</p>
+<div class="thermometer">
+<div class="thermo-track" role="meter" aria-label="插话占比" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+<div class="thermo-fill" id="thermoFill">
+</div>
+</div>
+<div class="thermo-labels">
+<span id="thermoQuiet">安静 —</span>
+<span id="thermoIntervene">插话 —</span>
+</div>
+</div>
+<p class="section-copy">全局参与档位 · 保存后持续生效</p>
+<div class="tonight-actions">
+<button type="button" class="button" id="btnGhostTonight" disabled>隐身</button>
+<button type="button" class="button" id="btnSensibleTonight" disabled>懂事</button>
+<button type="button" class="button" id="btnLivelyTonight" disabled>活跃</button>
+</div>
+<button type="button" class="button button-quiet" id="btnMuteTonight" disabled>当前会话 · 10 小时不提记忆</button>
+<p class="ops-note" id="tonightNote" role="status" aria-live="polite">
+</p>
+</section>
+</div>
+<div class="detail-grid">
+<section class="wire-card" aria-labelledby="whyTitle">
+<div class="card-heading">
+<h2 id="whyTitle">最近为什么没回</h2>
+<span class="card-note">最近 5 条 · 无消息原文</span>
+</div>
+<ul class="decision-list" id="decisionList">
+</ul>
+<div class="empty-state hidden" id="decisionEmpty">还没有决策记录，等待会话产生新的活动。</div>
+</section>
+<section class="wire-card">
+<div class="card-heading">
+<h2>协作与作息</h2>
+</div>
+<div class="partner-sheet" id="partnerSheet" aria-live="polite">
+</div>
+</section>
+</div>
+</main>
+</div>
+</div>
+<script type="module" src="./app.js">
+</script>
+</body>
 </html>

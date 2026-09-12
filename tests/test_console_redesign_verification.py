@@ -121,6 +121,7 @@ def test_all_viewports_no_horizontal_overflow_and_touch_targets(
         page.goto(console_server)
         page.locator("#channelList .channel").first.click()
         page.locator("#roomView").wait_for(state="visible")
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
 
         # 1. Assert no horizontal overflow
@@ -227,6 +228,7 @@ def test_integration_panel_renders_all_boundary_states_without_errors(
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
 
         # Verify no JS runtime page errors occurred
@@ -292,6 +294,7 @@ def test_integration_panel_initializing_empty_providers(console_server):
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert not page_errors
         assert page.locator("#integrationStatus").inner_text() == "初始化中"
@@ -338,6 +341,7 @@ def test_integration_panel_string_and_array_errors(console_server):
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert not page_errors
         assert page.locator(".error-banner").count() == 2
@@ -377,6 +381,7 @@ def test_integration_panel_weakened_diagnosis(console_server):
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         note_text = page.locator("#integrationNote").inner_text()
         assert "无直连记忆接口" in note_text
@@ -424,6 +429,7 @@ def test_four_concurrent_companions_and_extreme_strings(console_server):
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert page.locator(".provider-card").count() == 4
 
@@ -479,6 +485,7 @@ def test_integration_panel_ignores_empty_and_null_errors_and_serializes_objects(
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert not page_errors
         # Only 1 error item should be rendered (the slang object error), null and empty string are ignored
@@ -527,6 +534,7 @@ def test_integration_panel_handles_duplicate_provider_names_and_reordering(conso
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert not page_errors
         # Both distinct companion cards must be rendered even with the same name
@@ -552,6 +560,7 @@ def test_extreme_narrow_320px_viewport_no_overflow_and_single_column_stats(conso
         browser = _launch_browser(pw)
         page = browser.new_page(viewport={"width": 320, "height": 568})
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
 
         dims = page.evaluate("""() => ({
@@ -576,6 +585,7 @@ def test_capability_methods_summary_toggle_title_text(console_server):
         browser = _launch_browser(pw)
         page = browser.new_page()
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#capability-memories").wait_for(state="visible")
 
         summary_title = page.locator("#capability-memories .summary-title")
@@ -630,6 +640,7 @@ def test_integration_panel_counts_direct_methods_from_flat_array_and_string_valu
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
         assert not page_errors
 
@@ -658,6 +669,7 @@ def test_integration_panel_handles_error_instances_and_circular_references(conso
         page = browser.new_page()
         page.on("pageerror", lambda err: page_errors.append(str(err)))
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#integrationPanel").wait_for(state="visible")
 
         # Pass partner data directly via JS evaluate to include Error instances and circular refs
@@ -732,6 +744,7 @@ def test_accessibility_aria_expanded_sync_on_details_summaries(console_server):
             }};
         """)
         page.goto(console_server)
+        page.locator("#tab-integrations").click()
         page.locator("#capability-memories").wait_for(state="visible")
         page.locator(".provider-card").wait_for(state="visible")
 
