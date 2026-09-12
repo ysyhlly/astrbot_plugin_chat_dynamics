@@ -33,3 +33,18 @@
 .scope-banner{flex-direction:column;gap:6px}
 }
 
+
+/* Clear separation between participation level and instant switches. */
+.scope-banner { border:1px solid var(--line); border-left:3px solid var(--cyan); border-radius:8px; background:var(--surface-soft); }
+.presence-card { border-top:3px solid var(--cyan); }
+.presence-slider { padding:18px; background:var(--surface-soft); border-radius:8px; }
+.presence-slider input[type="range"] { min-height:32px; cursor:pointer; }
+.settings-grid { gap:8px 20px; }
+.settings-grid .chip { padding:18px 12px; border:1px solid var(--line); border-radius:8px; }
+.settings-grid .chip[aria-pressed="true"] { background:var(--surface-soft); border-color:var(--line-strong); }
+.setting-copy small { font-size:12px; }
+.switch-state { display:inline-flex; gap:6px; align-items:center; padding:5px 8px; }
+.switch-state::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--muted); }
+.chip[aria-pressed="true"] .switch-state::before { background:var(--cyan); }
+.save-feedback:not(:empty) { z-index:5; box-shadow:0 4px 20px rgb(0 0 0 / .08); }
+@media(max-width:640px) { .presence-card { gap:20px; } .settings-grid .chip { gap:12px; } }

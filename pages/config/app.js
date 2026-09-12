@@ -5,6 +5,7 @@ const CHAT_PROVIDER_KEYS = new Set([
   "reply_provider",
   "vibe_provider",
   "decision_provider",
+  "topic_reranker_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 const BASIC_HINTS = {
@@ -535,7 +536,7 @@ function renderField(key, mismatchSet) {
   const value = configFieldValue(key);
   let control = "";
   if (type === "bool") {
-    control = `<span class="config-check"><input type="checkbox" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/> 启用</span>`;
+    control = `<span class="config-check"><input type="checkbox" role="switch" aria-label="${escapeHtml(title)}" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/><span class="check-state" aria-hidden="true"><span class="check-on">已开启</span><span class="check-off">已关闭</span></span></span>`;
   } else if (isProviderField(key, schema) && type === "string") {
     control = renderProviderSelect(key, value);
   } else if (type === "string" && Array.isArray(schema.options) && schema.options.length) {

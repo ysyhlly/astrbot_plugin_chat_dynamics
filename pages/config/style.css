@@ -2,7 +2,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font: 14px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif; }
 .grain { display: none; }
-.app.plugin-shell { max-width: 1560px; width: 100%; margin: auto; padding: 24px 28px 72px; }
+.app.plugin-shell { max-width: 1680px; width: 100%; margin: auto; padding: 0 32px 64px 0; }
 .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding: 22px 0 32px; }
 .eyebrow { font: 10px/1.6 "Consolas", monospace; color: var(--cyan); letter-spacing: .16em; margin: 0 0 10px; }
 .brand-copy h1 { margin: 0 0 10px; font-size: 32px; letter-spacing: -.04em; font-weight: 650; }
@@ -69,7 +69,15 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .config-field :is(input[type="text"], input[type="number"], textarea, select) { width: 100%; min-height: 39px; border: 1px solid var(--line); border-radius: 6px; background: var(--input-bg); color: var(--text); padding: 8px 10px; font: inherit; font-size: 13px; }
 .config-field textarea { resize: vertical; min-height: 68px; }
 .config-check { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12px; }
-.config-check input { width: 17px; height: 17px; accent-color: var(--cyan); }
+.config-check input { appearance: none; flex-shrink: 0; width: 38px; height: 22px; margin: 0; border: 1px solid var(--muted); border-radius: 20px; background: var(--surface-soft); cursor: pointer; position: relative; transition: background .15s, border-color .15s; }
+.config-check input::before { content: ""; position: absolute; width: 14px; height: 14px; top: 3px; left: 3px; border-radius: 50%; background: var(--muted); transition: transform .15s; }
+.config-check input:checked { background: var(--cyan); border-color: var(--cyan); }
+.config-check input:checked::before { background: var(--surface); transform: translateX(16px); }
+.check-state { color: var(--muted); }
+.check-on { display: none; }
+.config-check input:checked + .check-state { color: var(--cyan); }
+.config-check input:checked + .check-state .check-on { display: inline; }
+.config-check input:checked + .check-state .check-off { display: none; }
 .config-hint, .config-effective { font-size: 11px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .config-basic-hint { display: none; }
 [data-view="basic"] .config-key, [data-view="basic"] .config-detail-hint, [data-view="basic"] .config-field:not(.mismatched) .config-effective { display: none; }
@@ -77,6 +85,34 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .search-empty, .empty { text-align: center; padding: 56px 24px; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; }
 .search-empty h2 { font-size: 18px; color: var(--text); }
 :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+/* Refined settings surfaces; retain the shared day/night palette. */
+.config-start { padding: 22px 24px; gap: 24px; border: 1px solid var(--line); border-left: 3px solid var(--cyan); border-radius: 8px; background: var(--surface-soft); }
+.config-start .eyebrow { margin-bottom: 6px; }
+.scope-guide { font-size: 13px; line-height: 1.8; }
+.action-bar { box-shadow: 0 4px 16px rgb(0 0 0 / .04); }
+.action-bar[data-dirty="true"] { box-shadow: inset 3px 0 var(--cyan), 0 4px 16px rgb(0 0 0 / .04); }
+.button { min-height: 40px; transition: background .15s, border-color .15s; }
+.button:not(:disabled):active { transform: translateY(1px); }
+.settings-index { max-height: calc(100dvh - 120px); overflow-y: auto; scrollbar-width: thin; padding-right: 4px; }
+.category-link { min-height: 42px; align-items: center; border: 1px solid transparent; }
+.category-link[aria-current="true"] { border-color: var(--line); box-shadow: inset 3px 0 var(--cyan); font-weight: 600; }
+.category-link span { min-width: 22px; text-align: center; border-radius: 4px; background: var(--surface); }
+.config-toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.config-search, .config-category { font-size: 12px; }
+.config-toolbar input, .config-toolbar select { min-height: 44px; font-size: 13px; }
+.config-group > summary { transition: background .15s; }
+.config-group > summary:hover { background: var(--surface-soft); }
+.config-group[open] > summary { background: var(--surface-soft); }
+.group-title strong { font-size: 16px; }
+.group-badge { padding: 2px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; }
+.config-field { gap: 9px; }
+.config-field :is(input[type="text"], input[type="number"], textarea, select) { min-height: 44px; }
+.config-check { min-height: 44px; gap: 10px; cursor: pointer; }
+.config-hint { font-size: 12px; line-height: 1.8; }
+.config-key { font-size: 11px; }
+.config-field[data-dirty="true"] :is(input, textarea, select) { border-color: var(--cyan); }
+@media (prefers-reduced-motion: reduce) { .button, .config-group > summary, .config-check input, .config-check input::before { transition: none; } }
+@media (forced-colors: active) { .config-check input { appearance: auto; } .config-check input::before { display: none; } }
 @media (max-width: 1100px) { .settings-workspace { grid-template-columns: 150px minmax(0, 1fr); gap: 18px; } .config-grid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) {
   .app.plugin-shell { padding: 0 16px 40px; }
@@ -88,11 +124,16 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
   .config-start { flex-direction: column; gap: 10px; }
   .scope-guide { max-width: none; margin-bottom: 0; }
   .settings-workspace { display: block; }
-  .settings-index { position: static; margin-bottom: 20px; }
+  .settings-index { position: static; margin-bottom: 20px; max-height: none; overflow: visible; padding-right: 0; }
   .index-label, #configCategoryNav { display: none; }
   .config-category { flex: 1 1 100%; }
   .config-view-actions { width: 100%; }
   .config-group > summary { padding: 16px; }
   .group-body { padding: 0 16px; }
   .config-field.span-2 { grid-column: auto; }
+  .button { min-height: 44px; }
+  .config-start { padding: 18px; }
+  .scope-guide { align-self: stretch; }
+  .config-view-actions .button { flex: 1; }
+  .config-field :is(input[type="text"], input[type="number"], textarea, select), .config-toolbar :is(input, select) { font-size: 16px; }
 }

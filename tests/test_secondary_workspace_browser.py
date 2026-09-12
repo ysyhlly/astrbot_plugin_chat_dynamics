@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 
 import pytest
-from .test_ui_theme_browser import browser, page_server
+from .test_ui_theme_browser import browser as browser, page_server as page_server
 from .test_console_redesign_verification import expect
 
 

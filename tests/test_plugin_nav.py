@@ -30,7 +30,6 @@ def test_daytime_rules_do_not_hardcode_night_fills():
 
 
 def test_daytime_ui_is_default_and_night_tokens_remain():
-    base = (PAGES / "shared" / "base.css").read_text(encoding="utf-8")
     theme = (PAGES / "shared" / "theme.css").read_text(encoding="utf-8")
     assert "--bg:#f5f6f4" in theme
     assert 'html[data-ui-theme="night"]' in theme

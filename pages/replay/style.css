@@ -137,3 +137,19 @@ html[data-ui-theme="night"] .replay-block { color: #14252b; }
  .scene-dialog { padding:20px; width:calc(100vw - 24px); }
  .card-heading { align-items:flex-start; }
 }
+
+/* Timeline and inspector share the same reading rhythm. */
+.replay-summary > div:first-child { background:var(--surface-soft); }
+.replay-summary strong { font-variant-numeric:tabular-nums; color:var(--cyan); }
+.replay-controls { background:var(--surface-soft); border-left:3px solid var(--cyan); }
+.replay-rail { border:1px solid var(--line); border-radius:8px; scrollbar-width:thin; }
+.gantt-heading,.gantt-label { border-right:1px solid var(--line); }
+.gantt-track:hover { background-color:var(--surface-soft); }
+.scene-dialog { box-shadow:0 20px 80px rgb(0 0 0 / .22); border-radius:12px; overscroll-behavior:contain; }
+.scene-dialog > .card-heading { border-bottom:1px solid var(--line); padding-bottom:16px; }
+.scene-events li { padding:16px 12px; }
+.scene-events li:nth-child(odd) { background:var(--surface-soft); }
+.recipient-editor { background:var(--surface-soft); }
+.recipient-editor summary { min-height:44px; display:flex; align-items:center; }
+.decision-trace { padding:14px; border-radius:6px; background:var(--surface-soft); line-height:1.8; }
+@media(max-width:700px) { .replay-summary strong { font-size:22px; } .scene-dialog .card-heading { flex-wrap:wrap; } }

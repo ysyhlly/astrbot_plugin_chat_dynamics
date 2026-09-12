@@ -35,3 +35,17 @@
 .memory-card .actions{grid-column:1;grid-row:auto}
 }
 
+
+/* A compact notebook editor beside the records. */
+.notebook-editor { border-top:3px solid var(--cyan); }
+.notebook-editor .section-copy { margin:8px 0 16px; }
+.notebook-editor #addFields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+#addFields > label { grid-column:1/-1; }
+#addFields > label:has(input[name="month"]), #addFields > label:has(input[name="day"]) { grid-column:auto; }
+.tabs { gap:4px; padding:4px; margin:12px 0 18px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
+.tabs .tab { flex:1; padding:10px 12px; border:0; border-radius:5px; }
+.tabs .tab[aria-selected="true"] { background:var(--surface); box-shadow:0 1px 4px rgb(0 0 0 / .06); }
+.memory-card { border:1px solid var(--line); border-left:3px solid var(--line-strong); border-radius:8px; padding:16px; margin-bottom:10px; }
+.memory-card .actions { flex-wrap:wrap; }
+.session-actions .button { min-height:44px; }
+@media(max-width:500px) { .memory-card .actions .button { flex:1; } }

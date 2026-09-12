@@ -33,3 +33,15 @@
 @media(max-width:900px){.overview-grid,.detail-grid{grid-template-columns:1fr}
 }
 
+
+/* Give the atmosphere a distinct summary surface. */
+.atmosphere { background:var(--surface-soft); justify-content:flex-start; padding-top:30px; }
+.atmosphere h2 { margin-top:8px; }
+.atmosphere .capsule { margin:12px 0; font-size:34px; }
+.thermo-track { height:14px; border-radius:20px; }
+.tonight-actions { padding:4px; background:var(--surface-soft); border:1px solid var(--line); border-radius:8px; }
+.tonight-actions .button { flex:1; border-color:transparent; }
+.tonight-actions .button[aria-pressed="true"] { color:var(--surface); background:var(--cyan); }
+.decision-list li { padding:16px 14px; border-left:2px solid var(--line-strong); margin-top:8px; background:var(--surface-soft); border-radius:0 6px 6px 0; }
+.partner-row:last-child { border-bottom:0; }
+@media(max-width:640px) { .atmosphere { min-height:240px; } .atmosphere .capsule { font-size:30px; } }

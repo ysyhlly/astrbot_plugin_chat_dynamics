@@ -367,7 +367,8 @@
   },
   "topic_reranker_provider": {
     "description": "话题复判模型", "type": "string", "default": "",
-    "hint": "填写提供商 ID；留空使用当前会话模型。"
+    "_special": "select_provider",
+    "hint": "选择模型提供商；留空使用当前会话模型。"
   },
   "topic_reranker_timeout": {
     "description": "话题复判超时（秒）", "type": "float", "default": 3.0,

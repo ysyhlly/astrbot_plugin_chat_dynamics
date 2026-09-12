@@ -46,7 +46,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m playwright install --with-deps chromium
       - run: mkdir -p artifacts
-      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py tests/test_topic_annotations_browser.py tests/test_replay_gantt_browser.py -q --junitxml=artifacts/junit-browser.xml
+      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py tests/test_topic_annotations_browser.py tests/test_replay_gantt_browser.py tests/test_config_categories_browser.py tests/test_config_simple_browser.py tests/test_secondary_workspace_browser.py tests/test_ui_theme_browser.py -q --junitxml=artifacts/junit-browser.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
