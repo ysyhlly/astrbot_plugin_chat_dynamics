@@ -50,32 +50,32 @@ All notable changes to this plugin are recorded here.
   `ThreadRouter.configure_topics` 的同一条规则推导；跨仓库测试把两边钉在一起。
 - 面板新增「学习层联动」分组；生效配置与已存配置不一致时，被策略覆盖的键单独列出并给出原因，
   而不是报成一个无法解释的 mismatch。
-- 修复一处跨仓库耦合：Learning 的 @@Q@@BASE_POLICY@@Q@@ 认为 @@Q@@topic_commit_threshold@@Q@@ 默认 0.58，
-  而本体的配置字段默认 0.0（由 @@Q@@topic_join_threshold@@Q@@ 推导）。不修的话每一份发布摘要都对不上，
-  @@Q@@active@@Q@@ 永远不可达 —— 而且看起来像是「运营改过配置」。
+- 修复一处跨仓库耦合：Learning 的 `BASE_POLICY` 认为 `topic_commit_threshold` 默认 0.58，
+  而本体的配置字段默认 0.0（由 `topic_join_threshold` 推导）。不修的话每一份发布摘要都对不上，
+  `active` 永远不可达 —— 而且看起来像是「运营改过配置」。
 
-### 清理旧 @@Q@@core/learning/@@Q@@
+### 清理旧 `core/learning/`
 
 旧的插件内学习层与独立的 Dynamics Learning 插件职责重叠：两边都在把标注转成样本、
 都在统计错误分布、都在给方向性建议。两份实现意味着两个答案，而运营只看到其中一个。
 
-- 删除 @@Q@@core/learning/@@Q@@（sample / stats / store / recipient_learner / builder / candidates）
-  与 @@Q@@scripts/learning_report.py@@Q@@，以及它们的三份测试；
-- @@Q@@core/learning/candidates.py@@Q@@ 移到 @@Q@@core/candidate_metrics.py@@Q@@：它不是学习层的一部分，
+- 删除 `core/learning/`（sample / stats / store / recipient_learner / builder / candidates）
+  与 `scripts/learning_report.py`，以及它们的三份测试；
+- `core/learning/candidates.py` 移到 `core/candidate_metrics.py`：它不是学习层的一部分，
   而是离线路由评测与标注控制台读的实时指标，不依赖样本格式、学习器或存储；
-- @@Q@@core/integrations/selflearning*.py@@Q@@ 保持不动 —— 那是 Self Learning 联动，与学习层无关。
+- `core/integrations/selflearning*.py` 保持不动 —— 那是 Self Learning 联动，与学习层无关。
 
-### @@Q@@main.py@@Q@@ 分阶段拆分（第一阶段）
+### `main.py` 分阶段拆分（第一阶段）
 
-把学习策略的运行期部分抽到 @@Q@@core/learning_policy_runtime.py@@Q@@：配置基线计算、策略折叠、
-刷新节流与状态查询。边界刻意收窄 —— 解析与兼容性规则留在 @@Q@@learning_policy.py@@Q@@，
+把学习策略的运行期部分抽到 `core/learning_policy_runtime.py`：配置基线计算、策略折叠、
+刷新节流与状态查询。边界刻意收窄 —— 解析与兼容性规则留在 `learning_policy.py`，
 运行期模块不知道消息怎么被路由 —— 后续两阶段（回合管线、控制台面）可以各自移动。
 
 ### 文档
 
-新增 @@Q@@docs/learning-contract.md@@Q@@：两条通道、两个互不推导的协议版本、
+新增 `docs/learning-contract.md`：两条通道、两个互不推导的协议版本、
 trace schema 3 的字段表、发布契约的形态、消费侧的三项检查，
-以及旧 @@Q@@core/learning/@@Q@@ 删除后的去向对照表。
+以及旧 `core/learning/` 删除后的去向对照表。
 
 ## v1.6.2 — Learning Contract v3：候选逐条证据与最终结果
 
@@ -94,7 +94,7 @@ trace schema 3 的字段表、发布契约的形态、消费侧的三项检查�
 - schema 号改由 `trace_schema_version` 承载。旧键名 `routing_schema_version` 描述的是
   routing 段，而数字描述的是整条轨迹，名字说错了事；读取端兼容旧键，本模块只写新键。
 - 标识脱敏同步覆盖候选集：schema 3 在 `routing` 里重复了每一个话题标识，
-  只清理 `topic@@ 段会让「已脱敏」这句话只对两处中的一处成立。
+  只清理 `topic` 段会让「已脱敏」这句话只对两处中的一处成立。
 - 运行时快照新增 `plugin_version`（读 `metadata.yaml`，不用字面量），
   学习层据此记录策略是在哪个本体版本上验证的；读不到就是空字符串，那是「无法验证」，
   不是「匹配」。`outcome` 同时进入 `META_FIELDS`，重启不会把已记录的结果退化成缺失。

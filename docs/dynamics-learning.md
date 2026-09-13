@@ -1,4 +1,14 @@
-# Dynamics Learning（行为学习层）
+# Dynamics Learning（行为学习层）— 历史记录
+
+> **已移除（v1.7.0）。** `core/learning/`、`scripts/learning_report.py` 与对应的测试已从仓库删除。
+> 本层与独立插件 `dynamics_learning` 职责重复：两者都把同一份标注与决策记录变成样本，
+> 而同一份契约有两个消费者就是它漂移的开始。`core/learning/candidates.py` 不在此列 ——
+> 它是离线路由评测与标注控制台读的实时指标，已移到 `core/candidate_metrics.py`。
+>
+> **去向**：数据方向（本体 → 学习）见[学习契约](learning-contract.md)；样本、统计与影子推荐在
+> `dynamics_learning` 插件里维护。删除理由与逐项去向见该文档第三节。
+>
+> 下面保留的是 v1.7.0 之前的实现说明，仅用于解释历史结论，**不再对应仓库中的代码**。
 
 本轮在插件内部落地学习层的第一阶段。**影子学习**：只记录、统计、推荐，不写配置、不改线上判定。
 
