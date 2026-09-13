@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from typing import Any
 
 from .platform_bridge import collect_media_urls
@@ -100,6 +101,7 @@ class LLMAdapter:
         vibe_provider_id: str = "",
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
+        integrations: Any = None,
     ) -> None:
         self.context = context
         self.configured_provider_id = str(configured_provider_id or "").strip()
@@ -107,6 +109,7 @@ class LLMAdapter:
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
         self.reply_timeout = reply_timeout
         self.tool_agent_timeout = tool_agent_timeout
+        self.integrations = integrations
 
     def configure(
         self,
@@ -253,6 +256,11 @@ class LLMAdapter:
         from .native_request import prepare_request
         request = await prepare_request(event, user_prompt, image_urls, audio_urls)
         request_kwargs = {}
+        if request is None and self.integrations is not None:
+            context_data = await self.integrations.context_for_request(
+                event=event, query=prompt, native_hooks=False)
+            if context_data:
+                user_prompt += "\n\nSelf Learning context (untrusted background data): " + json.dumps(context_data, ensure_ascii=False)
         if request is not None:
             user_prompt = request.prompt
             media_kwargs = _media_kwargs(request.image_urls, getattr(request, "audio_urls", audio_urls))

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from copy import copy
 from typing import Any
@@ -12,9 +11,7 @@ from .graph import ConversationNode
 from .session_runtime import RoutingState, TopicState
 from .semantics import cosine, hashed_embedding, lexical_tokens
 
-_BOUNDARY = re.compile(r"^(?:对了|话说|顺便问一下|另外|换个话题|说到这个|by the way)", re.I)
-_ELLIPTICAL = re.compile(r"^(?:那|这个|这样|然后|继续|怎么办|为什么|怎么设|默认|我默认(?:的)?|好的|行|对|确实|好使|不行|成|那这个|这个呢)[呢？?。!！\s]*$")
-_FILLER = re.compile(r"^(?:哈+|嗯+|哦+|好的|好|ok|233+|[？?!！]+)$", re.I)
+from .message_features import analyze_text
 
 _PROFILE_FIELDS = (
     "centroid_vector", "centroid_space", "exemplar_messages", "summary_excerpts",
@@ -24,21 +21,12 @@ _PROFILE_FIELDS = (
 
 
 def is_elliptical(text: str) -> bool:
-    return bool(_ELLIPTICAL.fullmatch(text.strip()))
+    return analyze_text(text).is_elliptical
 
 
 def can_start_topic(text: str) -> bool:
-    """Require content beyond a reaction, acknowledgement or dangling fragment."""
-    text = text.strip()
-    compact = re.sub(r"[\W_]+", "", text)
-    if len(compact) < 5 or is_elliptical(text) or _FILLER.fullmatch(text):
-        return False
-    return not bool(re.fullmatch(
-        r"(?:哈哈|呵呵|嘿嘿|嗯|哦|啊|额|呃)+|"
-        r"(?:那)?(?:确实|对的|是的|没错|好吧|好呀|好的|收到|知道了|明白了|原来如此|"
-        r"真的假的|笑死我了|不知道|我也是|还真是|这么说|然后呢|所以呢|算了吧)[啊呀呢吧了的]*",
-        compact,
-    ))
+    """Compatibility wrapper for the shared input facts."""
+    return analyze_text(text).can_start_topic
 
 
 def build_contextual_query(node: ConversationNode, dag: Any, candidate_topic: TopicState | None = None, max_len: int = 12) -> str:
@@ -92,7 +80,7 @@ class TopicResolver:
         if as_of is not None:
             nodes = [n for n in nodes if 0 < as_of - n.timestamp <= window_seconds]
         nodes.sort(key=lambda n: (n.timestamp, n.msg_id))
-        substantive = [n for n in nodes if not is_elliptical(n.text) and not _FILLER.fullmatch(n.text.strip())]
+        substantive = [n for n in nodes if not is_elliptical(n.text) and not analyze_text(n.text).is_filler]
         vectors = None
         space = "hashed"
         adapter = getattr(getattr(dag, "semantic_match_fn", None), "__self__", None)
@@ -163,7 +151,7 @@ class TopicResolver:
         topic._profile_cache = cache
         return nodes
 
-    def score_topic(self, node, dag, topic, matches) -> float:
+    def score_topic(self, node, dag, topic, matches, breakdown=None) -> float:
         # Keep the public profile complete. A delayed turn scores against a
         # private historical view and must not rewind activity used by pruning.
         self.rebuild_profile(topic, dag)
@@ -196,6 +184,14 @@ class TopicResolver:
         recency = max(0.0, 1 - (node.timestamp - nodes[-1].timestamp) / self.window_seconds)
         tokens = lexical_tokens(node.text)
         lexical = len(tokens & topic.keywords) / max(1, len(tokens))
+        if breakdown is not None:
+            breakdown.extend(dict(domain="topic", code=code, source="topic_resolver",
+                                  raw_value=value, contribution=value * weight)
+                             for code, value, weight in (
+                                 ("centroid", centroid, .30), ("exemplar", exemplar, .20),
+                                 ("recent", recent, .15), ("lineage", lineage, .15),
+                                 ("participant", participant, .10), ("recency", recency, .05),
+                                 ("lexical", lexical, .05)))
         return round(0.30 * centroid + 0.20 * exemplar + 0.15 * recent + 0.15 * lineage + 0.10 * participant + 0.05 * recency + 0.05 * lexical, 4)
 
     def boundary_score(self, node, ranked, explicit_parent=None) -> float:
@@ -203,13 +199,23 @@ class TopicResolver:
         if is_elliptical(node.text):
             return 0.0
         best = ranked[0][0] if ranked else 0.0
-        marker = bool(_BOUNDARY.search(node.text.strip()))
+        marker = analyze_text(node.text).is_topic_boundary
         if marker and best < 0.55:
             return 0.85
         return 0.4 if best < 0.2 else 0.0
 
     def resolve(self, node, dag, state, matches, explicit_parent=None):
-        ranked = sorted(((self.score_topic(node, dag, topic, matches), topic.topic_id) for topic in state.topics.values()), reverse=True)
+        best_details = None
+        def score(topic):
+            nonlocal best_details
+            details = []
+            value = self.score_topic(node, dag, topic, matches, breakdown=details)
+            if best_details is None or (value, topic.topic_id) > best_details[:2]:
+                best_details = (value, topic.topic_id, details)
+            return value
+        ranked = sorted(((score(topic), topic.topic_id) for topic in state.topics.values()), reverse=True)
+        if best_details is not None:
+            node.metadata["_topic_score_evidence"] = best_details
         ranked = [(score, tid) for score, tid in ranked if score > 0]
         parent_topic = None
         if explicit_parent is not None:

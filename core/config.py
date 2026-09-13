@@ -82,6 +82,8 @@ class RuntimeConfig:
     slang_trial_enabled: bool = False
     group_memory_enabled: bool = True
     selflearning_integration: bool = True
+    selflearning_hub_url: str = ""
+    selflearning_hub_key_env: str = "SELFLEARNING_HUB_API_KEY"
     media_image_gate_enabled: bool = True
     media_voice_gate_enabled: bool = True
     media_understand_reply_enabled: bool = False
@@ -325,6 +327,8 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         slang_trial_enabled=_bool(_get(raw, "slang_trial_enabled", False), False),
         group_memory_enabled=_bool(_get(raw, "group_memory_enabled", True), True),
         selflearning_integration=_bool(_get(raw, "selflearning_integration", True), True),
+        selflearning_hub_url=str(_get(raw, "selflearning_hub_url", "") or "").strip(),
+        selflearning_hub_key_env=str(_get(raw, "selflearning_hub_key_env", "SELFLEARNING_HUB_API_KEY") or "").strip(),
         media_image_gate_enabled=_bool(_get(raw, "media_image_gate_enabled", True), True),
         media_voice_gate_enabled=_bool(_get(raw, "media_voice_gate_enabled", True), True),
         media_understand_reply_enabled=_bool(_get(raw, "media_understand_reply_enabled", False), False),

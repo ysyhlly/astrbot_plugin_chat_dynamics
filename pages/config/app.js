@@ -220,7 +220,9 @@ const CONFIG_GROUPS = [
       "group_memory_enabled",
       "mood_memory_enabled",
       "slang_trial_enabled",
-      "selflearning_integration"
+      "selflearning_integration",
+      "selflearning_hub_url",
+      "selflearning_hub_key_env"
     ]
   },
   {

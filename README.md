@@ -104,7 +104,7 @@ AstrBot 群聊互动插件：合并碎发、追踪话题、判断回应时机，
 - **设置页**：支持搜索设置项、全部展开或收起分组，并在当前浏览器记住分组展开状态；参数通过“保存设置”写入配置。
 - **媒体理解**：媒体门闩用于判断是否适合接话，深入理解需相应开关及宿主、适配器、Provider 支持；人设模式可向 Agent 传递附件。
 - **今日作息**：模拟群聊中的作息氛围。普通晚安仅在当地 22:00–06:00 进入夜间收束，白天不会因此睡到次日；管理员强制入睡仍生效。高级设置中的 `rhythm_timezone` 支持 `Asia/Shanghai` 等 IANA 时区，留空沿用宿主操作系统本地时区；UTC 容器可显式设为所在时区。
-- **记忆联动**：支持 Self Learning / LivingMemory 的宿主钩子及部分分支直连接口。关闭 `selflearning_integration` 只关闭本插件的桥接，其他插件自己的钩子由其自身配置管理。
+- **记忆联动**：普通回复由 Self Learning / LivingMemory 原生宿主钩子增强；兼容直连接口只用于管理。绕过宿主请求钩子的内部 Agent 可选使用 Self Learning Hub v1。关闭 `selflearning_integration` 只关闭本插件的桥接，其他插件自己的钩子由其自身配置管理。
 - **调度兼容**：同一群建议由一个插件负责回复调度，避免与 Group Chat Plus 等插件竞争。
 
 ## 开发与文档
@@ -125,7 +125,8 @@ python scripts/check_release.py
 - [收件人回放评估](docs/routing_evaluation.md) · [人工标注](docs/recipient_annotations.md)
 - [话题优化评审](docs/topic_optimization.md) · [Embedding 行为与上限](docs/embedding_changes.md)
 - [记忆联动说明](docs/companion-integration-fix-2026-09-07.md)
-- [直连接口覆盖](docs/selflearning-api-coverage.md)
+- [集成边界与路由证据](docs/integrations-routing.md)
+- [兼容直连接口覆盖](docs/selflearning-api-coverage.md)
 - [更新记录](CHANGELOG.md) · [MIT License](LICENSE)
 
 插件标识保持 `astrbot_plugin_chat_dynamics`，已有配置与 `/dynamics` 指令继续使用。

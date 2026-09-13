@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from astrbot_plugin_chat_dynamics.core.selflearning_bridge import SelfLearningBridge
+from astrbot_plugin_chat_dynamics.core.integrations.legacy.selflearning_legacy import SelfLearningBridge
 from astrbot_plugin_chat_dynamics.core.mood_memory import MoodMemoryStore
 from astrbot_plugin_chat_dynamics.core.group_memory import GroupMemoryNotebook
 
@@ -85,7 +85,7 @@ async def test_relationship_context_skips_native_per_provider_and_filters_scope(
 
 
 @pytest.mark.asyncio
-async def test_relationship_hints_reach_main_request():
+async def test_relationship_hints_are_not_duplicated_in_main_request():
     from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import _plugin, MockEvent
 
     class Relationships:
@@ -98,7 +98,7 @@ async def test_relationship_hints_reach_main_request():
     plugin.selflearning = SelfLearningBridge(plugin.context)
     request = NS(prompt="original", extra_user_content_parts=[])
     await plugin.on_llm_request(MockEvent("hello"), request)
-    assert "熟悉的技术讨论伙伴" in str(request.prompt) + str(request.extra_user_content_parts)
+    assert "熟悉的技术讨论伙伴" not in str(request.prompt) + str(request.extra_user_content_parts)
     await plugin.terminate()
 
 
@@ -469,7 +469,7 @@ async def test_forget_while_recalling_wins_and_bad_weights_are_ignored(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_request_consumes_async_tags_and_preserves_other_injection(tmp_path):
+async def test_request_preserves_other_injection_without_direct_legacy_recall(tmp_path):
     from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import (
         _plugin,
         MockEvent,
@@ -487,7 +487,7 @@ async def test_request_consumes_async_tags_and_preserves_other_injection(tmp_pat
     )
     await plugin.on_llm_request(MockEvent("hello"), request)
     text = str(request.prompt) + str(request.extra_user_content_parts)
-    assert "calm" in text
+    assert "calm" not in text
     assert "original memory from another plugin" in text
 
 
@@ -565,7 +565,7 @@ def test_relationship_only_api_and_umo_alias_are_supported():
 
 
 @pytest.mark.asyncio
-async def test_reset_cancels_direct_recall_before_request_mutation(tmp_path):
+async def test_normal_request_never_starts_direct_recall(tmp_path):
     from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import (
         _plugin,
         MockEvent,
@@ -587,12 +587,11 @@ async def test_reset_cancels_direct_recall_before_request_mutation(tmp_path):
     key = event.unified_msg_origin
     plugin._get_or_create_runtime(key, group_id="reset-memory", umo=key, bot_id="bot")
     request = NS(prompt="original", extra_user_content_parts=[])
-    task = asyncio.create_task(plugin.on_llm_request(event, request))
-    await started.wait()
+    await asyncio.wait_for(plugin.on_llm_request(event, request), 1)
+    assert not started.is_set()
     await plugin._reset_session_state_async(key)
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert request.prompt == "original" and request.extra_user_content_parts == []
+    assert request.prompt == "original"
+    await plugin.terminate()
 
 
 @pytest.mark.parametrize("hooks_available", [False, True])

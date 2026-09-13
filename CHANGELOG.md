@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.5.3 — 集成边界收口、共享语义事实与可解释路由
+
+- 新增 `core/integrations/` 集成层：`CapabilityRegistry` 一次性发现 Self Learning、LivingMemory 与宿主 embedding 能力，业务代码不再自行 `hasattr` 试探；历史 Python 兼容方法隔离到 `legacy/`，仅供管理，不参与普通聊天注入。
+- 确立原生 Hook 优先：普通 AstrBot 请求不再由本插件调用搭档 `/context` 或长期记忆检索，改由两个搭档各自的 `on_llm_request` 注入，消除重复查询与重复提示；只有绕过宿主请求钩子的内部 Agent 才使用 Self Learning Hub v1。
+- 新增 `selflearning_hub_url` 与 `selflearning_hub_key_env` 配置：Hub 只读取 social / jargon / few_shots 背景文本，凭据仅从进程环境读取，不写入配置或面板，配置变更会使在途请求失效。
+- 新增不可变 `MessageFeatures`：统一短句、省略、应答、问句结尾、话题起点与称呼等输入事实，缓存有界且按源文本键控，修复元数据缓存污染；各模块原有语义差异、权重与 TTL 保持不变。
+- 新增 Evidence Ledger：topic / parent / recipient / participation 四域记录因子原始值与实际加权贡献，只导出白名单代码与有限数值，并明确标注未经概率校准；回放分列话题、父消息与收件人，标识脱敏统一处理。
+- 控制台互联面板新增能力注册表，区分「已发现 / 可用 / 已选择」，配置面板同步暴露 Hub 设置；新增集成注册表、请求边界、消息事实与证据账本回归测试。
+
 ## v1.5.2 — 引用识别、参与档位与回放容量优化
 
 - 引用消息在重启或原消息离开图谱后，仍可利用平台提供的作者身份识别收件人及对机器人的直接回复，不虚构原消息内容或话题。

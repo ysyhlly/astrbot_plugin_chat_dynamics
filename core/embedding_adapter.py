@@ -15,6 +15,7 @@ from collections import OrderedDict
 from typing import Any, Optional, Sequence, Tuple
 
 from .semantics import SemanticMatch, semantic_match
+from .integrations.semantic_provider import provider_id as _provider_id, resolve_embedding_provider  # noqa: F401 - compatibility export
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.embedding")
 
@@ -30,25 +31,6 @@ def _normalize_vec(values: Sequence[float]) -> Tuple[float, ...]:
     if norm <= 0.0:
         return tuple(nums)
     return tuple(item / norm for item in nums)
-
-
-def _provider_id(provider: Any) -> str:
-    if provider is None:
-        return ""
-    meta = getattr(provider, "meta", None)
-    if meta is not None:
-        for attr in ("id", "provider_id"):
-            value = getattr(meta, attr, None)
-            if value:
-                return str(value)
-    cfg = getattr(provider, "provider_config", None)
-    if isinstance(cfg, dict) and cfg.get("id"):
-        return str(cfg["id"])
-    for attr in ("id", "provider_id"):
-        value = getattr(provider, attr, None)
-        if value:
-            return str(value)
-    return ""
 
 
 def _extract_vector(payload: Any) -> Optional[Tuple[float, ...]]:
@@ -207,31 +189,7 @@ class EmbeddingAdapter:
         return match.backend == "neural" and match.embedding_cosine >= self.link_threshold
 
     def resolve_provider(self) -> Any:
-        ctx = self.context
-        if ctx is None:
-            return None
-        if self.provider_id:
-            getter = getattr(ctx, "get_provider_by_id", None)
-            if callable(getter):
-                try:
-                    found = getter(self.provider_id)
-                except Exception:
-                    found = None
-                if found is not None:
-                    return found
-        listing = getattr(ctx, "get_all_embedding_providers", None)
-        if not callable(listing):
-            return None
-        try:
-            providers = list(listing() or [])
-        except Exception:
-            return None
-        if self.provider_id:
-            for provider in providers:
-                if _provider_id(provider) == self.provider_id:
-                    return provider
-            return None
-        return providers[0] if providers else None
+        return resolve_embedding_provider(self.context, self.provider_id)
 
     async def embed(self, text: str) -> Optional[Tuple[float, ...]]:
         """Fetch a neural vector, or None to keep using the hashed fallback."""

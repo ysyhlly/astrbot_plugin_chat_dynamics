@@ -67,7 +67,11 @@ function traceView(trace) {
   const recipient = trace.recipient || {}, topic = trace.topic || {}, participation = trace.participation || {};
   const ids = trace.identifiers_redacted ? "ID 已隐藏" : (recipient.ids || []).join(", ") || "未确定";
   const summary = `收件人：${ids} · 对 Bot：${yesNo(recipient.bot_targeted)} · 话题歧义：${yesNo(topic.ambiguous)} · 收件人歧义：${yesNo(recipient.ambiguous)} · 参与：${participation.level || "待决"} · 应回复：${yesNo(participation.should_reply)}`;
-  return `<p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
+  const parent = trace.parent || {};
+  const routingRows = [["话题", topic.topic_id, topic.confidence], ["父消息", parent.parent_id || parent.message_id, parent.confidence], ["收件人", ids, recipient.confidence]];
+  const routingHtml = routingRows.map(([name, id, score]) => `<p class="ops-note">${escapeHtml(name)}：${escapeHtml(trace.identifiers_redacted ? "ID 已隐藏" : id || "未确定")} · 分数 ${escapeHtml(score ?? "—")}</p>`).join("");
+  const evidenceHtml = (trace.ledger?.entries || []).map(entry => `<li>${escapeHtml(entry.domain)} · ${escapeHtml(entry.code)}：${escapeHtml(entry.raw_value)}${entry.contribution == null ? "" : ` · 贡献 ${escapeHtml(entry.contribution)}`}</li>`).join("");
+  return `${routingHtml}<details><summary>判断依据（启发式分数，未经概率校准）</summary><ul>${evidenceHtml || "<li>暂无证据明细</li>"}</ul></details><p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
 }
 
 function recipientEditor(index) {

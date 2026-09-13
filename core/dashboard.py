@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from .routing_trace import build_routing_trace
+from .routing_trace import build_routing_trace, redact_trace_identifiers
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
@@ -608,22 +608,22 @@ def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     topic, recipient = section("topic"), section("recipient")
     routing = dict(node.metadata.get("routing", {}))
     for old, new in (("topic_id", "topic_id"), ("confidence", "topic_confidence"), ("ambiguous", "topic_ambiguous")):
-        if old in topic:
+        if old in topic and new not in routing:
             routing[new] = topic[old]
     for old, new in (("ids", "addressee_ids"), ("bot_targeted", "bot_is_addressee"),
                      ("confidence", "addressee_confidence"), ("ambiguous", "addressee_ambiguous")):
-        if old in recipient:
+        if old in recipient and new not in routing:
             routing[new] = recipient[old]
+    for old, new in (("message_id", "parent_message_id"), ("confidence", "parent_confidence"),
+                     ("margin", "parent_margin"), ("ambiguous", "parent_ambiguous"),
+                     ("candidates", "parent_candidates")):
+        if old in section("parent") and new not in routing:
+            routing[new] = section("parent")[old]
     result = build_routing_trace(routing=routing, identity=section("identity"),
         participation=section("participation"), state=section("state"),
         mode=source.get("mode", "legacy"), weights_version=source.get("weights_version", "default"))
     if not show_content:
-        result["recipient"]["ids"] = []
-        result["state"]["active_interlocutor"] = None
-        # A message identifier identifies its author too.
-        result["state"]["last_bot_message_id"] = None
-        if isinstance(result["state"]["intervening_users"], list):
-            result["state"]["intervening_users"] = len(result["state"]["intervening_users"])
+        result = redact_trace_identifiers(result)
     result["identifiers_redacted"] = not show_content
     return result
 

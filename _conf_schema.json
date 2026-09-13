@@ -542,6 +542,18 @@
     "default": true,
     "hint": "默认开启，但须显式写入纪念日或约定才有效。"
   },
+  "selflearning_hub_url": {
+    "description": "Self Learning Hub v1 地址（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "仅供不经过宿主请求钩子的内部回复使用；普通聊天由原生钩子增强，不重复调用 context。填写 Self Learning HTTP 服务地址或 /api/hub/v1 地址，留空关闭 Hub 连接。"
+  },
+  "selflearning_hub_key_env": {
+    "description": "Hub API Key 环境变量名",
+    "type": "string",
+    "default": "SELFLEARNING_HUB_API_KEY",
+    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不返回面板。Self Learning 未开启 API 鉴权时可留空。"
+  },
   "selflearning_integration": {
     "description": "尝试对接 selflearning",
     "type": "bool",

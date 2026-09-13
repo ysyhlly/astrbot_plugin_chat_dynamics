@@ -8,7 +8,7 @@ const CAPABILITIES = [
     "memories",
     "01",
     "批准记忆",
-    "把记忆正文与偏好交给主模型，在回复前注入提示词",
+    "长期记忆由 LivingMemory 原生 Hook 召回；旧接口仅供兼容管理",
     ["get_approved_memories", "list_approved_memories", "fetch_memories", "query_memories"],
   ],
   [
@@ -241,12 +241,25 @@ export function renderIntegrations(partner) {
     } else if (native) {
       noteText = "搭档已挂载 AstrBot 原生请求钩子，记忆将在请求发生时由宿主钩子自动注入主模型。";
     } else {
-      noteText = "已识别直连调用方法，将在生成回复前按需检索批准记忆与关系提示。";
+      noteText = "已识别兼容方法，处于待命状态。普通回复由搭档原生 Hook 增强；绕过宿主 Hook 的内部请求才使用 Hub v1。";
     }
     if (partner?.weakened && partner.weakened.length > 0 && !native) {
       noteText += `（诊断提示：${partner.weakened.join("，")}）`;
     }
     $("integrationNote").textContent = noteText;
+  }
+
+  let registry = $("integrationRegistry");
+  if (!registry) {
+    registry = el("section", "integration-registry");
+    registry.id = "integrationRegistry";
+    $("integrationPanel").append(registry);
+  }
+  registry.replaceChildren(el("h3", "", "能力注册表"), el("p", "ops-note", "正常请求优先使用原生 Hook。检测到接口不等于已启用调用。"));
+  for (const capability of list(partner?.capability_registry)) {
+    const row = el("p", "ops-note");
+    row.append(el("strong", "", capability.name), document.createTextNode(` · ${capability.selected ? "已选择" : capability.ready ? "可用 / 待命" : capability.detected ? "已发现 / 未就绪" : "未发现"} · ${capability.detail || ""}`));
+    registry.append(row);
   }
 
   // Capabilities cards

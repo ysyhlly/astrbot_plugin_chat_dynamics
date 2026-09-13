@@ -378,7 +378,9 @@ async def test_real_sdk_dispatches_both_companions_once(host_fixture, monkeypatc
         return "provider"
 
     ctx.tool_loop_agent = tool_loop
-    adapter = LLMAdapter(ctx)
+    from unittest.mock import AsyncMock
+    companion.hub.context = AsyncMock(side_effect=AssertionError("native hooks already own context"))
+    adapter = LLMAdapter(ctx, integrations=companion)
     adapter.resolve_provider_id = resolve
     event.stop_event()
     assert await adapter.run_native_agent(event, "legacy request") == "legacy response"
@@ -387,3 +389,5 @@ async def test_real_sdk_dispatches_both_companions_once(host_fixture, monkeypatc
     forwarded_text = forwarded[0]["prompt"] + forwarded[0]["system_prompt"]
     assert forwarded_text.count("approved-learning-hint") == 1
     assert forwarded_text.count("retrieved-memory-hint") == 1
+    companion.hub.context.assert_not_awaited()
+    await companion.close()

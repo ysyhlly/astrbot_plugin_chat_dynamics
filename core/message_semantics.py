@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 from .routing_contract import addressee_is_ambiguous
 from .topic_identity import node_topic_id
-from .semantics import classify_message, concept_scores
+from .semantics import classify_message
+from .message_features import MessageFeatures, message_features
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class MessageSemantics:
     routing_evidence: tuple[str, ...] = ()
     topic_ambiguous: bool = False
     addressee_ambiguous: bool = False
+    features: MessageFeatures | None = None
 
     @property
     def inferred_parent_id(self) -> str:
@@ -48,7 +50,8 @@ class MessageSemantics:
         return bool(self.subject_is_bot)
 
 
-def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
+def describe_message(node, dag, bot_id: str = "", *, bot_names=()) -> MessageSemantics:
+    features = message_features(node, bot_names, bot_id=bot_id)
     mentions = tuple(dict.fromkeys(str(uid) for uid in
                                   node.metadata.get("actual_mentions", node.mentioned_users) if uid))
     recipients, basis, certainty, evidence = (), "unknown", "unknown", ""
@@ -119,7 +122,7 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
 
     return MessageSemantics(str(node.user_id), bool(bot_id and node.user_id == bot_id),
                             recipients, basis, certainty, evidence, mentions, scenes, emotions,
-                            "question" if concept_scores(node.text).get("question") else "unknown",
+                            "question" if features.is_question else "unknown",
                             node.reply_to_id or "", quoted_author,
                             topic_id,
                             topic_conf,
@@ -133,4 +136,4 @@ def describe_message(node, dag, bot_id: str = "") -> MessageSemantics:
                             is_ambig,
                             rout_ev,
                             bool(routing.get("topic_ambiguous", False)),
-                            addressee_is_ambiguous(routing, certainty not in {"explicit", "probable"}))
+                            addressee_is_ambiguous(routing, certainty not in {"explicit", "probable"}), features)

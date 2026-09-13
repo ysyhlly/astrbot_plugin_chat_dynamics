@@ -6,10 +6,10 @@ adds no second mutable state to update on sends, cancellation, reset or prune.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any, Sequence
 
 from .topic_identity import node_topic_id
+from .message_features import analyze_text
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,7 @@ class ActiveDialogue:
             return False
         if not 0 < node.timestamp - self.updated_at <= 60:
             return False
-        text = node.text.strip()
-        if not text or len(text) > 32 or re.search(r"[\n。！？!?]", text.rstrip("。！？!?")):
-            return False
-        if re.match(r"(?:对了|话说|另外|顺便|换个话题|by the way\b)", text, re.I):
+        if not analyze_text(node.text).is_answer_like:
             return False
         # A reply cannot indefinitely reuse a question after somebody answered
         # or the group moved on, even when the intervening topic is unrelated.
@@ -71,8 +68,7 @@ def active_dialogue(runtime: Any) -> ActiveDialogue | None:
         bot.metadata.get("trigger_user_id") or getattr(runtime, "last_interlocutor", "") or "")
     if not user_id or user_id == bot_id:
         return None
-    text = bot.text.strip()
-    question = bool(re.search(r"[？?][\s）)\]】]*$|(?:吗|呢)[。！!\s]*$", text))
+    question = analyze_text(bot.text).question_ending
     return ActiveDialogue(user_id, node_topic_id(bot), str(bot.msg_id),
                           str(trigger.msg_id) if trigger is not None else "",
                           question, float(bot.timestamp), 1.0 if trigger is not None else .76)

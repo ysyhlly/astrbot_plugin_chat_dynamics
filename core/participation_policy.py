@@ -28,6 +28,10 @@ class Evidence:
     strength: float
     source: str
 
+    def ledger_entry(self):
+        from .evidence import EvidenceEntry
+        return EvidenceEntry("participation", self.code, self.source, self.strength, self.strength)
+
 
 @dataclass(frozen=True)
 class RecipientSnapshot:

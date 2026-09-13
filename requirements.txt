@@ -1,2 +1,4 @@
 # IANA timezone database, including Windows hosts without system tzdata.
 tzdata>=2024.1
+# Optional Self Learning Hub v1 HTTP transport (also provided by AstrBot).
+aiohttp>=3.9

@@ -29,7 +29,10 @@ def test_config_categories_navigation_and_save(browser, page_server, width, them
         control = page.locator('[data-config-key="topic_window_seconds"]')
         control.fill("240")
         page.locator("#configSearch").fill("记忆与联动")
-        assert page.locator('.config-field:visible').count() == 4
+        assert set(page.locator('.config-field:visible [data-config-key]').evaluate_all(
+            "nodes => nodes.map(n => n.dataset.configKey)")) == {
+                "group_memory_enabled", "mood_memory_enabled", "slang_trial_enabled",
+                "selflearning_integration", "selflearning_hub_url", "selflearning_hub_key_env"}
         page.locator("#configCategory").select_option("routing")
         assert control.input_value() == "240"
         assert not page.locator("#btnConfigSave").is_disabled()

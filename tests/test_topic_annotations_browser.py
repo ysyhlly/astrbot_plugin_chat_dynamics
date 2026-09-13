@@ -13,7 +13,7 @@ def test_annotation_save_export_and_escape(browser, page_server):
           window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
             if (endpoint === 'replay') return {ok:true,data:{sessions:[],topic_blocks:[{
               session_id:'room',topic_id:'t1',topic_title:'Topic',start_ts:1,end_ts:2,events:[],
-              messages:[{msg_id:'m',text:'<script>unsafe</script>',topic_id:'t1',confidence:.6,candidates:[[.6,'t1']],decision_trace:{routing_schema_version:2,recipient:{ids:['<img src=x onerror=alert(1)>'],bot_targeted:true,ambiguous:false},topic:{ambiguous:true},participation:{level:'STRONG',should_reply:null}}}]
+              messages:[{msg_id:'m',text:'<script>unsafe</script>',topic_id:'t1',confidence:.6,candidates:[[.6,'t1']],decision_trace:{routing_schema_version:2,parent:{message_id:'parent-1',confidence:.8},ledger:{entries:[{domain:'parent',code:'semantic',raw_value:.7,contribution:.266}]},recipient:{ids:['<img src=x onerror=alert(1)>'],bot_targeted:true,ambiguous:false},topic:{ambiguous:true},participation:{level:'STRONG',should_reply:null}}}]
             }]}};
             if (endpoint === 'topic_annotations') return {ok:true,data:{records:window.annotationWrites,metrics:{total:window.annotationWrites.length,error_counts:{},sample_note:'selected sample'}}};
             return original(endpoint, params);
@@ -34,6 +34,9 @@ def test_annotation_save_export_and_escape(browser, page_server):
         assert "收件人歧义：否" in page.locator("[data-trace-summary]").inner_text()
         assert "应回复：待决" in page.locator("[data-trace-summary]").inner_text()
         assert page.locator("#annotationMessages img").count() == 0
+        assert "父消息：parent-1" in page.locator("#annotationMessages").inner_text()
+        page.get_by_text("判断依据（启发式分数，未经概率校准）", exact=True).click()
+        assert "parent · semantic：0.7 · 贡献 0.266" in page.locator("#annotationMessages").inner_text()
         page.get_by_text("查看决策记录", exact=True).click()
         assert '"should_reply": null' in page.locator(".decision-trace").inner_text()
         page.locator("[data-target]").select_option("UNKNOWN")

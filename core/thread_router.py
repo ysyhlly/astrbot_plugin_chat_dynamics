@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
@@ -17,6 +16,8 @@ from .session_runtime import RoutingState as RoutingState, TopicState as TopicSt
 from .topic_resolution import TopicResolver, build_contextual_query, can_start_topic
 from .pending_topics import defer, reconcile
 from .topic_formation import discussion_burst, topic_text
+from .message_features import analyze_text, message_features
+from .evidence import routing_ledger
 
 WINDOW_SECONDS = 300.0
 WINDOW_NODES = 80
@@ -29,14 +30,6 @@ PARENT_ACCEPT_THRESHOLD = 0.72
 PARENT_MARGIN_THRESHOLD = 0.08
 
 logger = logging.getLogger(__name__)
-
-_ELLIPTICAL_RE = re.compile(
-    r"^(?:那|这个|这样|然后|继续|怎么办|为什么|怎么设|默认|我默认|好的|行|对|确实|好使|不行|成)[呢？?。!！\s]*$"
-)
-_FILLER_RE = re.compile(
-    r"^(?:哈+|[?？!！]+|嗯+|哦+|好的|好|ok|[hH]+|233+)$", re.IGNORECASE
-)
-_QUESTION_RE = re.compile(r"[?？]|怎么|如何|多少|几点|吗|能不能|可以吗|为啥|为什么")
 
 
 @asynccontextmanager
@@ -75,6 +68,16 @@ class RoutingInference:
     ambiguous: bool = True
     evidence: list[str] = field(default_factory=list)
     possible_parent: str = ""
+    parent_candidates: list[tuple[float, str]] = field(default_factory=list)
+    parent_candidate_score: float = 0.0
+    parent_margin: float = 0.0
+    parent_ambiguous: bool = True
+    parent_threshold: float = PARENT_ACCEPT_THRESHOLD
+    parent_margin_threshold: float = PARENT_MARGIN_THRESHOLD
+    topic_threshold: float = TOPIC_JOIN_THRESHOLD
+    topic_margin_threshold: float = TOPIC_MARGIN_THRESHOLD
+    recipient_threshold: float = 0.72
+    ledger: dict = field(default_factory=dict)
 
 
 class ParentRetriever:
@@ -100,6 +103,7 @@ class ParentRetriever:
         is_primary_topic: bool,
         turn_distance: int,
         participant_affinity: float = 0.5,
+        details: Optional[list] = None,
     ) -> float:
         """6-factor reranking: semantic, topic, qa_fit, temporal, turn, participant."""
         # Factor 1: Semantic fit (0.38)
@@ -109,8 +113,8 @@ class ParentRetriever:
         f_top = 1.0 if is_primary_topic else 0.5
 
         # Factor 3: Question-Answer fit (0.17)
-        cand_q = bool(_QUESTION_RE.search(candidate.text))
-        curr_q = bool(_QUESTION_RE.search(node.text))
+        cand_q = analyze_text(candidate.text).parent_question
+        curr_q = analyze_text(node.text).parent_question
         if cand_q and not curr_q:
             f_qa = 1.0
         elif not cand_q and curr_q:
@@ -138,6 +142,13 @@ class ParentRetriever:
             + f_turn * 0.10
             + f_part * 0.05
         )
+        if details is not None:
+            details.extend(dict(domain="parent", code=code, source="parent_retriever",
+                                raw_value=value, contribution=value * weight)
+                           for code, value, weight in (
+                               ("semantic", f_sem, .38), ("topic_affinity", f_top, .20),
+                               ("qa_fit", f_qa, .17), ("temporal", f_temp, .10),
+                               ("turn_proximity", f_turn, .10), ("participant", f_part, .05)))
         return round(score, 4)
 
     def retrieve(
@@ -151,7 +162,8 @@ class ParentRetriever:
         recent_nodes: Optional[List[ConversationNode]] = None,
     ) -> Tuple[Optional[str], float, float, List[str], str, List[Tuple[float, str]]]:
         """Evaluates candidates. Returns (parent_id, conf, margin, evidence, possible_parent, candidates)."""
-        if bool(_FILLER_RE.fullmatch(node.text.strip())):
+        node.metadata.pop("_parent_score_evidence", None)
+        if analyze_text(node.text).parent_filler:
             return None, 0.0, 0.0, [], "", []
 
         target_topics = {primary_topic}
@@ -200,6 +212,7 @@ class ParentRetriever:
                 continue
 
             sim = matches.get(candidate.msg_id, 0.0)
+            details: list = []
             score = self.score_candidate(
                 node=node,
                 candidate=candidate,
@@ -208,8 +221,12 @@ class ParentRetriever:
                 turn_distance=turn_distance,
                 participant_affinity=min(1.0, interactions.get(
                     tuple(sorted((node.user_id, candidate.user_id))), 0.0) / 2.0),
+                details=details,
             )
             candidates.append((score, candidate.msg_id))
+            best = node.metadata.get("_parent_score_evidence")
+            if best is None or (score, candidate.msg_id) > (best[0], best[1]):
+                node.metadata["_parent_score_evidence"] = (score, candidate.msg_id, details)
 
         if not candidates:
             return None, 0.0, 0.0, [], "", []
@@ -299,12 +316,19 @@ class ThreadRouter:
     ) -> RoutingInference:
         """Route message turn synchronously, inferring topic, parent, and addressee."""
         dag = runtime.dag
-        result = RoutingInference(topic_id=node.msg_id)
+        features = message_features(node, bot_names, getattr(runtime, "bot_id", ""), mentions=node.mentioned_users)
+        result = RoutingInference(topic_id=node.msg_id,
+            parent_threshold=self.parent_retriever.accept_threshold,
+            parent_margin_threshold=self.parent_retriever.margin_threshold,
+            topic_threshold=self.topic_resolver.join_threshold,
+            topic_margin_threshold=self.topic_resolver.margin_threshold)
         if dag is None:
             node.metadata["routing"] = asdict(result)
             return result
 
         state = runtime.routing_state
+        node.metadata.pop("_topic_score_evidence", None)
+        node.metadata.pop("_parent_score_evidence", None)
         previous_routing = node.metadata.get("routing", {})
         if (any(ev in previous_routing.get("evidence", []) for ev in ("topic_llm_rerank", "topic_burst_confirmed"))
                 and previous_routing.get("topic_id") in state.topics):
@@ -365,6 +389,7 @@ class ThreadRouter:
                 prior["addressee_ambiguous"] = prior["ambiguous"] = (
                     float(prior.get("addressee_confidence", 0.0) or 0.0) < 0.72)
                 prior["evidence"] = commit_topic_evidence(prior, "topic_burst_confirmed")
+                prior["ledger"] = routing_ledger(prior)
                 previous.metadata["routing"] = prior
                 previous.metadata["topic_id"] = formed_topic
         query = topic_text(node)
@@ -432,6 +457,9 @@ class ThreadRouter:
                 )
             )
             result.possible_parent = possible_mid
+            result.parent_candidates = candidates[:8]
+            result.parent_candidate_score = p_conf
+            result.parent_margin = p_margin
             parent_margin = p_margin
             if inferred_mid is not None and inferred_mid in dag.nodes:
                 inferred_candidate_parent = dag.nodes[inferred_mid]
@@ -449,6 +477,7 @@ class ThreadRouter:
             ranked_topics=ranked_topics,
             recent_nodes=recent,
             bot_names=bot_names,
+            features=features,
         )
 
         result.addressee_ids = list(recipient.recipient_ids)
@@ -478,7 +507,11 @@ class ThreadRouter:
                 dag._link_parent(node.msg_id, inferred_candidate_parent.msg_id, kind="inferred_reply")
         elif parent_override is not None:
             pmid, pconf, ptopic = parent_override
+            result.ledger = {"entries": [dict(domain="parent", code="parent_override",
+                source="recipient_resolver", raw_value=pconf)]}
             if ptopic:
+                result.ledger["entries"].append(dict(domain="topic", code="parent_topic_override",
+                    source="recipient_resolver", raw_value=result.topic_confidence))
                 result.topic_id = ptopic
                 result.topic_confidence = 0.78
                 result.topic_ambiguous = False
@@ -506,6 +539,7 @@ class ThreadRouter:
             state.last_topic_id = result.topic_id
         result.addressee_ambiguous = result.addressee_confidence < 0.72
         result.ambiguous = result.topic_ambiguous or result.addressee_ambiguous
+        result.parent_ambiguous = not bool(result.parent_message_id)
         # Store the conclusion and the reason together: a message that ends up
         # committed must not keep the codes that justified a pending topic.
         result.evidence = commit_topic_evidence(
@@ -513,6 +547,17 @@ class ThreadRouter:
              "topic_status": result.topic_status,
              "evidence": result.evidence})
         node.metadata["topic_id"] = result.topic_id
+        details = result.ledger.setdefault("entries", [])
+        for domain in ("topic", "parent"):
+            scored = node.metadata.pop(f"_{domain}_score_evidence", None)
+            if scored is None:
+                continue
+            if domain == "topic" and (scored[1] != result.topic_id or scored[0] != result.topic_confidence):
+                continue
+            if domain == "parent" and parent_override is not None:
+                continue
+            details.extend(scored[2])
+        result.ledger = routing_ledger(result)
         node.metadata["routing"] = asdict(result)
         if formation_allowed:
             reconcile(state, dag, node, result, self._remember)
@@ -625,6 +670,7 @@ class ThreadRouter:
             snapshot["addressee_ambiguous"] = snapshot["ambiguous"] = (
                 float(snapshot.get("addressee_confidence", 0.0) or 0.0) < 0.72)
             snapshot["evidence"] = commit_topic_evidence(snapshot, "topic_llm_rerank")
+            snapshot["ledger"] = routing_ledger(snapshot)
             node.metadata["topic_id"] = topic_id
             state.last_topic_id = topic_id
 

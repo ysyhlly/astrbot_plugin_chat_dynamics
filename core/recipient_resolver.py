@@ -1,12 +1,11 @@
 """Single recipient inference owner; topic scores are context, not identity."""
 from dataclasses import dataclass
-import re
 from typing import Any, List, Optional, Sequence, Tuple
 from .bot_identity import BotIdentityMatcher
 from .active_dialogue import active_dialogue
 from .graph import ConversationNode
 from .topic_identity import node_topic_id
-from .topic_resolution import is_elliptical
+from .message_features import MessageFeatures, message_features
 
 
 @dataclass(frozen=True)
@@ -58,6 +57,7 @@ class RecipientResolver:
         ranked_topics: Sequence[Tuple[float, str]] = (),
         recent_nodes: Sequence[ConversationNode] = (),
         bot_names: Sequence[str] = (),
+        features: Optional[MessageFeatures] = None,
     ) -> Tuple[List[str], float, bool, float, List[str], bool, List[str], Optional[Tuple[str, float, str]]]:
         """Resolves addressees and subject references based on the 6-tier precedence hierarchy."""
         bot_id = getattr(runtime, "bot_id", "")
@@ -70,14 +70,14 @@ class RecipientResolver:
         parent_override: Optional[Tuple[str, float, str]] = None
 
         # Subject reference analysis
-        subject_is_bot = self.is_subject_reference(node.text, names)
+        features = features or message_features(node, names, bot_id, mentions=node.mentioned_users)
+        reference = features.bot_reference
+        subject_is_bot = reference.subject
         subject_user_ids = [bot_id] if (subject_is_bot and bot_id) else []
-        vocative_target = self.is_vocative_call(node.text, names)
+        vocative_target = reference.vocative
 
         # Preserve all explicit recipients, including a textual bot vocative.
         is_wake = bool(node.metadata.get("is_wake"))
-        reference = BotIdentityMatcher.match(node.text, names,
-            mentions=node.mentioned_users, bot_id=bot_id)
         aliases = {name.casefold() for name in names}
         explicit_ids = list(dict.fromkeys(
             bot_id if bot_id and str(uid).casefold() in aliases else str(uid)
@@ -106,7 +106,7 @@ class RecipientResolver:
                 interlocutor = dialogue.user_id if dialogue is not None else (trigger.user_id if trigger else getattr(runtime, "last_interlocutor", ""))
                 bot_topic = node_topic_id(last_bot)
                 last_bot_ts = getattr(last_bot, "timestamp", 0.0)
-                elliptical = bool(re.fullmatch(r"\s*(?:那|这个|这样|这个呢|那这个呢|那怎么办|这个怎么办)[呢？?。!！]*\s*", node.text))
+                elliptical = features.quoted_subject_followup
                 competing = any(
                     n.user_id not in {node.user_id, bot_id}
                     and n.timestamp > last_bot_ts
@@ -166,13 +166,11 @@ class RecipientResolver:
                 and (not bot_topic or node_topic_id(n) == bot_topic)
                 for n in recent_nodes
             )
-            short_followup = bool(re.fullmatch(r"(?:然后呢|为什么|那这个呢|真的吗|怎么弄)[？?。!！\s]*", node.text.strip()))
-            followup = short_followup or bool(re.search(r"然后|继续|那|这个|这样|怎么办|呢[？?]?$", node.text))
+            followup = features.dialogue_followup
             if not bot_topic:
                 # With no semantic topic, only a short continuation can borrow
                 # the active interlocutor; a new sentence containing "那" cannot.
-                followup = short_followup or is_elliptical(node.text) or bool(re.fullmatch(
-                    r"\s*那(?:这个|怎么办|怎么做)[呢？?。!！\s]*", node.text))
+                followup = features.topicless_followup
             if (
                 interlocutor == node.user_id
                 and 0 < node.timestamp - last_bot_ts <= 60

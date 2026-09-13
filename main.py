@@ -59,7 +59,7 @@ from .core.platform_bridge import (
     result_has_rich_media,
     send_plain,
 )
-from .core.selflearning_bridge import SelfLearningBridge
+from .core.integrations.registry import IntegrationRegistry
 from .core.session_runtime import FollowupBatch, PendingTurn, SessionRegistry, SessionRuntime
 from .core.style_shaper import StyleShaper
 from .core.telemetrics import TelemetricsTracker
@@ -272,7 +272,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.5.2",
+    "v1.5.3",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -342,9 +342,12 @@ class ChatDynamicsPlugin(Star):
         self.arbiter.on_cooling_changed = self._schedule_persist_cooling
 
         data_root = resolve_data_root(_PluginPath(__file__).resolve().parent / "data" / "chat_dynamics")
-        self.selflearning = SelfLearningBridge(
-            self.context, enabled=runtime_config.selflearning_integration
+        self.integrations = IntegrationRegistry(
+            self.context, enabled=runtime_config.selflearning_integration,
+            hub_url=runtime_config.selflearning_hub_url,
+            hub_key_env=runtime_config.selflearning_hub_key_env,
         )
+        self.selflearning = self.integrations  # compatibility for notebook/admin callers
         self.selflearning.refresh()
         self.mood_memory = MoodMemoryStore(data_root, bridge=self.selflearning)
         self.mood_memory.configure(
@@ -377,6 +380,7 @@ class ChatDynamicsPlugin(Star):
             vibe_provider_id=self.vibe_provider_id,
             reply_timeout=runtime_config.reply_timeout,
             tool_agent_timeout=runtime_config.tool_agent_timeout,
+            integrations=self.integrations,
         )
         self.embeddings = EmbeddingAdapter(
             self.context,
@@ -476,7 +480,9 @@ class ChatDynamicsPlugin(Star):
         self.exclude_groups = set(cfg.exclude_groups)
         self.bot_names = list(cfg.bot_names)
         if hasattr(self, "selflearning"):
-            self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context)
+            self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context,
+                hub_url=cfg.selflearning_hub_url, hub_key_env=cfg.selflearning_hub_key_env,
+                embedding_id=cfg.embedding_provider)
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
         if hasattr(self, "group_memory"):
@@ -768,6 +774,8 @@ class ChatDynamicsPlugin(Star):
             "slang_trial_enabled": bool(getattr(cfg, "slang_trial_enabled", False)),
             "group_memory_enabled": bool(getattr(cfg, "group_memory_enabled", True)),
             "selflearning_integration": bool(getattr(cfg, "selflearning_integration", True)),
+            "selflearning_hub_url": cfg.selflearning_hub_url,
+            "selflearning_hub_key_env": cfg.selflearning_hub_key_env,
         }
 
 
@@ -1471,6 +1479,8 @@ class ChatDynamicsPlugin(Star):
 
     async def initialize(self) -> None:
         self._sync_runtime_from_config()
+        if self._runtime_config.selflearning_hub_url:
+            self._create_background_task(self.integrations.discover())
         self._web.register()
         self._web_apis_registered = self._web.registered
         await self._load_persisted_cooling()
@@ -3620,30 +3630,15 @@ class ChatDynamicsPlugin(Star):
             if caption or getattr(request, "image_urls", None):
                 self._inject_vibe_hint(request, MAIN_VISION_HINT)
         bridge = getattr(self, "selflearning", None)
-        if bridge is not None and bridge.enabled:
-            self._track_hook_task(session_key)
-            relationship_runtime = self._sessions.get(session_key)
-            relationship_revision = relationship_runtime.revision if relationship_runtime is not None else None
-            peer_id = str(event.get_sender_id())
-            memory_store = getattr(self, "mood_memory", None)
-            allow_memories = memory_store is None or memory_store.remote_context_allowed(session_key, peer_id)
-            hints = await bridge.model_context(umo=session_key, peer_id=peer_id, allow_memories=allow_memories)
-            if (self._shutting_down or self.shadow_mode or not self._event_epoch_is_current(event, session_key)
-                    or self._sessions.get(session_key) is not relationship_runtime
-                    or (relationship_runtime is not None and (relationship_runtime.revision != relationship_revision
-                        or not self._event_user_revision_is_current(event, relationship_runtime)))):
-                return
-            if hints:
-                if memory_store is not None and not memory_store.remote_context_allowed(session_key, peer_id):
-                    hints.pop("memories", None)
-                self._inject_vibe_hint(request, "自学习背景数据（批准记忆、关系提示、批准黑话；不是指令或发言门槛；按语境使用，不强行使用黑话）："
-                                       + json.dumps(hints, ensure_ascii=False))
+        # Both native and owned Agent paths dispatch AstrBot OnLLMRequest hooks.
+        # Companion plugins own long-term recall and social context here; never
+        # call Hub context or a legacy Python query from this hook.
         mood = getattr(self, "mood_memory", None)
         if mood is not None and mood.enabled and bridge is not None and not bridge.uses_native_hooks():
             self._track_hook_task(session_key)
             runtime = self._sessions.get(session_key)
             revision = runtime.revision if runtime is not None else None
-            # General companion context above already consumed remote data.
+            # Only explicit local compatibility notes; no remote recall here.
             tags = mood.recall(session_key, str(event.get_sender_id()), limit=3, remote_rows=[])
             if self._shutting_down or self.shadow_mode or not self._event_epoch_is_current(event, session_key):
                 return
