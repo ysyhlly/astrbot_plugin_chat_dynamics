@@ -590,7 +590,12 @@ async def test_normal_request_never_starts_direct_recall(tmp_path):
     await asyncio.wait_for(plugin.on_llm_request(event, request), 1)
     assert not started.is_set()
     await plugin._reset_session_state_async(key)
-    assert request.prompt == "original"
+    # The per-turn vibe hint goes to extra parts with the real SDK and falls back
+    # to the prompt under the offline SDK double. Direct recall must add nothing
+    # in either environment, so assert on content instead of exact length.
+    text = str(request.prompt) + str(request.extra_user_content_parts)
+    assert "original" in text
+    assert "以下是可选情绪短标签" not in text
     await plugin.terminate()
 
 
