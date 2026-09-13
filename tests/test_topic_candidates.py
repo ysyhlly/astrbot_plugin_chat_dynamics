@@ -1,5 +1,5 @@
 """Candidate parsing, attribution, and the two metrics that must not merge."""
-from astrbot_plugin_chat_dynamics.core.learning.candidates import (
+from astrbot_plugin_chat_dynamics.core.candidate_metrics import (
     CANDIDATE_MISS,
     NOT_RECORDED,
     RANKING_ERROR,

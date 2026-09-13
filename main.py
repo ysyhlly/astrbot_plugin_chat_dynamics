@@ -42,7 +42,8 @@ from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
-from .core.learning_policy import MODE_OFF, LearningPolicyConsumer
+from .core.learning_policy import MODE_OFF
+from .core.learning_policy_runtime import LearningPolicyRuntime
 from .core.runtime_persistence import host_version as _host_plugin_version
 from .core.native_delivery import NativeDeliveryGuard
 from .core.outcome_recorder import (
@@ -278,7 +279,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.6.2",
+    "v1.7.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -293,7 +294,7 @@ class ChatDynamicsPlugin(Star):
         # Created before the first config apply so `_with_learning_policy` has
         # something to consult; its decision is `off` until a refresh runs, so
         # this changes nothing on startup.
-        self.learning_policy = LearningPolicyConsumer(
+        self.learning_policy = LearningPolicyRuntime(
             mode=runtime_config.learning_policy_mode,
             source_id=runtime_config.learning_policy_source_id,
             expected_policy_id=runtime_config.learning_policy_expected_policy_id,
@@ -301,7 +302,6 @@ class ChatDynamicsPlugin(Star):
                 runtime_config.learning_policy_expected_dataset_fingerprint),
             host_version=_host_plugin_version(),
         )
-        self._learning_policy_read_at = 0.0
         self._apply_runtime_config(runtime_config, log_warnings=warnings)
 
         self._time_service: TimeService = SystemClock()
@@ -598,78 +598,35 @@ class ChatDynamicsPlugin(Star):
     # ---- Dynamics Learning policy consumer ------------------------------
 
     def _learning_policy_effective_config(self) -> dict[str, float]:
-        """The whitelisted parameters as *configured*, for the baseline digest.
-
-        Read from the configuration rather than from the live router attributes,
-        because the live attributes already carry any applied policy: hashing
-        those would make a policy invalidate its own compatibility check on the
-        next refresh, and the mode would flap between active and incompatible
-        every other interval.
-
-        `topic_commit_threshold` is derived from `topic_join_threshold` here
-        exactly as `ThreadRouter.configure_topics` derives it, because the
-        configuration field carries 0.0 to mean "derive me" while the value the
-        policy was calibrated against is the derived one. The derivation is
-        duplicated on purpose — the live value cannot be used, and the
-        cross-repo test in the learning plugin holds the two together so a
-        change to either rule fails loudly instead of leaving every published
-        digest quietly unmatched.
-        """
         cfg = getattr(self, "_runtime_config", None)
-        values: dict[str, float] = {}
-        for name in ("strong_addressivity_threshold", "safe_hover_threshold",
-                     "topic_commit_threshold", "topic_join_threshold",
-                     "topic_margin_threshold", "parent_accept_threshold"):
-            value = getattr(cfg, name, None)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                values[name] = float(value)
-        join = values.get("topic_join_threshold")
-        if values.get("topic_commit_threshold") in (None, 0.0) and join is not None:
-            values["topic_commit_threshold"] = (max(TOPIC_JOIN_THRESHOLD, join + 0.10)
-                                                if join < TOPIC_JOIN_THRESHOLD else join)
-        return values
+        if cfg is None:
+            return {}
+        return LearningPolicyRuntime.configured_values(
+            cfg, topic_join_threshold=TOPIC_JOIN_THRESHOLD)
 
     def _with_learning_policy(self, cfg: RuntimeConfig) -> RuntimeConfig:
-        """Fold an applied policy into the config before anything reads it.
-
-        Injecting here rather than poking the routers afterwards means every
-        consumer of the config — the addressivity router, the topic thresholds,
-        the effective-config view in the panel — sees one consistent set of
-        values, and a later config refresh cannot silently revert the policy.
-        """
-        consumer = getattr(self, "learning_policy", None)
-        if consumer is None or not consumer.decision.applied:
+        runtime = getattr(self, "learning_policy", None)
+        if runtime is None:
             return cfg
-        changes = {name: float(value) for name, value in consumer.overrides().items()
-                   if hasattr(cfg, name)}
-        if not changes:
-            return cfg
-        adjusted = replace(cfg, **changes)
-        if adjusted.safe_hover_threshold >= adjusted.strong_addressivity_threshold:
-            # The policy was validated as a set; a pair that overlaps would make
-            # the admission rule undefined, so the whole set is dropped rather
-            # than half-applied.
+        adjusted = runtime.apply_to(cfg, make=replace)
+        if adjusted is cfg:
             self._metric("learning_policy_rejected_overlap")
-            return cfg
         return adjusted
 
     async def _refresh_learning_policy(self, *, force: bool = False) -> None:
-        consumer = getattr(self, "learning_policy", None)
+        runtime = getattr(self, "learning_policy", None)
         cfg = getattr(self, "_runtime_config", None)
-        if consumer is None or cfg is None:
+        if runtime is None or cfg is None:
             return
-        consumer.configure(mode=cfg.learning_policy_mode,
-                           expected_policy_id=cfg.learning_policy_expected_policy_id,
-                           expected_dataset_fingerprint=cfg.learning_policy_expected_dataset_fingerprint)
-        if consumer.mode == MODE_OFF and not force:
+        runtime.configure(cfg)
+        if runtime.consumer.mode == MODE_OFF:
             return
         now = self.time_service.wall_time()
-        interval = max(10, int(getattr(cfg, "learning_policy_refresh_seconds", 60) or 60))
-        if not force and now - float(getattr(self, "_learning_policy_read_at", 0.0)) < interval:
+        if not runtime.due(now=now, config=cfg, force=force):
             return
-        self._learning_policy_read_at = now
-        before = consumer.decision
-        decision = await consumer.refresh(effective_config=self._learning_policy_effective_config())
+        runtime.last_read_at = now
+        before = runtime.consumer.decision
+        decision = await runtime.refresh(effective_config=self._learning_policy_effective_config())
         if decision.status != before.status or decision.policy_id != before.policy_id:
             self._sync_runtime_from_config()
             self._mark_panel_runtime_dirty()
@@ -680,10 +637,10 @@ class ChatDynamicsPlugin(Star):
             )
 
     def get_learning_policy_status(self) -> dict[str, Any]:
-        consumer = getattr(self, "learning_policy", None)
-        if consumer is None:
+        runtime = getattr(self, "learning_policy", None)
+        if runtime is None:
             return {"mode": MODE_OFF, "status": "off"}
-        return consumer.decision.as_dict()
+        return runtime.status()
 
     def _config_snapshot(self) -> Any:
         """Keep mutable lists detached so in-place host configuration edits are detected."""

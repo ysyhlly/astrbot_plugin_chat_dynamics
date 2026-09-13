@@ -1,5 +1,10 @@
 """Split "the labelled topic was never offered" from "it was offered and lost".
 
+Moved out of the deleted core/learning/ package in v1.7.0. It is not part of
+that layer: it is the live metric the offline routing evaluator and the
+annotation console read, and it has no dependency on the sample format, the
+learner or the store that used to sit beside it.
+
 Topic accuracy records that a decision was wrong. It cannot say which stage
 failed, and the two failures need opposite fixes:
 
@@ -28,7 +33,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 
-from ..topic_candidates import parse_candidates
+from .topic_candidates import parse_candidates
 
 # What happened to one labelled topic decision.
 SELECTED = "selected"

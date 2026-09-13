@@ -1,7 +1,7 @@
 """Label-aware offline metrics; missing supervision never means a negative."""
 from itertools import combinations
 
-from .learning.candidates import candidate_metrics
+from .candidate_metrics import candidate_metrics
 
 
 def known_label(value):
