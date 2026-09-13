@@ -361,3 +361,31 @@ def test_switching_the_mode_away_from_active_drops_the_cached_decision():
 
     assert consumer.decision.applied is False
     assert consumer.effective("strong_addressivity_threshold", 0.70) == pytest.approx(0.70)
+
+
+@pytest.mark.parametrize("state", ["validated", "shadow", "promoted"])
+def test_shadow_can_observe_without_promotion(state):
+    decision = decide(publish(state=state), mode="shadow")
+    assert decision.status == lp.STATUS_SHADOW
+    assert not decision.applied
+    assert decision.overrides["strong_addressivity_threshold"] == 0.67
+
+
+@pytest.mark.parametrize("state", ["proposed", "rejected", "rolled_back", "superseded", ""])
+def test_shadow_rejects_ineligible_lifecycle_states(state):
+    assert decide(publish(state=state), mode="shadow").status == lp.STATUS_INCOMPATIBLE
+
+
+@pytest.mark.asyncio
+async def test_shadow_reads_candidate_and_active_reads_published():
+    calls = []
+    class Preferences:
+        async def get_async(self, **kwargs):
+            calls.append(kwargs["key"])
+            return publish(state="shadow")
+    consumer = lp.LearningPolicyConsumer(mode="shadow", host_version="v1.6.2")
+    shadow = await consumer.refresh(sp_module=Preferences(), effective_config=BASE)
+    assert shadow.status == lp.STATUS_SHADOW and not shadow.applied
+    active = await consumer.refresh(sp_module=Preferences(), effective_config=BASE, mode="active")
+    assert active.status == lp.STATUS_INCOMPATIBLE and not active.applied
+    assert calls == [lp.CANDIDATE_KEY, lp.PUBLISHED_KEY]

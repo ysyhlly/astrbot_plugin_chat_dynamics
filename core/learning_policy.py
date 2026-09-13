@@ -56,6 +56,7 @@ MODES = (MODE_OFF, MODE_SHADOW, MODE_ACTIVE)
 # agreed artefact instead of re-deriving the shape and drifting from it.
 LEARNING_SCOPE_ID = "ysyhlly/astrbot_plugin_dynamics_learning"
 PUBLISHED_KEY = "learning_published_v1"
+CANDIDATE_KEY = "learning_candidate_v1"
 
 # The publish protocol this consumer implements (Learning -> ChatDynamics).
 SUPPORTED_POLICY_CONTRACT_VERSIONS = (1,)
@@ -276,7 +277,7 @@ def resolve(
     views = parse_published(payload)
     if not views:
         return Decision(mode=mode, status=STATUS_NO_POLICY,
-                        reasons=("没有读到已发布（promoted）的策略。",))
+                        reasons=("没有读到当前模式可读取的策略。",))
     view = next((item for item in views if item.policy_id == policy_id), None) \
         if policy_id else views[0]
     if view is None:
@@ -284,9 +285,10 @@ def resolve(
                         reasons=(f"发布的策略里没有 {policy_id}。",))
 
     reasons: list[str] = []
-    if view.state != "promoted":
+    allowed_states = {"validated", "shadow", "promoted"} if mode == MODE_SHADOW else {"promoted"}
+    if view.state not in allowed_states:
         return Decision(mode=mode, status=STATUS_INCOMPATIBLE, policy_id=view.policy_id,
-                        view=view, reasons=(f"策略状态是 {view.state}，不是 promoted。",))
+                        view=view, reasons=(f"策略状态 {view.state} 不允许用于 {mode}。",))
     if view.contract_version not in SUPPORTED_POLICY_CONTRACT_VERSIONS:
         return Decision(mode=mode, status=STATUS_INCOMPATIBLE, policy_id=view.policy_id,
                         view=view,
@@ -506,7 +508,8 @@ class LearningPolicyConsumer:
         if module is not None and hasattr(module, "get_async"):
             try:
                 payload = await module.get_async(scope="plugin", scope_id=self.source_id,
-                                                 key=PUBLISHED_KEY, default=None)
+                                                 key=CANDIDATE_KEY if self.mode == MODE_SHADOW else PUBLISHED_KEY,
+                                                 default=None)
             except Exception as exc:
                 self.last_error = type(exc).__name__
                 payload = None
@@ -522,7 +525,7 @@ __all__ = [
     "ALLOWED_PARAMS", "AMBIENT_ONLY_CODES", "EXPLICIT_CODES", "MODE_ACTIVE", "MODE_OFF",
     "MODE_SHADOW", "MODES", "PARAM_RANGES", "REASON_AMBIENT", "REASON_EARLY_RETURN",
     "REASON_STRUCTURAL", "shadow_decision",
-    "PUBLISHED_KEY", "SUPPORTED_POLICY_CONTRACT_VERSIONS", "STATUS_ACTIVE",
+    "CANDIDATE_KEY", "PUBLISHED_KEY", "SUPPORTED_POLICY_CONTRACT_VERSIONS", "STATUS_ACTIVE",
     "STATUS_INCOMPATIBLE", "STATUS_NO_POLICY", "STATUS_OFF", "STATUS_SHADOW", "Decision",
     "LearningPolicyConsumer", "PolicyView", "baseline_config_hash", "parse_published",
     "resolve",
