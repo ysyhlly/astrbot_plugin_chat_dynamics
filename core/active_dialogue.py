@@ -10,6 +10,7 @@ from typing import Any, Sequence
 
 from .topic_identity import node_topic_id
 from .message_features import analyze_text
+from .dialogue_continuity import evaluate
 
 
 @dataclass(frozen=True)
@@ -27,19 +28,12 @@ class ActiveDialogue:
 
         Only the intended participant's first uninterrupted response qualifies.
         Explicit mentions/replies are handled before this rule by the resolver.
+
+        The weights, the smooth time decay and the interruption factors live in
+        dialogue_continuity so the learning layer can fit them; this method stays
+        a boolean view of that score for callers that only need the decision.
         """
-        if not self.last_bot_was_question or str(node.user_id) != self.user_id:
-            return False
-        if not 0 < node.timestamp - self.updated_at <= 60:
-            return False
-        if not analyze_text(node.text).is_answer_like:
-            return False
-        # A reply cannot indefinitely reuse a question after somebody answered
-        # or the group moved on, even when the intervening topic is unrelated.
-        return not any(
-            n.msg_id != node.msg_id and self.updated_at < n.timestamp <= node.timestamp
-            for n in recent_nodes
-        )
+        return evaluate(self, node, recent_nodes).accepted
 
 
 def active_dialogue(runtime: Any) -> ActiveDialogue | None:

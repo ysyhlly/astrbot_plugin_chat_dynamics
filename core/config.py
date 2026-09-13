@@ -55,6 +55,7 @@ class RuntimeConfig:
     embedding_provider: str
     neural_link_threshold: float
     embedding_cache_size: int
+    embedding_cache_ttl_seconds: int
     conversation_router_enabled: bool = True
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
@@ -318,6 +319,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             raw, "neural_link_threshold", 0.78, lambda value: 0.5 <= value <= 0.95, warnings
         ),
         embedding_cache_size=_integer(raw, "embedding_cache_size", 512, 64, 4096, warnings),
+        embedding_cache_ttl_seconds=_integer(raw, "embedding_cache_ttl_seconds", 1800, 0, 7200, warnings),
         presence_knob=_presence_knob(_get(raw, "presence_knob", "sensible"), warnings),
         social_manners_enabled=_bool(_get(raw, "social_manners_enabled", True), True),
         relay_baton_enabled=_bool(_get(raw, "relay_baton_enabled", True), True),

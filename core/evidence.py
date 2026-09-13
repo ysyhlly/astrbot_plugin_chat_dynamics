@@ -15,8 +15,17 @@ ROUTING_CODES = frozenset({
     "topic_backfill", "pending_followup", "parent_override", "parent_topic_override", "selected_score",
     "semantic", "topic_affinity", "qa_fit", "temporal", "turn_proximity",
     "participant", "centroid", "exemplar", "recent", "lineage", "recency", "lexical",
+    "dialogue_time_decay", "dialogue_answer_shape", "dialogue_turn_factor",
+    "dialogue_competitor_factor", "dialogue_continuity_score",
 })
-ROUTING_SOURCES = frozenset({"topic_resolver", "parent_retriever", "recipient_resolver", "routing"})
+ROUTING_SOURCES = frozenset({"topic_resolver", "parent_retriever", "recipient_resolver", "routing",
+                             "dialogue_continuity"})
+# Dialogue continuity components are numeric evidence, not boolean codes: keep the
+# raw value recorded when a later stage rebuilds the ledger.
+DIALOGUE_FACTORS = frozenset({
+    "dialogue_time_decay", "dialogue_answer_shape", "dialogue_turn_factor",
+    "dialogue_competitor_factor", "dialogue_continuity_score",
+})
 
 
 def finite_number(value):
@@ -78,7 +87,8 @@ def routing_ledger(routing):
     previous = sanitize_ledger(routing.get("ledger", {}))["entries"]
     factors = {"semantic", "topic_affinity", "qa_fit", "temporal", "turn_proximity",
                "participant", "centroid", "exemplar", "recent", "lineage", "recency", "lexical"}
-    entries = [e for e in previous if e["code"] in factors or e["code"] in {"parent_override", "parent_topic_override"}]
+    entries = [e for e in previous if e["code"] in factors or e["code"] in DIALOGUE_FACTORS
+               or e["code"] in {"parent_override", "parent_topic_override"}]
     # A later topic decision supersedes the old candidate's factor breakdown.
     codes = routing.get("evidence", ())
     codes = [c for c in codes if isinstance(c, str)] if isinstance(codes, (list, tuple)) else []

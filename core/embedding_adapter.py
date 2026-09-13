@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import math
+import time
 from collections import OrderedDict
 from typing import Any, Optional, Sequence, Tuple
 
@@ -74,6 +75,8 @@ class EmbeddingAdapter:
         link_threshold: float = 0.78,
         timeout: float = 8.0,
         max_inflight: int = 8,
+        cache_ttl: float = 1800.0,
+        clock: Any = None,
     ) -> None:
         self.context = context
         self.enabled = bool(enabled)
@@ -82,7 +85,13 @@ class EmbeddingAdapter:
         self.link_threshold = float(link_threshold)
         self.timeout = max(1.0, float(timeout))
         self.max_inflight = max(1, int(max_inflight))
+        # Vectors are a pure function of text, so the cache is keyed by text and
+        # shared across sessions on purpose. What must stay short-term is the
+        # entry lifetime, not the key space.
+        self.cache_ttl = max(0.0, float(cache_ttl))
+        self._clock = clock or time.monotonic
         self._cache: OrderedDict[str, Tuple[float, ...]] = OrderedDict()
+        self._stamps: dict[str, float] = {}
         self._inflight: dict[str, asyncio.Task] = {}
         self._pending_tasks: set[asyncio.Task] = set()
         self._generation = 0
@@ -90,7 +99,7 @@ class EmbeddingAdapter:
         self.last_backend: str = "hashed"
         self._stats = dict(provider_calls=0, timeouts=0, failures=0,
                            cache_hits=0, singleflight_joins=0, capacity_fallbacks=0,
-                           provider_unavailable=0)
+                           provider_unavailable=0, expired=0, warms=0)
 
     def snapshot_stats(self) -> dict[str, int]:
         """Lifetime counters and current occupancy; never expose retained text."""
@@ -106,6 +115,7 @@ class EmbeddingAdapter:
         cache_size: Optional[int] = None,
         link_threshold: Optional[float] = None,
         context: Any = None,
+        cache_ttl: Optional[float] = None,
     ) -> None:
         changed = (
             (provider_id is not None and str(provider_id or "").strip() != self.provider_id)
@@ -115,6 +125,7 @@ class EmbeddingAdapter:
         if changed:
             self._generation += 1
             self._cache.clear()
+            self._stamps.clear()
             self.last_backend = "hashed"
             self.last_error = ""
             for task in self._pending_tasks:
@@ -126,7 +137,9 @@ class EmbeddingAdapter:
         if cache_size is not None:
             self.cache_size = max(32, int(cache_size))
             while len(self._cache) > self.cache_size:
-                self._cache.popitem(last=False)
+                self._drop(self._cache.popitem(last=False)[0])
+        if cache_ttl is not None:
+            self.cache_ttl = max(0.0, float(cache_ttl))
         if link_threshold is not None:
             self.link_threshold = float(link_threshold)
         if context is not None:
@@ -136,12 +149,28 @@ class EmbeddingAdapter:
     def cache_len(self) -> int:
         return len(self._cache)
 
+    def _drop(self, key: str) -> None:
+        self._cache.pop(key, None)
+        self._stamps.pop(key, None)
+
+    def _expired(self, key: str) -> bool:
+        if not self.cache_ttl:
+            return False
+        stamp = self._stamps.get(key)
+        return stamp is None or (self._clock() - stamp) > self.cache_ttl
+
     def cached(self, text: str) -> Optional[Tuple[float, ...]]:
         key = (text or "").strip()
         if not key:
             return None
         vec = self._cache.get(key)
         if vec is None:
+            return None
+        if self._expired(key):
+            # A cache hit decides which backend match() reports, so an expired
+            # entry must disappear from both structures at once.
+            self._drop(key)
+            self._stats["expired"] += 1
             return None
         self._cache.move_to_end(key)
         return vec
@@ -153,9 +182,30 @@ class EmbeddingAdapter:
             return normed
         self._cache[key] = normed
         self._cache.move_to_end(key)
+        self._stamps[key] = self._clock()
         while len(self._cache) > self.cache_size:
-            self._cache.popitem(last=False)
+            self._drop(self._cache.popitem(last=False)[0])
         return normed
+
+    async def warm(self, texts: Sequence[str]) -> int:
+        """Make a known corpus fully cached before a deterministic replay.
+
+        match() answers with the neural backend only when both sides are cached,
+        so an LRU that evicted one side mid-run silently changes routing results.
+        Warming a fixture up front removes that dependency on eviction order.
+        """
+        wanted = list(dict.fromkeys(
+            key for key in ((text or "").strip() for text in texts) if key))
+        if not wanted or not self.enabled:
+            return 0
+        for key in wanted:
+            try:
+                await self.embed(key)
+            except Exception as exc:  # a replay must survive one bad provider call
+                logger.warning("[Embedding] warm failed: %s", type(exc).__name__)
+        cached = sum(1 for key in wanted if self._cache.get(key) is not None)
+        self._stats["warms"] += 1
+        return cached
 
     def match(self, left_text: str, right_text: str) -> SemanticMatch:
         """Sync matcher used by the DAG. Neural cosine wins when both sides are cached."""

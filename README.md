@@ -126,6 +126,7 @@ python scripts/check_release.py
 - [话题优化评审](docs/topic_optimization.md) · [Embedding 行为与上限](docs/embedding_changes.md)
 - [记忆联动说明](docs/companion-integration-fix-2026-09-07.md)
 - [集成边界与路由证据](docs/integrations-routing.md)
+- [行为学习层](docs/dynamics-learning.md) · [对话连续性](docs/dialogue-continuity.md)
 - [兼容直连接口覆盖](docs/selflearning-api-coverage.md)
 - [更新记录](CHANGELOG.md) · [MIT License](LICENSE)
 

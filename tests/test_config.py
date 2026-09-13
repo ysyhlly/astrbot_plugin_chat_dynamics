@@ -165,6 +165,7 @@ def test_runtime_defaults_match_schema_defaults():
     assert cfg.embedding_provider == schema["embedding_provider"]["default"]
     assert cfg.neural_link_threshold == schema["neural_link_threshold"]["default"]
     assert cfg.embedding_cache_size == schema["embedding_cache_size"]["default"]
+    assert cfg.embedding_cache_ttl_seconds == schema["embedding_cache_ttl_seconds"]["default"]
     assert cfg.pipeline_mode == schema["pipeline_mode"]["default"]
     assert cfg.ambient_intervention is schema["ambient_intervention"]["default"]
     assert cfg.vibe_llm_enabled is schema["vibe_llm_enabled"]["default"]

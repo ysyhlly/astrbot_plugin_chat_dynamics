@@ -489,6 +489,17 @@
     },
     "hint": "进程内 LRU 缓存的文本向量条数，避免对同一句话重复请求 Embedding API。"
   },
+  "embedding_cache_ttl_seconds": {
+    "description": "Embedding 缓存有效期（秒）",
+    "type": "int",
+    "default": 1800,
+    "slider": {
+      "min": 0,
+      "max": 7200,
+      "step": 300
+    },
+    "hint": "超过该时长未再使用的文本向量会被回收，0 表示不按时间回收。CD 只保留短期工作记忆，长期记忆由记忆搭档负责。"
+  },
   "presence_knob": {
     "description": "分寸旋钮（存在感）",
     "type": "string",

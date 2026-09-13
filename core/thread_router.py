@@ -557,6 +557,9 @@ class ThreadRouter:
             if domain == "parent" and parent_override is not None:
                 continue
             details.extend(scored[2])
+        dialogue_scored = node.metadata.pop("_dialogue_score_evidence", None)
+        if dialogue_scored and "active_dialogue_answer" in result.evidence:
+            details.extend(dialogue_scored)
         result.ledger = routing_ledger(result)
         node.metadata["routing"] = asdict(result)
         if formation_allowed:

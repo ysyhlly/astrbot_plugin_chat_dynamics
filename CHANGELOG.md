@@ -2,6 +2,13 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.6.0 — 行为学习层、对话连续性旋钮与短期语义缓存
+
+- 新增 `core/learning/` 影子学习层：把回放人工标注与既有决策证据转成 `LearningSample`，统计各任务的错误分布与因子差异，并对收件人判定给出「权重偏高 / 权重不足」的方向性建议。样本特征只接受证据白名单，不存消息正文；样本数不足时不给建议，且全程不写入任何配置。
+- 对话连续性从四个硬编码二元量改为命名权重（`core/dialogue_continuity.py`）：平滑时间衰减取代固定 60 秒窗口，轮次差与竞争对象取代「中间有消息即否决」，并新增「纯反应是否算答上」的旋钮。默认权重经标定与替换前的判定逐条一致，行为零变更。
+- 五个连续性分量以 `dialogue_*` 代码写入证据账本，原始值与加权贡献分开记录，学习层因此可以拟合旋钮而不必重新推导语言。
+- Embedding 缓存新增有效期（`embedding_cache_ttl_seconds`，默认 1800 秒）与 `warm()`。缓存命中会决定 `match()` 使用神经还是哈希后端，预热已知语料可消除离线回放对淘汰顺序的依赖。
+- 新增 `scripts/learning_report.py`：从导出的回放标注生成样本、错误分布与因子报告，`--recommend` 追加影子推荐。
 ## v1.5.3 — 集成边界收口、共享语义事实与可解释路由
 
 - 新增 `core/integrations/` 集成层：`CapabilityRegistry` 一次性发现 Self Learning、LivingMemory 与宿主 embedding 能力，业务代码不再自行 `hasattr` 试探；历史 Python 兼容方法隔离到 `legacy/`，仅供管理，不参与普通聊天注入。

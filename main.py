@@ -272,7 +272,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.5.3",
+    "v1.6.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -388,6 +388,7 @@ class ChatDynamicsPlugin(Star):
             provider_id=runtime_config.embedding_provider,
             cache_size=runtime_config.embedding_cache_size,
             link_threshold=runtime_config.neural_link_threshold,
+            cache_ttl=float(runtime_config.embedding_cache_ttl_seconds),
         )
         self._registry.bind_semantic_match(self.embeddings.match)
 
@@ -568,6 +569,7 @@ class ChatDynamicsPlugin(Star):
                 provider_id=cfg.embedding_provider,
                 cache_size=cfg.embedding_cache_size,
                 link_threshold=cfg.neural_link_threshold,
+                cache_ttl=float(cfg.embedding_cache_ttl_seconds),
             )
             self._registry.bind_semantic_match(self.embeddings.match)
         self._runtime_config = cfg
@@ -742,6 +744,7 @@ class ChatDynamicsPlugin(Star):
             "embedding_provider": getattr(cfg, "embedding_provider", ""),
             "neural_link_threshold": getattr(cfg, "neural_link_threshold", 0.78),
             "embedding_cache_size": getattr(cfg, "embedding_cache_size", 512),
+            "embedding_cache_ttl_seconds": getattr(cfg, "embedding_cache_ttl_seconds", 1800),
             "presence_knob": getattr(cfg, "presence_knob", "sensible"),
             "social_manners_enabled": bool(getattr(cfg, "social_manners_enabled", True)),
             "relay_baton_enabled": bool(getattr(cfg, "relay_baton_enabled", True)),

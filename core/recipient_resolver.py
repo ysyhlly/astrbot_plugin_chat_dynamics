@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 from .bot_identity import BotIdentityMatcher
 from .active_dialogue import active_dialogue
+from .dialogue_continuity import evaluate as evaluate_continuity
 from .graph import ConversationNode
 from .topic_identity import node_topic_id
 from .message_features import MessageFeatures, message_features
@@ -140,12 +141,15 @@ class RecipientResolver:
 
         # An uninterrupted answer to the bot's own question is structural
         # evidence, even for values like "1.21.4" with no semantic overlap.
-        elif (dialogue is not None and not subject_is_bot
-              and dialogue.accepts_answer(node, recent_nodes)):
+        elif dialogue is not None and not subject_is_bot and (
+                continuity := evaluate_continuity(dialogue, node, recent_nodes)).accepted:
             addressee_ids = [bot_id]
             addressee_confidence = 0.80
             evidence.append("active_dialogue_answer")
             parent_override = (dialogue.last_bot_message_id, 0.80, dialogue.topic_id)
+            # Real component values, so a later learner fits the weights instead
+            # of guessing which factor carried the decision.
+            node.metadata["_dialogue_score_evidence"] = list(continuity.entries())
 
         # Tier 3: Inferred Parent (from ParentRetriever)
         elif inferred_parent is not None and inferred_confidence >= 0.72:

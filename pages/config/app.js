@@ -80,13 +80,14 @@ const CONFIG_GROUPS = [
   {
     "id": "embedding",
     "title": "语义理解",
-    "blurb": "向量模型、关联阈值与缓存容量",
+    "blurb": "向量模型、关联阈值、缓存容量与有效期",
     "open": false,
     "keys": [
       "neural_embedding_enabled",
       "embedding_provider",
       "neural_link_threshold",
-      "embedding_cache_size"
+      "embedding_cache_size",
+      "embedding_cache_ttl_seconds"
     ]
   },
   {
