@@ -115,7 +115,29 @@ def test_components_are_recorded_with_raw_value_and_contribution():
                             "dialogue_continuity_score"}
     assert entries["dialogue_turn_factor"].raw_value == pytest.approx(1 / 3)
     assert entries["dialogue_competitor_factor"].raw_value == pytest.approx(0.5)
-    assert entries["dialogue_answer_shape"].contribution == pytest.approx(0.4)
     assert result.intervening_total == 1 and result.intervening_competitors == 1
     assert result.score == pytest.approx(result.entries()[-1].raw_value)
     assert result.weights is DEFAULT_WEIGHTS
+    # A weighted term reports its share of the score including the factors it
+    # survived; a multiplicative factor reports how far it moved the score.
+    assert entries["dialogue_answer_shape"].contribution == pytest.approx(0.4 / 6)
+    assert entries["dialogue_turn_factor"].contribution == pytest.approx(1 / 3, abs=1e-3)
+    assert entries["dialogue_competitor_factor"].contribution == pytest.approx(1 / 6, abs=1e-3)
+
+
+def test_neutral_factors_report_no_movement():
+    result = evaluate(dialogue(), node("a", "alice", "1.21.4", 3.0))
+    entries = {entry.code: entry for entry in result.entries()}
+    assert entries["dialogue_turn_factor"].contribution == pytest.approx(0.0)
+    assert entries["dialogue_competitor_factor"].contribution == pytest.approx(0.0)
+    assert entries["dialogue_answer_shape"].contribution == pytest.approx(0.4, abs=1e-3)
+
+
+def test_contributions_do_not_claim_an_additive_decomposition():
+    result = evaluate(dialogue(), node("a", "alice", "1.21.4", 4.0),
+                      [node("x", "other", "插话", 2.5)])
+    parts = [entry.contribution for entry in result.entries()
+             if entry.code != "dialogue_continuity_score"]
+    # The score is a product of factors, so the rows must not sum to it; if they
+    # ever did, one of them would be a share of a sum that does not exist.
+    assert abs(sum(parts) - result.score) > 0.1

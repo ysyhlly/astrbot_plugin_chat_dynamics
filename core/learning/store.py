@@ -2,6 +2,10 @@
 
 The store is deliberately dumb: JSON lines, a hard cap, no rewriting of history.
 It never holds message text, so a leak exposes decisions rather than chat.
+
+Nothing in the plugin runtime writes here yet. The only writer today is the
+report CLI via --save, which derives samples from annotations that are already
+stored; wiring runtime collection is a separate, deliberate step.
 """
 from __future__ import annotations
 

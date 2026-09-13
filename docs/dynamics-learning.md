@@ -19,7 +19,8 @@
 回放页人工标注
   ↓  core/topic_annotations.py 已存 decision_trace（含 ledger）
 LearningSample（core/learning/sample.py）
-  ↓  特征 = 账本原始值 + 已应用证据码 + 消息事实
+  ↓  特征 = 账本原始值 + 已应用证据码 + 身份事实
+     （标注保留了消息正文时，另加由正文派生的形状事实）
 统计与因子差异（core/learning/stats.py）
   ↓
 影子推荐（core/learning/recipient_learner.py）
@@ -77,7 +78,7 @@ python scripts/learning_report.py --annotations annotations.json --bot-id <bot_i
 python scripts/learning_report.py --annotations annotations.json --json
 ```
 
-`--save` 可把派生样本写成 JSONL；`SampleStore` 默认关闭，需要显式开启才会在 data/chat_dynamics/ 下追加，并受条数上限约束。
+`--save` 把派生样本写成 JSONL。`SampleStore` 是有界追加存储库，**当前只有这条 CLI 路径会写**：插件运行时尚未接入样本落盘，store 默认关闭且没有任何运行时调用点。接入运行时采集是需要单独决定的动作，不应被文档说成「已经默认关闭」。
 
 ## 本轮未做
 
@@ -85,4 +86,6 @@ python scripts/learning_report.py --annotations annotations.json --json
 - 没有自动应用：没有 Policy Store、没有回滚版本、没有自动调参。
 - parent 任务暂无人工标注字段，因此不产出 parent 样本。
 - Participation 的运行时代理指标（回复后是否有人接话）尚未采集，目前只消费标注里的 `expected_reply`。
+- 插件运行时没有写入样本：样本只从已保存的标注派生。
+- 正文派生的形状事实依赖 `console_show_message_content`；该开关关闭时标注不含正文，样本只有账本与身份事实 —— 这是隐私设置的直接后果，不是缺陷。
 - 未接入群聊画像（Group Dynamics Profile）与阈值自动搜索；这些依赖先积累到足够的真实标注。

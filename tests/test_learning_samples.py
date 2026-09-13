@@ -68,6 +68,22 @@ def test_features_come_from_the_ledger_allowlist_only():
     assert features["active_dialogue_answer"] == pytest.approx(1.0)
 
 
+def test_message_facts_appear_only_when_the_annotation_kept_the_text():
+    plain = samples_from_annotation(record(), bot_id="bot")
+    trace_facts = {code: value for code, value in plain[0].features if code.startswith("fact.")}
+    # Identity facts come from the trace and never need the message text.
+    assert set(trace_facts) == {"fact.bot_mentioned", "fact.bot_vocative",
+                                "fact.bot_subject", "fact.has_reply"}
+    assert "fact.is_short" not in plain[0].feature_map()
+
+    kept = samples_from_annotation(record(text="1.21.4"), bot_id="bot")[0]
+    facts = kept.feature_map()
+    assert facts["fact.is_short"] == 1.0 and facts["fact.is_answer_like"] == 1.0
+    assert facts["fact.is_question"] == 0.0 and facts["fact.reaction_like"] == 0.0
+    # Shape facts are derived, and the text they came from is still not stored.
+    assert "1.21.4" not in json.dumps(kept.to_dict())
+
+
 def test_sample_rejects_anything_it_cannot_vouch_for():
     ok = dict(session_id="s", message_id="m", timestamp=1.0, task="topic",
               predicted="a", expected="b", confidence=0.5, source="test")

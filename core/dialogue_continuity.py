@@ -59,6 +59,9 @@ class DialogueContinuity:
     # predicate. It is scored through reaction_penalty, which defaults to zero.
     reaction_like: bool
     intervening_total: int
+    # Speakers other than the intended participant, the bot's own unrouted
+    # fragments included: this counts "somebody else took the floor", not
+    # "a rival human appeared".
     intervening_competitors: int
     turn_factor: float
     competitor_factor: float
@@ -68,17 +71,26 @@ class DialogueContinuity:
     weights: DialogueWeights = field(default=DEFAULT_WEIGHTS, repr=False)
 
     def entries(self) -> tuple[EvidenceEntry, ...]:
-        """Ledger rows carrying each raw value beside its actual contribution."""
+        """Ledger rows: each raw value beside how far that factor moved the score.
+
+        Contribution is the score this decision would have carried with the
+        factor neutralised, minus the score it actually carries. A product of
+        factors has no additive decomposition, so these rows deliberately do not
+        sum to the score; reporting a share of a sum that does not exist would be
+        worse than reporting the movement.
+        """
         weights = self.weights
+        base = weights.time * self.time_decay + weights.answer * self.answer_credit
+        shared = self.turn_factor * self.competitor_factor
         return (
             EvidenceEntry("recipient", "dialogue_time_decay", "dialogue_continuity",
-                          self.time_decay, weights.time * self.time_decay),
+                          self.time_decay, weights.time * self.time_decay * shared),
             EvidenceEntry("recipient", "dialogue_answer_shape", "dialogue_continuity",
-                          self.answer_shape, weights.answer * self.answer_credit),
+                          self.answer_shape, weights.answer * self.answer_credit * shared),
             EvidenceEntry("recipient", "dialogue_turn_factor", "dialogue_continuity",
-                          self.turn_factor, self.turn_factor),
+                          self.turn_factor, base * self.competitor_factor - self.score),
             EvidenceEntry("recipient", "dialogue_competitor_factor", "dialogue_continuity",
-                          self.competitor_factor, self.competitor_factor),
+                          self.competitor_factor, base * self.turn_factor - self.score),
             EvidenceEntry("recipient", "dialogue_continuity_score", "dialogue_continuity",
                           self.score, self.score),
         )

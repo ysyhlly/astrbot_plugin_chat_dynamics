@@ -20,7 +20,7 @@ score = (w_time · time_decay + w_answer · answer_credit)
 | `time` / `answer` | 0.60 / 0.40 | 时间与形状的加权 |
 | `time_midpoint` / `time_slope` | 60.0 / 4.0 | 逻辑曲线：60 秒处恰好 0.5 |
 | `turn_weight` | 2.0 | 中间隔了几条（轮次差） |
-| `competitor_weight` | 1.0 | 其中几条是别人说的（竞争对象） |
+| `competitor_weight` | 1.0 | 其中几条来自目标参与者以外的发言者 |
 | `reaction_penalty` | 0.0 | 纯反应（"好的"、"？？？"）要不要算答上了 |
 | `threshold` | 0.69 | 接受阈值 |
 
@@ -42,7 +42,9 @@ score = (w_time · time_decay + w_answer · answer_credit)
 
 ## 证据入账
 
-五个分量以 `dialogue_*` 代码写入 Evidence Ledger，**原始值与加权贡献分开记录**：
+五个分量以 `dialogue_*` 代码写入 Evidence Ledger，**原始值与该因子的影响量分开记录**：
+
+加权项记录它在最终得分里的份额（含它经过的乘性因子）；乘性因子记录「把它置为中性后得分会变成多少」的差值，即它把得分推离了多远。得分是因子之积，不存在可加和分解，因此这些行**刻意不等于**得分之和 —— 报一个并不存在的「占比」比报位移更糟。
 
 ```text
 dialogue_time_decay          raw=1.0000 contribution=0.6000

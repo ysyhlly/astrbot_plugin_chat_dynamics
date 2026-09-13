@@ -20,12 +20,14 @@ from ..participation_policy import EVIDENCE_CODES
 TASKS = ("topic", "parent", "recipient", "participation")
 
 # Input facts, not evidence: the router did not weigh these, a later learner may.
+# Every code here is reachable from a saved annotation: text shapes when the
+# annotation kept the message text, and the bot-reference facts from the trace.
 MESSAGE_FACTS = frozenset({
     "fact.is_short", "fact.is_elliptical", "fact.is_ack", "fact.is_question",
     "fact.is_answer_like", "fact.is_topic_boundary", "fact.is_filler",
     "fact.can_start_topic", "fact.question_ending", "fact.answer_boundary",
-    "fact.has_mention", "fact.has_reply", "fact.reaction_like",
-    "fact.information_density", "fact.lexical_terms",
+    "fact.reaction_like", "fact.information_density", "fact.lexical_terms",
+    "fact.bot_mentioned", "fact.bot_vocative", "fact.bot_subject", "fact.has_reply",
 })
 
 FEATURE_CODES = frozenset(ROUTING_CODES | EVIDENCE_CODES | DIALOGUE_FACTORS | MESSAGE_FACTS)
