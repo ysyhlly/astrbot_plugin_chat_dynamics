@@ -19,6 +19,7 @@ from .builder import (
     features_from_trace, samples_from_annotation, samples_from_annotations, session_hash,
 )
 from .stats import POSITIVE_CLASS, factor_disagreement, outcome_bucket, summarize
+from .candidates import OUTCOMES, SCORED_OUTCOMES, annotation_metrics, candidate_metrics
 from .recipient_learner import (
     DecisionOutcome, FactorFinding, Recommendation, ShadowPolicy, analyze_recipient,
     build_matrix, evaluate_decisions, feature_columns, fit_logistic, split_by_group,
@@ -32,6 +33,7 @@ __all__ = [
     "facts_from_text", "facts_from_trace", "samples_from_annotation",
     "samples_from_annotations", "session_hash",
     "POSITIVE_CLASS", "factor_disagreement", "outcome_bucket", "summarize",
+    "OUTCOMES", "SCORED_OUTCOMES", "annotation_metrics", "candidate_metrics",
     "DecisionOutcome", "FactorFinding", "Recommendation", "ShadowPolicy", "analyze_recipient",
     "build_matrix", "evaluate_decisions", "feature_columns", "fit_logistic", "split_by_group",
 ]

@@ -27,6 +27,7 @@ if str(ROOT.parent) not in sys.path:
 from astrbot_plugin_chat_dynamics.core.learning import (  # noqa: E402
     LearningSample,
     analyze_recipient,
+    annotation_metrics,
     build_samples,
     summarize,
 )
@@ -80,6 +81,31 @@ def render_factors(rows: list) -> list:
     return lines
 
 
+def render_candidates(metrics: dict) -> list:
+    """Show which stage failed, not only how often the topic was wrong."""
+    outcomes = metrics["outcomes"]
+    lines = ["", "[topic 候选归因] 正确话题是否被提出，以及被提出后是否被选中"]
+    for rank, counts in sorted(metrics["recall"].items(), key=lambda item: int(item[0])):
+        value = counts["value"]
+        shown = "无法计算" if value is None else f"{value * 100:.1f}%"
+        lines.append(f"    Candidate Recall@{rank}  {shown}  ({counts['hits']}/{counts['eligible']})")
+    selection = metrics["selection"]
+    value = selection["value"]
+    shown = "无法计算" if value is None else f"{value * 100:.1f}%"
+    lines.append(f"    Selection Accuracy  {shown}  ({selection['correct']}/{selection['eligible']}"
+                 "，仅在正确话题进入候选时计算)")
+    lines.append("    归因  " + "  ".join(
+        f"{key}:{outcomes[key]}" for key in ("selected", "ranking_error", "candidate_miss",
+                                             "not_recorded", "new_topic_expected",
+                                             "unattributable")))
+    if metrics["candidate_lengths"]:
+        lengths = "  ".join(f"{k}个:{v}" for k, v in metrics["candidate_lengths"].items())
+        lines.append(f"    候选长度分布  {lengths}")
+    for note in metrics["notes"]:
+        lines.append(f"    注：{note}")
+    return lines
+
+
 def render(report: dict) -> str:
     lines = [f"样本总数 {report['total']}（{report['sample_note']}）"]
     grouping = report.get("grouping") or {}
@@ -129,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
 
     samples: list = []
     warnings: list = []
+    records: list = []
     if args.store:
         samples.extend(load_store(args.store))
     if args.annotations:
@@ -149,11 +176,14 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8")
 
     report = summarize(samples, min_support=max(1, args.min_support))
+    candidates = annotation_metrics(records) if records else None
     advice = (analyze_recipient(samples, min_samples=max(1, args.min_samples),
                                 min_support=max(1, args.min_support))
               if args.recommend else None)
     if args.json:
         payload = dict(report)
+        if candidates is not None:
+            payload["candidates"] = candidates
         if advice is not None:
             payload["recommendation"] = {
                 "task": advice.task, "ready": advice.ready, "samples": advice.samples,
@@ -164,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(render(report))
+        if candidates is not None:
+            print(chr(10).join(render_candidates(candidates)))
         if advice is not None:
             print()
             print(advice.render())

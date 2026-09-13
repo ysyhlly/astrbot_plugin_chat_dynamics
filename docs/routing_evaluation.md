@@ -62,6 +62,32 @@ Only labeled turns with a prior observable matching topic and a recorded
 candidate list are eligible. Missing candidate data and newly appearing topics
 are excluded; an observed empty list on an eligible turn is a miss.
 
+`candidate_selection` splits the second half of that question out: of the turns
+where the true topic *was* offered, how often did it win. Conditioning on recall
+is what keeps a good scorer behind a weak retriever from reading as a weak
+scorer — recall is the retriever's number, selection accuracy is the ranker's,
+and either would hide the other if both used every eligible turn. Its
+denominator is the offered turns and it is null when nothing was offered, so an
+empty selection block means "nothing to rank", never "the ranker scored zero".
+`candidate_attribution` counts each labeled turn exactly once as `selected`,
+`ranking_error`, `candidate_miss`, `not_recorded`, `new_topic_expected` or
+`unattributable`. `candidate_coverage` reports how many turns were recorded and
+attributable, the observed candidate-list lengths, and dropped entries.
+
+Both parsers accept either recorded schema: the legacy `[score, id]` pair and a
+structured row carrying an explicit `rank` and `final_score`. Rank wins when
+present, otherwise the scores order the list, otherwise the written order is
+kept — the router writes descending, so a list that is not is read by its scores
+rather than by position. A candidate carrying only `topic_id` is still offered,
+which is what recall counts, but it never contributes a score of zero. An
+unparseable entry is dropped and counted instead of silently shifting ranks. Two
+facts stay distinct throughout: an **absent** candidate key means the router
+recorded nothing and the turn is excluded rather than scored as a miss, while an
+**empty list** means it looked and found none, which is a miss. With at most
+three candidates recorded today, recall@5 cannot differ from recall@3; the
+observed lengths make that visible instead of letting a truncated number read as
+a measured one.
+
 Parent accuracy is exact parent agreement over labeled turns, including true
 null parents; coverage is the fraction of these turns with a nonempty predicted
 parent. Recipient confusion counts and precision/recall are grouped by the

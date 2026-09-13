@@ -107,6 +107,30 @@
           "eligible": 0,
           "value": null
         }
+      },
+      "candidate_selection": {
+        "correct": 0,
+        "eligible": 0,
+        "value": null
+      },
+      "candidate_attribution": {
+        "selected": 0,
+        "ranking_error": 0,
+        "candidate_miss": 0,
+        "not_recorded": 0,
+        "new_topic_expected": 0,
+        "unattributable": 38
+      },
+      "candidate_coverage": {
+        "rows": 38,
+        "recorded": 0,
+        "attributable": 0,
+        "lengths": {},
+        "dropped_entries": 0,
+        "notes": [
+          "没有任何行记录 topic_candidates，候选生成与排序错误无法区分",
+          "38 行没有可归属的真值话题，未参与任何候选指标"
+        ]
       }
     },
     "parent": {
