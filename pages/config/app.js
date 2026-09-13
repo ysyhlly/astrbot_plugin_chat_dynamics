@@ -227,6 +227,19 @@ const CONFIG_GROUPS = [
     ]
   },
   {
+    "id": "learning",
+    "title": "学习层联动",
+    "blurb": "是否读取 Dynamics Learning 发布的策略，以及锁定哪一版",
+    "open": false,
+    "keys": [
+      "learning_policy_mode",
+      "learning_policy_source_id",
+      "learning_policy_expected_policy_id",
+      "learning_policy_expected_dataset_fingerprint",
+      "learning_policy_refresh_seconds"
+    ]
+  },
+  {
     "id": "console",
     "title": "面板隐私",
     "blurb": "控制面板是否显示消息正文",

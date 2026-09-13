@@ -28,7 +28,7 @@ _VERSION_PATTERN = re.compile(r'^version:\s*["\']?([^"\'\s]+)', re.MULTILINE)
 
 
 @lru_cache(maxsize=1)
-def _host_version() -> str:
+def host_version() -> str:
     """The plugin's own version, or '' when it cannot be read.
 
     An empty string is a real answer: the policy published from data collected
@@ -141,7 +141,7 @@ def export_runtime_state(plugin) -> dict:
             # which ChatDynamics a policy's numbers came from. Without it the
             # published policy can only say "host version unknown", and a
             # consumer has no basis for anything stronger than shadow.
-            'plugin_version': _host_version(),
+            'plugin_version': host_version(),
             'saved_clock': plugin.time_service.time(), 'sessions': sessions,
             'metrics': _json(plugin._metrics),
             'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})

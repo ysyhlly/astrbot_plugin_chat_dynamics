@@ -2,6 +2,39 @@
 
 All notable changes to this plugin are recorded here.
 
+## Unreleased — 学习策略消费端（off / shadow / active）
+
+- 新增 `core/learning_policy.py`：读取 Dynamics Learning 发布的策略并决定是否使用。
+  默认 `off`（完全不影响行为）；`shadow` 只解析、算出「会改成什么」、不应用；
+  `active` 应用且必须通过全部兼容性检查。
+- 三项检查，各自挡住一种过期方式：
+  - `policy_contract_version`：发布协议版本，不认识就直接拒绝而不是半读；
+  - `validated_host_versions`：**成员判定，不是 SemVer 比较**。`1.7.0 -> 1.7.1`
+    可能改掉参与度计算或门禁顺序，而策略里每个阈值都是对着旧分布校准的。列表为空表示
+    「学习层不知道数据来自哪个本体版本」，按不匹配处理；`active` 要求 host 版本在列表内
+    （今天是严格相等），`shadow` 允许不匹配但打 `version_mismatch` 且绝不应用；
+  - `baseline_config_hash`：策略假定的基线配置摘要。运营改过其中任何一个参数，
+    这份策略的数字就是对着一个已经不存在的基线校准的。
+- 白名单：只应用 `ALLOWED_PARAMS` 里的键。**未知键或超出范围的取值会让整份策略不可用**，
+  而不是部分应用 —— 策略是一个被验证过的**集合**，离线结果描述的是整个集合，
+  只应用本机认得的那部分等于应用了一个没人量过的配置。`shadow` 仍会解析这个子集，
+  因为它标记为「部分」之后是有用的观测对象。
+- `dataset_fingerprint` 是来源证明，不是兼容条件：默认不因为它缺失或变化而拒绝，
+  只有显式配置 `learning_policy_expected_dataset_fingerprint` 时才做完全匹配。
+  「人为批准锁定」的正确位置是 `learning_policy_expected_policy_id`。
+- 参数注入点在 `_with_learning_policy`，位于配置解析之后、任何读取之前，所以地址度阈值、
+  话题阈值与面板的「生效配置」看到的是同一组值，后续的配置热重载也不会把策略悄悄顶掉。
+  阈值对（hover < strong）不成立时整组丢弃，而不是应用一半。
+- 基线摘要读的是**配置值**而不是路由器的实时属性：实时属性已经带着上一次应用的策略，
+  拿它做摘要会让策略在下一次刷新时否定掉自己的兼容性，模式在两个区间之间来回跳。
+  `topic_commit_threshold` 在配置里是 `0.0`（表示「推导」），因此按
+  `ThreadRouter.configure_topics` 的同一条规则推导；跨仓库测试把两边钉在一起。
+- 面板新增「学习层联动」分组；生效配置与已存配置不一致时，被策略覆盖的键单独列出并给出原因，
+  而不是报成一个无法解释的 mismatch。
+- 修复一处跨仓库耦合：Learning 的 `BASE_POLICY` 认为 `topic_commit_threshold` 默认 0.58，
+  而本体的配置字段默认 0.0（由 `topic_join_threshold` 推导）。不修的话每一份发布摘要都对不上，
+  `active` 永远不可达 —— 而且看起来像是「运营改过配置」。
+
 ## v1.6.2 — Learning Contract v3：候选逐条证据与最终结果
 
 - 决策轨迹升到 **schema 3**（`trace_schema_version = 3`）：

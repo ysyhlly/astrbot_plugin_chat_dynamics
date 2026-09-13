@@ -56,6 +56,16 @@ class RuntimeConfig:
     neural_link_threshold: float
     embedding_cache_size: int
     embedding_cache_ttl_seconds: int
+    # ---- Dynamics Learning policy consumer -----------------------------
+    # Default off: a published policy changes how the bot behaves in real
+    # groups, and that must be opted into, never inherited from the fact that a
+    # companion plugin happens to be installed.
+    learning_policy_mode: str = "off"
+    learning_policy_source_id: str = "ysyhlly/astrbot_plugin_dynamics_learning"
+    learning_policy_expected_policy_id: str = ""
+    learning_policy_expected_dataset_fingerprint: str = ""
+    learning_policy_refresh_seconds: int = 60
+
     conversation_router_enabled: bool = True
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
@@ -218,6 +228,11 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         warnings.append(f"pipeline_mode is invalid; using {PIPELINE_FILTER}")
         mode = PIPELINE_FILTER
 
+    policy_mode = str(_get(raw, "learning_policy_mode", "off") or "off").strip().lower()
+    if policy_mode not in ("off", "shadow", "active"):
+        warnings.append(f"learning_policy_mode is invalid; using off (got {policy_mode!r})")
+        policy_mode = "off"
+
     rhythm_timezone = str(_get(raw, "rhythm_timezone", "") or "").strip()
     if rhythm_timezone:
         try:
@@ -227,6 +242,15 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             rhythm_timezone = ""
 
     config = RuntimeConfig(
+        learning_policy_mode=policy_mode,
+        learning_policy_source_id=(str(_get(raw, "learning_policy_source_id", "") or "").strip()
+                                   or "ysyhlly/astrbot_plugin_dynamics_learning"),
+        learning_policy_expected_policy_id=str(
+            _get(raw, "learning_policy_expected_policy_id", "") or "").strip(),
+        learning_policy_expected_dataset_fingerprint=str(
+            _get(raw, "learning_policy_expected_dataset_fingerprint", "") or "").strip(),
+        learning_policy_refresh_seconds=_integer(
+            raw, "learning_policy_refresh_seconds", 60, 10, 3600, warnings),
         rhythm_timezone=rhythm_timezone,
         decision_mode=str(_get(raw, "decision_mode", "legacy")) if _get(raw, "decision_mode", "legacy") in ("legacy", "persona_model") else "legacy",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
