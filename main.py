@@ -45,6 +45,7 @@ from .core.mood_memory import MoodMemoryStore
 from .core.learning_policy import MODE_OFF
 from .core.learning_policy_runtime import LearningPolicyRuntime
 from .core.runtime_persistence import host_version as _host_plugin_version
+from .core.shadow_telemetry import ShadowTelemetry, KV_KEY as _KV_SHADOW, SALT_KEY as _KV_SHADOW_SALT
 from .core.native_delivery import NativeDeliveryGuard
 from .core.outcome_recorder import (
     STAGE_GATE, VALUE_IN_FLIGHT, mark_delivered, mark_delivery_failed, mark_generation_failed,
@@ -431,6 +432,8 @@ class ChatDynamicsPlugin(Star):
         self._runtime_persist_task: Optional[asyncio.Task] = None
         self._runtime_persist_stop = asyncio.Event()
         self._runtime_persist_lock = asyncio.Lock()
+        self.shadow_telemetry = ShadowTelemetry()
+        self._shadow_persist_lock = asyncio.Lock()
         self._config_lock = asyncio.Lock()
         self._capacity_lock = threading.RLock()
         self._outgoing_sequence: int = 0
@@ -1563,6 +1566,7 @@ class ChatDynamicsPlugin(Star):
         self._web_apis_registered = self._web.registered
         await self._load_persisted_cooling()
         await self._load_panel_runtime()
+        await self._load_shadow_telemetry()
         if self._runtime_persist_task is None or self._runtime_persist_task.done():
             self._runtime_persist_stop.clear()
             self._runtime_persist_task = self._create_background_task(self._panel_persistence_loop())
@@ -1616,6 +1620,50 @@ class ChatDynamicsPlugin(Star):
                 self._metric("panel_persist_failed")
                 logger.warning("[ChatDynamics] Panel save failed type=%s", type(exc).__name__)
 
+    async def _load_shadow_telemetry(self) -> None:
+        reader = getattr(self, "get_kv_data", None)
+        writer = getattr(self, "put_kv_data", None)
+        if not callable(reader) or not callable(writer):
+            return
+        try:
+            salt = reader(_KV_SHADOW_SALT, None)
+            if inspect.isawaitable(salt):
+                salt = await salt
+            if isinstance(salt, str) and len(salt) == 64:
+                self.shadow_telemetry.salt = salt
+            else:
+                saved = writer(_KV_SHADOW_SALT, self.shadow_telemetry.salt)
+                if inspect.isawaitable(saved):
+                    saved = await saved
+                if saved is False:
+                    raise RuntimeError("shadow salt storage returned false")
+            payload = reader(_KV_SHADOW, {})
+            if inspect.isawaitable(payload):
+                payload = await payload
+            self.shadow_telemetry.restore(payload, self.time_service.wall_time())
+        except Exception as exc:
+            logger.warning("[ChatDynamics] Shadow restore failed type=%s", type(exc).__name__)
+
+    async def _save_shadow_telemetry(self) -> None:
+        writer = getattr(self, "put_kv_data", None)
+        if not callable(writer):
+            return
+        async with self._shadow_persist_lock:
+            try:
+                salt_saved = writer(_KV_SHADOW_SALT, self.shadow_telemetry.salt)
+                if inspect.isawaitable(salt_saved):
+                    salt_saved = await salt_saved
+                if salt_saved is False:
+                    raise RuntimeError("shadow salt storage returned false")
+                result = writer(_KV_SHADOW, self.shadow_telemetry.export(self.time_service.wall_time()))
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is False:
+                    raise RuntimeError("shadow storage returned false")
+            except Exception as exc:
+                self._metric("shadow_telemetry_persist_failed")
+                logger.warning("[ChatDynamics] Shadow save failed type=%s", type(exc).__name__)
+
     async def _panel_persistence_loop(self) -> None:
         while not self._shutting_down:
             try:
@@ -1623,6 +1671,7 @@ class ChatDynamicsPlugin(Star):
                 break
             except asyncio.TimeoutError:
                 await self._save_panel_runtime(force=False)
+                await self._save_shadow_telemetry()
 
     def _schedule_persist_cooling(self) -> None:
         if self._shutting_down:
@@ -1768,6 +1817,7 @@ class ChatDynamicsPlugin(Star):
         self._hook_tasks_by_session.clear()
         self._clear_all_native_contexts()
         await self._save_panel_runtime()
+        await self._save_shadow_telemetry()
         for session_id in list(self._sessions):
             self.arbiter.reset_session(session_id)
             self.vibe_analyzer.reset_session(session_id)
@@ -2526,6 +2576,9 @@ class ChatDynamicsPlugin(Star):
             ) if shadow_runtime is not None else None)
         if shadow_recorded is not None:
             node.metadata["shadow_decision"] = shadow_recorded
+            self.shadow_telemetry.record(
+                shadow_recorded, session=session_id, message_id=node.msg_id,
+                host_version=_host_plugin_version())
         node.metadata["decision_trace"] = build_routing_trace(
             routing=node.metadata.get("routing", {}), identity=identity,
             participation={"score": addressivity.score, "level": addressivity.level,
