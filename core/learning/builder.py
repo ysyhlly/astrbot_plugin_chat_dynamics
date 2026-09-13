@@ -97,16 +97,22 @@ def _recipient_label(record: Mapping) -> str | None:
     return None
 
 
-def _predicted_recipient(trace: Mapping, bot_id: str) -> str:
+def _predicted_recipient(trace: Mapping, bot_id: str) -> str | None:
+    """Unknown without the bot id: guessing would fabricate a perfect label."""
+    if not bot_id:
+        return None
     ids = (trace.get("recipient") or {}).get("ids") or []
-    if bot_id and any(str(item) == bot_id for item in ids):
-        return BOT
-    return OTHER
+    return BOT if any(str(item) == bot_id for item in ids) else OTHER
 
 
 def samples_from_annotation(record: Mapping, *, session_id: str = "", bot_id: str = "",
                             source: str = "manual_replay") -> list[LearningSample]:
-    """One annotation record in, up to three labelled samples out."""
+    """One annotation record in, up to three labelled samples out.
+
+    Recipient samples need the bot id: without it the router's choice cannot be
+    read out of the trace, and labelling every row "not the bot" would hand a
+    learner a flawless-looking corpus that means nothing.
+    """
     if not isinstance(record, Mapping):
         return []
     msg_id = str(record.get("msg_id") or "")
@@ -129,9 +135,10 @@ def samples_from_annotation(record: Mapping, *, session_id: str = "", bot_id: st
         _confidence(trace, "topic"), source, features, str(record.get("error_type") or "")))
 
     expected_recipient = _recipient_label(record)
-    if expected_recipient is not None:
+    predicted_recipient = _predicted_recipient(trace, bot_id)
+    if expected_recipient is not None and predicted_recipient is not None:
         samples.append(LearningSample(
-            session, msg_id, stamp, "recipient", _predicted_recipient(trace, bot_id),
+            session, msg_id, stamp, "recipient", predicted_recipient,
             expected_recipient, _confidence(trace, "recipient"), source, features,
             str(record.get("recipient_error_type") or "")))
 

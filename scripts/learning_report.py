@@ -82,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--annotations", type=Path, help="annotation JSON exported from replay")
     parser.add_argument("--store", type=Path, help="existing sample JSONL to include")
     parser.add_argument("--save", type=Path, help="write the derived samples here")
-    parser.add_argument("--bot-id", default="", help="bot account id, for recipient labels")
+    parser.add_argument("--bot-id", default="",
+                        help="bot account id; required for recipient samples")
     parser.add_argument("--min-support", type=int, default=4)
     parser.add_argument("--recommend", action="store_true",
                         help="add the shadow recipient recommendation (never applied)")
@@ -95,8 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.store:
         samples.extend(load_store(args.store))
     if args.annotations:
-        samples.extend(samples_from_annotations(load_annotations(args.annotations),
-                                                bot_id=args.bot_id))
+        records = load_annotations(args.annotations)
+        if not args.bot_id and any("bot_targeted" in row for row in records):
+            # Silence here would look like a perfect recipient model.
+            print("警告：标注里有收件人标签，但未提供 --bot-id，收件人样本已跳过",
+                  file=sys.stderr)
+        samples.extend(samples_from_annotations(records, bot_id=args.bot_id))
     if not samples:
         print("没有可用的样本：请提供 --annotations 或 --store", file=sys.stderr)
         return 1

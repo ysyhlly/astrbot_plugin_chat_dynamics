@@ -68,6 +68,15 @@ def test_features_come_from_the_ledger_allowlist_only():
     assert features["active_dialogue_answer"] == pytest.approx(1.0)
 
 
+def test_recipient_samples_are_withheld_without_the_bot_id():
+    # Guessing here would mark every row "not the bot", which reads as a
+    # flawless corpus whenever the annotator agreed with the router.
+    tasks = {s.task for s in samples_from_annotation(record(), bot_id="")}
+    assert tasks == {"topic", "participation"}
+    with_id = {s.task for s in samples_from_annotation(record(), bot_id="bot")}
+    assert "recipient" in with_id
+
+
 def test_message_facts_appear_only_when_the_annotation_kept_the_text():
     plain = samples_from_annotation(record(), bot_id="bot")
     trace_facts = {code: value for code, value in plain[0].features if code.startswith("fact.")}
