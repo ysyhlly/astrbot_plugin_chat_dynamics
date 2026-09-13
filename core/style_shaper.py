@@ -18,7 +18,11 @@ logger = logging.getLogger("astrbot_plugin_chat_dynamics.style_shaper")
 # Cliché assistant endings to strictly strip from outputs
 ROBOTIC_SIGNOFFS = [
     r"如果您?还有(?:其他|其它)?(?:任何)?问题[，,]?(?:请)?随时(?:问我|告诉我|找我|联系我)[。!！]?",
-    r"希望(?:这个|这些)?(?:回答|解释|建议)?(?:能够|能)?(?:对|帮到)?(?:您|你)?(?:有所帮助|有所启发)?[。!！]?",
+    # Every group after 希望 used to be optional, so a bare "希望" anywhere in the
+    # body matched: "我希望明天别下雨" lost its verb and "希望这个回答能帮到你"
+    # became an empty message. A real sign-off names an object and a beneficiary.
+    r"希望(?:这个|这些|我的)?(?:回答|解释|建议|内容|信息)?(?:能够|能|可以)?(?:帮到|帮助|对)(?:您|你)(?:有所帮助|有所启发|有用)?[。!！]?",
+    r"希望(?:这个|这些|我的)?(?:回答|解释|建议|内容|信息)(?:能够|能)?(?:有所帮助|有所启发)[。!！]?",
     r"如果还有疑问[，,]?(?:欢迎|可以)继续提问[。!！]?",
     r"祝(?:您|你)生活愉快[！!。]?",
     r"作为(?:一个)?(?:AI|人工智能)(?:助手)?[，,]?",

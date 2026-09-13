@@ -858,6 +858,10 @@ class ChatDynamicsPlugin(Star):
         return store.list_all(str(umo or ""))
 
     async def notebook_mutate_async(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        # Deliberately not offloaded to a worker thread: the notebook keeps an
+        # in-process cache that the message path (reminder popping, memory
+        # lines) reads and writes on the event loop, so a second thread would
+        # add read-modify-write races for a small blocking-IO gain.
         if action != "add_slang":
             return self.notebook_mutate(action, payload)
         umo = str(payload.get("umo") or payload.get("session_key") or "").strip()
@@ -868,62 +872,100 @@ class ChatDynamicsPlugin(Star):
         )
         return {"item": item}
 
+    @staticmethod
+    def _notebook_number(
+        payload: dict[str, Any],
+        key: str,
+        *,
+        default: Optional[float] = None,
+        minimum: Optional[float] = None,
+        maximum: Optional[float] = None,
+    ) -> float:
+        """Strict numeric field for notebook payloads.
+
+        The panel and the HTTP API share this path, and ``json`` accepts
+        ``Infinity``/``NaN`` literals, so a float() coercion alone would let a
+        request store a non-finite deadline such as a permanent mute.
+        """
+        raw = payload.get(key)
+        if raw is None or raw == "":
+            if default is None:
+                raise ValueError(f"{key} required")
+            return float(default)
+        if isinstance(raw, bool) or isinstance(raw, (dict, list, tuple, set)):
+            raise ValueError(f"{key} must be a number")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a number") from None
+        if not math.isfinite(value):
+            raise ValueError(f"{key} must be finite")
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{key} must be >= {minimum:g}")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"{key} must be <= {maximum:g}")
+        return value
+
     def notebook_mutate(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         """CRUD-lite for group notebook. Raises ValueError on bad input."""
         store = getattr(self, "group_memory", None)
         mood = getattr(self, "mood_memory", None)
         if store is None:
             raise RuntimeError("group memory unavailable")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
         action = str(action or "").strip()
         umo = str(payload.get("umo") or payload.get("session_key") or "").strip()
         if not umo:
             raise ValueError("umo required")
+        if len(umo) > 256:
+            raise ValueError("umo too long")
         if action == "list":
             return self.notebook_list(umo)
         if action == "mute_tonight":
-            hours = float(payload.get("hours") or 10)
+            # Bounded so a bad request cannot silence a group indefinitely.
+            hours = self._notebook_number(payload, "hours", default=10.0, minimum=1.0, maximum=720.0)
             until = store.mute_tonight(umo, hours=hours)
             if mood is not None:
                 mood.mute_tonight(umo, hours=hours)
             return {"mute_until": until}
         if action == "forget":
-            peer = str(payload.get("peer_id") or "")
-            tag = str(payload.get("tag") or "")
+            peer = str(payload.get("peer_id") or "")[:128]
+            tag = str(payload.get("tag") or "")[:64]
             ok = bool(mood and mood.forget(umo, peer, tag=tag))
             return {"forgotten": ok}
         if action == "add_anniversary":
             item = store.add_anniversary(
                 umo,
-                title=str(payload.get("title") or ""),
-                month=int(payload.get("month") or 0),
-                day=int(payload.get("day") or 0),
-                note=str(payload.get("note") or ""),
+                title=self._bounded_text(payload.get("title") or "", 200),
+                month=int(self._notebook_number(payload, "month", default=0, minimum=1, maximum=12)),
+                day=int(self._notebook_number(payload, "day", default=0, minimum=1, maximum=31)),
+                note=self._bounded_text(payload.get("note") or "", 500),
             )
             return {"item": item}
         if action == "remove_anniversary":
-            return {"removed": store.remove_anniversary(umo, str(payload.get("id") or ""))}
+            return {"removed": store.remove_anniversary(umo, str(payload.get("id") or "")[:128])}
         if action == "add_reminder":
-            due_at = payload.get("due_at")
-            if due_at is None:
-                raise ValueError("due_at required")
             item = store.add_reminder(
                 umo,
-                text=str(payload.get("text") or ""),
-                due_at=float(due_at),
-                created_by=str(payload.get("created_by") or ""),
+                text=self._bounded_text(payload.get("text") or "", 500),
+                # Finiteness is what matters here (json parses Infinity); the
+                # ceiling only rules out nonsense beyond year 9999.
+                due_at=self._notebook_number(payload, "due_at", minimum=0.0, maximum=253402300800.0),
+                created_by=str(payload.get("created_by") or "")[:128],
             )
             return {"item": item}
         if action == "remove_reminder":
-            return {"removed": store.remove_reminder(umo, str(payload.get("id") or ""))}
+            return {"removed": store.remove_reminder(umo, str(payload.get("id") or "")[:128])}
         if action == "add_slang":
             item = store.add_slang_trial(
                 umo,
-                phrase=str(payload.get("phrase") or ""),
+                phrase=self._bounded_text(payload.get("phrase") or "", 64),
                 approved=payload.get("approved") is True,
             )
             return {"item": item}
         if action == "remove_slang":
-            return {"removed": store.remove_slang(umo, str(payload.get("id") or ""))}
+            return {"removed": store.remove_slang(umo, str(payload.get("id") or "")[:128])}
         if action in {"mark_done", "done_reminder"}:
             return {"removed": store.remove_reminder(umo, str(payload.get("id") or ""))}
         if action == "due_reminders":
@@ -1759,6 +1801,38 @@ class ChatDynamicsPlugin(Star):
     async def terminate(self) -> None:
         self._shutting_down = True
         self._runtime_persist_stop.set()
+        try:
+            await self._shutdown_work()
+        finally:
+            # The persistence loop returns as soon as the stop event is set, so
+            # this is the only chance to write the session/DAG/metric snapshot.
+            # Cancelling or failing shutdown must not skip it.
+            try:
+                await asyncio.shield(self._save_panel_runtime())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[ChatDynamics] Final panel save failed type=%s", type(exc).__name__)
+            # Same single chance for the shadow A/B telemetry: the loop above
+            # only writes it on its own timer, and the last comparisons of a
+            # run are exactly the ones a shutdown would otherwise drop.
+            try:
+                await asyncio.shield(self._save_shadow_telemetry())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[ChatDynamics] Final shadow save failed type=%s", type(exc).__name__)
+        for session_id in list(self._sessions):
+            self.arbiter.reset_session(session_id)
+            self.vibe_analyzer.reset_session(session_id)
+        self._in_flight.clear()
+        self._registry.clear()
+        self._last_bot_nodes.clear()
+        self._umo_by_session.clear()
+        self._vibe_msg_counts.clear()
+
+    async def _shutdown_work(self) -> None:
+        """Stop background work and release hosts before the final snapshot."""
         if self._runtime_persist_task is not None:
             await asyncio.gather(self._runtime_persist_task, return_exceptions=True)
             self._runtime_persist_task = None
@@ -1816,16 +1890,6 @@ class ChatDynamicsPlugin(Star):
         self._embedding_tasks_by_session.clear()
         self._hook_tasks_by_session.clear()
         self._clear_all_native_contexts()
-        await self._save_panel_runtime()
-        await self._save_shadow_telemetry()
-        for session_id in list(self._sessions):
-            self.arbiter.reset_session(session_id)
-            self.vibe_analyzer.reset_session(session_id)
-        self._in_flight.clear()
-        self._registry.clear()
-        self._last_bot_nodes.clear()
-        self._umo_by_session.clear()
-        self._vibe_msg_counts.clear()
 
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
@@ -2052,13 +2116,18 @@ class ChatDynamicsPlugin(Star):
                     and self._sessions.get(session_id) is runtime
                     and runtime.epoch == expected_epoch)
         poke_id = str(getattr(parsed, "message_id", "") or getattr(trigger_node, "msg_id", "") or "")
+        poke_key: Optional[tuple[str, str]] = None
         if poke_id:
             replied_key = (session_id, poke_id)
             if replied_key in self._poke_replied_ids:
                 if raw_event is not None:
                     self._claim_poke_event(raw_event)
                 return
+            # The claim goes in before the model call so a duplicate delivery of
+            # the same poke cannot answer twice, but a failed attempt releases it
+            # so the poke is not silently lost for the rest of the session.
             self._poke_replied_ids.add(replied_key)
+            poke_key = replied_key
             if len(self._poke_replied_ids) > 2000:
                 extra = list(self._poke_replied_ids)[:500]
                 self._poke_replied_ids.difference_update(extra)
@@ -2088,10 +2157,15 @@ class ChatDynamicsPlugin(Star):
         sent_any = False
         previous_bot_msg_id = getattr(trigger_node, "msg_id", None)
 
+        def _release_claim() -> None:
+            if poke_key is not None:
+                self._poke_replied_ids.discard(poke_key)
+
         async def _remember(send_result: Any, text: str) -> None:
             nonlocal sent_any, previous_bot_msg_id
             if not send_result.success:
                 self._metric("send_failed")
+                _release_claim()
                 return
             self._metric("send_succeeded")
             sent_any = True
@@ -2123,6 +2197,8 @@ class ChatDynamicsPlugin(Star):
                 await self._send_owned(runtime, raw_event, build_poke_chain(user_id)),
                 "[戳一戳]",
             )
+            if not sent_any:
+                _release_claim()
         elif decision.speak:
             context_nodes = dag.get_thread_context(trigger_node.msg_id, max_nodes=8) if dag is not None else []
             context_text = "\n".join(
@@ -2138,6 +2214,7 @@ class ChatDynamicsPlugin(Star):
                 prompt, raw_event, vibe, session_id, wrap_as_turn=False,
             )
             if not reply or not current():
+                _release_claim()
                 return
             await _remember(
                 await self._send_owned(runtime, raw_event, reply),
@@ -2682,6 +2759,7 @@ class ChatDynamicsPlugin(Star):
             willingness=float(getattr(arb_res, "willingness_score", 0.0) or 0.0),
             cfg=self._runtime_config,
             now=self.time_service.wall_time(),
+            node_now=now,
             has_media=has_media_turn,
             media_component_types=media_types,
             outline=" ".join(outline_bits),
@@ -2855,7 +2933,16 @@ class ChatDynamicsPlugin(Star):
                 runtime.generation_task = None
                 runtime.latest_pending = None
                 self._in_flight.discard(runtime.session_key)
-            self._prune_idle_sessions(self.time_service.time())
+            # A raise here would replace the CancelledError already propagating
+            # (and turn a cancelled generation into a failed one), so the sweep
+            # is guarded the same way the periodic sweeper guards it.
+            try:
+                self._prune_idle_sessions(self.time_service.time())
+            except Exception as exc:
+                logger.warning(
+                    "[ChatDynamics] Generation-loop sweep failed code=CD_SESSION_SWEEP type=%s",
+                    type(exc).__name__,
+                )
 
     async def _dispatch_bot_response(
         self,

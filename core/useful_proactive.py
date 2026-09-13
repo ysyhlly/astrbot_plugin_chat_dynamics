@@ -168,8 +168,15 @@ class UsefulProactiveGate:
         now: Optional[float] = None,
         private_field: bool = False,
         media_privacy: bool = False,
+        node_now: Optional[float] = None,
     ) -> UsefulProactiveVerdict:
         stamp = time.time() if now is None else float(now)
+        # ``stamp`` is the civil clock used by quotas, help timestamps and the
+        # notebook's wall-clock ``mute_until``. Node recency must be measured on
+        # the monotonic clock the DAG stamps nodes with, so it gets its own
+        # value; mixing the two makes every node window compare a wall second
+        # against a monotonic one.
+        node_stamp = float(node_now) if node_now is not None else stamp
         sid = str(session_id or "")
         uid = str(user_id or "")
         clean = (text or "").strip()
@@ -221,6 +228,7 @@ class UsefulProactiveGate:
             gap = self._detect_gap(
                 sid=sid,
                 stamp=stamp,
+                node_stamp=node_stamp,
                 text=clean,
                 recent_nodes=recent_nodes,
                 bot_id=bot_id,
@@ -243,6 +251,7 @@ class UsefulProactiveGate:
                 gap = self._detect_gap(
                     sid=sid,
                     stamp=stamp,
+                    node_stamp=node_stamp,
                     text=clean,
                     recent_nodes=recent_nodes,
                     bot_id=bot_id,
@@ -326,7 +335,7 @@ class UsefulProactiveGate:
             gap_kind=gap_kind,
             gap_fingerprint=fingerprint,
             force_scale=gap_force,
-            length_hint=length_hint if length_hint == "brief" else "brief",
+            length_hint=length_hint or "brief",
             delay_scale=delay_scale,
             proactive=True,
             quota_used=used_now,
@@ -416,6 +425,7 @@ class UsefulProactiveGate:
         *,
         sid: str,
         stamp: float,
+        node_stamp: Optional[float] = None,
         text: str,
         recent_nodes: Sequence[Any],
         bot_id: str,
@@ -426,8 +436,9 @@ class UsefulProactiveGate:
         telemetrics: Any,
     ) -> Optional[Tuple[str, str, float, str]]:
         """Return (kind, fingerprint, force, reason_zh) or None."""
+        node_now = stamp if node_stamp is None else float(node_stamp)
         # 1) hanging question: last human Q unanswered beyond threshold.
-        hang = self._hanging_question(recent_nodes, bot_id=bot_id, stamp=stamp)
+        hang = self._hanging_question(recent_nodes, bot_id=bot_id, stamp=node_now)
         if hang is not None:
             q_text, q_user, q_ts = hang
             return (
@@ -450,8 +461,11 @@ class UsefulProactiveGate:
         # 3) strong help then long silence.
         help_ts = float(self._help_ts.get(sid, 0) or 0)
         if help_ts and stamp - help_ts >= 90.0:
+            # help_ts lives on the civil clock while nodes are monotonic, so the
+            # same elapsed age is expressed in the node clock before comparing.
+            help_since_node = node_now - (stamp - help_ts)
             # Only if recent traffic is quiet / no bot reply after help.
-            if not self._bot_spoke_since(recent_nodes, bot_id=bot_id, since=help_ts):
+            if not self._bot_spoke_since(recent_nodes, bot_id=bot_id, since=help_since_node):
                 return (
                     "help_followup",
                     _fp("hf", sid, str(int(help_ts))),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -191,6 +192,24 @@ def _integer(
 
 _PRESENCE_KNOBS = {"ghost", "sensible", "lively"}
 
+# The Hub reads one credential out of the process environment. The variable name
+# is part of the published config, so it is restricted to names that are
+# plausibly this integration's own: an arbitrary name would let a config write
+# turn any unrelated secret into a Bearer header sent to the Hub host.
+_HUB_KEY_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_HUB_KEY_ENV_HINT = re.compile(r"HUB|SELFLEARNING|CHAT_DYNAMICS", re.IGNORECASE)
+_HUB_KEY_ENV_DEFAULT = "SELFLEARNING_HUB_API_KEY"
+
+
+def _hub_key_env(value: Any, warnings: List[str]) -> str:
+    name = str(value or "").strip() or _HUB_KEY_ENV_DEFAULT
+    if not _HUB_KEY_ENV_NAME.match(name) or not _HUB_KEY_ENV_HINT.search(name):
+        warnings.append(
+            f"selflearning_hub_key_env must be a Hub-related environment variable name ({_HUB_KEY_ENV_DEFAULT} is used)"
+        )
+        return _HUB_KEY_ENV_DEFAULT
+    return name
+
 
 def _presence_knob(value: Any, warnings: List[str]) -> str:
     raw = str(value or "sensible").strip().lower()
@@ -354,7 +373,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         group_memory_enabled=_bool(_get(raw, "group_memory_enabled", True), True),
         selflearning_integration=_bool(_get(raw, "selflearning_integration", True), True),
         selflearning_hub_url=str(_get(raw, "selflearning_hub_url", "") or "").strip(),
-        selflearning_hub_key_env=str(_get(raw, "selflearning_hub_key_env", "SELFLEARNING_HUB_API_KEY") or "").strip(),
+        selflearning_hub_key_env=_hub_key_env(_get(raw, "selflearning_hub_key_env", _HUB_KEY_ENV_DEFAULT), warnings),
         media_image_gate_enabled=_bool(_get(raw, "media_image_gate_enabled", True), True),
         media_voice_gate_enabled=_bool(_get(raw, "media_voice_gate_enabled", True), True),
         media_understand_reply_enabled=_bool(_get(raw, "media_understand_reply_enabled", False), False),

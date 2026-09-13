@@ -605,13 +605,13 @@
     "description": "Self Learning Hub v1 地址（可选）",
     "type": "string",
     "default": "",
-    "hint": "仅供不经过宿主请求钩子的内部回复使用；普通聊天由原生钩子增强，不重复调用 context。填写 Self Learning HTTP 服务地址或 /api/hub/v1 地址，留空关闭 Hub 连接。"
+    "hint": "仅供不经过宿主请求钩子的内部回复使用；普通聊天由原生钩子增强，不重复调用 context。填写 Self Learning HTTP 服务地址或 /api/hub/v1 地址，留空关闭 Hub 连接。配置了密钥时仅接受 https（本机回环可用 http），避免凭据明文外发；其余情况按降级处理并在诊断里显示原因。Hub 需在 /context 响应里回显 group_id 与 user_id，缺失或不一致时本次背景数据会被丢弃（scope_mismatch）。"
   },
   "selflearning_hub_key_env": {
     "description": "Hub API Key 环境变量名",
     "type": "string",
     "default": "SELFLEARNING_HUB_API_KEY",
-    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不返回面板。Self Learning 未开启 API 鉴权时可留空。"
+    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不返回面板。Self Learning 未开启 API 鉴权时可留空。为免任意环境变量被当作凭据外发，变量名须是 Hub/本插件相关名称（含 HUB、SELFLEARNING 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
   },
   "selflearning_integration": {
     "description": "尝试对接 selflearning",
@@ -677,7 +677,7 @@
     "description": "主动配额",
     "type": "bool",
     "default": true,
-    "hint": "每小时/每话题段上限；用尽后纯响应（只答 @/强相关）。"
+    "hint": "规则模式（decision_mode=legacy）的每小时/每话题段上限，用尽后纯响应（只答 @/强相关）。人设模式由决策模型与每分钟开口预算控制，本组设置不参与人设模式判定。"
   },
   "proactive_quota_per_hour": {
     "description": "每小时主动上限",
@@ -688,7 +688,7 @@
       "max": 20,
       "step": 1
     },
-    "hint": "偏紧默认 2。用尽后只答点名/强相关。"
+    "hint": "偏紧默认 2。用尽后只答点名/强相关。仅作用于规则模式。"
   },
   "proactive_quota_per_topic": {
     "description": "每话题段主动上限",
@@ -699,7 +699,7 @@
       "max": 10,
       "step": 1
     },
-    "hint": "同一话题段默认最多主动 1 次。"
+    "hint": "同一话题段默认最多主动 1 次。仅作用于规则模式。"
   },
   "daily_rhythm_enabled": {
     "description": "今日作息总开关",

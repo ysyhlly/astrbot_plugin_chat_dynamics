@@ -96,13 +96,24 @@ class DialogueContinuity:
         )
 
 
+# exp() overflows once the exponent passes ~709, which the default slope
+# reaches after ~2900s. A quiet group whose bot turn is still inside the DAG can
+# hit that window (sessions are swept after an hour), and the resulting
+# OverflowError escapes message routing, so the exponent is saturated: exact in
+# the useful range, a true 0.0 beyond it.
+_EXP_CEILING = 700.0
+
+
 def time_decay(seconds: float, weights: DialogueWeights = DEFAULT_WEIGHTS) -> float:
     """Smooth replacement for the fixed window: ~1 well inside it, 0.5 at 60s.
 
     Pure in its argument; the "the answer cannot precede the question" gate is
     the caller's, not this curve's.
     """
-    return 1.0 / (1.0 + exp((seconds - weights.time_midpoint) / max(0.05, weights.time_slope)))
+    exponent = (seconds - weights.time_midpoint) / max(0.05, weights.time_slope)
+    if exponent >= _EXP_CEILING:
+        return 0.0
+    return 1.0 / (1.0 + exp(exponent))
 
 
 def answer_shape(text: str) -> float:

@@ -109,7 +109,7 @@ class RoutingState:
                 self.pending_assignments.pop(mid, None)
                 node = dag.get_node(mid)
                 if node is not None:
-                    node.metadata.get("routing", {})["topic_status"] = "unknown"
+                    node.metadata.setdefault("routing", {})["topic_status"] = "unknown"
         for key, topic in list(self.topics.items()):
             if not any(mid in allowed for mid in topic.message_ids) or now - topic.updated_at > window_seconds:
                 self.archive.archive(topic, dag, now)
@@ -468,6 +468,9 @@ class SessionRuntime:
         self.seen_id_set.clear()
         self.fallback_fingerprints.clear()
         self.fallback_fingerprint_set.clear()
+        # Receipts describe tool calls made for an earlier conversation; a reset
+        # must not keep replaying them into the next system prompt.
+        self.tool_executions.clear()
         if self.dag is not None:
             self.dag.reset()
 

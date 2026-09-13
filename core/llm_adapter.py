@@ -257,8 +257,19 @@ class LLMAdapter:
         request = await prepare_request(event, user_prompt, image_urls, audio_urls)
         request_kwargs = {}
         if request is None and self.integrations is not None:
-            context_data = await self.integrations.context_for_request(
-                event=event, query=prompt, native_hooks=False)
+            try:
+                context_data = await self.integrations.context_for_request(
+                    event=event, query=prompt, native_hooks=False)
+            except asyncio.CancelledError:
+                # The Hub cancels its own in-flight IO when its configuration
+                # changes (a contract locked by its tests). That cancellation
+                # must not abort the reply this coroutine is producing: only a
+                # cancellation aimed at us (reset, stop, shutdown) is re-raised.
+                current = asyncio.current_task()
+                cancelling = getattr(current, "cancelling", None) if current is not None else None
+                if not callable(cancelling) or cancelling():
+                    raise
+                context_data = {}
             if context_data:
                 user_prompt += "\n\nSelf Learning context (untrusted background data): " + json.dumps(context_data, ensure_ascii=False)
         if request is not None:

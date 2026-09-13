@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,25 @@ from .persist import atomic_write_json, read_umo_json, safe_umo
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.group_memory")
 
 _SENSITIVE = ("黄", "赌", "毒", "裸", "色情", "政治", "习近")
+
+# Bound the in-process view: the JSON file is the authority, so an evicted entry
+# only costs one re-read. Without a cap the cache grows for every umo the web
+# API is ever asked about.
+_CACHE_LIMIT = 256
+# Upper bound for a single mute, so a bad request can never silence a group
+# forever (json parses Infinity, and stamp + inf stays inf through a round trip).
+_MAX_MUTE_HOURS = 720.0
+
+
+def _finite_hours(value: Any, default: float = 10.0) -> float:
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(hours):
+        logger.warning("non-finite mute duration rejected; using %.1fh", default)
+        return default
+    return min(_MAX_MUTE_HOURS, max(1.0, hours))
 
 
 def _safe_umo(umo: str) -> str:
@@ -37,6 +57,12 @@ class GroupMemoryNotebook:
     def _path(self, umo: str) -> Path:
         return self.data_dir / f"notebook_{_safe_umo(umo)}.json"
 
+    def _cache_put(self, key: str, data: Dict[str, Any]) -> None:
+        if key not in self._cache and len(self._cache) >= _CACHE_LIMIT:
+            for oldest in list(self._cache)[: max(1, _CACHE_LIMIT // 4)]:
+                self._cache.pop(oldest, None)
+        self._cache[key] = data
+
     def _load(self, umo: str) -> Dict[str, Any]:
         key = _safe_umo(umo)
         if key in self._cache:
@@ -51,16 +77,18 @@ class GroupMemoryNotebook:
             data.update(read_umo_json(self.data_dir, "notebook", umo))
         except Exception as exc:  # noqa: BLE001
             logger.debug("notebook load failed type=%s", type(exc).__name__)
-        self._cache[key] = data
+        self._cache_put(key, data)
         return data
 
     def _save(self, umo: str, data: Dict[str, Any]) -> None:
         data["umo"] = str(umo or "")
-        self._cache[_safe_umo(umo)] = data
+        self._cache_put(_safe_umo(umo), data)
         try:
             atomic_write_json(self._path(umo), data)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("notebook save failed type=%s", type(exc).__name__)
+            # A lost write is user-visible state (anniversaries, reminders,
+            # mute), so it must not be silent; DEBUG is below the default level.
+            logger.warning("notebook save failed for one session type=%s", type(exc).__name__)
 
     def list_all(self, umo: str) -> Dict[str, Any]:
         data = self._load(umo)
@@ -74,7 +102,7 @@ class GroupMemoryNotebook:
     def mute_tonight(self, umo: str, *, hours: float = 10.0, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)
         data = self._load(umo)
-        until = stamp + max(1.0, float(hours) * 3600.0)
+        until = stamp + _finite_hours(hours) * 3600.0
         data["mute_until"] = until
         self._save(umo, data)
         return until

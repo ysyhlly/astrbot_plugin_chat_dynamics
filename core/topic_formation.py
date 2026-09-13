@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from .semantics import lexical_tokens
 from .topic_resolution import can_start_topic
@@ -32,22 +33,36 @@ def discussion_burst(dag, node, bot_id: str, window: float = 60.0) -> list:
     for n in sorted(recent, key=lambda n: (n.timestamp, n.msg_id), reverse=True):
         key = re.sub(r"\s+", "", topic_text(n)).lower()
         unique.setdefault(key, n)
-    remaining = list(unique.values())
+    remaining = [n for n in unique.values() if n.msg_id != node.msg_id]
     component = [node]
-    remaining = [n for n in remaining if n.msg_id != node.msg_id]
+    # Texts and pair scores are memoised for this call only. The nested walk
+    # recomputed the same (candidate, member) comparison on every attachment
+    # round, which is cubic in the window size (~85k semantic calls at the
+    # documented 80-node limit) and runs synchronously under the session lock.
+    texts = {node.msg_id: text, **{n.msg_id: topic_text(n) for n in remaining}}
+    token_cache = {msg_id: lexical_tokens(value) for msg_id, value in texts.items()}
+    semantic_cache: dict = {}
+
+    def _linked(left: Any, right: Any) -> bool:
+        if left.reply_to_id == right.msg_id or right.reply_to_id == left.msg_id:
+            return True
+        shared = token_cache.get(left.msg_id, frozenset()) & token_cache.get(right.msg_id, frozenset())
+        if len(shared) < 2:
+            return False
+        first, second = left.msg_id, right.msg_id
+        key = (first, second) if first <= second else (second, first)
+        score = semantic_cache.get(key)
+        if score is None:
+            match = dag.semantic_match_fn(texts.get(first, ""), texts.get(second, ""))
+            score = max(float(getattr(match, "score", 0) or 0), float(getattr(match, "embedding_cosine", 0) or 0))
+            semantic_cache[key] = score
+        return score >= _BURST_LINK_THRESHOLD
+
     while remaining:
-        attached = []
-        for candidate in remaining:
-            left = topic_text(candidate)
-            for member in component:
-                right = topic_text(member)
-                explicit = candidate.reply_to_id == member.msg_id or member.reply_to_id == candidate.msg_id
-                shared = lexical_tokens(left) & lexical_tokens(right)
-                match = dag.semantic_match_fn(left, right)
-                semantic = max(float(getattr(match, "score", 0) or 0), float(getattr(match, "embedding_cosine", 0) or 0))
-                if explicit or (len(shared) >= 2 and semantic >= _BURST_LINK_THRESHOLD):
-                    attached.append(candidate)
-                    break
+        attached = [
+            candidate for candidate in remaining
+            if any(_linked(candidate, member) for member in component)
+        ]
         if not attached:
             break
         component.extend(attached)

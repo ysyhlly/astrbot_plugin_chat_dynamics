@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .dashboard import (
     scene_replay_snapshot,
@@ -32,10 +32,30 @@ def _query_param(name: str) -> str:
         return ""
 
 
+def _declared_body_bytes() -> Optional[int]:
+    """Declared Content-Length, when the host request object exposes it.
+
+    AstrBot's ``PluginRequest`` has no ``content_length`` attribute, so the
+    header is the only place the size is visible before the body is parsed.
+    """
+    raw = getattr(request, "content_length", None)
+    if raw is None:
+        try:
+            raw = request.headers.get("content-length")
+        except Exception:
+            raw = None
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _json_body() -> Dict[str, Any]:
     try:
-        content_length = getattr(request, "content_length", None)
-        if content_length is not None and int(content_length) > _MAX_BODY_BYTES:
+        declared = _declared_body_bytes()
+        if declared is not None and declared > _MAX_BODY_BYTES:
             return {"__invalid_body__": "body too large"}
         payload = await request_json({})
         if isinstance(payload, dict):
@@ -53,7 +73,7 @@ async def _json_body() -> Dict[str, Any]:
 def _session_identifier(body: Dict[str, Any]) -> str:
     for key in ("session_key", "session_id", "group_id", "id"):
         value = body.get(key)
-        if value is None or value == "":
+        if value is None or value == "" or (isinstance(value, str) and not value.strip()):
             continue
         # Group IDs are often numeric, while session keys are strings. Reject
         # containers and other coercible values so malformed JSON cannot turn
@@ -621,9 +641,24 @@ class ConsoleWebAPI:
         try:
             data = await self.topic_annotations.read(session)
             if not getattr(self.plugin, "console_show_message_content", False):
-                data["records"] = [{k: v for k, v in row.items() if k != "text"} for row in data["records"]]
+                from .routing_trace import redact_trace_identifiers
+
+                rows = []
+                for row in data["records"]:
+                    clean = {k: v for k, v in row.items() if k != "text"}
+                    # The stored trace carries message ids and participant ids;
+                    # /replay already redacts them under the same switch, so the
+                    # annotation endpoint must not be the leak in the pair.
+                    if isinstance(clean.get("decision_trace"), dict):
+                        clean["decision_trace"] = redact_trace_identifiers(clean["decision_trace"])
+                    for key in ("recipient_ids", "subject_ids"):
+                        if key in clean:
+                            clean[key] = []
+                    rows.append(clean)
+                data["records"] = rows
             return _json_ok(data)
-        except Exception:
+        except Exception as exc:
+            logger.error("[ChatDynamics] annotations read failed code=CD_ANNOTATIONS type=%s", type(exc).__name__)
             return _json_err("annotations unavailable", 503)
 
     async def annotations_post(self):
@@ -635,7 +670,8 @@ class ConsoleWebAPI:
             return _json_ok(await self.topic_annotations.save(await _json_body()))
         except ValueError as exc:
             return _json_err(str(exc), 400)
-        except Exception:
+        except Exception as exc:
+            logger.error("[ChatDynamics] annotation write failed code=CD_ANNOTATIONS type=%s", type(exc).__name__)
             return _json_err("annotation write failed", 503)
 
     async def notebook_get(self):
@@ -649,6 +685,9 @@ class ConsoleWebAPI:
         if len(umo) > _MAX_SESSION_ID_LENGTH:
             return _json_err("umo too long", 400)
         try:
+            # Kept on the event loop on purpose: the notebook cache is shared
+            # with the message path, so moving only the panel onto a worker
+            # thread would race that cache (see notebook_mutate_async).
             return _json_ok(self.plugin.notebook_list(umo))
         except Exception as exc:
             logger.error("[ChatDynamics] notebook get failed code=CD_NOTEBOOK type=%s", type(exc).__name__)

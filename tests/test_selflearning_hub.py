@@ -131,25 +131,44 @@ async def test_cancellation_and_hot_update(action):
         assert not client._tasks
 
 
-@pytest.mark.parametrize("mismatch", [True, False])
+@pytest.mark.parametrize("echo", ["match", "mismatch", "missing", "partial"])
 @pytest.mark.asyncio
-async def test_context_scope_and_bounds(mismatch):
+async def test_context_scope_echo_is_mandatory(echo):
+    """The Hub must echo the scope: a missing echo is a mismatch, not a pass."""
+    scope = {"match": {"group_id": "group", "user_id": "user"},
+             "mismatch": {"group_id": "other", "user_id": "user"},
+             "missing": {},
+             "partial": {"group_id": "group"}}[echo]
+
     async def override(request):
         if request.path.endswith("context"):
             return web.json_response({"success": True, "data": {
-                "group_id": "other" if mismatch else "group", "user_id": "user",
+                **scope,
                 "parts": [{"type": "social", "content": "x" * 10000}],
                 "few_shots": ["y" * 10000] * 10, "context_text": "never expose"}})
     async with server(override) as (url, calls):
         client = SelfLearningHubClient(url)
         result = await client.context(group_id="group", user_id="user", query="hello")
-        if mismatch:
-            assert result == {}
-            assert client.snapshot()["error_code"] == "scope_mismatch"
-        else:
+        if echo == "match":
             assert set(result) == {"social", "few_shots"}
             assert all(len(value) <= 4096 for value in result.values())
+        else:
+            assert result == {}
+            assert client.snapshot()["error_code"] == "scope_mismatch"
         assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_context_scope_echo_matches_a_numeric_id():
+    async def override(request):
+        if request.path.endswith("context"):
+            return web.json_response({"success": True, "data": {
+                "group_id": 123, "user_id": 456,
+                "parts": [{"type": "social", "content": "friend"}]}})
+    async with server(override) as (url, _):
+        client = SelfLearningHubClient(url)
+        result = await client.context(group_id="123", user_id="456", query="hello")
+        assert result == {"social": "friend"}
 
 
 @pytest.mark.parametrize("url", ["", "http://user:pass@localhost", "http://localhost?key=secret",
