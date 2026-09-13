@@ -1,4 +1,23 @@
-"""Privacy-bounded, immutable-by-copy routing decision diagnostics."""
+"""Privacy-bounded, immutable-by-copy routing decision diagnostics.
+
+Three schemas have existed, and the differences are the reason the learning
+plugin has two readers:
+
+    1   the raw routing mapping, before traces existed
+    2   the allowlisted snapshot: recipient, topic, participation evidence, state
+    3   the same, plus the candidate set with the host's own per-candidate
+        evidence, the topic that was selected, and where the turn finally ended
+        up (`core/outcome_recorder.py`)
+
+The schema number travels as `trace_schema_version`. The older key name,
+`routing_schema_version`, described the routing section alone while the number
+described the whole trace; it is gone from what this module writes.
+
+The trace is frozen at decision time, so the outcome does not exist yet when it
+is built. It is written into the snapshot afterwards by the recorder, and
+re-attached here when the annotation record rebuilds a fresh one.
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +25,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from collections.abc import Mapping
 from .evidence import routing_ledger, sanitize_ledger, finite_number
+from .outcome_recorder import OUTCOME_KEY
 from .routing_contract import addressee_is_ambiguous
 from .participation_policy import EVIDENCE_CODES, EVIDENCE_FAMILIES, EVIDENCE_SOURCES
 
@@ -72,6 +92,77 @@ def _candidates(value):
     return result
 
 
+def _topic_candidates(route, evidence_by_topic):
+    """The candidate set in the schema 3 shape: ranked, scored, with evidence.
+
+    Two older shapes arrive here — `[[score, id], ...]` pairs and
+    `{topic_id, final_score, rank}` rows — and both become one structured list.
+    The per-candidate evidence comes from `route["topic_candidate_evidence"]`,
+    which the resolver fills in for **every** candidate it scored, not only the
+    winner: "which scoring term put the wrong one first" cannot be asked of a
+    snapshot that only kept the winner breakdown.
+
+    A candidate whose score was never recorded keeps `final_score` out rather
+    than writing 0.0. A reader that saw a zero would treat a missing number as a
+    decisive one.
+    """
+    evidence_by_topic = evidence_by_topic if isinstance(evidence_by_topic, Mapping) else {}
+    entries = []
+    raw = route.get("topic_candidates")
+    if not isinstance(raw, (list, tuple)):
+        raw = route.get("candidates")
+    for index, item in enumerate(raw if isinstance(raw, (list, tuple)) else ()):
+        if index >= 8:
+            break
+        if isinstance(item, Mapping):
+            topic_id = item.get("topic_id")
+            score = item.get("final_score")
+            if score is None:
+                score = item.get("score")
+            rank = item.get("rank")
+            rank = rank if isinstance(rank, int) and not isinstance(rank, bool) and rank > 0 else None
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            score, topic_id = item[0], item[1]
+            rank = None
+        else:
+            continue
+        if not isinstance(topic_id, str) or not topic_id:
+            continue
+        row = {"topic_id": topic_id[:160]}
+        if finite_number(score) is not None:
+            row["final_score"] = float(score)
+        if rank is not None:
+            row["rank"] = rank
+        evidence = evidence_by_topic.get(topic_id)
+        if isinstance(evidence, Mapping) and evidence:
+            row["evidence"] = {str(key)[:64]: float(value)
+                               for key, value in list(evidence.items())[:32]
+                               if finite_number(value) is not None}
+        entries.append(row)
+    entries.sort(key=lambda row: (row.get("rank") is None, row.get("rank") or 0,
+                                  -(row.get("final_score") or 0.0)))
+    for position, row in enumerate(entries, 1):
+        row.setdefault("rank", position)
+    return entries
+
+
+def _outcome_block(outcome):
+    """The recorder's block, narrowed to the four fields a reader consumes."""
+    block = _mapping(outcome) if outcome is not None else {}
+    if not block:
+        return None
+    value = block.get("final_outcome")
+    if not isinstance(value, str) or not value:
+        return None
+    delivered = block.get("delivered")
+    return {
+        "final_outcome": value[:32],
+        "delivered": delivered if isinstance(delivered, bool) else None,
+        "suppression_reason": str(block.get("suppression_reason") or "")[:96],
+        "stage": str(block.get("stage") or "")[:32],
+    }
+
+
 def redact_trace_identifiers(trace):
     """Redact identifiers in a fresh trace, including parent candidates."""
     from copy import deepcopy
@@ -80,6 +171,13 @@ def redact_trace_identifiers(trace):
     result.get("parent", {})["message_id"] = ""
     result.get("parent", {})["candidates"] = []
     result.get("recipient", {})["ids"] = []
+    # Schema 3 carries the same identifiers a second time inside the candidate
+    # set: the selected topic and every offered topic id. Redacting only the
+    # `topic` section would leave them in the "redacted" copy.
+    routing = result.get("routing")
+    if isinstance(routing, dict):
+        routing["selected_topic"] = ""
+        routing["topic_candidates"] = []
     state = result.get("state", {})
     state["active_interlocutor"] = None
     state["last_bot_message_id"] = None
@@ -90,11 +188,18 @@ def redact_trace_identifiers(trace):
 
 
 def build_routing_trace(*, routing, identity=None, participation=None,
-                        state=None, mode="legacy", weights_version="default") -> dict:
-    """Return schema 2 using a field allowlist; never copy message text/payloads."""
+                        state=None, mode="legacy", weights_version="default",
+                        outcome=None) -> dict:
+    """Return schema 3 using a field allowlist; never copy message text/payloads.
+
+    `outcome` is optional because the trace is normally built *before* the turn
+    reaches the gate. When the annotation record rebuilds a trace it passes the
+    outcome recorded on the node, so the frozen snapshot ends up describing the
+    whole turn rather than stopping at the admission decision.
+    """
     route, ident, part, status = map(_mapping, (routing, identity, participation, state))
     result = {
-        "routing_schema_version": 2,
+        "trace_schema_version": 3,
         "trace_version": 1,
         "calibrated": False,
         "parent": {"message_id": route.get("parent_message_id", ""),
@@ -131,6 +236,15 @@ def build_routing_trace(*, routing, identity=None, participation=None,
                                  for key, value in result.items()}, allow_nan=False))
     if any(key in part for key in ("evidence", "family_contributions", "contribution_total")):
         snapshot["participation"].update(_participation_evidence(part))
+    # Schema 3 sections, added after the JSON round trip: `_safe` narrows a
+    # mapping to None, so a nested structure has to be built already-clean.
+    snapshot["routing"] = {
+        "selected_topic": str(route.get("topic_id") or "")[:160],
+        "topic_candidates": _topic_candidates(route, route.get("topic_candidate_evidence")),
+    }
+    block = _outcome_block(outcome)
+    if block is not None:
+        snapshot[OUTCOME_KEY] = block
     ledger = routing_ledger(route)
     for item in _participation_evidence(part)["evidence"]:
         ledger["entries"].append(dict(domain="participation", code=item["code"],

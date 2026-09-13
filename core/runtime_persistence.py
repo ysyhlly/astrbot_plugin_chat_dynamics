@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections import deque
+from functools import lru_cache
+from pathlib import Path
 
 from .graph import ConversationNode
 from .session_runtime import TopicState
@@ -14,6 +17,30 @@ from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
 MAX_SESSIONS = 1000
+
+# The host version the learning layer records, resolved from the same file the
+# plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the
+# first release that forgets to update it, and a version that lies is worse than
+# an empty one — the consumer would verify compatibility against it.
+_VERSION_KEYS = ('version', 'name')
+_METADATA_PATH = Path(__file__).resolve().parents[1] / 'metadata.yaml'
+_VERSION_PATTERN = re.compile(r'^version:\s*["\']?([^"\'\s]+)', re.MULTILINE)
+
+
+@lru_cache(maxsize=1)
+def _host_version() -> str:
+    """The plugin's own version, or '' when it cannot be read.
+
+    An empty string is a real answer: the policy published from data collected
+    under an unknown host version says so, and a consumer that cannot verify the
+    version has no basis for anything stronger than shadow.
+    """
+    try:
+        text = _METADATA_PATH.read_text(encoding='utf-8')
+    except OSError:
+        return ''
+    match = _VERSION_PATTERN.search(text)
+    return (match.group(1).strip()[:64] if match else '')
 MAX_NODES = 500
 RUNTIME_FIELDS = ('last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
@@ -24,8 +51,11 @@ TOPIC_FIELDS = ('topic_id', 'message_ids', 'participants', 'updated_at', 'label'
                 'summary_excerpts')
 NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
                'mentioned_users', 'parent_ids', 'thread_id', 'edge_kinds')
+# `outcome` is in the allowlist because it is written after the fact and can be
+# written after a restart: losing it would turn a recorded 作息压制 back into a
+# missing ending, which is the schema 2 gap this field exists to close.
 META_FIELDS = ('topic_id', 'routing', 'is_bot', 'source', 'addressivity', 'decision',
-               'vibe_mode', 'sender_name', 'display_name', 'turn_id', 'topic_title',
+               'outcome', 'vibe_mode', 'sender_name', 'display_name', 'turn_id', 'topic_title',
                'edge_metadata', 'inferred_parent_id', 'is_wake')
 SHADOW_FIELDS = ('session_key', 'timestamp', 'action', 'reason', 'willingness_score',
                  'threshold', 'topic_relevance', 'professionalism', 'question_value',
@@ -107,6 +137,11 @@ def export_runtime_state(plugin) -> dict:
                                for record in list(plugin.telemetrics._records.get(runtime.session_key, ()))[-200:]]
         sessions.append(item)
     return {'version': VERSION, 'saved_wall': _wall(plugin),
+            # The host's own software version, so the learning layer can record
+            # which ChatDynamics a policy's numbers came from. Without it the
+            # published policy can only say "host version unknown", and a
+            # consumer has no basis for anything stronger than shadow.
+            'plugin_version': _host_version(),
             'saved_clock': plugin.time_service.time(), 'sessions': sessions,
             'metrics': _json(plugin._metrics),
             'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})

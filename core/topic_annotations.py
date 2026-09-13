@@ -94,14 +94,19 @@ class TopicAnnotations:
         record = {"annotation_schema_version": 2, "msg_id": mid, "predicted_topic": predicted, "expected_topic": expected,
                   "error_type": error, "annotated_at": time.time(),
                   "session_hash": self.digest(session),
-                  "routing": {key: deepcopy(routing[key]) for key in ("topic_confidence", "ambiguous", "topic_ambiguous", "topic_status", "candidates", "topic_candidates", "boundary_score", "evidence") if key in routing}}
+                  "routing": {key: deepcopy(routing[key]) for key in ("topic_confidence", "ambiguous", "topic_ambiguous", "topic_status", "candidates", "topic_candidates", "topic_candidate_evidence", "boundary_score", "evidence") if key in routing}}
         record.update({key: deepcopy(body[key]) for key in RECIPIENT_FIELDS if key in body})
         trace = node.metadata.get("routing_trace", node.metadata.get("decision_trace", {}))
         trace = trace if isinstance(trace, dict) else {}
+        # The outcome is read from the node rather than from the frozen trace:
+        # the trace was snapshotted at decision time, and the gate, the generator
+        # and the platform adapter all ran after that. `build_routing_trace`
+        # re-attaches it so the rebuilt snapshot describes the whole turn.
         record["decision_trace"] = build_routing_trace(
             routing=routing, identity=trace.get("identity"), participation=trace.get("participation"),
             state=trace.get("state"), mode=trace.get("mode", "legacy"),
             weights_version=trace.get("weights_version", "default"),
+            outcome=node.metadata.get("outcome") or trace.get("outcome"),
         )
         # Only submitted labels and bounded diagnostics, never automatic message collection.
         if getattr(self.plugin, "console_show_message_content", False):

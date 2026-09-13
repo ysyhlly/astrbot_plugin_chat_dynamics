@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Mapping
 from copy import copy
 from typing import Any
 
@@ -206,16 +207,28 @@ class TopicResolver:
 
     def resolve(self, node, dag, state, matches, explicit_parent=None):
         best_details = None
+        # Per-candidate evidence, kept for every topic that was scored. Only the
+        # winner's breakdown used to survive, which answers "why did this one
+        # win" but not "why did the right one lose" — and the second question is
+        # the one a ranking error has to be told apart by.
+        evidence_by_topic = {}
+
         def score(topic):
             nonlocal best_details
             details = []
             value = self.score_topic(node, dag, topic, matches, breakdown=details)
+            evidence_by_topic[topic.topic_id] = {
+                str(entry.get("code")): round(float(entry.get("contribution") or 0.0), 6)
+                for entry in details
+                if isinstance(entry, Mapping) and entry.get("code")
+            }
             if best_details is None or (value, topic.topic_id) > best_details[:2]:
                 best_details = (value, topic.topic_id, details)
             return value
         ranked = sorted(((score(topic), topic.topic_id) for topic in state.topics.values()), reverse=True)
         if best_details is not None:
             node.metadata["_topic_score_evidence"] = best_details
+        node.metadata["_topic_candidate_evidence"] = evidence_by_topic
         ranked = [(score, tid) for score, tid in ranked if score > 0]
         parent_topic = None
         if explicit_parent is not None:

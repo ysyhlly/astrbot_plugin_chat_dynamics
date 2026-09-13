@@ -53,6 +53,10 @@ class RoutingInference:
     topic_ambiguous: bool = False
     topic_status: str = "committed"
     topic_candidates: list[tuple[float, str]] = field(default_factory=list)
+    # {topic_id: {evidence_code: contribution}} for every candidate that was
+    # scored, not only the winner. Consumed by `routing_trace._topic_candidates`
+    # to emit the schema 3 candidate rows.
+    topic_candidate_evidence: dict = field(default_factory=dict)
     parent_message_id: str = ""
     parent_confidence: float = 0.0
     addressee_ids: list[str] = field(default_factory=list)
@@ -421,6 +425,7 @@ class ThreadRouter:
         result.topic_id = topic_id
         result.topic_ambiguous = is_ambiguous
         result.topic_candidates = list(ranked_topics[:3])
+        result.topic_candidate_evidence = node.metadata.pop("_topic_candidate_evidence", {}) or {}
         if (formation_allowed and topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
                 and (not ranked_topics or ranked_topics[0][0] < self.topic_resolver.ambiguity_threshold)):
             archived = state.archive.retrieve(node, dag)

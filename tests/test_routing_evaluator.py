@@ -21,8 +21,9 @@ def test_trace_is_json_safe_private_and_does_not_alias_inputs():
     state = {"intervening_users": ["human"], "payload": "private payload"}
     before = list(routing["addressee_ids"])
     trace = build_routing_trace(routing=routing, state=state)
-    assert trace["routing_schema_version"] == 2
+    assert trace["trace_schema_version"] == 3
     assert trace["topic"]["confidence"] is None
+    assert trace["routing"]["topic_candidates"] == []
     assert "private" not in json.dumps(trace, allow_nan=False)
     trace["recipient"]["ids"].append("new")
     trace["state"]["intervening_users"].clear()

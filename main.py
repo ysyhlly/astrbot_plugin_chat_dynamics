@@ -43,6 +43,10 @@ from .core.group_memory import GroupMemoryNotebook
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
 from .core.native_delivery import NativeDeliveryGuard
+from .core.outcome_recorder import (
+    STAGE_GATE, VALUE_IN_FLIGHT, mark_delivered, mark_delivery_failed, mark_generation_failed,
+    mark_in_flight, mark_not_attempted, mark_suppressed, read_outcome,
+)
 from .core.pacer import PacingShaper, is_rhythm_short_act
 from .core.persona_engine import PersonaEngine, is_request_supplement, snapshot_turn
 from .core.poke import PokeReplyPolicy, drop_poke_streaks, next_poke_streak
@@ -272,7 +276,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.6.0",
+    "v1.6.2",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -2446,6 +2450,11 @@ class ChatDynamicsPlugin(Star):
                        and n.user_id not in {runtime.bot_id, node.user_id}})},
             mode="persona" if self._persona_mode() else "legacy",
             weights_version=ROUTING_WEIGHTS_VERSION)
+        # Every processed turn starts as "the reply flow was never entered" and
+        # is upgraded as the turn progresses. Recording a default beats leaving
+        # the field out: "we did not try" and "we never found out" are different
+        # facts, and only a written one can be counted.
+        mark_not_attempted(node)
 
         if self._persona_mode():
             explicit = explicit_platform
@@ -2557,6 +2566,12 @@ class ChatDynamicsPlugin(Star):
                 timestamp=now,
             )
             self._metric("shadow_decision")
+            # Shadow mode answers "what would the gate have decided" and then
+            # does nothing, so the turn is suppressed by *this* plugin rather
+            # than by the gate. Saying so keeps the reason honest: the learning
+            # layer reads every reason it does not recognise as unclassified
+            # instead of filing it under the gate.
+            mark_suppressed(node, "shadow_mode", stage=STAGE_GATE, now=now)
             self._clear_pending_gate(runtime)
             return
         if not arb_res.should_speak:
@@ -2565,6 +2580,7 @@ class ChatDynamicsPlugin(Star):
                 self._session_label(session_id),
                 arb_res.reason,
             )
+            mark_suppressed(node, arb_res.reason, stage=STAGE_GATE, now=now)
             self._metric("speech_withheld")
             if native_pipeline:
                 self._suppress_native_llm(last_event)
@@ -2652,6 +2668,7 @@ class ChatDynamicsPlugin(Star):
                         current = runtime.latest_pending
                     runtime.latest_pending = None
                     runtime.generation_level = current.addressivity_level
+                mark_in_flight(current.node)
                 await self._dispatch_bot_response(
                     runtime,
                     current.node,
@@ -2662,6 +2679,12 @@ class ChatDynamicsPlugin(Star):
                     owner_user_id=current.owner_user_id,
                     owner_revision=current.owner_revision,
                 )
+                # Still in flight after the dispatch returned means nothing was
+                # ever sent and nothing raised: the generator produced no usable
+                # reply. Naming that here beats leaving the turn marked as "never
+                # attempted", which is what an unrecorded ending collapses to.
+                if read_outcome(current.node).get("final_outcome") == VALUE_IN_FLIGHT:
+                    mark_generation_failed(current.node, "no_reply_produced")
                 async with runtime.state_lock:
                     current = runtime.latest_pending
                     if current is None and runtime.generation_task is generation_task:
@@ -2672,6 +2695,9 @@ class ChatDynamicsPlugin(Star):
             raise
         except Exception as exc:
             logger.error("[ChatDynamics] Generation loop failed code=CD_GENERATION_FAILED type=%s", type(exc).__name__)
+            node = getattr(current, "node", None)
+            if node is not None:
+                mark_generation_failed(node, f"generation_error:{type(exc).__name__}")
         finally:
             # A reset/cool operation may have detached this task and allowed a
             # newer generation to start. Only the current owner may clear the
@@ -2843,8 +2869,12 @@ class ChatDynamicsPlugin(Star):
                     "[ChatDynamics] Fragment send failed for %s (send_failed)",
                     self._session_label(session_id),
                 )
+                mark_delivery_failed(trigger_node, "send_failed")
                 return
             self._metric("send_succeeded")
+            # Terminal: a partially delivered reply is a delivered reply, and a
+            # later fragment failing does not retract it.
+            mark_delivered(trigger_node)
             sent_any = True
             platform_msg_id = send_result.message_id
             bot_msg_id = platform_msg_id or self._next_outgoing_id()

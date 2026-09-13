@@ -32,10 +32,14 @@ def test_parent_trace_and_redaction_copy():
                    topic_id="private-topic", addressee_ids=["private-user"])
     trace = build_routing_trace(routing=routing)
     assert trace["parent"]["candidates"] == [[.8, "private-parent"]]
+    assert trace["routing"]["selected_topic"] == "private-topic"
     redacted = redact_trace_identifiers(trace)
+    # Schema 3 repeats every topic identifier inside the candidate set, so the
+    # redacted copy has to clear that section too — otherwise "redacted" is a
+    # claim about one of the two places the identifier lives.
     assert "private" not in json.dumps(redacted)
     assert trace["parent"]["message_id"] == "private-parent"
-    assert trace["routing_schema_version"] == 2
+    assert trace["trace_schema_version"] == 3
 
 
 def test_rerank_ledger_supersedes_old_factor_and_replay_topic():

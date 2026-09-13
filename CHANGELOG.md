@@ -2,6 +2,31 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.6.2 — Learning Contract v3：候选逐条证据与最终结果
+
+- 决策轨迹升到 **schema 3**（`trace_schema_version = 3`）：
+  - 新增 `routing` 段：`selected_topic` 与结构化 `topic_candidates`
+    （`topic_id` / `final_score` / `rank` / `evidence`）。候选逐条证据由
+    `TopicResolution.resolve` 为**每一个**被打分的候选保留，而不只是胜出的那一个 ——
+    「是哪个分项把错的候选排到了前面」问不出只留胜者分解的快照。
+  - 新增 `outcome` 段：`final_outcome` / `delivered` / `suppression_reason` /
+    `stage`。轨迹是在决策时冻结的，最终结果当时还不存在，所以它由
+    `core/outcome_recorder.py` 在各检查点写入节点元数据，并在标注快照重建时重新挂回。
+- 新增 `core/outcome_recorder.py`：`not_attempted` / `suppressed` /
+  `generation_failed` / `delivery_failed` / `delivered` 五个检查点集中在一处，
+  不再散落在 `main.py` 的五个调用点上。投递是终态：只要有一个分片发出去了，
+  这一轮就是 `delivered`。
+- schema 号改由 `trace_schema_version` 承载。旧键名 `routing_schema_version` 描述的是
+  routing 段，而数字描述的是整条轨迹，名字说错了事；读取端兼容旧键，本模块只写新键。
+- 标识脱敏同步覆盖候选集：schema 3 在 `routing` 里重复了每一个话题标识，
+  只清理 `topic@@ 段会让「已脱敏」这句话只对两处中的一处成立。
+- 运行时快照新增 `plugin_version`（读 `metadata.yaml`，不用字面量），
+  学习层据此记录策略是在哪个本体版本上验证的；读不到就是空字符串，那是「无法验证」，
+  不是「匹配」。`outcome` 同时进入 `META_FIELDS`，重启不会把已记录的结果退化成缺失。
+
+这一版回答的是一个具体误判：schema 2 里「准入正确但被作息压掉」和「路由根本没准入」
+是同一条记录，所以学习层只能把前者也算成路由漏回复。schema 3 之后两者可以分开。
+
 ## v1.6.0 — 行为学习层、对话连续性旋钮与短期语义缓存
 
 - 新增 `core/learning/` 影子学习层：把回放人工标注与既有决策证据转成 `LearningSample`，统计各任务的错误分布与因子差异，并对收件人判定给出「权重偏高 / 权重不足」的方向性建议。样本特征只接受证据白名单，不存消息正文；样本数不足时不给建议，且全程不写入任何配置。
