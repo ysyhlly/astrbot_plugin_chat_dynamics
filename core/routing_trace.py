@@ -44,7 +44,12 @@ def _participation_evidence(part):
         if (isinstance(code, str) and code in EVIDENCE_CODES
                 and isinstance(family, str) and family in EVIDENCE_FAMILIES
                 and isinstance(source, str) and source in EVIDENCE_SOURCES and strength is not None):
-            evidence.append(dict(code=code, family=family, strength=strength, source=source))
+            # "strength" is the contribution the policy applied; "raw_value" is the
+            # fact behind it. A caller that predates the split has only one number,
+            # so it is used for both rather than recording a zero.
+            raw = number(fields.get("raw_value"))
+            evidence.append(dict(code=code, family=family, strength=strength,
+                                 raw_value=strength if raw is None else raw, source=source))
     families = part.get("family_contributions", {})
     if isinstance(families, (tuple, list)):
         families = {item[0]: item[1] for item in families if isinstance(item, (tuple, list))
@@ -129,7 +134,7 @@ def build_routing_trace(*, routing, identity=None, participation=None,
     ledger = routing_ledger(route)
     for item in _participation_evidence(part)["evidence"]:
         ledger["entries"].append(dict(domain="participation", code=item["code"],
-                                     source=item["source"], raw_value=item["strength"],
+                                     source=item["source"], raw_value=item["raw_value"],
                                      contribution=item["strength"]))
     snapshot["ledger"] = sanitize_ledger(ledger)
     return snapshot

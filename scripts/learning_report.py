@@ -5,8 +5,13 @@ configuration, or AstrBot state. It reads annotation JSON (as exported from the
 replay page) and prints what the labelled errors look like.
 
     python scripts/learning_report.py --annotations annotations.json --bot-id <id>
+    python scripts/learning_report.py --annotations annotations.json --recommend
     python scripts/learning_report.py --annotations annotations.json --save samples.jsonl
     python scripts/learning_report.py --store samples.jsonl --json
+
+Rows that could not be built are reported on stderr rather than dropped in
+silence: a corpus that is quietly smaller than it looks is worse than one that
+says why.
 """
 from __future__ import annotations
 
@@ -22,9 +27,11 @@ if str(ROOT.parent) not in sys.path:
 from astrbot_plugin_chat_dynamics.core.learning import (  # noqa: E402
     LearningSample,
     analyze_recipient,
-    samples_from_annotations,
+    build_samples,
     summarize,
 )
+
+MAX_RENDERED_FACTORS = 8
 
 
 def load_json(path: Path):
@@ -41,7 +48,7 @@ def load_annotations(path: Path) -> list:
     return payload if isinstance(payload, list) else []
 
 
-def load_store(path: Path) -> list[LearningSample]:
+def load_store(path: Path) -> list:
     rows = []
     if not path.exists():
         return rows
@@ -56,24 +63,50 @@ def load_store(path: Path) -> list[LearningSample]:
     return rows
 
 
+def render_factors(rows: list) -> list:
+    lines = []
+    for row in rows[:MAX_RENDERED_FACTORS]:
+        detail = (f"n={row['support']} 错{row['wrong_n']}/对{row['right_n']} "
+                  f"覆盖{row['coverage'] * 100:.0f}%")
+        buckets = row.get("buckets") or {}
+        if "fp" in buckets or "fn" in buckets:
+            # False positives and false negatives call for opposite corrections,
+            # so they are printed apart instead of as one averaged difference.
+            detail += (f" | FP均值 {buckets.get('fp', {}).get('mean', 0.0):.2f}"
+                       f" FN均值 {buckets.get('fn', {}).get('mean', 0.0):.2f}"
+                       f" TP均值 {buckets.get('tp', {}).get('mean', 0.0):.2f}"
+                       f" TN均值 {buckets.get('tn', {}).get('mean', 0.0):.2f}")
+        lines.append(f"    {row['code']:34s} {row['delta']:+.3f}  ({detail})")
+    return lines
+
+
 def render(report: dict) -> str:
-    lines = [f"样本总数 {report['total']}（{report['sample_note']}）", ""]
+    lines = [f"样本总数 {report['total']}（{report['sample_note']}）"]
+    grouping = report.get("grouping") or {}
+    lines.append(f"会话分组：{grouping.get('groups', 0)} 个"
+                 + (f"（{grouping['note']}）" if grouping.get("note") else ""))
     for task, data in report["tasks"].items():
+        lines.append("")
         lines.append(f"[{task}] 准确 {data['accuracy'] * 100:.1f}%  "
                      f"({data['correct']}/{data['total']})")
+        if data.get("outcomes"):
+            outcome = data["outcomes"]
+            lines.append(f"    混淆  TP={outcome['tp']} FP={outcome['fp']} "
+                         f"TN={outcome['tn']} FN={outcome['fn']}")
         if data["error_counts"]:
             errors = "  ".join(f"{k}:{v}" for k, v in data["error_counts"].items())
             lines.append(f"    错误分布  {errors}")
         lines.append(f"    判对时平均置信 {data['confidence_when_right']:.2f}  "
                      f"判错时 {data['confidence_when_wrong']:.2f}")
-    if report["factors"]:
-        lines += ["", "因子差异（判错均值 - 判对均值，正数表示判错时该因子更大）"]
-        for row in report["factors"][:12]:
-            lines.append(f"    {row['code']:34s} {row['delta']:+.3f}  "
-                         f"(n={row['support']} 错{row['wrong_n']}/对{row['right_n']})")
-    else:
-        lines += ["", "因子差异：样本不足，至少需要同一因子在判错与判对两侧各出现若干次"]
-    return "\n".join(lines)
+        if len(data.get("policy_versions") or {}) > 1:
+            versions = "  ".join(f"{k}:{v}" for k, v in data["policy_versions"].items())
+            lines.append(f"    策略版本混杂，跨版本比较需谨慎  {versions}")
+        if data["factors"]:
+            lines.append("    因子差异（判错均值 - 判对均值）")
+            lines += render_factors(data["factors"])
+        else:
+            lines.append("    因子差异：样本不足，至少需要同一因子在判错与判对两侧各出现若干次")
+    return chr(10).join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save", type=Path, help="write the derived samples here")
     parser.add_argument("--bot-id", default="",
                         help="bot account id; required for recipient samples")
+    parser.add_argument("--plugin-version", default="",
+                        help="stamped into every sample so a corpus stays interpretable")
     parser.add_argument("--min-support", type=int, default=4)
     parser.add_argument("--recommend", action="store_true",
                         help="add the shadow recipient recommendation (never applied)")
@@ -92,24 +127,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     args = parser.parse_args(argv)
 
-    samples: list[LearningSample] = []
+    samples: list = []
+    warnings: list = []
     if args.store:
         samples.extend(load_store(args.store))
     if args.annotations:
         records = load_annotations(args.annotations)
-        if not args.bot_id and any("bot_targeted" in row for row in records):
-            # Silence here would look like a perfect recipient model.
-            print("警告：标注里有收件人标签，但未提供 --bot-id，收件人样本已跳过",
-                  file=sys.stderr)
-        samples.extend(samples_from_annotations(records, bot_id=args.bot_id))
+        built = build_samples(records, bot_id=args.bot_id,
+                              plugin_version=args.plugin_version)
+        samples.extend(built.samples)
+        warnings.extend(built.warnings())
+    for warning in warnings:
+        print(f"警告：{warning}", file=sys.stderr)
     if not samples:
         print("没有可用的样本：请提供 --annotations 或 --store", file=sys.stderr)
         return 1
 
     if args.save:
-        args.save.write_text("\n".join(json.dumps(s.to_dict(), ensure_ascii=False,
-                                                   allow_nan=False) for s in samples) + "\n",
-                             encoding="utf-8")
+        args.save.write_text(chr(10).join(
+            json.dumps(s.to_dict(), ensure_ascii=False, allow_nan=False) for s in samples) + chr(10),
+            encoding="utf-8")
 
     report = summarize(samples, min_support=max(1, args.min_support))
     advice = (analyze_recipient(samples, min_samples=max(1, args.min_samples),
@@ -120,8 +157,10 @@ def main(argv: list[str] | None = None) -> int:
         if advice is not None:
             payload["recommendation"] = {
                 "task": advice.task, "ready": advice.ready, "samples": advice.samples,
-                "required_samples": advice.required_samples, "notes": list(advice.notes),
-                "factors": [vars(item) for item in advice.factors]}
+                "required_samples": advice.required_samples,
+                "reasons": list(advice.reasons), "notes": list(advice.notes),
+                "findings": [item.as_dict() for item in advice.findings],
+                "shadow": advice.shadow.as_dict() if advice.shadow else None}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(render(report))

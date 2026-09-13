@@ -22,8 +22,18 @@ class TopicAnnotations:
         self.lock = asyncio.Lock()
 
     @staticmethod
-    def key(session):
-        return "topic_annotations_v1_" + hashlib.sha256(session.encode()).hexdigest()
+    def digest(session):
+        """Stable per-session key that does not carry the group id itself.
+
+        The record stores this so an export stays groupable after it leaves the
+        plugin: without it a learner cannot split train from validation by
+        conversation, and every row collapses into one "unknown" session.
+        """
+        return hashlib.sha256(session.encode()).hexdigest()
+
+    @classmethod
+    def key(cls, session):
+        return "topic_annotations_v1_" + cls.digest(session)
 
     async def read(self, session):
         rows = await self.plugin.get_kv_data(self.key(session), [])
@@ -83,6 +93,7 @@ class TopicAnnotations:
             raise ValueError("correct label must match prediction")
         record = {"annotation_schema_version": 2, "msg_id": mid, "predicted_topic": predicted, "expected_topic": expected,
                   "error_type": error, "annotated_at": time.time(),
+                  "session_hash": self.digest(session),
                   "routing": {key: deepcopy(routing[key]) for key in ("topic_confidence", "ambiguous", "topic_ambiguous", "topic_status", "candidates", "topic_candidates", "boundary_score", "evidence") if key in routing}}
         record.update({key: deepcopy(body[key]) for key in RECIPIENT_FIELDS if key in body})
         trace = node.metadata.get("routing_trace", node.metadata.get("decision_trace", {}))

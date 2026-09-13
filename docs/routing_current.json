@@ -136,9 +136,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -148,6 +162,7 @@
             ],
             "bot_targeted": true,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -165,6 +180,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 1.0,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -182,13 +198,75 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 1.0
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -198,6 +276,7 @@
             ],
             "bot_targeted": true,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -215,6 +294,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 1.0,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -232,7 +312,55 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 1.0
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -284,9 +412,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -296,6 +438,7 @@
             ],
             "bot_targeted": true,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -313,6 +456,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 1.0,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -330,13 +474,75 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 1.0
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -346,6 +552,7 @@
             ],
             "bot_targeted": true,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -363,6 +570,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 1.0,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -380,7 +588,55 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 1.0
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -429,15 +685,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -455,6 +726,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -472,19 +744,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -502,6 +823,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -519,7 +841,41 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -567,9 +923,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -578,6 +948,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -595,6 +966,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -612,13 +984,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -627,6 +1054,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -644,6 +1072,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -661,7 +1090,48 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -709,15 +1179,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -735,6 +1220,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -752,19 +1238,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -782,6 +1317,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -799,7 +1335,41 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -845,15 +1415,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -871,24 +1456,28 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 1.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.05,
+                "raw_value": 0.0,
                 "source": "dag.recent"
               },
               {
                 "code": "continuation_cue",
                 "family": "dialogue",
                 "strength": 0.15,
+                "raw_value": 1.0,
                 "source": "continuation_matcher"
               }
             ],
@@ -908,19 +1497,96 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 1.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 0.0,
+                "contribution": 0.05
+              },
+              {
+                "domain": "participation",
+                "code": "continuation_cue",
+                "source": "continuation_matcher",
+                "raw_value": 1.0,
+                "contribution": 0.15
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -938,24 +1604,28 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 1.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.05,
+                "raw_value": 0.0,
                 "source": "dag.recent"
               },
               {
                 "code": "continuation_cue",
                 "family": "dialogue",
                 "strength": 0.15,
+                "raw_value": 1.0,
                 "source": "continuation_matcher"
               }
             ],
@@ -975,7 +1645,69 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 1.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 0.0,
+                "contribution": 0.05
+              },
+              {
+                "domain": "participation",
+                "code": "continuation_cue",
+                "source": "continuation_matcher",
+                "raw_value": 1.0,
+                "contribution": 0.15
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1065,9 +1797,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -1076,6 +1822,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1093,6 +1840,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1110,13 +1858,82 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -1125,6 +1942,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1142,6 +1960,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1159,7 +1978,62 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1251,9 +2125,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -1262,6 +2150,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1279,6 +2168,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1296,13 +2186,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -1311,6 +2256,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1328,6 +2274,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1345,7 +2292,48 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1393,15 +2381,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -1419,6 +2422,7 @@
                 "code": "bot_subject",
                 "family": "recipient",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1436,19 +2440,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "bot_subject",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -1466,6 +2519,7 @@
                 "code": "bot_subject",
                 "family": "recipient",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1483,7 +2537,41 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "bot_subject",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1531,9 +2619,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -1542,6 +2644,7 @@
             ],
             "bot_targeted": false,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1559,6 +2662,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.15,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1576,13 +2680,75 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.15
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
@@ -1591,6 +2757,7 @@
             ],
             "bot_targeted": false,
             "confidence": 1.0,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1608,6 +2775,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.15,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1625,7 +2793,55 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_not_formed",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_mention",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.15
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1675,9 +2891,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -1686,6 +2916,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1703,6 +2934,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1720,13 +2952,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -1735,6 +3022,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1752,6 +3040,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -1769,7 +3058,48 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1817,15 +3147,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -1843,6 +3188,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -1860,19 +3206,68 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -1890,6 +3285,7 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               }
             ],
@@ -1907,7 +3303,41 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -1955,9 +3385,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "0",
+            "confidence": 1.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.7130000000000001,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -1966,6 +3410,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -1983,6 +3428,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2000,13 +3446,96 @@
             "last_bot_message_id": null
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.7130000000000001,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_reply",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "explicit_reply",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_reply_evidence",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "0",
+            "confidence": 1.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.7130000000000001,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -2015,6 +3544,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.95,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -2032,6 +3562,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.95,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2049,7 +3580,76 @@
             "last_bot_message_id": null
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.7130000000000001,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.95,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "explicit_reply",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "explicit_reply",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_reply_evidence",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "direct_name_call",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.95
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -2130,9 +3730,23 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -2141,6 +3755,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -2158,6 +3773,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2175,13 +3791,82 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": false,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -2190,6 +3875,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -2207,6 +3893,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2224,7 +3911,62 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -2349,15 +4091,39 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0791,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.5233,
+            "ambiguous": true,
+            "candidates": [
+              [
+                0.5233,
+                "0"
+              ],
+              [
+                0.4442,
+                "1"
+              ]
+            ]
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.081,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -2375,18 +4141,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 2.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -2406,19 +4175,147 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "semantic",
+                "source": "parent_retriever",
+                "raw_value": 0.0,
+                "contribution": 0.0
+              },
+              {
+                "domain": "parent",
+                "code": "topic_affinity",
+                "source": "parent_retriever",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "parent",
+                "code": "qa_fit",
+                "source": "parent_retriever",
+                "raw_value": 1.0,
+                "contribution": 0.17
+              },
+              {
+                "domain": "parent",
+                "code": "temporal",
+                "source": "parent_retriever",
+                "raw_value": 0.9833333333333333,
+                "contribution": 0.09833333333333333
+              },
+              {
+                "domain": "parent",
+                "code": "turn_proximity",
+                "source": "parent_retriever",
+                "raw_value": 0.55,
+                "contribution": 0.05500000000000001
+              },
+              {
+                "domain": "parent",
+                "code": "participant",
+                "source": "parent_retriever",
+                "raw_value": 0.0,
+                "contribution": 0.0
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.081,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_ambiguous",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 2.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0791,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.5233,
+            "ambiguous": true,
+            "candidates": [
+              [
+                0.5233,
+                "0"
+              ],
+              [
+                0.4442,
+                "1"
+              ]
+            ]
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.081,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -2436,18 +4333,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 2.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -2467,7 +4367,111 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "semantic",
+                "source": "parent_retriever",
+                "raw_value": 0.0,
+                "contribution": 0.0
+              },
+              {
+                "domain": "parent",
+                "code": "topic_affinity",
+                "source": "parent_retriever",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "parent",
+                "code": "qa_fit",
+                "source": "parent_retriever",
+                "raw_value": 1.0,
+                "contribution": 0.17
+              },
+              {
+                "domain": "parent",
+                "code": "temporal",
+                "source": "parent_retriever",
+                "raw_value": 0.9833333333333333,
+                "contribution": 0.09833333333333333
+              },
+              {
+                "domain": "parent",
+                "code": "turn_proximity",
+                "source": "parent_retriever",
+                "raw_value": 0.55,
+                "contribution": 0.05500000000000001
+              },
+              {
+                "domain": "parent",
+                "code": "participant",
+                "source": "parent_retriever",
+                "raw_value": 0.0,
+                "contribution": 0.0
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.081,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_ambiguous",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 2.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -2588,9 +4592,28 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.4692,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.4692,
+            "ambiguous": false,
+            "candidates": [
+              [
+                0.4692,
+                "1"
+              ]
+            ]
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -2599,6 +4622,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -2616,6 +4640,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2633,13 +4658,94 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.181,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "1",
+            "confidence": 0.76,
+            "margin": 0.4692,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.4692,
+            "ambiguous": false,
+            "candidates": [
+              [
+                0.4692,
+                "1"
+              ]
+            ]
+          },
           "topic": {
             "topic_id": "0",
             "confidence": 0.78,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
@@ -2648,6 +4754,7 @@
             ],
             "bot_targeted": true,
             "confidence": 0.76,
+            "threshold": 0.72,
             "ambiguous": false
           },
           "identity": {
@@ -2665,6 +4772,7 @@
                 "code": "canonical_recipient",
                 "family": "recipient",
                 "strength": 0.76,
+                "raw_value": 1.0,
                 "source": "routing"
               }
             ],
@@ -2682,7 +4790,69 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "parent",
+                "code": "parent_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "parent_topic_override",
+                "source": "recipient_resolver",
+                "raw_value": 0.181,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.78,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.76,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "active_interlocutor_followup",
+                "source": "recipient_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "canonical_recipient",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": 0.76
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -2803,15 +4973,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "3",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -2829,18 +5014,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 2.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -2860,19 +5048,82 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 2.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "3",
             "confidence": 1.0,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": false
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -2890,18 +5141,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": 0.25,
+                "raw_value": 2.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -2921,7 +5175,55 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 2.0,
+                "contribution": 0.25
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         }
       },
       "turns": [
@@ -3042,15 +5344,30 @@
       "traces": {
         "legacy": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.1315,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -3068,18 +5385,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": -0.1,
+                "raw_value": 299.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -3099,19 +5419,96 @@
             "last_bot_message_id": "1"
           },
           "mode": "legacy",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.1315,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_ambiguous",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 299.0,
+                "contribution": -0.1
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         },
         "persona": {
           "routing_schema_version": 2,
+          "trace_version": 1,
+          "calibrated": false,
+          "parent": {
+            "message_id": "",
+            "confidence": 0.0,
+            "margin": 0.0,
+            "threshold": 0.72,
+            "margin_threshold": 0.08,
+            "candidate_score": 0.0,
+            "ambiguous": true,
+            "candidates": []
+          },
           "topic": {
             "topic_id": "",
             "confidence": 0.1315,
+            "threshold": 0.58,
+            "margin_threshold": 0.06,
             "ambiguous": true
           },
           "recipient": {
             "ids": [],
             "bot_targeted": false,
             "confidence": 0.0,
+            "threshold": 0.72,
             "ambiguous": true
           },
           "identity": {
@@ -3129,18 +5526,21 @@
                 "code": "ambient_baseline",
                 "family": "baseline",
                 "strength": 0.2,
+                "raw_value": 1.0,
                 "source": "policy"
               },
               {
                 "code": "temporal_gap",
                 "family": "temporal",
                 "strength": -0.1,
+                "raw_value": 299.0,
                 "source": "message.timestamp"
               },
               {
                 "code": "intervening_messages",
                 "family": "dialogue",
                 "strength": 0.0,
+                "raw_value": 1.0,
                 "source": "dag.recent"
               }
             ],
@@ -3160,7 +5560,69 @@
             "last_bot_message_id": "1"
           },
           "mode": "persona",
-          "weights_version": "recipient-v2"
+          "weights_version": "recipient-v2",
+          "ledger": {
+            "version": 1,
+            "calibrated": false,
+            "entries": [
+              {
+                "domain": "topic",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.1315,
+                "contribution": null
+              },
+              {
+                "domain": "parent",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "recipient",
+                "code": "selected_score",
+                "source": "routing",
+                "raw_value": 0.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_profile",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "topic",
+                "code": "topic_ambiguous",
+                "source": "topic_resolver",
+                "raw_value": 1.0,
+                "contribution": null
+              },
+              {
+                "domain": "participation",
+                "code": "ambient_baseline",
+                "source": "policy",
+                "raw_value": 1.0,
+                "contribution": 0.2
+              },
+              {
+                "domain": "participation",
+                "code": "temporal_gap",
+                "source": "message.timestamp",
+                "raw_value": 299.0,
+                "contribution": -0.1
+              },
+              {
+                "domain": "participation",
+                "code": "intervening_messages",
+                "source": "dag.recent",
+                "raw_value": 1.0,
+                "contribution": 0.0
+              }
+            ]
+          }
         }
       },
       "turns": [
