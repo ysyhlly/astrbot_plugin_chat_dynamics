@@ -278,6 +278,80 @@ def test_effective_returns_the_configured_value_unless_applied():
     assert active.effective("safe_hover_threshold", 0.40) == pytest.approx(0.40)
 
 
+# ---- shadow decisions ---------------------------------------------------
+
+def shadow_of(*, mode="shadow", evidence=("ambient_baseline",), score=0.68,
+              level="hover", has_prior_bot=True, payload=None, baseline_threshold=0.70):
+    consumer = lp.LearningPolicyConsumer(mode=mode, host_version="v1.6.2")
+    consumer.decision = decide(payload if payload is not None else publish(), mode=mode)
+    return consumer.shadow_decision(
+        score=score, level=level, evidence_codes=evidence,
+        has_prior_bot=has_prior_bot, baseline_threshold=baseline_threshold)
+
+
+def test_a_shadow_decision_reproduces_the_admission_rule_exactly():
+    """The comparison is only worth recording if it is the decision the policy
+    would have made, not an approximation of it."""
+    above = shadow_of(score=0.68, baseline_threshold=0.70)
+    below = shadow_of(score=0.66, baseline_threshold=0.70)
+
+    assert above["baseline_reply"] is False, "0.68 低于基线阈值"
+    assert above["shadow_reply"] is True, "0.68 高于策略阈值 0.67"
+    assert above["changed"] is True
+    assert above["reason"] == "ambient"
+    assert below["shadow_reply"] is False, "0.66 连策略阈值也没到"
+    assert below["changed"] is False
+    assert above["baseline_margin"] == pytest.approx(-0.02)
+    assert above["shadow_margin"] == pytest.approx(0.01)
+
+
+def test_a_structural_turn_is_the_same_decision_at_any_threshold():
+    decision = shadow_of(evidence=("bot_mention", "ambient_baseline"), level="strong",
+                         score=0.9)
+
+    assert decision["changed"] is False
+    assert decision["reason"] == "structural"
+    assert decision["baseline_reply"] is True and decision["shadow_reply"] is True
+
+
+def test_a_turn_with_no_prior_bot_message_returns_early_for_both():
+    decision = shadow_of(evidence=("ambient_baseline",), level="weak", score=0.2,
+                         has_prior_bot=False)
+
+    assert decision["changed"] is False
+    assert decision["reason"] == "early_return"
+
+
+def test_shadow_records_nothing_outside_shadow_mode():
+    """active would compare the policy with itself; off has nothing to compare."""
+    assert shadow_of(mode="active") is None
+    assert shadow_of(mode="off") is None
+
+
+def test_shadow_records_nothing_when_the_policy_does_not_move_the_threshold():
+    payload = publish(params={"topic_commit_threshold": 0.62})
+
+    assert shadow_of(payload=payload) is None
+
+
+def test_the_shadow_block_is_narrowed_and_carries_no_identifiers():
+    from astrbot_plugin_chat_dynamics.core.routing_trace import build_routing_trace
+
+    trace = build_routing_trace(routing={"topic_id": "t1"}, shadow=shadow_of())
+
+    assert trace["shadow"]["policy_id"] == "policy_v3"
+    assert trace["shadow"]["changed"] is True
+    assert set(trace["shadow"]) == {
+        "policy_id", "baseline_threshold", "shadow_threshold", "baseline_reply",
+        "shadow_reply", "changed", "reason", "score", "baseline_margin", "shadow_margin"}
+
+
+def test_a_trace_without_a_shadow_decision_has_no_shadow_block():
+    from astrbot_plugin_chat_dynamics.core.routing_trace import build_routing_trace
+
+    assert "shadow" not in build_routing_trace(routing={})
+
+
 def test_switching_the_mode_away_from_active_drops_the_cached_decision():
     consumer = lp.LearningPolicyConsumer(mode="active", host_version="v1.6.2")
     consumer.decision = decide(publish())

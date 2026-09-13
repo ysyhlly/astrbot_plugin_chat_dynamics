@@ -26,8 +26,13 @@ from enum import Enum
 from collections.abc import Mapping
 from .evidence import routing_ledger, sanitize_ledger, finite_number
 from .outcome_recorder import OUTCOME_KEY
-from .routing_contract import addressee_is_ambiguous
 from .participation_policy import EVIDENCE_CODES, EVIDENCE_FAMILIES, EVIDENCE_SOURCES
+from .routing_contract import addressee_is_ambiguous
+
+# The schema 3 section carrying the shadow policy's decision. Named here rather
+# than imported from the consumer: the trace describes what happened, and it
+# should not depend on the module that decided whether to read a policy.
+SHADOW_KEY = "shadow"
 
 
 def _mapping(value):
@@ -163,6 +168,33 @@ def _outcome_block(outcome):
     }
 
 
+def _shadow_block(shadow):
+    """The shadow policy's decision, narrowed to what a reader consumes.
+
+    Recorded only while the policy is being *observed*: it is the other half of
+    a comparison whose first half is what the runtime actually did, and a
+    comparison against itself would only add rows to the disagreement subset
+    that are not disagreements.
+    """
+    block = _mapping(shadow) if shadow is not None else {}
+    if not block or not block.get("policy_id"):
+        return None
+    outcome = {
+        "policy_id": str(block.get("policy_id"))[:64],
+        "baseline_threshold": finite_number(block.get("baseline_threshold")),
+        "shadow_threshold": finite_number(block.get("shadow_threshold")),
+        "baseline_reply": bool(block.get("baseline_reply")),
+        "shadow_reply": bool(block.get("shadow_reply")),
+        "changed": bool(block.get("changed")),
+        "reason": str(block.get("reason") or "")[:32],
+    }
+    for name in ("score", "baseline_margin", "shadow_margin"):
+        value = finite_number(block.get(name))
+        if value is not None:
+            outcome[name] = value
+    return outcome
+
+
 def redact_trace_identifiers(trace):
     """Redact identifiers in a fresh trace, including parent candidates."""
     from copy import deepcopy
@@ -189,7 +221,7 @@ def redact_trace_identifiers(trace):
 
 def build_routing_trace(*, routing, identity=None, participation=None,
                         state=None, mode="legacy", weights_version="default",
-                        outcome=None) -> dict:
+                        outcome=None, shadow=None) -> dict:
     """Return schema 3 using a field allowlist; never copy message text/payloads.
 
     `outcome` is optional because the trace is normally built *before* the turn
@@ -245,6 +277,9 @@ def build_routing_trace(*, routing, identity=None, participation=None,
     block = _outcome_block(outcome)
     if block is not None:
         snapshot[OUTCOME_KEY] = block
+    shadow_block = _shadow_block(shadow)
+    if shadow_block is not None:
+        snapshot[SHADOW_KEY] = shadow_block
     ledger = routing_ledger(route)
     for item in _participation_evidence(part)["evidence"]:
         ledger["entries"].append(dict(domain="participation", code=item["code"],

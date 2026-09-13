@@ -54,9 +54,12 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 # `outcome` is in the allowlist because it is written after the fact and can be
 # written after a restart: losing it would turn a recorded 作息压制 back into a
 # missing ending, which is the schema 2 gap this field exists to close.
+# `shadow_decision` is in the allowlist for the same reason `outcome` is: it is
+# written after the fact and can be written after a restart. Losing it would
+# drop exactly the turns a shadow run is measuring.
 META_FIELDS = ('topic_id', 'routing', 'is_bot', 'source', 'addressivity', 'decision',
-               'outcome', 'vibe_mode', 'sender_name', 'display_name', 'turn_id', 'topic_title',
-               'edge_metadata', 'inferred_parent_id', 'is_wake')
+               'outcome', 'shadow_decision', 'vibe_mode', 'sender_name', 'display_name',
+               'turn_id', 'topic_title', 'edge_metadata', 'inferred_parent_id', 'is_wake')
 SHADOW_FIELDS = ('session_key', 'timestamp', 'action', 'reason', 'willingness_score',
                  'threshold', 'topic_relevance', 'professionalism', 'question_value',
                  'participation', 'state', 'length', 'target_message_ids')

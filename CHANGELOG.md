@@ -2,6 +2,23 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.8.0 — Shadow A/B 第一阶段：记录策略判定
+
+本体在 `learning_policy_mode = shadow` 时**不改任何行为**，但每条处理过的消息会同时算出
+「baseline 会怎么判」和「策略会怎么判」，写进 schema 3 轨迹的 `shadow` 段。
+
+- `core/learning_policy.py` 新增 `shadow_decision`：**精确复现**准入规则而不是近似它 ——
+  结构化证据短路（`structural`）、无前置机器人消息的提前返回（`early_return`）、
+  环境层加性分数比阈值（`ambient`）。判定与轨迹一起冻结，学习层才能把两边的结论对上；
+- 只有 `shadow` 模式记录。`active` 下策略就是运行时，比较等于和自己比；`off` 下没有可比对象 ——
+  两种情况写进去，都会给分歧子集塞进一列「一致」的、其实从未比较过的行；
+- 策略没有移动准入阈值时返回 `None`：没有可比的东西，就不该记；
+- `shadow_decision` 同时进入 `META_FIELDS`，重启不会把已记录的比较退化成缺失；
+- `main.py` 里的运行期部分（基线计算、策略折叠、刷新节流、状态查询、shadow 判定）
+  已在 v1.7.0 抽到 `core/learning_policy_runtime.py`，本版只在那里加一层委派。
+
+学习层侧配套：`core/shadow.py` 做配对表与 active 门槛，详见它的 CHANGELOG。
+
 ## v1.7.0 — 学习策略消费端、旧学习层清理与跨插件契约
 
 ### 学习策略消费端（off / shadow / active）

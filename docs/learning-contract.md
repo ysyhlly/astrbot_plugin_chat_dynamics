@@ -27,6 +27,7 @@ ChatDynamics  ◀──policy_contract_version──  Dynamics Learning   （发
 | `state` | 待定 hover、当前对话者、中间消息数、等答复、上一条是不是问句 |
 | `routing`（schema 3 起） | `selected_topic` 与结构化 `topic_candidates`，每条带 `evidence` |
 | `outcome`（schema 3 起） | `final_outcome` / `delivered` / `suppression_reason` / `stage` |
+| `shadow`（v1.8.0 起） | `policy_id` / 两个阈值 / 两个判定 / `changed` / `score` / 两侧 margin / `reason` |
 
 `contribution_total` 是学习层阈值回放的**唯一依据**（它是宿主裁剪前的分数），
 不要停止写入它。
@@ -45,6 +46,27 @@ delivered         至少一个分片发出去了（终态）
 ```
 
 **投递是终态**：一个分片发出去了，这一轮就是 delivered，后续分片失败不会翻案。
+
+### `shadow` 段：Shadow A/B 第一阶段
+
+`learning_policy_mode = shadow` 时运行时**不改行为**，但每条消息会同时算出「baseline 会怎么判」
+和「策略会怎么判」。`shadow_decision` **精确复现**准入规则而不是近似它：
+
+| `reason` | 含义 |
+| --- | --- |
+| `structural` | 结构化证据短路（明确指代、回复、称呼…）—— 阈值对这轮没有影响 |
+| `early_return` | 会话里没有前置机器人消息，本体提前返回 |
+| `ambient` | 环境层加性分数与两侧阈值比较 |
+
+两条只在本体侧成立的约束：
+
+1. **只有 `shadow` 模式记录。** `active` 下策略就是运行时，比较等于和自己比；`off` 下没有
+   可比对象。两种情况写进去，都会给学习层的分歧子集塞进一列「一致」的、其实从未比较过的行；
+2. **策略没有移动 `strong_addressivity_threshold` 时返回 `None`。** 没有可比的东西就不记 ——
+   记一行 `changed=false` 同样是在污染「一致」的计数。
+
+`reason` 不只是注解：学习层的跨仓库测试会断言结构化轮次在两边都被认成「同一判定」。
+两边的 admission 规则必须是同一件事，否则分歧子集在契约两侧会是两个不同的集合。
 
 ### 未知的抑制原因会被读成未分类
 

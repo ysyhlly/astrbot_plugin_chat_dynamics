@@ -126,6 +126,19 @@ class LearningPolicyRuntime:
         decision = await self.consumer.refresh(effective_config=effective_config)
         return decision
 
+    def shadow_decision(self, *, score: float, level: str, evidence_codes,
+                        has_prior_bot: bool, baseline_threshold: float,
+                        now: float | None = None) -> dict[str, Any] | None:
+        """What the policy would have decided, or `None` when nothing is observed.
+
+        Delegated rather than reimplemented: the admission rule has exactly one
+        implementation (`learning_policy.shadow_decision`) and a second copy
+        here would be a second answer to "what would the policy have done".
+        """
+        return self.consumer.shadow_decision(
+            score=score, level=level, evidence_codes=evidence_codes,
+            has_prior_bot=has_prior_bot, baseline_threshold=baseline_threshold, now=now)
+
     def status(self) -> dict[str, Any]:
         return self.consumer.decision.as_dict()
 

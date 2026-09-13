@@ -279,7 +279,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.7.0",
+    "v1.8.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -2509,6 +2509,23 @@ class ChatDynamicsPlugin(Star):
             mentions=node.mentioned_users, bot_id=runtime.bot_id)
         dialogue = runtime.active_dialogue
         trace_recent = dag.get_recent_nodes(limit=80)
+        # Phase one of a shadow run: the runtime keeps the baseline behaviour and
+        # the policy's decision is computed beside it. Computed here, before the
+        # trace is frozen, so the comparison travels inside the same snapshot the
+        # rest of the decision does.
+        shadow_runtime = getattr(self, "learning_policy", None)
+        shadow_recorded = (
+            shadow_runtime.shadow_decision(
+                score=float(addressivity.contribution_total or 0.0),
+                level=addressivity.level.value if hasattr(addressivity.level, "value")
+                else str(addressivity.level),
+                evidence_codes=[item.code for item in addressivity.evidence],
+                has_prior_bot=last_bot_node is not None,
+                baseline_threshold=float(self.addressivity_router.strong_threshold),
+                now=self.time_service.wall_time(),
+            ) if shadow_runtime is not None else None)
+        if shadow_recorded is not None:
+            node.metadata["shadow_decision"] = shadow_recorded
         node.metadata["decision_trace"] = build_routing_trace(
             routing=node.metadata.get("routing", {}), identity=identity,
             participation={"score": addressivity.score, "level": addressivity.level,
@@ -2525,7 +2542,8 @@ class ChatDynamicsPlugin(Star):
                        if last_bot_node is not None and last_bot_node.timestamp < n.timestamp < node.timestamp
                        and n.user_id not in {runtime.bot_id, node.user_id}})},
             mode="persona" if self._persona_mode() else "legacy",
-            weights_version=ROUTING_WEIGHTS_VERSION)
+            weights_version=ROUTING_WEIGHTS_VERSION,
+            shadow=shadow_recorded)
         # Every processed turn starts as "the reply flow was never entered" and
         # is upgraded as the turn progresses. Recording a default beats leaving
         # the field out: "we did not try" and "we never found out" are different

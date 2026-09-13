@@ -353,6 +353,78 @@ def resolve(
                     reasons=tuple(reasons + [f"已应用策略 {view.policy_id}。"]))
 
 
+# ---- shadow decisions ---------------------------------------------------
+#
+# Phase one of a shadow A/B run: the runtime keeps the baseline behaviour and,
+# for every turn, the policy's decision is computed beside it and recorded. No
+# behaviour changes; what changes is that the two decisions can be compared
+# later against a human label.
+#
+# The comparison is only meaningful if it is exactly the decision the policy
+# would have made, so it reproduces the admission rule rather than approximating
+# it: structural turns are threshold-independent, a session with no prior bot
+# message returns early, and only the ambient additive score is compared against
+# the threshold.
+
+# Codes that short-circuit the policy: the decision comes from the evidence, not
+# from the score, so moving a threshold cannot change it. Mirrors
+# `participation_policy.ParticipationPolicy.explicit`.
+EXPLICIT_CODES = frozenset({
+    "canonical_recipient", "bot_mention", "other_mention", "vocative", "bot_reply",
+    "routed_bot", "routed_other", "bot_subject",
+})
+# The evidence a turn can carry and still be the host's early return.
+AMBIENT_ONLY_CODES = frozenset({"ambient_baseline", "human_quote"})
+
+REASON_STRUCTURAL = "structural"
+REASON_EARLY_RETURN = "early_return"
+REASON_AMBIENT = "ambient"
+
+
+def shadow_decision(*, score: float, level: str, evidence_codes,
+                    has_prior_bot: bool, baseline_threshold: float,
+                    params: Mapping[str, float], policy_id: str,
+                    now: float | None = None) -> dict[str, Any] | None:
+    """What the policy would have decided, recorded beside what was decided.
+
+    Returns `None` when the policy does not move the admission threshold, which
+    is the honest answer: there is nothing to compare.
+    """
+    target = params.get("strong_addressivity_threshold")
+    number = _number(target)
+    if number is None:
+        return None
+    if abs(number - float(baseline_threshold)) < 1e-9:
+        # The policy does not move the admission threshold, so there is no
+        # comparison to record. Writing a row anyway would put a column of
+        # always-equal decisions into the "same" count — rows that were never
+        # compared, reported as agreement.
+        return None
+    codes = {str(code) for code in evidence_codes}
+    clamped = max(0.0, min(1.0, float(score)))
+    baseline_reply = level == "strong"
+    if codes & EXPLICIT_CODES:
+        # The evidence decided it, at either threshold.
+        shadow_reply, reason = baseline_reply, REASON_STRUCTURAL
+    elif not has_prior_bot:
+        shadow_reply, reason = baseline_reply, REASON_EARLY_RETURN
+    else:
+        shadow_reply, reason = clamped >= number, REASON_AMBIENT
+    return {
+        "policy_id": policy_id,
+        "baseline_threshold": round(float(baseline_threshold), 4),
+        "shadow_threshold": round(number, 4),
+        "baseline_reply": bool(baseline_reply),
+        "shadow_reply": bool(shadow_reply),
+        "changed": bool(baseline_reply) != bool(shadow_reply),
+        "score": round(clamped, 6),
+        "baseline_margin": round(clamped - float(baseline_threshold), 6),
+        "shadow_margin": round(clamped - number, 6),
+        "reason": reason,
+        "recorded_at": float(now) if now is not None else 0.0,
+    }
+
+
 class LearningPolicyConsumer:
     """Caches the published policy and answers "what should this key be".
 
@@ -397,6 +469,24 @@ class LearningPolicyConsumer:
     def overrides(self) -> dict[str, float]:
         return dict(self.decision.overrides) if self.decision.applied else {}
 
+    def shadow_decision(self, *, score: float, level: str, evidence_codes,
+                        has_prior_bot: bool, baseline_threshold: float,
+                        now: float | None = None) -> dict[str, Any] | None:
+        """Record what the policy would have decided, or `None` in any other mode.
+
+        Only `shadow` records. In `active` the policy *is* the runtime, so the
+        comparison would be against itself; in `off` there is no policy to
+        compare with. Writing rows in either case would put a column of
+        always-equal decisions into the disagreement statistics and make the
+        subset look large and empty.
+        """
+        if self.mode != MODE_SHADOW or not self.decision.overrides:
+            return None
+        return shadow_decision(
+            score=score, level=level, evidence_codes=evidence_codes,
+            has_prior_bot=has_prior_bot, baseline_threshold=baseline_threshold,
+            params=self.decision.overrides, policy_id=self.decision.policy_id, now=now)
+
     async def refresh(self, *, sp_module: Any = None, effective_config: Mapping[str, float],
                       mode: str | None = None) -> Decision:
         """Re-read the published policy. Never raises: a missing partner plugin
@@ -429,7 +519,9 @@ class LearningPolicyConsumer:
 
 
 __all__ = [
-    "ALLOWED_PARAMS", "MODE_ACTIVE", "MODE_OFF", "MODE_SHADOW", "MODES", "PARAM_RANGES",
+    "ALLOWED_PARAMS", "AMBIENT_ONLY_CODES", "EXPLICIT_CODES", "MODE_ACTIVE", "MODE_OFF",
+    "MODE_SHADOW", "MODES", "PARAM_RANGES", "REASON_AMBIENT", "REASON_EARLY_RETURN",
+    "REASON_STRUCTURAL", "shadow_decision",
     "PUBLISHED_KEY", "SUPPORTED_POLICY_CONTRACT_VERSIONS", "STATUS_ACTIVE",
     "STATUS_INCOMPATIBLE", "STATUS_NO_POLICY", "STATUS_OFF", "STATUS_SHADOW", "Decision",
     "LearningPolicyConsumer", "PolicyView", "baseline_config_hash", "parse_published",
