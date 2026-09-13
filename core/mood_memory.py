@@ -16,6 +16,22 @@ logger = logging.getLogger("astrbot_plugin_chat_dynamics.mood_memory")
 _BLOCKED_TAGS = {"conflict", "romance", "恋爱", "冲突", "吵架", "暧昧"}
 _TAG_RE = re.compile(r"^[\w\u4e00-\u9fff\-·]{1,24}$")
 
+# The JSON file is the authority, so eviction only costs one re-read.
+_CACHE_LIMIT = 256
+# Same bound as the notebook: a mute must not be able to become permanent.
+_MAX_MUTE_HOURS = 720.0
+
+
+def _finite_hours(value: Any, default: float = 10.0) -> float:
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(hours):
+        logger.warning("non-finite mute duration rejected; using %.1fh", default)
+        return default
+    return min(_MAX_MUTE_HOURS, max(1.0, hours))
+
 
 def _safe_umo(umo: str) -> str:
     return safe_umo(umo)
@@ -39,6 +55,12 @@ class MoodMemoryStore:
     def _path(self, umo: str) -> Path:
         return self.data_dir / f"mood_{_safe_umo(umo)}.json"
 
+    def _cache_put(self, key: str, data: Dict[str, Any]) -> None:
+        if key not in self._cache and len(self._cache) >= _CACHE_LIMIT:
+            for oldest in list(self._cache)[: max(1, _CACHE_LIMIT // 4)]:
+                self._cache.pop(oldest, None)
+        self._cache[key] = data
+
     def _load(self, umo: str) -> Dict[str, Any]:
         key = _safe_umo(umo)
         if key in self._cache:
@@ -48,13 +70,13 @@ class MoodMemoryStore:
             data.update(read_umo_json(self.data_dir, "mood", umo))
         except Exception as exc:  # noqa: BLE001
             logger.debug("mood load failed type=%s", type(exc).__name__)
-        self._cache[key] = data
+        self._cache_put(key, data)
         return data
 
     def _save(self, umo: str, data: Dict[str, Any]) -> None:
         data["umo"] = str(umo or "")
         key = _safe_umo(umo)
-        self._cache[key] = data
+        self._cache_put(key, data)
         path = self._path(umo)
         try:
             # Keep storage small: cap peers.
@@ -68,12 +90,12 @@ class MoodMemoryStore:
                 data["peers"] = dict(ordered[-200:])
             atomic_write_json(path, data)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("mood save failed type=%s", type(exc).__name__)
+            logger.warning("mood save failed for one session type=%s", type(exc).__name__)
 
     def mute_tonight(self, umo: str, *, hours: float = 10.0, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)
         data = self._load(umo)
-        until = stamp + max(1.0, float(hours) * 3600.0)
+        until = stamp + _finite_hours(hours) * 3600.0
         data["mute_until"] = until
         self._save(umo, data)
         return until
@@ -102,6 +124,12 @@ class MoodMemoryStore:
         self._save(umo, data)
         return True
 
+    # Local tag writing. Nothing in this plugin calls this today: the runtime
+    # only reads approved tags, either from this store or from the companion's
+    # own approved memories (see recall()). It is kept as the documented write
+    # seam for a companion or an operator tool — deleting it would remove the
+    # only way to seed the local store, and wiring it to an LLM tag classifier is
+    # a feature decision, not a fix.
     def remember(
         self,
         umo: str,

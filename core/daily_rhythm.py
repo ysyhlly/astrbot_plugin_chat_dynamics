@@ -309,8 +309,16 @@ class DailyRhythmGate:
         command_prefix: str = "/",
         public_memory_snippet: str = "",
         gap_fill_candidate: bool = False,
+        node_now: Optional[float] = None,
     ) -> DailyRhythmVerdict:
         stamp = time.time() if now is None else float(now)
+        # ``stamp`` stays the civil clock: session bookkeeping, hour/day buckets
+        # and every duration written into _SessionRhythm are wall seconds.
+        # ``node_stamp`` is the same instant on the monotonic clock the DAG
+        # stamps nodes with; only node-window math may use it. Comparing a wall
+        # value against node timestamps is off by the epoch offset (~1.7e9s),
+        # which silently disables every recency check.
+        node_stamp = float(node_now) if node_now is not None else stamp
         sid = str(session_id or "")
         enabled = bool(getattr(cfg, "daily_rhythm_enabled", True)) if cfg is not None else True
         if not enabled:
@@ -342,6 +350,7 @@ class DailyRhythmGate:
         self._tick_sleep(
             sess,
             stamp=stamp,
+            node_stamp=node_stamp,
             telemetrics=telemetrics,
             recent_nodes=recent_nodes,
             bot_id=bot_id,
@@ -356,7 +365,7 @@ class DailyRhythmGate:
         if not force_sleep:
             self._maybe_end_overnight_sleep(sess, stamp)
 
-        heat = _chat_heat(telemetrics, recent_nodes, stamp=stamp)
+        heat = _chat_heat(telemetrics, recent_nodes, stamp=node_stamp)
 
         # --- asleep / brief_wake ---------------------------------------------
         if sess.state in ASLEEP_STATES or sess.state == STATE_BRIEF_WAKE:
@@ -495,9 +504,9 @@ class DailyRhythmGate:
             and sess.state == STATE_AWAKE
             and not force_sleep
             and not explicit
-            and _local_hour(stamp) >= 23
+            and _local_hour(stamp, sess.timezone) >= 23
         ):
-            if heat == "cold" and _unique_speakers(recent_nodes, since=stamp - 40 * 60, bot_id=bot_id) <= 1:
+            if heat == "cold" and _unique_speakers(recent_nodes, since=node_stamp - 40 * 60, bot_id=bot_id) <= 1:
                 self._enter_asleep(sess, stamp, kind="self", reason="majority_asleep")
                 sess.last_reason_code = "asleep_ambient"
                 sess.last_reason_zh = REASON["asleep_ambient"]
@@ -687,6 +696,7 @@ class DailyRhythmGate:
         sess: _SessionRhythm,
         *,
         stamp: float,
+        node_stamp: float,
         telemetrics: Any,
         recent_nodes: Sequence[Any],
         bot_id: str,
@@ -710,7 +720,7 @@ class DailyRhythmGate:
         if not sleep_after_wind:
             return
 
-        heat = _chat_heat(telemetrics, recent_nodes, stamp=stamp)
+        heat = _chat_heat(telemetrics, recent_nodes, stamp=node_stamp)
         if heat == "hot":
             sess.wind_sleep_deadline = max(sess.wind_sleep_deadline, stamp + 12 * 60)
             sess.hot_delay_until = stamp + 12 * 60

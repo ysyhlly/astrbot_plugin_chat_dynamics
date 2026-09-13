@@ -8,6 +8,7 @@ No long-term memory, ingest, learning or native-hook orchestration lives here.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 from urllib.parse import urlsplit, urlunsplit
 
@@ -16,6 +17,26 @@ import aiohttp
 
 class _HubError(Exception):
     pass
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """True only for a literal loopback address or a `.localhost` name.
+
+    A prefix test on "127." would also accept an attacker-chosen name such as
+    "127.example.com", which resolves wherever its owner points it, so the
+    address is parsed instead of pattern-matched. RFC 6761 reserves the
+    `.localhost` suffix for loopback, so that suffix stays accepted.
+    """
+    host = str(hostname or "").strip().lower().strip("[]")
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
 
 
 class SelfLearningHubClient:
@@ -31,8 +52,11 @@ class SelfLearningHubClient:
 
     def configure(self, url: str, api_key: str) -> None:
         """Invalidate changed configuration; preserve discovery on routine refresh."""
-        if (not self._closed and url and getattr(self, "_configured_input", None)
-                == (url, api_key) and self._url):
+        if self._closed:
+            # A closed client must not claim to be configured while every request
+            # short-circuits to the fallback.
+            return
+        if (url and getattr(self, "_configured_input", None) == (url, api_key) and self._url):
             return
         self._configured_input = (url, api_key)
         self._generation += 1
@@ -53,6 +77,11 @@ class SelfLearningHubClient:
                     or parts.path.rstrip("/") not in {"", self.BASE}):
                 raise ValueError
             _ = parts.port
+            if self._key and parts.scheme == "http" and not _is_loopback_host(parts.hostname or ""):
+                # The key would travel in clear text to a remote host. Loopback
+                # hubs keep working, and a keyless remote hub stays usable.
+                self._status, self._detail = "degraded", "insecure_cleartext"
+                return
             self._url = urlunsplit((parts.scheme, parts.netloc, self.BASE, "", ""))
         except (ValueError, TypeError):
             self._status, self._detail = "degraded", "invalid_url"
@@ -164,9 +193,14 @@ class SelfLearningHubClient:
                 "include": {"social": True, "jargon": True, "few_shots": True, "v2": False},
                 "top_k": 4,
             })
-            if any(key in data and data[key] != expected
-                   for key, expected in (("group_id", group_id), ("user_id", user_id))):
-                raise _HubError("scope_mismatch")
+            # The Hub contract requires the response to echo the scope it was
+            # asked about. Without that echo, another conversation's background
+            # data is indistinguishable from this one's, so a **missing** echo is
+            # treated exactly like a mismatch rather than trusted. Values are
+            # compared as text so a Hub that echoes a numeric id still matches.
+            for key, expected in (("group_id", group_id), ("user_id", user_id)):
+                if str(data.get(key) or "") != expected:
+                    raise _HubError("scope_mismatch")
             result = {}
             parts = data.get("parts", [])
             if isinstance(parts, list):

@@ -378,15 +378,10 @@ def _read_air_summary(
     """Today's read-air: occasion, intervene vs quiet, recent why-silent (no raw msgs)."""
     gate = getattr(plugin, "decision_gate", None)
     manners = getattr(gate, "manners", None) if gate is not None else None
-    stats = manners.today_stats() if manners is not None and hasattr(manners, "today_stats") else {
-        "intervene": 0,
-        "quiet": int((getattr(plugin, "_metrics", {}) or {}).get("speech_withheld", 0) or 0),
-        "why_silent": [],
-    }
     selected = (session_key or "").strip()
-    scoped = sessions
+    matched = sessions
     if selected:
-        scoped = [
+        matched = [
             row
             for row in sessions
             if selected in {
@@ -395,7 +390,21 @@ def _read_air_summary(
                 str(row.get("group_id") or ""),
                 str(row.get("umo") or ""),
             }
-        ] or sessions
+        ]
+    # A named session that is not known must not silently report every other
+    # group's totals under its name, and a named session's counters must be its
+    # own — the global sums otherwise look like this group's activity.
+    scoped = matched
+    if not selected:
+        stats = manners.today_stats() if manners is not None and hasattr(manners, "today_stats") else {
+            "intervene": 0,
+            "quiet": int((getattr(plugin, "_metrics", {}) or {}).get("speech_withheld", 0) or 0),
+            "why_silent": [],
+        }
+    elif matched and manners is not None and hasattr(manners, "today_stats"):
+        stats = manners.today_stats(selected)
+    else:
+        stats = {"intervene": 0, "quiet": 0, "why_silent": [], "why_spoke": []}
     occasion = {"kind": "neutral", "reason_zh": "暂无活跃群", "confidence": 0.35}
     live_rows = [row for row in scoped if row.get("sample_size", 0) or row.get("dag_nodes", 0)]
     top = None

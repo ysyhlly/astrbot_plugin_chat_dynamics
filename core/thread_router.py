@@ -523,7 +523,16 @@ class ThreadRouter:
             else:
                 dag._link_parent(node.msg_id, pmid, kind="inferred_reply")
 
-        if not formation_allowed:
+        # A burst is required to *form* a topic, not to join one that already
+        # exists. Clearing unconditionally erased an explicit reply or a clear
+        # continuation into an established topic while keeping the evidence that
+        # justified it (explicit_reply + topic_reply_continuation +
+        # topic_not_formed), and it also skipped the defer/reconcile paths that
+        # are supposed to back-fill such messages later.
+        joins_existing = bool(
+            result.topic_id and result.topic_id != node.msg_id and result.topic_id in state.topics
+        )
+        if not formation_allowed and not joins_existing:
             result.topic_id = ""
             result.topic_confidence = 0.0
             result.topic_ambiguous = True
@@ -626,7 +635,13 @@ class ThreadRouter:
                 return
             source_id = snapshot.get("topic_id", "")
             new_topic = source_id == node.msg_id
-            if (not snapshot.get("topic_ambiguous") and not new_topic) or snapshot.get("rerank_attempted"):
+            # A failed model call must not consume the node's only chance: the
+            # attempt counter and a bounded backoff mirror the topic-title retry
+            # policy, so a timeout is retried later instead of never.
+            attempts = int(snapshot.get("rerank_attempts") or 0)
+            if (not snapshot.get("topic_ambiguous") and not new_topic):
+                return
+            if attempts and time.monotonic() < float(snapshot.get("rerank_retry_at") or 0.0):
                 return
             revision, epoch = getattr(runtime, "revision", None), getattr(runtime, "epoch", None)
             topic_ids = [tid for _, tid in snapshot.get("topic_candidates", []) if tid != source_id]
@@ -648,8 +663,17 @@ class ThreadRouter:
             if not candidates:
                 return
             snapshot["rerank_attempted"] = True
+            snapshot["rerank_attempts"] = attempts + 1
         decision = await reranker.rerank(umo=runtime.umo, text=node.text,
                                          candidates=candidates, ambiguous=True)
+
+        def _retry_later() -> None:
+            """Back off a rerank that did not produce a usable conclusion."""
+            failures = max(1, int(snapshot.get("rerank_attempts") or 1))
+            snapshot["rerank_retry_at"] = time.monotonic() + min(
+                300.0, 30.0 * 2 ** min(failures - 1, 4)
+            )
+
         async with _state_guard(runtime):
             if (runtime.dag is not dag or runtime.routing_state is not state
                     or getattr(runtime, "revision", None) != revision or getattr(runtime, "epoch", None) != epoch
@@ -659,9 +683,11 @@ class ThreadRouter:
                 return
             topic_id = node.msg_id if decision.choice == "NEW" else decision.topic_id
             if decision.choice == "NEW" and not can_start_topic(node.text):
+                _retry_later()
                 return
             if not topic_id or (decision.choice != "NEW" and
                                 (topic_id not in state.topics or topic_id not in {c.topic_id for c in candidates})):
+                _retry_later()
                 return
             self._remember(state, node, topic_id, dag=dag)
             if source_id != topic_id and source_id in state.topics and not state.topics[source_id].message_ids:
@@ -674,6 +700,8 @@ class ThreadRouter:
                 float(snapshot.get("addressee_confidence", 0.0) or 0.0) < 0.72)
             snapshot["evidence"] = commit_topic_evidence(snapshot, "topic_llm_rerank")
             snapshot["ledger"] = routing_ledger(snapshot)
+            snapshot.pop("rerank_retry_at", None)
+            snapshot["rerank_attempts"] = 0
             node.metadata["topic_id"] = topic_id
             state.last_topic_id = topic_id
 

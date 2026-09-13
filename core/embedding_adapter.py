@@ -34,12 +34,22 @@ def _normalize_vec(values: Sequence[float]) -> Tuple[float, ...]:
     return tuple(item / norm for item in nums)
 
 
+def _directed(vector: Tuple[float, ...]) -> Optional[Tuple[float, ...]]:
+    """Return a usable vector, or None when it carries no direction.
+
+    ``_normalize_vec`` deliberately keeps a zero vector's shape (its unit test
+    locks that), but a zero vector is not an embedding: caching it would report
+    backend ``neural`` while every cosine is 0.0 and would build a zero centroid.
+    The rejection therefore happens here, at the boundary that consumes it.
+    """
+    return vector if vector and any(vector) else None
+
+
 def _extract_vector(payload: Any) -> Optional[Tuple[float, ...]]:
     if payload is None:
         return None
     if isinstance(payload, (list, tuple)) and payload and isinstance(payload[0], (int, float)):
-        vector = _normalize_vec(payload)
-        return vector or None
+        return _directed(_normalize_vec(payload))
     if isinstance(payload, (list, tuple)) and payload:
         first = payload[0]
         if isinstance(first, (list, tuple)):
@@ -178,7 +188,10 @@ class EmbeddingAdapter:
     def remember(self, text: str, vector: Sequence[float]) -> Tuple[float, ...]:
         key = (text or "").strip()
         normed = _normalize_vec(vector)
-        if not key or not normed:
+        if not any(normed):
+            # Directionless vectors are not cached; see _directed().
+            return ()
+        if not key:
             return normed
         self._cache[key] = normed
         self._cache.move_to_end(key)

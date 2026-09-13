@@ -28,6 +28,17 @@ class TopicAnnotations:
     async def read(self, session):
         rows = await self.plugin.get_kv_data(self.key(session), [])
         rows = deepcopy(rows) if isinstance(rows, list) else []
+        # A stored row is only trusted while it still carries the fields this
+        # schema requires: one legacy or truncated row used to break both the
+        # read and every later save (save() reads first), with no log.
+        rows = [
+            row for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("error_type"), str)
+            and isinstance(row.get("predicted_topic"), str)
+            and isinstance(row.get("expected_topic"), str)
+            and isinstance(row.get("msg_id"), str)
+        ]
         counts = Counter(row["error_type"] for row in rows)
         matrix = Counter((row["predicted_topic"], row["expected_topic"]) for row in rows)
         recipient_rows = [row for row in rows if RECIPIENT_FIELDS.intersection(row)]

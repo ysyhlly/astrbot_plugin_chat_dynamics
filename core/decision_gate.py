@@ -63,6 +63,7 @@ class DynamicsDecisionGate:
         group_memory: Any = None,
         public_memory_snippet: str = "",
         committed_reply: bool = False,
+        node_now: Optional[float] = None,
     ) -> GateResult:
         presence = str(getattr(cfg, "presence_knob", "sensible") or "sensible")
         scene_tags = tuple(getattr(telemetrics, "scene_tags", ()) or ())
@@ -151,8 +152,18 @@ class DynamicsDecisionGate:
                 media_privacy_strict=bool(getattr(cfg, "media_privacy_strict", True)),
                 multimodal_available=multimodal_available,
             )
-        except Exception:
-            media_verdict = None
+        except Exception as exc:
+            logger.warning("media_gate.evaluate failed: %s", type(exc).__name__)
+            # Unknown media posture keeps the gate's own conservative default:
+            # media stays unheard rather than being treated as plain text.
+            media_present = bool(has_media or media_component_types)
+            # ``has_image`` must carry the same fact the consumer tests below, or
+            # the fallback would be built and then ignored when only the
+            # component types announced the media.
+            media_verdict = MediaGateVerdict(
+                False, 0.0, "media_gate_error", "媒体门闩不可用，先旁听",
+                skip_memory=True, has_image=media_present,
+            ) if media_present else None
 
         if media_verdict is not None and (has_media or media_verdict.has_image or media_verdict.has_voice):
             if not media_verdict.allow_speak:
@@ -252,6 +263,7 @@ class DynamicsDecisionGate:
                 telemetrics=telemetrics,
                 cfg=cfg,
                 now=now,
+                node_now=node_now,
                 private_field=pf_hint,
                 quoted_bot=bool(quoted_bot),
                 has_media=bool(has_media),
@@ -263,8 +275,12 @@ class DynamicsDecisionGate:
                 command_prefix=str(getattr(cfg, "command_prefix", "/") or "/") if cfg is not None else "/",
                 public_memory_snippet=snippet,
             )
-        except Exception:
-            rhythm = DailyRhythmVerdict(True, "ok", "作息检查通过")
+        except Exception as exc:
+            logger.warning("daily_rhythm.evaluate failed: %s", type(exc).__name__)
+            # An unreadable sleep state must not become "definitely awake" for
+            # ambient turns; a direct address still gets through.
+            rhythm = DailyRhythmVerdict(
+                bool(explicit), "rhythm_unavailable", "作息检查不可用，未点名时保持安静")
 
         # Honor rhythm.allow even for explicit @ — evaluate() already encodes
         # wake-whitelist exceptions. ``rhythm_allow_wake=False`` must not be
@@ -319,11 +335,17 @@ class DynamicsDecisionGate:
                 public_memory_snippet=snippet,
                 cfg=cfg,
                 now=now,
+                node_now=node_now,
                 private_field=pf_hint,
                 media_privacy=media_privacy,
             )
-        except Exception:
-            proactive = UsefulProactiveVerdict(True, "ok", "主动检查通过")
+        except Exception as exc:
+            logger.warning("useful_proactive.evaluate failed: %s", type(exc).__name__)
+            # Only the proactive half is decided here, and explicit turns never
+            # consult it — so an unreadable quota/gap state denies ambient
+            # proactive instead of silently granting it.
+            proactive = UsefulProactiveVerdict(
+                bool(explicit), "proactive_unavailable", "主动检查不可用，未点名时不主动")
 
         # Rhythm may block ambient proactive (asleep / wind-down) even if useful allowed.
         if (

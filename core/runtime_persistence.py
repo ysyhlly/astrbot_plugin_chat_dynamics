@@ -1,6 +1,7 @@
 """Versioned, bounded JSON snapshots. Executable and pending state is never saved."""
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections import deque
@@ -15,6 +16,11 @@ from .vibe_analyzer import GroupChatMode
 VERSION = 1
 MAX_SESSIONS = 1000
 MAX_NODES = 500
+# Per-session limits alone still allow a very large snapshot (sessions x nodes x
+# 16k strings). The host copies the whole value on write, and the export runs
+# synchronously on the event loop, so the payload gets a total budget too: the
+# oldest sessions are dropped rather than blocking the loop with a huge build.
+MAX_TOTAL_BYTES = 4 * 1024 * 1024
 RUNTIME_FIELDS = ('last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
                   'vibe_message_count', 'turn_sequence', 'model_diagnostic')
@@ -71,10 +77,31 @@ def _wall(plugin):
     return getattr(plugin.time_service, 'wall_time', time.time)()
 
 
+def _encoded_size(value) -> int:
+    # Measured with the default separators: the host serializes the value with
+    # its own settings, and the spaced form is the larger of the two.
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+    except (TypeError, ValueError):
+        return MAX_TOTAL_BYTES
+
+
 def export_runtime_state(plugin) -> dict:
     sessions = []
-    runtimes = sorted(plugin._registry.runtimes.values(), key=lambda r: r.last_activity)
-    for runtime in runtimes[-MAX_SESSIONS:]:
+    used = 0
+    # The small fixed part is measured first so the session budget covers the
+    # whole payload instead of only the sessions array.
+    extras = {'version': VERSION, 'saved_wall': _wall(plugin),
+              'saved_clock': plugin.time_service.time(),
+              'metrics': _json(plugin._metrics),
+              'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
+                                   for row in list(plugin._shadow_decisions)[-50:]]}
+    budget = max(0, MAX_TOTAL_BYTES - _encoded_size(extras))
+    # Newest first, so running out of budget drops the least recently active
+    # sessions; the list is reversed back to chronological order below because
+    # restore() reads the end of it.
+    runtimes = sorted(plugin._registry.runtimes.values(), key=lambda r: r.last_activity, reverse=True)
+    for runtime in runtimes[:MAX_SESSIONS]:
         item = _fields(runtime, RUNTIME_FIELDS)
         item.update(session_key=runtime.session_key, group_id=runtime.group_id,
                     umo=runtime.umo, bot_id=runtime.bot_id)
@@ -105,12 +132,15 @@ def export_runtime_state(plugin) -> dict:
             item['arbitration'] = _fields(decision, ARBITRATION_FIELDS) if decision else None
         item['telemetrics'] = [_fields(record, ('timestamp', 'char_count', 'emoji_count', 'media_count', 'has_formal_punc', 'text', 'user_id'))
                                for record in list(plugin.telemetrics._records.get(runtime.session_key, ()))[-200:]]
+        # Oldest first: dropping the front keeps the most recent sessions, which
+        # is also the order restore() reads from the end of the list.
+        item_bytes = _encoded_size(item)
+        if sessions and used + item_bytes > budget:
+            break
+        used += item_bytes
         sessions.append(item)
-    return {'version': VERSION, 'saved_wall': _wall(plugin),
-            'saved_clock': plugin.time_service.time(), 'sessions': sessions,
-            'metrics': _json(plugin._metrics),
-            'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
-                                 for row in list(plugin._shadow_decisions)[-50:]]}
+    sessions.reverse()
+    return {**extras, 'sessions': sessions}
 
 
 def restore_runtime_state(plugin, payload) -> None:

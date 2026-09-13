@@ -161,9 +161,13 @@ class TopicResolver:
             return 0.0
         # All semantic terms use the original message. Context copied from a
         # candidate must never become semantic evidence for that same candidate.
-        if topic.centroid_space.startswith("neural:"):
-            adapter = dag.semantic_match_fn.__self__
-            query_vector = adapter.cached(node.text) or ()
+        adapter = getattr(getattr(dag, "semantic_match_fn", None), "__self__", None)
+        cached = getattr(adapter, "cached", None)
+        if topic.centroid_space.startswith("neural:") and callable(cached):
+            # Same defensive access as rebuild_profile: an unbound matcher must
+            # degrade to the hashed query instead of raising AttributeError in
+            # the middle of routing.
+            query_vector = cached(node.text) or ()
         else:
             query_vector = hashed_embedding(node.text)
         centroid = cosine(query_vector, topic.centroid_vector or [])

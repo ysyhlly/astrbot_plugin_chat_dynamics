@@ -180,6 +180,10 @@ class DebounceBuffer:
         # Member stops invalidate only one (session, user) slot; reset still
         # uses the broader session generation above.
         self._user_generations: Dict[Tuple[str, str], int] = {}
+        # Generation keys exist only while a result created before the discard
+        # could still be in flight, so their last touch time bounds how long they
+        # have to be kept (see prune_idle_slots).
+        self._generation_touched: Dict[Any, float] = {}
 
     def _create_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -474,11 +478,14 @@ class DebounceBuffer:
         timer that has already extracted a result cannot re-inject stale state.
         """
         async with self._master_lock:
+            touched = self.time_service.time()
             if user_id is None:
                 self._session_generations[session_id] = self._session_generations.get(session_id, 0) + 1
+                self._generation_touched[session_id] = touched
             else:
                 user_key = (session_id, user_id)
                 self._user_generations[user_key] = self._user_generations.get(user_key, 0) + 1
+                self._generation_touched[user_key] = touched
             target_keys = [
                 key for key in self._slots
                 if key[0] == session_id and (user_id is None or key[1] == user_id)
@@ -544,6 +551,7 @@ class DebounceBuffer:
             self._slots.clear()
             self._session_generations.clear()
             self._user_generations.clear()
+            self._generation_touched.clear()
 
         await asyncio.sleep(0)
 
@@ -593,6 +601,17 @@ class DebounceBuffer:
         for key in keys_to_remove:
             self._slots.pop(key, None)
             pruned += 1
+
+        # Generation keys otherwise grow for every (session, member) pair that ever
+        # used /dynamics_stop or a fast path. A result can only be in flight for a
+        # few seconds, so anything untouched for a full hour is unreachable.
+        expiry = now - max(max_idle_seconds, 3600.0)
+        for key, touched in list(self._generation_touched.items()):
+            if touched >= expiry:
+                continue
+            self._generation_touched.pop(key, None)
+            self._session_generations.pop(key, None)
+            self._user_generations.pop(key, None)
 
         return pruned
 

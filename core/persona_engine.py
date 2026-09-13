@@ -548,6 +548,7 @@ class PersonaEngine:
                     willingness=1.0 if addressed else 0.55,
                     cfg=cfg,
                     now=gate_now,
+                    node_now=now,
                     has_media=has_media_turn,
                     media_component_types=media_types,
                     quoted_bot=bool(turn.explicit),
