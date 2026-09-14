@@ -122,7 +122,9 @@ class ConsoleWebAPI:
         self.registered = False
         self._registered_endpoints: set[str] = set()
         self._rate_buckets: Dict[tuple[str, str], list[float]] = {}
-        self.topic_annotations = TopicAnnotations(plugin)
+        # Share the plugin-owned store when it exists: the draft path in
+        # main.py and these endpoints must read and write through one lock.
+        self.topic_annotations = getattr(plugin, "topic_annotations", None) or TopicAnnotations(plugin)
 
     @staticmethod
     def _endpoint_key(route: str, methods: list[str]) -> str:

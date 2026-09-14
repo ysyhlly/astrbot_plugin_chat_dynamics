@@ -394,3 +394,21 @@ async def test_an_unexpected_failure_is_a_503_not_a_traceback(monkeypatch, offli
 
     assert result["status_code"] == 503
 
+# ---- 接线回归 -----------------------------------------------------------
+
+def test_the_real_plugin_wires_the_store_the_draft_path_reads():
+    """main.py 的草稿路径读 self.topic_annotations；接口层必须共享同一个实例。
+
+    曾经插件类从不创建这个属性（只有 ConsoleWebAPI 自己 new 了一个），
+    于是每次点「生成 AI 草稿」都在 annotation_draft_payload 里 AttributeError，
+    前端只看到笼统的 503。这里用真实插件钉住接线。
+    """
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+    from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import MockContext
+
+    plugin = ChatDynamicsPlugin(MockContext(), {"decision_mode": "legacy", "enable": True})
+
+    assert isinstance(plugin.topic_annotations, TopicAnnotations)
+    assert plugin._web.topic_annotations is plugin.topic_annotations
+
+

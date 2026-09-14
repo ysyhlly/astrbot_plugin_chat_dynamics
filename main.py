@@ -72,6 +72,8 @@ from .core.integrations.registry import IntegrationRegistry
 from .core.session_runtime import FollowupBatch, PendingTurn, SessionRegistry, SessionRuntime
 from .core.style_shaper import StyleShaper
 from .core.telemetrics import TelemetricsTracker
+from .core.topic_annotations import TopicAnnotations
+from .core.topic_annotations import TopicAnnotations
 from .core.time_service import SystemClock, TimeService
 from .core.vibe_analyzer import GroupChatMode, VibeAnalyzer, parse_mode_label
 from .core.web_api import ConsoleWebAPI, PLUGIN_NAME  # noqa: F401  (compatibility re-export)
@@ -456,6 +458,9 @@ class ChatDynamicsPlugin(Star):
         self._native_context_by_event: dict[tuple[str, int], _NativeEventContext] = {}
         self._metrics: dict[str, int] = {name: 0 for name in _METRIC_NAMES}
         self._shadow_decisions = deque(maxlen=50)
+        # The draft path and the web API must share one store (and its lock);
+        # the web constructor reuses this instance instead of opening a second.
+        self.topic_annotations = TopicAnnotations(self)
         self._web = ConsoleWebAPI(self)
         self._web.register()
         self._web_apis_registered = self._web.registered
