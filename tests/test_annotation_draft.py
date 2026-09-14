@@ -323,3 +323,74 @@ async def test_an_unavailable_provider_is_reported_separately():
     assert "LLMUnavailable" in payload["reason"]
     assert plugin.metrics == ["annotation_draft_unavailable"]
 
+
+
+# ---- 接口层 -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_endpoint_requires_a_session_and_returns_the_draft(monkeypatch, offline_web_responses):
+    from astrbot_plugin_chat_dynamics.core import web_api
+    from astrbot_plugin_chat_dynamics.core.web_api import ConsoleWebAPI
+
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")], reply=reply(reply_for("m1")))
+    plugin._shutting_down = False
+    api = ConsoleWebAPI(plugin)
+
+    async def empty_body():
+        return {}
+
+    monkeypatch.setattr(web_api, "_json_body", empty_body)
+    assert (await api.annotation_draft())["status_code"] == 400
+
+    async def with_session():
+        return {"session_key": "a"}
+
+    monkeypatch.setattr(web_api, "_json_body", with_session)
+    result = await api.annotation_draft()
+
+    assert result["ok"] is True
+    assert result["data"]["state"] == "fresh"
+    assert list(result["data"]["drafts"]) == ["m1"]
+
+
+@pytest.mark.asyncio
+async def test_the_endpoint_refuses_while_shutting_down(monkeypatch, offline_web_responses):
+    from astrbot_plugin_chat_dynamics.core import web_api
+    from astrbot_plugin_chat_dynamics.core.web_api import ConsoleWebAPI
+
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")], reply=reply(reply_for("m1")))
+    plugin._shutting_down = True
+    api = ConsoleWebAPI(plugin)
+
+    async def with_session():
+        return {"session_key": "a"}
+
+    monkeypatch.setattr(web_api, "_json_body", with_session)
+    result = await api.annotation_draft()
+
+    assert result["status_code"] == 503
+    assert plugin.llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_is_a_503_not_a_traceback(monkeypatch, offline_web_responses):
+    from astrbot_plugin_chat_dynamics.core import web_api
+    from astrbot_plugin_chat_dynamics.core.web_api import ConsoleWebAPI
+
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")])
+    plugin._shutting_down = False
+
+    async def explode(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    plugin.annotation_draft_payload = explode
+    api = ConsoleWebAPI(plugin)
+
+    async def with_session():
+        return {"session_key": "a"}
+
+    monkeypatch.setattr(web_api, "_json_body", with_session)
+    result = await api.annotation_draft()
+
+    assert result["status_code"] == 503
+
