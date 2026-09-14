@@ -125,6 +125,14 @@ def export_runtime_state(plugin) -> dict:
     # The small fixed part is measured first so the session budget covers the
     # whole payload instead of only the sessions array.
     extras = {'version': VERSION, 'saved_wall': _wall(plugin),
+              # The graph's own limits, stated rather than inferred: a message is
+              # only labelable while it is still in the session graph, and a
+              # reader that wants to say "you have N minutes left" has to read
+              # the rule from the side that applies it instead of guessing.
+              'graph': {'max_nodes': int(getattr(getattr(plugin, '_registry', None),
+                                                 'max_nodes', 0) or 0),
+                        'ttl_seconds': float(getattr(getattr(plugin, '_registry', None),
+                                                     'ttl_seconds', 0.0) or 0.0)},
               # The host's own software version, so the learning layer can record
               # which ChatDynamics a policy's numbers came from. Without it the
               # published policy can only say "host version unknown", and a

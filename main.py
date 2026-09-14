@@ -43,7 +43,7 @@ from .core.group_memory import GroupMemoryNotebook
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
 from .core.learning_policy import MODE_OFF
-from .core.learning_policy_runtime import LearningPolicyRuntime
+from .core.learning_policy_runtime import APPLY_OVERLAP, LearningPolicyRuntime
 from .core.runtime_persistence import host_version as _host_plugin_version
 from .core.shadow_telemetry import ShadowTelemetry, KV_KEY as _KV_SHADOW, SALT_KEY as _KV_SHADOW_SALT
 from .core.native_delivery import NativeDeliveryGuard
@@ -140,6 +140,8 @@ _METRIC_NAMES = (
     "stale_followup_dropped",
     "preset_applied",
     "preset_apply_failed",
+    "learning_policy_not_applied",
+    "learning_policy_rejected_overlap",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -280,7 +282,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.8.0",
+    "v1.8.1",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -613,7 +615,13 @@ class ChatDynamicsPlugin(Star):
             return cfg
         adjusted = runtime.apply_to(cfg, make=replace)
         if adjusted is cfg:
-            self._metric("learning_policy_rejected_overlap")
+            # Only an applied-but-dropped set is a rejection. A shadow or off
+            # consumer applying nothing is the normal state, and reporting it as
+            # a rejected policy made a healthy install look broken.
+            self._metric(
+                "learning_policy_rejected_overlap"
+                if runtime.last_apply_reason == APPLY_OVERLAP
+                else "learning_policy_not_applied")
         return adjusted
 
     async def _refresh_learning_policy(self, *, force: bool = False) -> None:

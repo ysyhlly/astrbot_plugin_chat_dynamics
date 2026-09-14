@@ -2,6 +2,21 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.8.1 — 遥测口径修正与窗口上限外报
+
+两处都不改线上行为，改的是**别人读到的数字**：
+
+- `learning_policy_rejected_overlap` 以前在 `apply_to` 原样返回配置时 +1 —— 也就是说，`off` / `shadow`
+  这类「本来就不该应用任何参数」的状态每次刷新都会被记成「策略被拒绝」，一个健康的安装看起来像坏了一样。
+  现在只有**真的因为 hover/strong 阈值对重叠而整组丢弃**才走这个计数器；其余情况记到新的
+  `learning_policy_not_applied`。运行时把原因写进 `last_apply_reason`（`not_applied` / `no_fields` /
+  `overlap` / `applied`），调用方不必再猜是哪一种。
+- 运行快照新增 `graph: {max_nodes, ttl_seconds}`：本体消息图的保留规则（默认 500 条 / 3600 秒）随快照
+  一起外报，学习层因此可以说清「这条消息还有多久就不能再标注了」，而不是自己假设一遍上限。字段是追加式的，
+  旧读取方忽略即可。
+
+验证：策略测试 41 项（新增 5 项覆盖三种 `apply_to` 结果与计数器分流）、快照往返 4 项（新增 `graph` 断言）、
+`ruff` / `mypy` / 全量单元与集成套件通过。
 ## v1.8.0 — Shadow A/B 第一阶段：记录策略判定
 
 本体在 `learning_policy_mode = shadow` 时**不改任何行为**，但每条处理过的消息会同时算出

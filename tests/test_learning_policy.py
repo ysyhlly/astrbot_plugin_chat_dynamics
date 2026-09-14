@@ -389,3 +389,102 @@ async def test_shadow_reads_candidate_and_active_reads_published():
     active = await consumer.refresh(sp_module=Preferences(), effective_config=BASE, mode="active")
     assert active.status == lp.STATUS_INCOMPATIBLE and not active.applied
     assert calls == [lp.CANDIDATE_KEY, lp.PUBLISHED_KEY]
+
+
+# ---- why a configuration came back unchanged ----------------------------
+#
+# `apply_to` returns the configuration untouched for three different reasons and
+# only one of them is a rejection. The plugin used to count all three as
+# "learning_policy_rejected_overlap", which made a healthy shadow install report
+# a rejected policy on every refresh.
+
+def _runtime_with(decision):
+    from astrbot_plugin_chat_dynamics.core import learning_policy_runtime as lpr
+
+    runtime = lpr.LearningPolicyRuntime(mode="active", host_version="v1.6.2")
+    runtime.consumer.decision = decision
+    return runtime
+
+
+def _config(**overrides):
+    from dataclasses import replace
+
+    cfg, _ = parse_runtime_config({})
+    return replace(cfg, **overrides) if overrides else cfg
+
+
+def _plugin_with(runtime):
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+
+    plugin = ChatDynamicsPlugin.__new__(ChatDynamicsPlugin)
+    plugin.metrics = []
+    plugin._metric = plugin.metrics.append
+    plugin.learning_policy = runtime
+    return plugin
+
+
+def test_a_shadow_consumer_reports_nothing_applied_rather_than_a_rejection():
+    from astrbot_plugin_chat_dynamics.core import learning_policy_runtime as lpr
+
+    runtime = _runtime_with(decide(publish(), mode="shadow"))
+    cfg = _config()
+
+    assert runtime.apply_to(cfg, make=lambda base, **kw: base) is cfg
+    assert runtime.last_apply_reason == lpr.APPLY_NOT_APPLIED
+
+
+def test_an_off_consumer_is_not_applied_either():
+    from astrbot_plugin_chat_dynamics.core import learning_policy_runtime as lpr
+
+    runtime = lpr.LearningPolicyRuntime(mode="off")
+    cfg = _config()
+
+    assert runtime.apply_to(cfg, make=lambda base, **kw: base) is cfg
+    assert runtime.last_apply_reason == lpr.APPLY_NOT_APPLIED
+
+
+def test_an_applied_policy_reports_applied():
+    from dataclasses import replace
+
+    from astrbot_plugin_chat_dynamics.core import learning_policy_runtime as lpr
+
+    runtime = _runtime_with(decide(publish()))
+    cfg = _config()
+
+    adjusted = runtime.apply_to(cfg, make=lambda base, **kw: replace(base, **kw))
+
+    assert adjusted is not cfg
+    assert adjusted.strong_addressivity_threshold == pytest.approx(0.67)
+    assert runtime.last_apply_reason == lpr.APPLY_APPLIED
+
+
+def test_an_overlapping_pair_is_the_one_reason_that_is_a_rejection():
+    from dataclasses import replace
+
+    from astrbot_plugin_chat_dynamics.core import learning_policy_runtime as lpr
+
+    # A policy whose pair lands on top of each other: both values are inside
+    # their declared ranges (so the policy is applied), and the pair is dropped
+    # rather than half-applied because the admission rule would be undefined.
+    runtime = _runtime_with(decide(publish(params={
+        "strong_addressivity_threshold": 0.55, "safe_hover_threshold": 0.60})))
+    cfg = _config()
+
+    assert runtime.apply_to(cfg, make=lambda base, **kw: replace(base, **kw)) is cfg
+    assert runtime.last_apply_reason == lpr.APPLY_OVERLAP
+
+
+def test_the_plugin_counts_a_rejection_separately_from_nothing_applied():
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+
+    cfg = _config()
+
+    quiet = _plugin_with(_runtime_with(decide(publish(), mode="shadow")))
+    ChatDynamicsPlugin._with_learning_policy(quiet, cfg)
+    assert quiet.metrics == ["learning_policy_not_applied"]
+
+    rejected = _plugin_with(_runtime_with(decide(publish(params={
+        "strong_addressivity_threshold": 0.55, "safe_hover_threshold": 0.60}))))
+    ChatDynamicsPlugin._with_learning_policy(rejected, cfg)
+    assert rejected.metrics == ["learning_policy_rejected_overlap"]
+

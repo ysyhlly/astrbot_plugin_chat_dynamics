@@ -34,6 +34,15 @@ BASELINE_FIELDS = (
 
 MIN_REFRESH_SECONDS = 10
 
+# Why `apply_to` handed the configuration back unchanged. The reasons have
+# different fixes and only the last one is a rejection, so the caller must not
+# have to infer which happened: counting "a shadow consumer applied nothing"
+# as "the policy was rejected" made a healthy install look broken.
+APPLY_APPLIED = "applied"
+APPLY_NOT_APPLIED = "not_applied"
+APPLY_NO_FIELDS = "no_fields"
+APPLY_OVERLAP = "overlap"
+
 
 class LearningPolicyRuntime:
     """Caches the consumer and the read throttle for one plugin instance."""
@@ -51,6 +60,7 @@ class LearningPolicyRuntime:
             host_version=host_version,
         )
         self.last_read_at = 0.0
+        self.last_apply_reason = APPLY_NOT_APPLIED
 
     # ---- what the policy assumed ---------------------------------------
 
@@ -95,17 +105,21 @@ class LearningPolicyRuntime:
         values, and a later config refresh cannot silently revert the policy.
         """
         if not self.consumer.decision.applied:
+            self.last_apply_reason = APPLY_NOT_APPLIED
             return config
         changes = {name: float(value) for name, value in self.consumer.overrides().items()
                    if hasattr(config, name)}
         if not changes:
+            self.last_apply_reason = APPLY_NO_FIELDS
             return config
         adjusted = make(config, **changes)
         if adjusted.safe_hover_threshold >= adjusted.strong_addressivity_threshold:
             # The policy was validated as a set; a pair that overlaps would make
             # the admission rule undefined, so the whole set is dropped rather
-            # than half-applied.
+            # than half-applied. This is the only reason that is a rejection.
+            self.last_apply_reason = APPLY_OVERLAP
             return config
+        self.last_apply_reason = APPLY_APPLIED
         return adjusted
 
     def configure(self, config: Any) -> None:
@@ -143,4 +157,7 @@ class LearningPolicyRuntime:
         return self.consumer.decision.as_dict()
 
 
-__all__ = ["BASELINE_FIELDS", "MIN_REFRESH_SECONDS", "LearningPolicyRuntime"]
+__all__ = [
+    "APPLY_APPLIED", "APPLY_NOT_APPLIED", "APPLY_NO_FIELDS", "APPLY_OVERLAP",
+    "BASELINE_FIELDS", "MIN_REFRESH_SECONDS", "LearningPolicyRuntime",
+]

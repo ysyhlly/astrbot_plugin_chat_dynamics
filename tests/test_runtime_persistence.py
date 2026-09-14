@@ -32,6 +32,10 @@ def test_roundtrip_rebases_clocks_and_preserves_isolation(monkeypatch):
     original._metrics['received'] = 7
     snapshot = json.loads(json.dumps(export_runtime_state(original), allow_nan=False))
     assert 'raw_event' not in str(snapshot)
+    # The retention rule travels with the snapshot: a reader (the learning
+    # plugin, the replay page) can then say how long a message stays labelable
+    # instead of assuming the cap and the TTL.
+    assert snapshot['graph'] == {'max_nodes': 500, 'ttl_seconds': 3600.0}
     monkeypatch.setattr(codec.time, 'time', lambda: 1010)
     restored = plugin(30)
     restore_runtime_state(restored, snapshot)
