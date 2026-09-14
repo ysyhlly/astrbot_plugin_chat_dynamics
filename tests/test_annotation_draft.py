@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -197,3 +198,128 @@ async def test_a_label_with_no_draft_is_plainly_human():
 
     row = (await store.read("a"))["records"][0]
     assert row["label_source"] == "human" and "accepted_from" not in row
+
+
+# ---- 运行期（状态机与错误分流） -----------------------------------------
+
+class _Llm:
+    """只回答我们让它回答的东西：模型在这里是可控输入，不是被测对象。"""
+
+    def __init__(self, reply="", error=None):
+        self.reply = reply
+        self.error = error
+        self.calls = []
+
+    def configured_provider(self, purpose="reply"):
+        return "provider-" + purpose
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+
+def draft_runtime(*, nodes=(), enabled=True, reply="", error=None, records=(), limit=20):
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+
+    plugin = ChatDynamicsPlugin.__new__(ChatDynamicsPlugin)
+    kv = {}
+
+    async def get(key, default):
+        return kv.get(key, default)
+
+    async def put(key, value):
+        kv[key] = value
+
+    dag = SimpleNamespace(get_recent_nodes=lambda count: list(nodes))
+    store_plugin = SimpleNamespace(get_kv_data=get, put_kv_data=put, dags={"a": dag},
+                                  console_show_message_content=False, _shutting_down=False)
+    store = TopicAnnotations(store_plugin)
+    kv[store.key("a")] = list(records)
+    plugin.dags = {"a": dag}
+    plugin.topic_annotations = store
+    plugin.llm = _Llm(reply, error)
+    plugin.annotation_draft_enabled = enabled
+    plugin.annotation_draft_limit = limit
+    plugin.annotation_draft_timeout = 30.0
+    plugin.metrics = []
+    plugin._metric = lambda name, amount=1: plugin.metrics.append(name)
+    plugin._bounded_text = lambda value, size: str(value)[:size]
+    return plugin, kv
+
+
+@pytest.mark.asyncio
+async def test_the_disabled_draft_never_calls_the_model():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")], enabled=False)
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "disabled"
+    assert "annotation_draft_enabled" in payload["reason"]
+    assert plugin.llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_session_is_its_own_answer():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")])
+
+    payload = await plugin.annotation_draft_payload("nope")
+
+    assert payload["state"] == "no_session"
+    assert plugin.llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_window_that_is_already_labelled_is_not_drafted_again():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               records=[{**label(msg_id="m1"), "predicted_topic": "t"}])
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "nothing_to_draft"
+    assert plugin.llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_successful_draft_is_stored_and_reported():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗"), node("m2", "在的", bot=True)],
+                               reply=reply(reply_for("m1")))
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "fresh"
+    assert payload["provider_id"] == "provider-draft"
+    assert payload["stats"]["asked"] == 1
+    assert list(payload["drafts"]) == ["m1"]
+    assert plugin.llm.calls[0]["purpose"] == "draft"
+    assert plugin.llm.calls[0]["timeout"] == 30.0
+    assert "在吗" in plugin.llm.calls[0]["prompt"]
+    assert kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]["expected_reply"] is True
+    assert kv[plugin.topic_annotations.key("a")] == [], "草稿不能写进标注键"
+    assert plugin.metrics == ["annotation_draft_succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_answers_with_prose_is_a_failure_not_a_draft():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")], reply="这条应该回。")
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "failed"
+    assert plugin.metrics == ["annotation_draft_failed"]
+    assert plugin.topic_annotations.draft_key("a") not in kv
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_provider_is_reported_separately():
+    from astrbot_plugin_chat_dynamics.core.llm_adapter import LLMUnavailable
+
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")], error=LLMUnavailable("no provider"))
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "unavailable"
+    assert "LLMUnavailable" in payload["reason"]
+    assert plugin.metrics == ["annotation_draft_unavailable"]
+
