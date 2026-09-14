@@ -369,9 +369,14 @@ async function boot() {
       const data = await apiPost("annotation_draft",
         { session_key: block.session_id, refresh: true }, { timeoutMs: 180000 });
       const asked = data?.stats?.asked ?? 0;
-      const drafted = Object.keys(data?.drafts || {}).length;
+      const drafts = data?.drafts || {};
+      const drafted = Object.keys(drafts).length;
+      // Drafts cover the session's recent window, not this page: messages
+      // without a committed topic never render here, so say how many of the
+      // drafts actually land on the block the user is looking at.
+      const onPage = (block.messages || []).filter(m => drafts[m.msg_id]).length;
       annotationStatus.textContent = data?.state === "fresh"
-        ? `已生成 ${drafted} 条草稿（窗口内可起草 ${asked} 条）。草稿不是标注：确认后按「保存标注」才生效。`
+        ? `已生成 ${drafted} 条草稿（窗口内可起草 ${asked} 条），其中 ${onPage} 条对应本页消息。草稿不是标注：确认后按「保存标注」才生效。`
         : (data?.reason || "本次没有生成草稿。");
       const refreshed = await apiGet("topic_annotations", { session_key: block.session_id });
       applyAnnotationData(refreshed, block);
@@ -386,9 +391,12 @@ async function boot() {
       const message = block?.messages?.[index];
       if (applyDraftToRow(row, draftFor(message))) filled += 1;
     });
+    const stored = Object.keys(annotationData?.drafts || {}).length;
     annotationStatus.textContent = filled
       ? `已按草稿填写 ${filled} 条；话题仍由你选择，逐条确认后按保存标注。`
-      : "本页没有可用的草稿，先点「生成 AI 草稿」。";
+      : stored
+        ? `本会话存有 ${stored} 条草稿，但都对应其他消息：草稿覆盖该会话最近窗口里未标注的消息，包含尚未形成话题、不在任何回放块里的那些。`
+        : "本页没有可用的草稿，先点「生成 AI 草稿」。";
   });
   document.getElementById("btnExportAnnotations").addEventListener("click", () => {
     if (!annotationData) { annotationStatus.textContent = "请先等待标注加载完成。"; return; }

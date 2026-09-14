@@ -73,7 +73,6 @@ from .core.session_runtime import FollowupBatch, PendingTurn, SessionRegistry, S
 from .core.style_shaper import StyleShaper
 from .core.telemetrics import TelemetricsTracker
 from .core.topic_annotations import TopicAnnotations
-from .core.topic_annotations import TopicAnnotations
 from .core.time_service import SystemClock, TimeService
 from .core.vibe_analyzer import GroupChatMode, VibeAnalyzer, parse_mode_label
 from .core.web_api import ConsoleWebAPI, PLUGIN_NAME  # noqa: F401  (compatibility re-export)

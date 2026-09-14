@@ -109,6 +109,15 @@ def test_an_id_that_was_not_asked_about_is_reported_rather_than_stored():
     assert list(parsed["drafts"]) == ["m2"]
     assert parsed["invented"] == ["m9"]
 
+def test_a_numeric_msg_id_is_the_same_message_without_quotes():
+    """消息平台常用数字 id；模型把引号丢掉不该静默丢掉整条草稿。"""
+    batch, _stats = build_batch([node("12345", "在吗")], {}, limit=5)
+
+    parsed = parse_drafts(reply(reply_for(12345)), batch)
+
+    assert parsed is not None
+    assert list(parsed["drafts"]) == ["12345"]
+
 
 def test_a_bot_message_cannot_be_drafted_even_if_the_model_answers_for_it():
     batch, _stats = build_batch([node("m1", "在的", bot=True)], {}, limit=5)

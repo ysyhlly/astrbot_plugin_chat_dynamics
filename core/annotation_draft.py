@@ -167,7 +167,14 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
         if not isinstance(raw, Mapping):
             continue
         msg_id = raw.get("msg_id")
-        msg_id = msg_id.strip() if isinstance(msg_id, str) else ""
+        if isinstance(msg_id, str):
+            msg_id = msg_id.strip()
+        elif isinstance(msg_id, int) and not isinstance(msg_id, bool):
+            # Chat platforms often use numeric ids; a model that drops the
+            # quotes is still answering the question it was asked.
+            msg_id = str(msg_id)
+        else:
+            msg_id = ""
         if not msg_id or msg_id in drafts:
             continue
         if msg_id not in asked:
