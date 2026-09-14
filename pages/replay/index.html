@@ -101,7 +101,16 @@
           <div id="annotationMessages"></div>
           <p id="annotationStatus" role="status" aria-live="polite"></p>
           <p id="annotationMetrics" class="ops-note"></p>
-          <button type="button" class="button" id="btnExportAnnotations">导出标注 JSON</button>
+          <div class="ops-actions">
+            <button type="button" class="button" id="btnDraftAnnotations">生成 AI 草稿</button>
+            <button type="button" class="button" id="btnApplyDrafts">本页全部按草稿填写</button>
+            <button type="button" class="button" id="btnExportAnnotations">导出标注 JSON</button>
+          </div>
+          <p class="ops-note">
+            AI 草稿只写进插件自己的键，不会成为标注：模型给出「该不该回 / 是否对机器人说话」与理由，
+            你看过之后按「保存标注」才算数，记录里会写明这条采纳了草稿。默认关闭
+            （<code>annotation_draft_enabled</code>），开启后按下按钮才会把本会话的正文发给模型。
+          </p>
         </section>
         <div class="tonight-actions" aria-label="调整参与程度">
           <button type="button" class="button" id="btnGhostTonight" disabled>设为隐身</button>

@@ -99,6 +99,7 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
+        draft_provider_id: str = "",
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
         integrations: Any = None,
@@ -107,6 +108,7 @@ class LLMAdapter:
         self.configured_provider_id = str(configured_provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
+        self.draft_provider_id = str(draft_provider_id or "").strip()
         self.reply_timeout = reply_timeout
         self.tool_agent_timeout = tool_agent_timeout
         self.integrations = integrations
@@ -117,22 +119,37 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
+        draft_provider_id: str = "",
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
     ) -> None:
         self.configured_provider_id = str(provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
+        self.draft_provider_id = str(draft_provider_id or "").strip()
         self.reply_timeout = reply_timeout
         self.tool_agent_timeout = tool_agent_timeout
 
+    def _dedicated_provider(self, purpose: str) -> str:
+        """The provider pinned for one kind of call, if any.
+
+        Three purposes, three answers: a reply is the product, a vibe snapshot is
+        a background reading, and a draft is an offline labelling aid. Sharing one
+        of them with another would make one setting silently move two costs.
+        """
+        if purpose == "reply":
+            return self.reply_provider_id
+        if purpose == "draft":
+            return self.draft_provider_id
+        return self.vibe_provider_id
+
     def configured_provider(self, purpose: str = "reply") -> str:
         """Return the configured preference before UMO-specific resolution."""
-        dedicated = self.reply_provider_id if purpose == "reply" else self.vibe_provider_id
+        dedicated = self._dedicated_provider(purpose)
         return dedicated or self.configured_provider_id
 
     async def resolve_provider_id(self, umo: str, purpose: str = "reply") -> str:
-        explicit = self.reply_provider_id if purpose == "reply" else self.vibe_provider_id
+        explicit = self._dedicated_provider(purpose)
         if explicit:
             return explicit
         # ``provider`` is the v1.1 unified override. Keep it as a fallback for
@@ -164,13 +181,19 @@ class LLMAdapter:
         purpose: str = "reply",
         image_urls: list[str] | None = None,
         audio_urls: list[str] | None = None,
+        timeout: float | None = None,
     ) -> str:
-        """Bound provider lookup and completion by one shared deadline."""
+        """Bound provider lookup and completion by one shared deadline.
+
+        `timeout` overrides the reply deadline for callers whose work is not a
+        reply (a draft over a whole window is one call over many messages, and
+        the reply budget would cut it short).
+        """
         try:
             return await asyncio.wait_for(
                 self._generate(prompt=prompt, umo=umo, system_prompt=system_prompt,
                                purpose=purpose, image_urls=image_urls, audio_urls=audio_urls),
-                timeout=self.reply_timeout,
+                timeout=self.reply_timeout if timeout is None else float(timeout),
             )
         except asyncio.TimeoutError as exc:
             raise LLMUnavailable(f"LLM reply timed out after {self.reply_timeout:g}s") from exc

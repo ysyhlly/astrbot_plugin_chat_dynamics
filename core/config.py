@@ -27,6 +27,10 @@ class RuntimeConfig:
     provider_id: str
     reply_provider_id: str
     vibe_provider_id: str
+    draft_provider_id: str
+    annotation_draft_enabled: bool
+    annotation_draft_limit: int
+    annotation_draft_timeout: float
     command_prefix: str
     debounce_base_cooldown: float
     debounce_extended_cooldown: float
@@ -286,6 +290,14 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         provider_id=str(_get(raw, "provider", "") or "").strip(),
         reply_provider_id=str(_get(raw, "reply_provider", "") or "").strip(),
         vibe_provider_id=str(_get(raw, "vibe_provider", "") or "").strip(),
+        draft_provider_id=str(_get(raw, "annotation_draft_provider", "") or "").strip(),
+        # Off by default: drafting sends other people messages to a model, and the
+        # feature only becomes useful once somebody has decided to review drafts.
+        annotation_draft_enabled=_bool(_get(raw, "annotation_draft_enabled", False), False),
+        annotation_draft_limit=_integer(raw, "annotation_draft_limit", 20, 1, 40, warnings),
+        annotation_draft_timeout=_number(
+            raw, "annotation_draft_timeout", 60.0, lambda value: 10 <= value <= 300, warnings
+        ),
         command_prefix=prefix,
         debounce_base_cooldown=base,
         debounce_extended_cooldown=extended,

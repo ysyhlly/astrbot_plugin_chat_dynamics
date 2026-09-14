@@ -157,6 +157,8 @@ class ConsoleWebAPI:
             ("replay", self.replay, ["GET"], "场景回放色块时间轨"),
             ("topic_annotations", self.annotations_get, ["GET"], "话题标注与混淆统计"),
             ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
+        ("annotation_draft", self.annotation_draft, ["POST"],
+         "为当前窗口生成 AI 预标注草稿（默认关闭；会把正文发给模型）"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -661,6 +663,28 @@ class ConsoleWebAPI:
             logger.error("[ChatDynamics] annotations read failed code=CD_ANNOTATIONS type=%s", type(exc).__name__)
             return _json_err("annotations unavailable", 503)
 
+    async def annotation_draft(self):
+        """Draft labels for the current window. Read-only for routing; writes drafts only."""
+        if (limited := self._rate_limit("POST", 10)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        try:
+            body = await _json_body()
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        session = str(body.get("session_key") or "").strip()
+        if not session or len(session) > 256:
+            return _json_err("session_key is required", 400)
+        try:
+            return _json_ok(await self.plugin.annotation_draft_payload(
+                session, refresh=bool(body.get("refresh"))))
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] annotation draft failed code=CD_ANNOTATION_DRAFT type=%s",
+                         type(exc).__name__)
+            return _json_err("annotation draft failed", 503)
     async def annotations_post(self):
         if (limited := self._rate_limit("POST", 20)) is not None:
             return limited

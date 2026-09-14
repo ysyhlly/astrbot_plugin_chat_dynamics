@@ -40,6 +40,7 @@ from .core.thread_router import TOPIC_JOIN_THRESHOLD, ThreadRouter, build_contex
 from .core.topic_reranker import TopicReranker
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
+from .core.annotation_draft import build_batch, build_prompt as build_draft_prompt, parse_drafts
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
 from .core.learning_policy import MODE_OFF
@@ -98,6 +99,10 @@ _MAX_SESSIONS = 1000
 _MAX_INPUT_CHARS = 4000
 _MAX_TURN_CHARS = 8000
 _MAX_TURN_FRAGMENTS = 32
+# How much of a session the draft batch is built from. `build_batch` caps the
+# batch itself; this only decides how far back the reader looks for unlabelled
+# messages.
+_ANNOTATION_DRAFT_WINDOW = 120
 _KV_COOLING = "cooling_until"
 _KV_RUNTIME = "panel_runtime_v1"
 _METRIC_NAMES = (
@@ -140,6 +145,9 @@ _METRIC_NAMES = (
     "stale_followup_dropped",
     "preset_applied",
     "preset_apply_failed",
+    "annotation_draft_succeeded",
+    "annotation_draft_failed",
+    "annotation_draft_unavailable",
     "learning_policy_not_applied",
     "learning_policy_rejected_overlap",
 )
@@ -151,6 +159,10 @@ _DIRECT_RUNTIME_ATTRS = (
     "provider_id",
     "reply_provider_id",
     "vibe_provider_id",
+    "draft_provider_id",
+    "annotation_draft_enabled",
+    "annotation_draft_limit",
+    "annotation_draft_timeout",
     "command_prefix",
     "vibe_llm_enabled",
     "shadow_mode",
@@ -282,7 +294,7 @@ _PRESETS = {
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.8.1",
+    "v1.9.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -399,6 +411,7 @@ class ChatDynamicsPlugin(Star):
             configured_provider_id=self.provider_id,
             reply_provider_id=self.reply_provider_id,
             vibe_provider_id=self.vibe_provider_id,
+            draft_provider_id=self.draft_provider_id,
             reply_timeout=runtime_config.reply_timeout,
             tool_agent_timeout=runtime_config.tool_agent_timeout,
             integrations=self.integrations,
@@ -533,6 +546,7 @@ class ChatDynamicsPlugin(Star):
                 cfg.provider_id,
                 reply_provider_id=cfg.reply_provider_id,
                 vibe_provider_id=cfg.vibe_provider_id,
+                draft_provider_id=cfg.draft_provider_id,
                 reply_timeout=cfg.reply_timeout,
                 tool_agent_timeout=cfg.tool_agent_timeout,
             )
@@ -791,6 +805,9 @@ class ChatDynamicsPlugin(Star):
             "provider": getattr(cfg, "provider_id", ""),
             "reply_provider": getattr(cfg, "reply_provider_id", ""),
             "vibe_provider": getattr(cfg, "vibe_provider_id", ""),
+            "draft_provider": getattr(cfg, "draft_provider_id", ""),
+            "annotation_draft_enabled": bool(getattr(cfg, "annotation_draft_enabled", False)),
+            "annotation_draft_limit": getattr(cfg, "annotation_draft_limit", 20),
             "bot_names": list(getattr(cfg, "bot_names", ()) or ()),
             "command_prefix": getattr(cfg, "command_prefix", "/"),
             "debounce_base_cooldown": getattr(cfg, "debounce_base_cooldown", 3.5),
@@ -982,6 +999,79 @@ class ChatDynamicsPlugin(Star):
             return {"items": store.due_anniversaries(umo)}
         raise ValueError(f"unknown notebook action: {action}")
 
+    async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Draft reply labels for the current window, for a human to accept.
+
+        The drafts are stored under their own key and never enter the annotation
+        list; the human still presses save, and the record then says the accepted
+        values came from a draft. Nothing here is applied to routing, and the
+        model is not shown what the gate decided — a draft that has seen the
+        answer is a rubber stamp, not a second opinion.
+        """
+        payload: dict[str, Any] = {
+            "state": "unavailable",
+            "reason": "",
+            "session_key": session_key,
+            "provider_id": "",
+            "generated_at": None,
+            "stats": {},
+            "drafts": {},
+            "invented": [],
+            "undecided": [],
+            "note": "草稿只写进本插件自己的键，不会成为标注；采纳与否由你在回放页按下保存决定。",
+        }
+        if not self.annotation_draft_enabled:
+            payload["state"] = "disabled"
+            payload["reason"] = ("AI 预标注默认关闭：它会把该会话的消息正文发给你配置的模型。"
+                                 "打开 annotation_draft_enabled 后可用。")
+            return payload
+        dag = self.dags.get(session_key)
+        if dag is None:
+            payload["state"] = "no_session"
+            payload["reason"] = "当前没有这个会话的消息图；先在回放页选中一个会话。"
+            return payload
+        existing = await self.topic_annotations.read(session_key)
+        annotated = {row.get("msg_id"): row for row in existing.get("records") or []}
+        batch, stats = build_batch(dag.get_recent_nodes(_ANNOTATION_DRAFT_WINDOW), annotated,
+                                   limit=int(self.annotation_draft_limit or 20))
+        payload["stats"] = stats
+        if not stats["asked"]:
+            payload["state"] = "nothing_to_draft"
+            payload["reason"] = "窗口里没有可起草的消息：要么都已经标注过，要么这几条没有正文。"
+            return payload
+        provider_id = self.llm.configured_provider(purpose="draft")
+        payload["provider_id"] = provider_id
+        system_prompt, prompt = build_draft_prompt(batch)
+        try:
+            reply = await self.llm.generate(
+                prompt=self._bounded_text(prompt, _MAX_TURN_CHARS),
+                umo=session_key, system_prompt=system_prompt, purpose="draft",
+                timeout=float(self.annotation_draft_timeout or 60.0))
+        except asyncio.CancelledError:
+            raise
+        except LLMUnavailable as exc:
+            self._metric("annotation_draft_unavailable")
+            payload["reason"] = f"模型不可用（{type(exc).__name__}）。"
+            return payload
+        except Exception as exc:
+            self._metric("annotation_draft_failed")
+            payload["state"] = "failed"
+            payload["reason"] = f"调用模型失败（{type(exc).__name__}）。"
+            return payload
+        parsed = parse_drafts(reply, batch)
+        if parsed is None:
+            self._metric("annotation_draft_failed")
+            payload["state"] = "failed"
+            payload["reason"] = "模型返回的不是可解析的 JSON 对象。"
+            return payload
+        saved = await self.topic_annotations.save_drafts(
+            session_key, {**parsed, "provider_id": provider_id, "model": ""})
+        self._metric("annotation_draft_succeeded", amount=int(parsed.get("drafted") or 0))
+        payload.update(state="fresh", generated_at=saved.get("generated_at"),
+                       drafts=saved.get("drafts") or {},
+                       invented=parsed.get("invented") or [],
+                       undecided=parsed.get("undecided") or [])
+        return payload
     def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
         if refresh:
             self._sync_runtime_from_config()

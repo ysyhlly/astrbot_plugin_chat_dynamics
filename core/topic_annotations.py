@@ -13,6 +13,10 @@ ERROR_TYPES = {"correct", "topic_merge", "topic_split", "wrong_assignment", "pre
 
 RECIPIENT_ERROR_TYPES = {"correct", "missed_bot", "false_bot", "wrong_recipient", "missing_recipient", "subject_confusion", "unknown"}
 REQUIRED_FIELDS = {"session_key", "msg_id", "expected_topic", "error_type"}
+# Drafts live in their own key: a proposal a human has not accepted must not be
+# readable as a label by anything downstream (the learning plugin, the export,
+# the metrics below).
+DRAFT_KEY_PREFIX = "annotation_drafts_v1_"
 RECIPIENT_FIELDS = {"recipient_correct", "bot_targeted", "recipient_ids", "subject_ids", "expected_reply", "recipient_error_type"}
 
 
@@ -35,6 +39,41 @@ class TopicAnnotations:
     def key(cls, session):
         return "topic_annotations_v1_" + cls.digest(session)
 
+    @classmethod
+    def draft_key(cls, session):
+        return DRAFT_KEY_PREFIX + cls.digest(session)
+
+    async def read_drafts(self, session) -> dict:
+        """Model-drafted labels nobody has accepted yet."""
+        raw = await self.plugin.get_kv_data(self.draft_key(session), {})
+        if not isinstance(raw, dict):
+            return {}
+        drafts = raw.get("drafts")
+        return {
+            "draft_schema_version": raw.get("draft_schema_version"),
+            "generated_at": raw.get("generated_at"),
+            "provider_id": str(raw.get("provider_id") or ""),
+            "model": str(raw.get("model") or ""),
+            "drafts": {str(mid): draft for mid, draft in drafts.items()
+                       if isinstance(draft, dict)} if isinstance(drafts, dict) else {},
+        }
+
+    async def save_drafts(self, session, payload) -> dict:
+        raw = payload.get("drafts")
+        record = {
+            "draft_schema_version": payload.get("draft_schema_version") or 1,
+            "generated_at": time.time(),
+            "provider_id": str(payload.get("provider_id") or "")[:64],
+            "model": str(payload.get("model") or "")[:64],
+            "drafts": {str(mid): draft for mid, draft in (raw or {}).items()
+                       if isinstance(mid, str) and isinstance(draft, dict)},
+        }
+        await self.plugin.put_kv_data(self.draft_key(session), record)
+        return record
+
+    async def clear_drafts(self, session) -> None:
+        await self.plugin.put_kv_data(self.draft_key(session), {})
+
     async def read(self, session):
         rows = await self.plugin.get_kv_data(self.key(session), [])
         rows = deepcopy(rows) if isinstance(rows, list) else []
@@ -53,10 +92,15 @@ class TopicAnnotations:
         matrix = Counter((row["predicted_topic"], row["expected_topic"]) for row in rows)
         recipient_rows = [row for row in rows if RECIPIENT_FIELDS.intersection(row)]
         recipient_counts = Counter(row["recipient_error_type"] for row in recipient_rows if "recipient_error_type" in row)
+        drafts = await self.read_drafts(session)
+        assisted = sum(1 for row in rows if row.get("accepted_from") == "ai")
         # Labels are a selected sample, not an unbiased estimate of accuracy.
-        return {"records": rows, "metrics": {"total": len(rows), "error_counts": dict(counts),
+        return {"records": rows, "metrics": {"total": len(rows), "ai_assisted": assisted,
+                "error_counts": dict(counts),
                 "confusion": [{"predicted": a, "expected": b, "count": n} for (a, b), n in sorted(matrix.items())],
-                "sample_note": "仅统计人工标注样本，不代表真实准确率"},
+                "sample_note": ("仅统计人工标注样本，不代表真实准确率；其中 %d 条采纳了模型草稿" % assisted)},
+                "drafts": drafts.get("drafts") or {},
+                "drafts_generated_at": drafts.get("generated_at"),
                 "recipient_metrics": {"total": len(recipient_rows), "error_counts": dict(recipient_counts),
                     "correct": sum(row.get("recipient_correct") is True for row in recipient_rows),
                     "incorrect": sum(row.get("recipient_correct") is False for row in recipient_rows),
@@ -124,6 +168,16 @@ class TopicAnnotations:
         if getattr(self.plugin, "console_show_message_content", False):
             record["text"] = node.text[:2000]
         async with self.lock:
+            # Provenance: a human pressed save, and if the values they saved are
+            # the ones the draft proposed, the record says so instead of leaving
+            # the learning layer to guess how much of a label is model output.
+            record["label_source"] = "human"
+            draft = (await self.read_drafts(session)).get("drafts", {}).get(mid)
+            if isinstance(draft, dict):
+                shared = [key for key in ("expected_reply", "bot_targeted") if key in draft]
+                if shared and all(body.get(key) == draft.get(key) for key in shared):
+                    record["accepted_from"] = "ai"
+                    record["draft_confidence"] = draft.get("confidence")
             rows = (await self.read(session))["records"]
             rows = [row for row in rows if row["msg_id"] != mid]
             rows.append(record)

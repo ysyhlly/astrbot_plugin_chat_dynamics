@@ -297,6 +297,36 @@
     "default": false,
     "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
   },
+  "annotation_draft_enabled": {
+    "description": "AI 预标注（草稿）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。开启后，回放页的「生成 AI 草稿」会把该会话的消息正文发给你配置的模型，让它给出「该不该回 / 是否在对机器人说话」的草稿。草稿只写进插件自己的键，不会成为标注；你在回放页按下保存才算数，记录里会写明这条采纳了草稿。"
+  },
+  "annotation_draft_provider": {
+    "description": "AI 预标注 Chat Provider",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "留空时回退旧版 provider，再为空时按会话默认 Provider。预标注是一次离线判读，建议固定一个便宜且稳定的模型。"
+  },
+  "annotation_draft_limit": {
+    "description": "单次预标注条数",
+    "type": "int",
+    "default": 20,
+    "hint": "一次为多少条未标注消息起草（范围 1~40）。条数越多，一次调用越贵，草稿之间也更容易互相影响。"
+  },
+  "annotation_draft_timeout": {
+    "description": "预标注超时 (秒)",
+    "type": "float",
+    "default": 60.0,
+    "slider": {
+      "min": 10,
+      "max": 300,
+      "step": 5
+    },
+    "hint": "一次预标注要读整段窗口，比单条回复慢；超时即放弃，不写任何草稿。范围 10~300。"
+  },
   "telemetrics_window_seconds": {
     "description": "遥测滑动窗口 (秒)",
     "type": "float",

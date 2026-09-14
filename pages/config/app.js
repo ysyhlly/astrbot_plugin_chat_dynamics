@@ -240,6 +240,18 @@ const CONFIG_GROUPS = [
     ]
   },
   {
+    "id": "drafting",
+    "title": "AI 预标注",
+    "blurb": "让模型为窗口里的消息起草回复标签，由人采纳后才成为标注",
+    "open": false,
+    "keys": [
+      "annotation_draft_enabled",
+      "annotation_draft_provider",
+      "annotation_draft_limit",
+      "annotation_draft_timeout"
+    ]
+  },
+  {
     "id": "console",
     "title": "面板隐私",
     "blurb": "控制面板是否显示消息正文",

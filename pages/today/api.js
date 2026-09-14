@@ -70,18 +70,20 @@ export function withTimeout(promise, timeoutMs = REQUEST_TIMEOUT_MS) {
   });
 }
 
-export async function apiGet(endpoint, params = {}) {
+// `timeoutMs` is overridable per call: 8s is right for a panel read, and far
+// too short for a call that waits on a model.
+export async function apiGet(endpoint, params = {}, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
   if (bridge && typeof bridge.apiGet === "function") {
-    return unwrap(await withTimeout(bridge.apiGet(endpoint, params)));
+    return unwrap(await withTimeout(bridge.apiGet(endpoint, params), timeoutMs));
   }
   throw new Error("Plugin Page bridge 不可用");
 }
 
-export async function apiPost(endpoint, body = {}) {
+export async function apiPost(endpoint, body = {}, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
   if (bridge && typeof bridge.apiPost === "function") {
-    return unwrap(await withTimeout(bridge.apiPost(endpoint, body)));
+    return unwrap(await withTimeout(bridge.apiPost(endpoint, body), timeoutMs));
   }
   throw new Error("Plugin Page bridge 不可用");
 }

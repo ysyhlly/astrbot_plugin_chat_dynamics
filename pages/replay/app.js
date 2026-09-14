@@ -81,13 +81,45 @@ function recipientEditor(index) {
     <p id="recipient-help-${index}" class="ops-note">留空表示未标注；输入 [] 表示没有对象。每项最多 256 字符，最多 64 项。</p>
     ${select("recipient_error_type", "收件人错误类型", Object.entries(RECIPIENT_ERRORS).map(([key, label]) => `<option value="${key}">${label}</option>`).join(""))}</details><p data-saved-annotation class="ops-note"></p>`;
 }
+function draftNote(draft) {
+  if (!draft || typeof draft !== "object") return "";
+  const parts = [];
+  if (typeof draft.expected_reply === "boolean") parts.push(`该回复：${draft.expected_reply ? "是" : "否"}`);
+  if (typeof draft.bot_targeted === "boolean") parts.push(`对 Bot 说话：${draft.bot_targeted ? "是" : "否"}`);
+  const confidence = Number(draft.confidence);
+  const confidenceText = Number.isFinite(confidence) ? ` · 置信度 ${confidence}` : "";
+  const reason = draft.reason ? ` · ${escapeHtml(draft.reason)}` : "";
+  return `<p class="ops-note" data-draft-note>AI 草稿：${escapeHtml(parts.join(" · "))}${confidenceText}${reason} <button type="button" class="button" data-apply-draft>按草稿填写</button></p>`;
+}
+function applyDraftToRow(row, draft) {
+  if (!draft) return false;
+  row.querySelectorAll("[data-recipient]").forEach(input => {
+    const value = draft[input.dataset.recipient];
+    if (value === undefined || value === null) return;
+    input.value = typeof value === "boolean" ? String(value) : Array.isArray(value) ? value.join(", ") : String(value);
+  });
+  row.dataset.dirty = "1";
+  return true;
+}
+function draftFor(message) {
+  if (!message || !annotationData) return null;
+  return (annotationData.drafts || {})[message.msg_id] || null;
+}
+
 function applyAnnotationData(data, block, prefill = false) {
   annotationData = data;
   annotationMetrics.textContent = `已标注 ${data.metrics.total} 条 · 收件人标注 ${data.recipient_metrics?.total || 0} 条 · ${Object.entries(data.metrics.error_counts).map(([key, count]) => `${ERROR_LABELS[key] || key} ${count}`).join(" · ")}。${data.metrics.sample_note}`;
   (block.messages || []).forEach((message, index) => {
     const row = annotationMessages.children[index];
+    if (!row) return;
     const record = (data.records || []).find(item => item.msg_id === message.msg_id);
-    if (!row || !record) return;
+    // The draft is shown whether or not a label exists yet — an unlabelled
+    // message is the one a draft is for.
+    const note = row.querySelector("[data-draft-note]");
+    if (note) note.remove();
+    const draft = draftFor(message);
+    if (draft) row.querySelector("[data-saved-annotation]").insertAdjacentHTML("afterend", draftNote(draft));
+    if (!record) return;
     const descriptions = Object.entries(RECIPIENT_BOOLS).filter(([key]) => typeof record[key] === "boolean").map(([key, label]) => `${label}：${record[key] ? "是" : "否"}`);
     for (const [key, label] of [["recipient_ids", "收件人"], ["subject_ids", "讨论对象"]]) {
       if (Array.isArray(record[key])) descriptions.push(`${label}：${record[key].join(", ") || "无"}`);
@@ -293,6 +325,17 @@ async function boot() {
     row.querySelector("[data-error]").value = event.target.value === "UNKNOWN" ? "premature_assignment" : event.target.value === "NEW" ? "topic_merge" : "wrong_assignment";
   });
   annotationMessages.addEventListener("click", async event => {
+    const applyButton = event.target.closest("[data-apply-draft]");
+    if (applyButton) {
+      const row = applyButton.closest(".annotation-row");
+      const index = [...annotationMessages.children].indexOf(row);
+      const message = blocks[selectedIndex]?.messages?.[index];
+      if (applyDraftToRow(row, draftFor(message))) {
+        annotationStatus.textContent = ("已按草稿填写收件人与回复标签；话题仍由你选择，确认后按保存标注。"
+          + "保存后记录里会写明这条采纳了草稿。");
+      }
+      return;
+    }
     const button = event.target.closest("[data-annotate]");
     if (!button || button.disabled) return;
     const block = blocks[selectedIndex];
@@ -314,6 +357,38 @@ async function boot() {
     } catch (err) {
       if (revision === annotationRevision) annotationStatus.textContent = err.message || "标注保存失败";
     } finally { button.disabled = false; }
+  });
+  document.getElementById("btnDraftAnnotations").addEventListener("click", async () => {
+    const block = blocks[selectedIndex];
+    const button = document.getElementById("btnDraftAnnotations");
+    if (!block) { annotationStatus.textContent = "先选一个会话。"; return; }
+    button.disabled = true;
+    annotationStatus.textContent = "正在生成 AI 草稿…";
+    try {
+      // The model call is not a panel read: it needs its own budget.
+      const data = await apiPost("annotation_draft",
+        { session_key: block.session_id, refresh: true }, { timeoutMs: 180000 });
+      const asked = data?.stats?.asked ?? 0;
+      const drafted = Object.keys(data?.drafts || {}).length;
+      annotationStatus.textContent = data?.state === "fresh"
+        ? `已生成 ${drafted} 条草稿（窗口内可起草 ${asked} 条）。草稿不是标注：确认后按「保存标注」才生效。`
+        : (data?.reason || "本次没有生成草稿。");
+      const refreshed = await apiGet("topic_annotations", { session_key: block.session_id });
+      applyAnnotationData(refreshed, block);
+    } catch (err) {
+      annotationStatus.textContent = err.message || "生成草稿失败";
+    } finally { button.disabled = false; }
+  });
+  document.getElementById("btnApplyDrafts").addEventListener("click", () => {
+    const block = blocks[selectedIndex];
+    let filled = 0;
+    annotationMessages.querySelectorAll(".annotation-row").forEach((row, index) => {
+      const message = block?.messages?.[index];
+      if (applyDraftToRow(row, draftFor(message))) filled += 1;
+    });
+    annotationStatus.textContent = filled
+      ? `已按草稿填写 ${filled} 条；话题仍由你选择，逐条确认后按保存标注。`
+      : "本页没有可用的草稿，先点「生成 AI 草稿」。";
   });
   document.getElementById("btnExportAnnotations").addEventListener("click", () => {
     if (!annotationData) { annotationStatus.textContent = "请先等待标注加载完成。"; return; }
