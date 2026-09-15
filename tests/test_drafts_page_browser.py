@@ -155,7 +155,7 @@ def test_accept_works_on_non_secure_http_origin(browser, page_server):
         assert "已采纳 1 条" in page.locator("#reviewStatus").inner_text()
 
 
-def test_storage_failure_before_dispatch_is_reported_and_retryable(browser, page_server):
+def test_storage_unavailable_does_not_block_review(browser, page_server):
     with browser.new_context() as context:
         page = open_page(context, page_server)
         page.evaluate("""() => {
@@ -163,13 +163,45 @@ def test_storage_failure_before_dispatch_is_reported_and_retryable(browser, page
             Storage.prototype.setItem = function() { throw new Error('storage blocked'); };
         }""")
         page.locator('[data-accept][data-mid="m1"]').click()
-        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('保存')", timeout=3000)
-        assert page.evaluate("window.__calls.length") == 0
-        assert page.locator('[data-accept][data-mid="m1"]').is_enabled()
-        page.evaluate("() => { Storage.prototype.setItem = window.originalSetItem; }")
-        page.locator('[data-accept][data-mid="m1"]').click()
         page.wait_for_function("window.__calls.length === 1", timeout=3000)
         assert "已采纳 1 条" in page.locator("#reviewStatus").inner_text()
+
+
+def test_opaque_host_iframe_accepts_and_reconciles_without_storage(browser, page_server):
+    with browser.new_context() as context:
+        setup(context)
+        context.route("**/sandbox-host", lambda route: route.fulfill(
+            content_type="text/html", body='<iframe sandbox="allow-scripts allow-forms allow-downloads" '
+            'src="/drafts/index.html?ui=day"></iframe>'))
+        page = context.new_page()
+        page.goto(f"{page_server}/sandbox-host")
+        frame = page.frames[1]
+        frame.wait_for_selector(".draft-card")
+        assert frame.evaluate("""() => { try { return !!sessionStorage; }
+            catch (e) { return e.name; } }""") == "SecurityError"
+        frame.locator('[data-accept][data-mid="m1"]').click()
+        frame.wait_for_function("window.__calls.length === 1")
+        assert "已采纳 1 条" in frame.locator('#reviewStatus').inner_text()
+        frame.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
+            window.__calls.push({body}); throw new Error('offline');
+          };
+        }""")
+        frame.locator('[data-accept][data-mid="m1"]').click()
+        frame.wait_for_function("window.__calls.length === 3")
+        assert frame.evaluate("window.__calls[1].body.request_id === window.__calls[2].body.request_id")
+        assert "核对再刷新" in frame.locator('#reviewStatus').inner_text()
+        assert frame.locator('[data-accept][data-mid="m1"]').is_disabled()
+        frame.evaluate("""() => {
+          const get = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params={}) => params.request_id
+            ? {ok:true,data:{state:'complete',result:{saved:1,saved_ids:['m1'],failed:[]}}}
+            : get(endpoint, params);
+        }""")
+        frame.locator('#btnCheckPending').click()
+        frame.wait_for_function("document.querySelector('#btnCheckPending').hidden")
+        assert frame.evaluate("window.__calls.length") == 3
+        assert frame.locator('[data-accept][data-mid="m1"]').is_enabled()
 
 
 def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, page_server):

@@ -36,6 +36,7 @@ let loadRevision = 0;
 
 const pendingKey = "chat-dynamics:draft-review:pending:v1";
 let pendingRequests = [];
+let pendingStorageAvailable = true;
 try {
   const stored = JSON.parse(sessionStorage.getItem(pendingKey) || "[]");
   if (Array.isArray(stored)) pendingRequests = stored.filter(body => body?.request_id && body?.session_key);
@@ -47,11 +48,14 @@ checkPending.id = "btnCheckPending";
 checkPending.textContent = "核对待确认请求";
 els.reviewStatus.insertAdjacentElement("afterend", checkPending);
 function persistPending(next = pendingRequests) {
-  // Persist before dispatch. If storage fails, do not risk an unrecoverable write.
+  // AstrBot's opaque-origin sandbox denies sessionStorage. The server still
+  // deduplicates requests by ID; keep that ID in memory for query/retry instead
+  // of making browser storage a prerequisite for every review write.
   try {
     sessionStorage.setItem(pendingKey, JSON.stringify(next));
+    pendingStorageAvailable = true;
   } catch {
-    throw new Error("无法保存待确认请求，请允许此页面使用会话存储后重试。");
+    pendingStorageAvailable = false;
   }
   pendingRequests = next;
 }
@@ -68,6 +72,9 @@ function requestId() {
 function pendingNotice() {
   if (pendingRequests.length) {
     els.reviewStatus.textContent = `请求结果待确认：${pendingRequests.length} 个请求可能已生效，请核对待确认请求。`;
+    if (!pendingStorageAvailable) {
+      els.reviewStatus.textContent += "请先完成核对再刷新或离开页面；当前环境无法保存待确认记录。";
+    }
     els.reviewStatus.classList.add("error");
   }
 }
