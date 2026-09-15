@@ -306,7 +306,7 @@
     "description": "AI 预标注（草稿）",
     "type": "bool",
     "default": false,
-    "hint": "默认关闭。开启后，回放页的「生成 AI 草稿」会把该会话的消息正文发给你配置的模型，让它给出「该不该回 / 是否在对机器人说话」的草稿。草稿只写进插件自己的键，不会成为标注；你在回放页按下保存才算数，记录里会写明这条采纳了草稿。"
+    "hint": "默认关闭。开启后可在回放页外层一键生成，也可另行开启定时生成。生成时会把会话消息正文发给预标注模型，起草「该不该回 / 是否在对机器人说话」。草稿仍需在回放或审批页人工采纳，记录会保留 AI 草稿来源。"
   },
   "annotation_draft_provider": {
     "description": "AI 预标注 Chat Provider",
@@ -314,6 +314,19 @@
     "default": "",
     "_special": "select_provider",
     "hint": "留空时回退旧版 provider，再为空时按会话默认 Provider。预标注是一次离线判读，建议固定一个便宜且稳定的模型。"
+  },
+  "annotation_draft_auto_enabled": {
+    "description": "定时生成 AI 标注草稿",
+    "type": "bool",
+    "default": false,
+    "hint": "需同时开启 AI 预标注。按设定间隔依次检查生效群的会话，把未标注且没有草稿的消息正文发给预标注模型；已有草稿不重复生成。只生成待审草稿，仍需人工采纳。"
+  },
+  "annotation_draft_interval_minutes": {
+    "description": "自动生成间隔（分钟）",
+    "type": "float",
+    "default": 15.0,
+    "slider": { "min": 1, "max": 1440, "step": 1 },
+    "hint": "范围 1–1440 分钟，默认 15 分钟。开启或修改间隔后等待一个间隔开始；各会话依次生成，上轮未完成时不会叠加新一轮。每次仍受单次预标注条数限制。"
   },
   "annotation_draft_limit": {
     "description": "单次预标注条数",

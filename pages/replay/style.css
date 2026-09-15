@@ -110,6 +110,9 @@ html[data-ui-theme="night"] .replay-block { color: #14252b; }
 .replay-controls label { display:grid; gap:8px; font-size:12px; color:var(--muted); }
 .replay-controls input,.replay-controls select { width:100%; min-width:0; box-sizing:border-box; }
 .replay-controls .card-note { grid-column:1/-1; }
+.replay-draft-tools { grid-column:1/-1; border-top:1px solid var(--line); padding-top:14px; min-width:0; }
+.replay-draft-tools .ops-actions { display:flex; flex-wrap:wrap; gap:10px; }
+.replay-draft-tools .ops-note { margin:8px 0 0; overflow-wrap:anywhere; }
 .gantt-chart { grid-template-columns:180px minmax(480px,1fr); min-width:660px; }
 .gantt-heading,.gantt-label { background:var(--surface); }
 .gantt-track { height:76px; }

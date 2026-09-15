@@ -139,6 +139,8 @@ class ConfigPanel:
             # showing "生效：—" and excluded it from the drift check.
             "annotation_draft_provider": getattr(cfg, "draft_provider_id", ""),
             "annotation_draft_enabled": bool(getattr(cfg, "annotation_draft_enabled", False)),
+            "annotation_draft_auto_enabled": bool(getattr(cfg, "annotation_draft_auto_enabled", False)),
+            "annotation_draft_interval_minutes": getattr(cfg, "annotation_draft_interval_minutes", 15.0),
             "annotation_draft_limit": getattr(cfg, "annotation_draft_limit", 20),
             "annotation_draft_timeout": getattr(cfg, "annotation_draft_timeout", 60.0),
             "parent_window_seconds": getattr(cfg, "parent_window_seconds", 180.0),
@@ -481,5 +483,4 @@ class ConfigPanel:
         self.host._sync_runtime_from_config(validated_config=candidate)
         self.host._metric("preset_applied")
         return {"name": name, "changed": changed, "saved": saved}
-
 

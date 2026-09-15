@@ -665,7 +665,8 @@ async def test_dismissing_and_clearing_never_write_labels():
     cleared = await plugin.annotation_drafts_apply(
         {"action": "clear_session", "session_key": "a"})
     assert cleared == {"cleared": True}
-    assert kv[plugin.topic_annotations.draft_key("a")] == {}
+    assert kv[plugin.topic_annotations.draft_key("a")]["drafts"] == {}
+    assert set(kv[plugin.topic_annotations.draft_key("a")]["dismissed_ids"]) == {"m1", "m2"}
 
 
 @pytest.mark.asyncio

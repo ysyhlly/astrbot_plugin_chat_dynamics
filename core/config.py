@@ -31,6 +31,8 @@ class RuntimeConfig:
     annotation_draft_enabled: bool
     annotation_draft_limit: int
     annotation_draft_timeout: float
+    annotation_draft_auto_enabled: bool
+    annotation_draft_interval_minutes: float
     command_prefix: str
     debounce_base_cooldown: float
     debounce_extended_cooldown: float
@@ -294,6 +296,10 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         # Off by default: drafting sends other people messages to a model, and the
         # feature only becomes useful once somebody has decided to review drafts.
         annotation_draft_enabled=_bool(_get(raw, "annotation_draft_enabled", False), False),
+        annotation_draft_auto_enabled=_bool(_get(raw, "annotation_draft_auto_enabled", False), False),
+        annotation_draft_interval_minutes=_number(
+            raw, "annotation_draft_interval_minutes", 15.0, lambda value: 1 <= value <= 1440, warnings
+        ),
         annotation_draft_limit=_integer(raw, "annotation_draft_limit", 20, 1, 40, warnings),
         annotation_draft_timeout=_number(
             raw, "annotation_draft_timeout", 60.0, lambda value: 10 <= value <= 300, warnings

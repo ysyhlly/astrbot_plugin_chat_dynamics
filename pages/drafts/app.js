@@ -138,7 +138,7 @@ function render() {
     const expired = items.filter(item => !item.saveable);
     const head = `<div class="draft-session-head">
       <strong>会话 ${escapeHtml(redactId(group.session_key))}</strong>
-      <span class="ops-note">${group.generated_at ? `生成于 ${escapeHtml(formatTs(group.generated_at))}` : ""}${group.provider_id ? ` · 模型 ${escapeHtml(group.provider_id)}` : ""}</span>
+      <span class="ops-note">${group.generated_at ? `最近生成于 ${escapeHtml(formatTs(group.generated_at))}` : ""}${group.provider_id ? ` · 最近使用模型 ${escapeHtml(group.provider_id)}` : ""}</span>
       <button type="button" class="button button-danger" data-clear-session="${escapeHtml(group.session_key)}"${busy ? " disabled" : ""} data-clear-count="${items.length}">清空该会话草稿</button>
     </div>`;
     // Expired drafts are kept visible — silently dropping them would hide the

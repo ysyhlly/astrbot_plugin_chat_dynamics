@@ -59,6 +59,8 @@ class TopicAnnotations:
             "generated_at": raw.get("generated_at"),
             "provider_id": str(raw.get("provider_id") or ""),
             "model": str(raw.get("model") or ""),
+            "dismissed_ids": [mid for mid in raw.get("dismissed_ids", []) if isinstance(mid, str)][:2000]
+            if isinstance(raw.get("dismissed_ids"), list) else [],
             "drafts": {str(mid): draft for mid, draft in drafts.items()
                        if isinstance(draft, dict)} if isinstance(drafts, dict) else {},
         }
@@ -77,7 +79,7 @@ class TopicAnnotations:
         rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY, [])
         return [str(row) for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
 
-    async def save_drafts(self, session, payload) -> dict:
+    async def save_drafts(self, session, payload, *, merge=False, is_current=None) -> dict | None:
         raw = payload.get("drafts")
         record = {
             "draft_schema_version": payload.get("draft_schema_version") or 1,
@@ -88,13 +90,25 @@ class TopicAnnotations:
                        if isinstance(mid, str) and isinstance(draft, dict)},
         }
         async with self.lock:
+            if merge:
+                previous = await self.read_drafts(session)
+                labels = await self.plugin.get_kv_data(self.key(session), [])
+                labelled = {row.get("msg_id") for row in labels if isinstance(row, dict)} if isinstance(labels, list) else set()
+                record["dismissed_ids"] = previous.get("dismissed_ids", [])
+                combined = {**previous.get("drafts", {}), **record["drafts"]}
+                record["drafts"] = dict(list((mid, draft) for mid, draft in combined.items()
+                                           if mid not in labelled)[-2000:])
+            if is_current is not None and not is_current():
+                return None
             await self.plugin.put_kv_data(self.draft_key(session), record)
             await self._index_session(session)
         return record
 
     async def clear_drafts(self, session) -> None:
         async with self.lock:
-            await self.plugin.put_kv_data(self.draft_key(session), {})
+            previous = await self.read_drafts(session)
+            dismissed = list(dict.fromkeys(previous.get("dismissed_ids", []) + list(previous.get("drafts", {}))))[-2000:]
+            await self.plugin.put_kv_data(self.draft_key(session), {"drafts": {}, "dismissed_ids": dismissed})
             await self._index_session(session, remove=True)
 
     async def remove_drafts(self, session, msg_ids) -> int:
@@ -114,6 +128,10 @@ class TopicAnnotations:
                 if drafts.pop(mid, None) is not None:
                     removed += 1
             raw["drafts"] = drafts
+            previous = raw.get("dismissed_ids", [])
+            previous = previous if isinstance(previous, list) else []
+            raw["dismissed_ids"] = list(dict.fromkeys(
+                [mid for mid in previous if isinstance(mid, str)] + sorted(wanted)))[-2000:]
             await self.plugin.put_kv_data(self.draft_key(session), raw)
             if not drafts:
                 await self._index_session(session, remove=True)

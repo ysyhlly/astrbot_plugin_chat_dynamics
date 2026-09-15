@@ -1,7 +1,7 @@
 """AnnotationReview operations composed around the plugin runtime host."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 import asyncio
 from .annotation_draft import build_batch, build_prompt as build_draft_prompt, parse_drafts
 from .llm_adapter import LLMUnavailable
@@ -15,7 +15,9 @@ class AnnotationReview:
     def __init__(self, host: Any) -> None:
         self.host = host
 
-    async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False) -> dict[str, Any]:
+    async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False,
+                                       automatic: bool = False,
+                                       is_valid: Callable[[], bool] | None = None) -> dict[str, Any]:
         """Draft reply labels for the current window, for a human to accept.
 
         The drafts are stored under their own key and never enter the annotation
@@ -48,16 +50,35 @@ class AnnotationReview:
             return payload
         existing = await self.host.topic_annotations.read(session_key)
         annotated = {row.get("msg_id"): row for row in existing.get("records") or []}
+        if automatic:
+            annotated.update(existing.get("drafts") or {})
+            stored = await self.host.topic_annotations.read_drafts(session_key)
+            annotated.update({mid: True for mid in stored.get("dismissed_ids", [])})
         runtime = (getattr(self.host, "_sessions", None) or {}).get(session_key)
+        epoch = getattr(runtime, "epoch", None)
         bot_id = str(getattr(runtime, "bot_id", "") or "")
         if not bot_id:
             bot_id = str(getattr(getattr(self.host, "addressivity_router", None), "bot_id", "") or "")
         batch, stats = build_batch(dag.get_recent_nodes(_ANNOTATION_DRAFT_WINDOW), annotated,
                                    limit=int(self.host.annotation_draft_limit or 20), bot_id=bot_id)
         payload["stats"] = stats
+        asked_nodes = {row["msg_id"]: dag.nodes.get(row["msg_id"])
+                       for row in batch if row["draft_this"]}
+
+        def is_current() -> bool:
+            return bool(not getattr(self.host, "_shutting_down", False)
+                        and (is_valid is None or is_valid())
+                        and self.host.annotation_draft_enabled
+                        and (not automatic or getattr(self.host, "annotation_draft_auto_enabled", False))
+                        and self.host.dags.get(session_key) is dag
+                        and getattr(runtime, "epoch", None) == epoch
+                        and all(dag.nodes.get(mid) is node for mid, node in asked_nodes.items()))
+
+        if not is_current():
+            return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
         if not stats["asked"]:
             payload["state"] = "nothing_to_draft"
-            payload["reason"] = "窗口里没有可起草的消息：要么都已经标注过，要么这几条没有正文。"
+            payload["reason"] = "窗口里没有可起草的新消息：已有标注或草稿、已忽略，或没有正文。"
             return payload
         provider_id = self.host.llm.configured_provider(purpose="draft")
         payload["provider_id"] = provider_id
@@ -84,10 +105,16 @@ class AnnotationReview:
             payload["state"] = "failed"
             payload["reason"] = "模型返回的不是可解析的 JSON 对象。"
             return payload
+        if not is_current():
+            return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
         saved = await self.host.topic_annotations.save_drafts(
-            session_key, {**parsed, "provider_id": provider_id, "model": ""})
+            session_key, {**parsed, "provider_id": provider_id, "model": ""},
+            merge=True, is_current=is_current)
+        if saved is None:
+            return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
         self.host._metric("annotation_draft_succeeded", amount=int(parsed.get("drafted") or 0))
         payload.update(state="fresh", generated_at=saved.get("generated_at"),
+                       drafted=len(set(parsed.get("drafts", {})) & set(saved.get("drafts", {}))),
                        drafts=saved.get("drafts") or {},
                        invented=parsed.get("invented") or [],
                        undecided=parsed.get("undecided") or [])
@@ -233,4 +260,3 @@ class AnnotationReview:
         if saved:
             await self.host.topic_annotations.remove_drafts(session, saved)
         return {"saved": len(saved), "skipped": skipped, "failed": failed}
-

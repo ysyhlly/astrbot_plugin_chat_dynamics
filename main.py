@@ -41,6 +41,7 @@ from .core.topic_reranker import TopicReranker
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
 from .core.annotation_review import AnnotationReview
+from .core.annotation_scheduler import AnnotationDraftScheduler
 from .core.config_panel import ConfigPanel, _PRESETS  # noqa: F401 (compatibility re-export)
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
@@ -172,6 +173,8 @@ _DIRECT_RUNTIME_ATTRS = (
     "vibe_provider_id",
     "draft_provider_id",
     "annotation_draft_enabled",
+    "annotation_draft_auto_enabled",
+    "annotation_draft_interval_minutes",
     "annotation_draft_limit",
     "annotation_draft_timeout",
     "command_prefix",
@@ -435,6 +438,7 @@ class ChatDynamicsPlugin(Star):
         # The draft path and the web API must share one store (and its lock);
         # the web constructor reuses this instance instead of opening a second.
         self.topic_annotations = TopicAnnotations(self)
+        self._annotation_scheduler = AnnotationDraftScheduler(self)
         self._web = ConsoleWebAPI(self)
         self._web.register()
         self._web_apis_registered = self._web.registered
@@ -532,6 +536,9 @@ class ChatDynamicsPlugin(Star):
             )
             # A different provider can change whether media can travel at all.
             self._refresh_multimodal_availability()
+        scheduler = getattr(self, "_annotation_scheduler", None)
+        if scheduler is not None:
+            scheduler.configure()
         for warning in log_warnings:
             if warning not in self._config_warnings_seen:
                 logger.warning("[ChatDynamics] Invalid config: %s", warning)
@@ -907,11 +914,17 @@ class ChatDynamicsPlugin(Star):
         raise ValueError(f"unknown notebook action: {action}")
 
     async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False) -> dict[str, Any]:
-        return await AnnotationReview(self).annotation_draft_payload(session_key, refresh=refresh)
+        scheduler = getattr(self, "_annotation_scheduler", None)
+        if scheduler is None:
+            scheduler = self._annotation_scheduler = AnnotationDraftScheduler(self)
+        return await scheduler.generate(session_key, refresh=refresh)
     async def annotation_drafts_payload(self, session_key: str = "") -> dict[str, Any]:
         return await AnnotationReview(self).annotation_drafts_payload(session_key)
 
     async def annotation_drafts_apply(self, body: dict[str, Any]) -> dict[str, Any]:
+        scheduler = getattr(self, "_annotation_scheduler", None)
+        if scheduler is not None and isinstance(body, dict):
+            scheduler.cancel_session(str(body.get("session_key") or ""))
         return await AnnotationReview(self).annotation_drafts_apply(body)
     def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
         return ConfigPanel(self).get_config_panel(refresh=refresh)
@@ -1326,6 +1339,7 @@ class ChatDynamicsPlugin(Star):
             len(self.takeover_groups),
             len(self.exclude_groups),
         )
+        self._annotation_scheduler.start()
 
     async def _load_panel_runtime(self) -> None:
         from .core.runtime_persistence import restore_runtime_state
@@ -1547,6 +1561,9 @@ class ChatDynamicsPlugin(Star):
 
     async def _shutdown_work(self) -> None:
         """Stop background work and release hosts before the final snapshot."""
+        scheduler = getattr(self, "_annotation_scheduler", None)
+        if scheduler is not None:
+            await scheduler.close()
         if self._runtime_persist_task is not None:
             await asyncio.gather(self._runtime_persist_task, return_exceptions=True)
             self._runtime_persist_task = None
@@ -3434,6 +3451,9 @@ class ChatDynamicsPlugin(Star):
                 runtime.latest_pending = None
                 runtime.clear_active_followup_batches()
                 runtime.followup_queue.clear()
+            scheduler = getattr(self, "_annotation_scheduler", None)
+            if scheduler is not None:
+                scheduler.cancel_session(session_id)
             self._cancel_vibe_llm(session_id)
             self._cancel_embedding_tasks(session_id)
             self._cancel_hook_tasks(session_id)
@@ -3536,6 +3556,9 @@ class ChatDynamicsPlugin(Star):
         cancel_background: bool = True,
     ) -> None:
         key = self._resolve_session_key(session_id) or session_id
+        scheduler = getattr(self, "_annotation_scheduler", None)
+        if scheduler is not None:
+            scheduler.cancel_session(key)
         self._clear_native_context(key)
         if cancel_background:
             self._cancel_vibe_llm(key)

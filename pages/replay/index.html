@@ -66,6 +66,14 @@
         <label for="topicSearch">查找主题<input id="topicSearch" type="search" placeholder="输入主题关键词" autocomplete="off" /></label>
         <label for="decisionFilter">参与情况<select id="decisionFilter"><option value="all">全部主题</option><option value="speak">有开口记录</option><option value="silent">没有开口记录</option></select></label>
         <span class="card-note" id="trackHint">正在读取回放</span>
+        <div class="replay-draft-tools">
+          <div class="ops-actions">
+            <button type="button" class="button" id="btnDraftAnnotations" disabled>一键生成 AI 草稿</button>
+            <button type="button" class="button button-quiet" id="btnOpenSessionDrafts">打开审批页</button>
+          </div>
+          <p class="ops-note" id="draftGenerationStatus" role="status" aria-live="polite">选择一个会话即可生成，无需打开话题。</p>
+          <p class="ops-note">生成范围为所选会话最近未标注的消息，包含尚未形成话题的消息。草稿需人工审批后才成为标注。启用 AI 草稿后，手动生成或已开启的定时生成会将正文发送给模型。</p>
+        </div>
       </section>
 
       <section class="wire-card" aria-labelledby="railTitle">
@@ -102,7 +110,6 @@
           <p id="annotationStatus" role="status" aria-live="polite"></p>
           <p id="annotationMetrics" class="ops-note"></p>
           <div class="ops-actions">
-            <button type="button" class="button" id="btnDraftAnnotations">生成 AI 草稿</button>
             <button type="button" class="button" id="btnApplyDrafts">本页全部按草稿填写</button>
             <button type="button" class="button button-quiet" id="btnOpenDrafts">打开审批页</button>
             <button type="button" class="button" id="btnExportAnnotations">导出标注 JSON</button>
@@ -110,7 +117,7 @@
           <p class="ops-note">
             AI 草稿只写进插件自己的键，不会成为标注：模型给出「该不该回 / 是否对机器人说话」与理由，
             你看过之后按「保存标注」才算数，记录里会写明这条采纳了草稿。默认关闭
-            （<code>annotation_draft_enabled</code>），开启后按下按钮才会把本会话的正文发给模型。
+            （<code>annotation_draft_enabled</code>）。可在外层会话筛选区一键生成，或在配置页开启定时自动生成；生成时会把会话正文发给模型。
           </p>
         </section>
         <div class="tonight-actions" aria-label="调整参与程度">

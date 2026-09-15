@@ -254,6 +254,8 @@ const CONFIG_GROUPS = [
     "open": false,
     "keys": [
       "annotation_draft_enabled",
+      "annotation_draft_auto_enabled",
+      "annotation_draft_interval_minutes",
       "annotation_draft_provider",
       "annotation_draft_limit",
       "annotation_draft_timeout"
