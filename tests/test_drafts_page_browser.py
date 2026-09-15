@@ -40,6 +40,7 @@ PAYLOAD = {
                     "reason": "在跟别人说话",
                     "annotated": False,
                     "saveable": False,
+                    "stale_reason": "evicted",
                     "text": "",
                     "topic_id": "t1",
                     "ts": 1730000060.0,
@@ -139,8 +140,13 @@ def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, pag
         text = page.locator(".draft-list").inner_text()
         assert "该回复：是" in text and "对 Bot 说话：否" in text and "置信度 0.8" in text
         assert "理由：直接提问" in text
-        assert "消息已滚出窗口，无法保存" in text
+        assert "已失效：消息已超出保留窗口" in text
+        assert "以下 1 条已失效" in text
         assert page.locator(".draft-card.is-stale").count() == 1
+        assert "可采纳 2 条" in page.locator("#draftCount").inner_text()
+        # An expired draft offers dismiss only.
+        assert page.locator(".draft-card.is-stale button[data-accept]").is_disabled()
+        assert page.locator('.draft-card:not(.is-stale) button[data-accept]').first.is_enabled()
         # Text stays hidden by default; the page says so instead of showing blanks.
         assert "脱敏" in page.locator("#hiddenNote").inner_text()
         assert page.locator("#listEmpty").is_hidden()
@@ -172,8 +178,11 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         }
         assert all(call["body"]["action"] == "accept" for call in calls)
         assert all(call["body"]["expected_topic"] == "CORRECT" for call in calls)
-        assert sorted(sum((call["body"]["msg_ids"] for call in calls), [])) == ["m1", "m2", "m3"]
-        assert "已采纳 3 条" in page.locator("#reviewStatus").inner_text()
+        # m2 is expired: it must never be sent as an accept, or the batch turns
+        # into a wall of identical 'message no longer available' failures.
+        assert sorted(sum((call["body"]["msg_ids"] for call in calls), [])) == ["m1", "m3"]
+        status = page.locator("#reviewStatus").inner_text()
+        assert "已采纳 2 条" in status and "1 条已失效" in status
 
         page.evaluate("window.__calls = []")
         page.locator("#acceptTopic").select_option("NEW")
@@ -182,6 +191,47 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         page.wait_for_function("window.__calls.length >= 2")
         assert all(call["body"]["expected_topic"] == "NEW"
                    for call in page.evaluate("window.__calls"))
+
+
+def test_accepting_only_expired_drafts_explains_instead_of_failing(browser, page_server):
+    expired_only = {
+        "content_hidden": True,
+        "total_drafts": 2,
+        "sessions": [{
+            "session_key": "aiocqhttp:GroupMessage:10001",
+            "generated_at": 1730000000.0,
+            "provider_id": "provider-draft",
+            "items": [
+                {
+                    "msg_id": "m1",
+                    "expected_reply": True,
+                    "bot_targeted": False,
+                    "confidence": 0.8,
+                    "reason": "直接提问",
+                    "annotated": False,
+                    "saveable": False,
+                    "text": "",
+                    "topic_id": "t1",
+                    "ts": 1730000000.0,
+                },
+            ],
+        }],
+    }
+    with browser.new_context() as context:
+        page = open_page(context, page_server, expired_only)
+
+        page.locator("#btnSelectAll").click()
+        page.locator("#btnAccept").click()
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('都已失效')")
+
+        assert page.evaluate("window.__calls") == [], "失效草稿不该发请求"
+        status = page.locator("#reviewStatus").inner_text()
+        assert "无法采纳" in status and "忽略选中" in status
+
+        # Dismissing them still works, so a restart cannot leave dead weight.
+        page.locator("#btnDismiss").click()
+        page.wait_for_function("window.__calls.length >= 1")
+        assert page.evaluate("window.__calls[0].body")["action"] == "dismiss"
 
 
 def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_server):

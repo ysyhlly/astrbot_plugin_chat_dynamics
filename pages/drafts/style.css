@@ -63,6 +63,14 @@
   opacity: 0.62;
 }
 
+.draft-expired-note {
+  margin: 10px 0 2px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--line-strong);
+  background: var(--surface-soft);
+  border-radius: 6px;
+}
+
 .draft-check {
   padding-top: 3px;
 }

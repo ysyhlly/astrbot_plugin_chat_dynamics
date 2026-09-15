@@ -477,7 +477,7 @@ async def test_accepting_a_draft_writes_a_label_and_drops_the_draft():
     result = await plugin.annotation_drafts_apply(
         {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
 
-    assert result == {"saved": 1, "failed": []}
+    assert result == {"saved": 1, "skipped": [], "failed": []}
     rows = kv[plugin.topic_annotations.key("a")]
     assert len(rows) == 1
     # Provenance is decided by save(), not by the caller: the label values are
@@ -503,7 +503,8 @@ async def test_accepting_with_the_new_topic_choice_keeps_that_call():
 
 
 @pytest.mark.asyncio
-async def test_accepting_a_gone_message_reports_it_and_keeps_the_draft():
+async def test_a_draft_whose_message_left_the_window_is_skipped_not_saved():
+    """重启或超出保留窗口后，草稿还在但消息没了 —— 只能跳过并说明。"""
     plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
                                reply=reply(reply_for("m1")))
     await plugin.annotation_draft_payload("a")
@@ -512,9 +513,84 @@ async def test_accepting_a_gone_message_reports_it_and_keeps_the_draft():
     result = await plugin.annotation_drafts_apply(
         {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
 
-    assert result["saved"] == 0 and result["failed"][0]["msg_id"] == "m1"
-    assert kv[plugin.topic_annotations.key("a")] == [], "失败的采纳不能留下标注"
+    assert result["saved"] == 0 and result["failed"] == []
+    assert result["skipped"][0]["msg_id"] == "m1"
+    assert "保留窗口" in result["skipped"][0]["error"]
+    assert kv[plugin.topic_annotations.key("a")] == [], "跳过的采纳不能留下标注"
     assert list(kv[plugin.topic_annotations.draft_key("a")]["drafts"]) == ["m1"]
+
+
+@pytest.mark.asyncio
+async def test_a_restart_that_dropped_the_graph_is_reported_as_such():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.dags.clear()
+    plugin.topic_annotations.plugin.dags.clear()
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    assert result["saved"] == 0 and result["failed"] == []
+    assert "插件重启" in result["skipped"][0]["error"]
+    assert kv[plugin.topic_annotations.key("a")] == []
+
+@pytest.mark.asyncio
+async def test_the_draft_index_keeps_drafts_visible_when_the_graph_is_gone():
+    """重启后会话没新消息时，dag 整个消失；草稿仍要能被看到并清掉。"""
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    assert await plugin.topic_annotations.known_sessions() == ["a"]
+    plugin.dags.clear()
+    plugin.topic_annotations.plugin.dags.clear()
+
+    payload = await plugin.annotation_drafts_payload("")
+
+    assert [session["session_key"] for session in payload["sessions"]] == ["a"]
+    item = payload["sessions"][0]["items"][0]
+    assert item["saveable"] is False and item["stale_reason"] == "session_gone"
+
+
+@pytest.mark.asyncio
+async def test_evicted_message_and_missing_session_are_different_reasons():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    payload = await plugin.annotation_drafts_payload("a")
+
+    assert payload["sessions"][0]["items"][0]["stale_reason"] == "evicted"
+
+
+@pytest.mark.asyncio
+async def test_a_session_leaves_the_index_once_it_has_no_drafts_left():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗"), node("m2", "在的")],
+                                reply=reply(reply_for("m1"), reply_for("m2")))
+    await plugin.annotation_draft_payload("a")
+
+    await plugin.annotation_drafts_apply(
+        {"action": "dismiss", "session_key": "a", "msg_ids": ["m1"]})
+    assert await plugin.topic_annotations.known_sessions() == ["a"], "还有草稿就还在索引里"
+
+    await plugin.annotation_drafts_apply(
+        {"action": "dismiss", "session_key": "a", "msg_ids": ["m2"]})
+
+    assert await plugin.topic_annotations.known_sessions() == []
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_session_also_drops_it_from_the_index():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    await plugin.annotation_drafts_apply(
+        {"action": "clear_session", "session_key": "a"})
+
+    assert await plugin.topic_annotations.known_sessions() == []
+    assert (await plugin.annotation_drafts_payload(""))["sessions"] == []
 
 
 @pytest.mark.asyncio

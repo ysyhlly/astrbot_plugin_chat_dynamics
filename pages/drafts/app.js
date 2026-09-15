@@ -35,6 +35,11 @@ let loadRevision = 0;
 
 const keyOf = (session, mid) => `${session}::${mid}`;
 
+function pairOf(key) {
+  const idx = key.indexOf("::");
+  return { session: key.slice(0, idx), mid: key.slice(idx + 2) };
+}
+
 function yesNo(value) {
   return value === true ? "是" : value === false ? "否" : "未判";
 }
@@ -42,6 +47,11 @@ function yesNo(value) {
 function visibleSessions() {
   const sessions = payload?.sessions || [];
   return sessionFilter ? sessions.filter(s => s.session_key === sessionFilter) : sessions;
+}
+
+function itemBy(pair) {
+  const group = (payload?.sessions || []).find(s => s.session_key === pair.session);
+  return (group?.items || []).find(item => item.msg_id === pair.mid) || null;
 }
 
 function setEnabled() {
@@ -53,7 +63,11 @@ function setEnabled() {
   els.btnRefresh.disabled = busy;
   els.sessionFilter.disabled = busy;
   els.acceptTopic.disabled = busy;
-  els.listHost.querySelectorAll("button, input").forEach(node => { node.disabled = busy; });
+  // `data-expired` marks controls that stay disabled regardless of busy: an
+  // expired draft has no label to write, so re-enabling it here would break it.
+  els.listHost.querySelectorAll("button, input").forEach(node => {
+    node.disabled = busy || node.hasAttribute("data-expired");
+  });
 }
 
 function cardHtml(session, item) {
@@ -70,8 +84,12 @@ function cardHtml(session, item) {
     item.topic_id ? `话题 ${item.topic_id}` : "未形成话题",
     item.ts ? formatTs(item.ts) : "",
     item.annotated ? "已有人工标注（采纳会覆盖）" : "",
-    item.saveable ? "" : "消息已滚出窗口，无法保存",
+    item.saveable ? "" : (item.stale_reason === "session_gone"
+      ? "已失效：会话的消息图已不在内存里（插件重启过），只能忽略"
+      : "已失效：消息已超出保留窗口，只能忽略"),
   ].filter(Boolean).join(" · ");
+  const acceptDisabled = busy || !item.saveable;
+  const acceptTitle = item.saveable ? "" : " title=\"失效草稿无法采纳，只能忽略\"";
   const text = item.text || "（正文已隐藏；打开 console_show_message_content 后可显示）";
   return `<article class="draft-card${item.saveable ? "" : " is-stale"}">
     <label class="draft-check" title="选择这条"><input type="checkbox" data-select data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${checked}${disabled}></label>
@@ -82,7 +100,7 @@ function cardHtml(session, item) {
       ${item.reason ? `<p class="ops-note">理由：${escapeHtml(item.reason)}</p>` : ""}
     </div>
     <div class="draft-actions">
-      <button type="button" class="button button-primary" data-accept data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${disabled}>采纳</button>
+      <button type="button" class="button button-primary" data-accept data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${acceptDisabled ? " disabled" : ""}${item.saveable ? "" : " data-expired"}${acceptTitle}>采纳</button>
       <button type="button" class="button button-quiet" data-dismiss data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${disabled}>忽略</button>
     </div>
   </article>`;
@@ -94,22 +112,39 @@ function render() {
     sessions.map(s => `<option value="${escapeHtml(s.session_key)}"${s.session_key === sessionFilter ? " selected" : ""}>${escapeHtml(redactId(s.session_key))}（${(s.items || []).length} 条）</option>`),
   ).join("");
   const total = payload?.total_drafts ?? 0;
-  els.draftCount.textContent = `${total} 条`;
+  const liveCount = sessions.reduce((sum, group) => sum + (group.items || []).filter(item => item.saveable).length, 0);
+  const selectedExpired = [...selected].filter(key => itemBy(pairOf(key))?.saveable === false).length;
   els.summaryLine.textContent = total
-    ? `待审 ${total} 条 · ${sessions.length} 个会话 · 已选 ${selected.size} 条`
+    ? `待审 ${total} 条 · 可采纳 ${liveCount} 条 · ${sessions.length} 个会话 · 已选 ${selected.size} 条`
+      + (selectedExpired ? `（其中 ${selectedExpired} 条已失效，采纳时会跳过）` : "")
     : "";
   els.hiddenNote.textContent = payload?.content_hidden
     ? "正文按默认脱敏隐藏；审批依据是模型给出的结论、置信度与理由。"
     : "";
   els.listEmpty.classList.toggle("hidden", total > 0);
   els.listHost.innerHTML = visibleSessions().map(group => {
+    const items = group.items || [];
+    const live = items.filter(item => item.saveable);
+    const expired = items.filter(item => !item.saveable);
     const head = `<div class="draft-session-head">
       <strong>会话 ${escapeHtml(redactId(group.session_key))}</strong>
       <span class="ops-note">${group.generated_at ? `生成于 ${escapeHtml(formatTs(group.generated_at))}` : ""}${group.provider_id ? ` · 模型 ${escapeHtml(group.provider_id)}` : ""}</span>
       <button type="button" class="button button-quiet" data-clear-session="${escapeHtml(group.session_key)}"${busy ? " disabled" : ""}>清空该会话草稿</button>
     </div>`;
-    return head + (group.items || []).map(item => cardHtml(group.session_key, item)).join("");
+    // Expired drafts are kept visible — silently dropping them would hide the
+    // fact that a restart ate them — but they are never offered as savable.
+    const sessionGone = expired.length > 0 && live.length === 0
+      && expired.every(item => item.stale_reason === "session_gone");
+    const expiredNote = expired.length
+      ? `<p class="ops-note draft-expired-note">以下 ${expired.length} 条已失效（${sessionGone ? "插件重启后这条会话的消息图还没重建" : "消息超出保留窗口"}），无法采纳，只能忽略或清空：</p>`
+      : "";
+    return head
+      + live.map(item => cardHtml(group.session_key, item)).join("")
+      + expiredNote
+      + expired.map(item => cardHtml(group.session_key, item)).join("");
   }).join("");
+  const liveTotal = visibleSessions().reduce((sum, group) => sum + (group.items || []).filter(item => item.saveable).length, 0);
+  els.draftCount.textContent = total ? `${total} 条（可采纳 ${liveTotal} 条）` : "0 条";
   setEnabled();
 }
 
@@ -133,7 +168,7 @@ async function load() {
   }
 }
 
-async function apply(action, pairs) {
+async function apply(action, pairs, expiredSkipped = 0) {
   if (!pairs.length || busy) return;
   busy = true;
   setEnabled();
@@ -144,6 +179,7 @@ async function apply(action, pairs) {
   }
   let saved = 0;
   let removed = 0;
+  let skipped = expiredSkipped;
   const failed = [];
   try {
     for (const [session, msgIds] of bySession) {
@@ -152,12 +188,17 @@ async function apply(action, pairs) {
       const result = await apiPost("annotation_drafts", body);
       saved += Number(result.saved) || 0;
       removed += Number(result.removed) || 0;
+      skipped += (result.skipped || []).length;
       for (const row of result.failed || []) failed.push(row);
     }
     if (action === "accept") {
       const topicLabel = els.acceptTopic.selectedOptions[0]?.textContent || "";
-      els.reviewStatus.textContent = `已采纳 ${saved} 条，按「${topicLabel}」写入标注（记录会注明采纳自草稿）。`
-        + (failed.length ? `另有 ${failed.length} 条失败：${failed[0].error}` : "");
+      const notes = [];
+      if (skipped) notes.push(`${skipped} 条已失效的草稿被跳过（插件重启或消息超出保留窗口，只能忽略）`);
+      if (failed.length) notes.push(`${failed.length} 条失败：${failed[0].error}`);
+      els.reviewStatus.textContent = saved
+        ? `已采纳 ${saved} 条，按「${topicLabel}」写入标注（记录会注明采纳自草稿）。` + (notes.length ? `另有 ${notes.join("；")}。` : "")
+        : `没有写入任何标注：${notes.join("；") || "这些草稿已经不能采纳了"}。`;
     } else {
       els.reviewStatus.textContent = `已忽略 ${removed} 条草稿，不会写入标注。`;
     }
@@ -180,19 +221,21 @@ async function boot() {
     render();
   });
   els.btnSelectNone.addEventListener("click", () => { selected.clear(); render(); });
+  const selectedPairs = () => [...selected].map(pairOf);
   els.btnAccept.addEventListener("click", () => {
-    const pairs = [...selected].map(key => {
-      const idx = key.indexOf("::");
-      return { session: key.slice(0, idx), mid: key.slice(idx + 2) };
-    });
-    void apply("accept", pairs);
+    // Expired drafts cannot become labels; filter them here so one restart
+    // does not turn a batch accept into a wall of identical failures.
+    const chosen = selectedPairs();
+    const live = chosen.filter(pair => itemBy(pair)?.saveable);
+    const expired = chosen.length - live.length;
+    if (!live.length) {
+      els.reviewStatus.textContent = `选中的 ${chosen.length} 条都已失效（插件重启或消息超出保留窗口），无法采纳；可以直接「忽略选中」把它们清掉。`;
+      return;
+    }
+    void apply("accept", live, expired);
   });
   els.btnDismiss.addEventListener("click", () => {
-    const pairs = [...selected].map(key => {
-      const idx = key.indexOf("::");
-      return { session: key.slice(0, idx), mid: key.slice(idx + 2) };
-    });
-    void apply("dismiss", pairs);
+    void apply("dismiss", selectedPairs());
   });
   els.listHost.addEventListener("change", event => {
     const box = event.target.closest("[data-select]");

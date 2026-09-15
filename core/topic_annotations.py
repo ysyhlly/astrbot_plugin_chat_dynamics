@@ -16,7 +16,12 @@ REQUIRED_FIELDS = {"session_key", "msg_id", "expected_topic", "error_type"}
 # Drafts live in their own key: a proposal a human has not accepted must not be
 # readable as a label by anything downstream (the learning plugin, the export,
 # the metrics below).
+# Drafts outlive the in-memory message graph, so the sessions that own them
+# are indexed here: without the index a restart hides drafts on sessions that
+# have not seen new traffic, and nobody can even dismiss them.
 DRAFT_KEY_PREFIX = "annotation_drafts_v1_"
+DRAFT_INDEX_KEY = "annotation_drafts_index_v1"
+MAX_INDEXED_SESSIONS = 200
 RECIPIENT_FIELDS = {"recipient_correct", "bot_targeted", "recipient_ids", "subject_ids", "expected_reply", "recipient_error_type"}
 
 
@@ -58,6 +63,20 @@ class TopicAnnotations:
                        if isinstance(draft, dict)} if isinstance(drafts, dict) else {},
         }
 
+    async def _index_session(self, session, *, remove: bool = False) -> None:
+        """Remember (or forget) a session that has drafts. Caller holds the lock."""
+        rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY, [])
+        rows = [str(row) for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
+        rows = [row for row in rows if row != session]
+        if not remove:
+            rows.insert(0, session)
+        await self.plugin.put_kv_data(DRAFT_INDEX_KEY, rows[:MAX_INDEXED_SESSIONS])
+
+    async def known_sessions(self) -> list:
+        """Sessions with stored drafts, newest first, whether or not they are live."""
+        rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY, [])
+        return [str(row) for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
+
     async def save_drafts(self, session, payload) -> dict:
         raw = payload.get("drafts")
         record = {
@@ -68,11 +87,16 @@ class TopicAnnotations:
             "drafts": {str(mid): draft for mid, draft in (raw or {}).items()
                        if isinstance(mid, str) and isinstance(draft, dict)},
         }
-        await self.plugin.put_kv_data(self.draft_key(session), record)
+        async with self.lock:
+            await self.plugin.put_kv_data(self.draft_key(session), record)
+            await self._index_session(session)
         return record
 
     async def clear_drafts(self, session) -> None:
-        await self.plugin.put_kv_data(self.draft_key(session), {})
+        async with self.lock:
+            await self.plugin.put_kv_data(self.draft_key(session), {})
+            await self._index_session(session, remove=True)
+
     async def remove_drafts(self, session, msg_ids) -> int:
         """Drop drafts a reviewer dismissed or accepted; returns the count removed."""
         wanted = {str(mid) for mid in msg_ids if str(mid).strip()}
@@ -91,6 +115,8 @@ class TopicAnnotations:
                     removed += 1
             raw["drafts"] = drafts
             await self.plugin.put_kv_data(self.draft_key(session), raw)
+            if not drafts:
+                await self._index_session(session, remove=True)
             return removed
 
     async def read(self, session):

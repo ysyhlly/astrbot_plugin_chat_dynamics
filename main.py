@@ -1083,13 +1083,18 @@ class ChatDynamicsPlugin(Star):
     async def annotation_drafts_payload(self, session_key: str = "") -> dict[str, Any]:
         """Pending AI drafts across sessions (or one), for the approval page.
 
-        The list is built from the in-memory session registry: drafts are only
-        ever written for sessions with a live DAG, so scanning those keys misses
-        nothing the approval page could act on. Message text follows the same
-        console_show_message_content switch as the replay page.
+        Sessions come from the live registry *and* from the store's own draft
+        index: a restart empties the in-memory graph, and a session with no new
+        traffic would otherwise hide its drafts where nobody could even dismiss
+        them. Those items carry `stale_reason: session_gone` and cannot be
+        accepted - a label needs the message the graph no longer has. Message
+        text follows the same console_show_message_content switch as replay.
         """
         show_content = bool(getattr(self, "console_show_message_content", False))
-        keys = [session_key] if session_key else sorted(self.dags.keys())
+        if session_key:
+            keys = [session_key]
+        else:
+            keys = sorted(set(self.dags) | set(await self.topic_annotations.known_sessions()))
         sessions: list[dict[str, Any]] = []
         total = 0
         for key in keys:
@@ -1115,6 +1120,7 @@ class ChatDynamicsPlugin(Star):
                     "reason": str(draft.get("reason") or ""),
                     "annotated": mid in annotated,
                     "saveable": node is not None,
+                    "stale_reason": "" if node is not None else ("session_gone" if dag is None else "evicted"),
                     "text": str(getattr(node, "text", "") or "")[:240] if show_content and node is not None else "",
                     "topic_id": str(routing.get("topic_id") or ""),
                     "ts": float(getattr(node, "timestamp", 0.0) or 0.0) if node is not None else 0.0,
@@ -1139,6 +1145,10 @@ class ChatDynamicsPlugin(Star):
         page uses, so provenance (`accepted_from: ai`) is decided there by
         comparing values with the stored draft. Accepted and dismissed drafts are
         then removed so the pending list only holds what still needs a human.
+
+        A draft whose message left the graph is *skipped*, not failed: it is a
+        normal consequence of restarting the plugin, and the honest answer is
+        "this one can only be dismissed" rather than a bare error string.
         """
         if not isinstance(body, dict):
             raise ValueError("invalid body")
@@ -1162,12 +1172,25 @@ class ChatDynamicsPlugin(Star):
             raise ValueError("invalid expected_topic")
         stored = await self.topic_annotations.read_drafts(session)
         drafts = stored.get("drafts") or {}
+        dag = self.dags.get(session)
         saved: list[str] = []
+        skipped: list[dict[str, str]] = []
         failed: list[dict[str, str]] = []
         for mid in msg_ids:
             draft = drafts.get(mid)
             if not isinstance(draft, dict):
                 failed.append({"msg_id": mid, "error": "草稿不存在或已处理"})
+                continue
+            # Drafts are persisted while the message graph is in memory, so a
+            # restart (or the retention window) leaves drafts that nobody can
+            # ever accept. Report those as skipped with the reason, instead of
+            # letting save() fail them one obscure message at a time.
+            if dag is None:
+                skipped.append({"msg_id": mid,
+                                "error": "会话的消息图已不在内存里（插件重启过），这条草稿只能忽略"})
+                continue
+            if mid not in dag.nodes:
+                skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
                 continue
             record: dict[str, Any] = {
                 "session_key": session,
@@ -1181,12 +1204,15 @@ class ChatDynamicsPlugin(Star):
             try:
                 await self.topic_annotations.save(record)
             except ValueError as exc:
-                failed.append({"msg_id": mid, "error": str(exc)})
+                if "no longer available" in str(exc):
+                    skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
+                else:
+                    failed.append({"msg_id": mid, "error": str(exc)})
                 continue
             saved.append(mid)
         if saved:
             await self.topic_annotations.remove_drafts(session, saved)
-        return {"saved": len(saved), "failed": failed}
+        return {"saved": len(saved), "skipped": skipped, "failed": failed}
     def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
         if refresh:
             self._sync_runtime_from_config()
