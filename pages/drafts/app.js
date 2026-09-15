@@ -34,6 +34,8 @@ let sessionFilter = "";
 let busy = false;
 let loadRevision = 0;
 let confirming = false;
+const REVIEW_BATCH_SIZE = 20;
+const REVIEW_WRITE_TIMEOUT_MS = 30000;
 
 async function confirmReview(message) {
   // Native confirm is denied by the host sandbox (no allow-modals).
@@ -118,7 +120,7 @@ async function confirmRequest(body, initial = false) {
     } catch { /* Query failure is not evidence of write failure. */ }
   }
   if (result === undefined) {
-    try { result = await apiPost("annotation_drafts", body); }
+    try { result = await apiPost("annotation_drafts", body, {timeoutMs: REVIEW_WRITE_TIMEOUT_MS}); }
     catch {
       if (initial) return confirmRequest(body, false);
       const error = new Error("请求结果待确认");
@@ -363,8 +365,9 @@ async function apply(action, pairs, expiredSkipped = 0) {
       if (totalSessions > 1) {
         els.reviewStatus.textContent = `正在处理第 ${doneSessions}/${totalSessions} 个会话…`;
       }
-      for (let offset = 0; offset < msgIds.length; offset += 200) {
-      const chunk = msgIds.slice(offset, offset + 200);
+      for (let offset = 0; offset < msgIds.length; offset += REVIEW_BATCH_SIZE) {
+      const chunk = msgIds.slice(offset, offset + REVIEW_BATCH_SIZE);
+      els.reviewStatus.textContent = `正在处理会话 ${doneSessions}/${totalSessions}，第 ${offset + 1}–${offset + chunk.length}/${msgIds.length} 条；已采纳 ${saved} 条。`;
       const body = { action, session_key: session, msg_ids: chunk };
       if (action === "accept") {
         body.expected_topic = topicChoice;

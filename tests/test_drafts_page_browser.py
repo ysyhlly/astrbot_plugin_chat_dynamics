@@ -495,11 +495,11 @@ def test_large_batch_chunks_and_preserves_failed_selection(browser, page_server)
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
         confirm_review_if_visible(page)
-        page.wait_for_function("window.__calls.length === 4 && !document.querySelector('#btnRefresh').disabled")
-        assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [200, 200, 200, 1]
-        assert page.locator("[data-select]:checked").count() == 200
+        page.wait_for_function("window.__calls.length === 22 && !document.querySelector('#btnRefresh').disabled")
+        assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [20] * 21 + [1]
+        assert page.locator("[data-select]:checked").count() == 20
         assert "请求结果待确认" in page.locator("#reviewStatus").inner_text()
-        assert page.evaluate("window.__calls[1].body.request_id === window.__calls[2].body.request_id")
+        assert page.evaluate("window.__calls[10].body.request_id === window.__calls[11].body.request_id")
 
 
 def test_slow_success_is_confirmed_by_query_without_second_write(browser, page_server):
