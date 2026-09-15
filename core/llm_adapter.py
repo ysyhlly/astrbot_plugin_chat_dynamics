@@ -148,6 +148,24 @@ class LLMAdapter:
         dedicated = self._dedicated_provider(purpose)
         return dedicated or self.configured_provider_id
 
+    def accepts_media(self) -> bool | None:
+        """Whether the entry this adapter calls can carry image/audio content.
+
+        The plugin cannot see which model a provider talks to; what it can see is the
+        same thing the real call checks: whether the host's ``llm_generate`` accepts
+        ``image_urls``/``audio_urls``. Probing through the identical
+        ``_supported_kwargs`` gate means the probe and the call cannot disagree.
+
+        ``None`` means this adapter has no entry to read — the owned agent path carries
+        the components inside the request rather than as kwargs, so that question
+        belongs to the caller.
+        """
+        ctx = self.context
+        generate = getattr(ctx, "llm_generate", None) if ctx is not None else None
+        if not callable(generate):
+            return None
+        return bool(_supported_kwargs(generate, _media_kwargs(["probe-image"], ["probe-audio"])))
+
     async def resolve_provider_id(self, umo: str, purpose: str = "reply") -> str:
         explicit = self._dedicated_provider(purpose)
         if explicit:
@@ -333,7 +351,10 @@ class LLMAdapter:
     ) -> str:
         """AstrBot builds that expose get_using_provider but not llm_generate."""
         ctx = self.context
-        explicit = self.reply_provider_id if purpose == "reply" else self.vibe_provider_id
+        # Three purposes, three answers (see _dedicated_provider): collapsing them to
+        # reply/vibe sent a draft to the vibe model while the panel reported the
+        # draft provider.
+        explicit = self._dedicated_provider(purpose)
         if not explicit:
             explicit = self.configured_provider_id
         provider = None

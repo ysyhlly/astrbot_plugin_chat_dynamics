@@ -235,7 +235,7 @@ def test_scene_track_records_speak_and_silent_without_plaintext():
     from astrbot_plugin_chat_dynamics.core.dashboard import merge_replay_blocks, scene_replay_snapshot
     from astrbot_plugin_chat_dynamics.core.occasion_skin import OccasionSkin
 
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: now + 30)
     now = 1_800_000_000.0
     quiet = gate.evaluate(
         session_id="replay-g",
@@ -254,7 +254,7 @@ def test_scene_track_records_speak_and_silent_without_plaintext():
         force_scale=1.0,
         reason_zh="整活场合接了一句",
     )
-    gate.note_spoke("replay-g", skin=skin, now=now + 30)
+    gate.note_spoke("replay-g", skin=skin)
     track = gate.manners.scene_track("replay-g")
     actions = [row["action"] for row in track]
     assert "silent" in actions and "speak" in actions

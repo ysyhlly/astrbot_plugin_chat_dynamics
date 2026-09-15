@@ -214,6 +214,17 @@ def parse_published(payload: Any) -> list[PolicyView]:
         source = row.get("source") if isinstance(row.get("source"), Mapping) else {}
         target = row.get("target") if isinstance(row.get("target"), Mapping) else {}
         raw_params = row.get("params") if isinstance(row.get("params"), Mapping) else {}
+        # The producer echoes the whole parameter set, not only the keys it moves,
+        # and says which ones it moved. The band in PARAM_RANGES bounds what a
+        # policy may *move* a parameter to; applying it to an echoed baseline would
+        # refuse the whole policy because of a value the operator chose (both
+        # addressivity thresholds are configurable over 0..1 while a policy may only
+        # move them inside its own band). A payload without `changed` is read as
+        # having moved everything, which is the conservative reading.
+        raw_changed = row.get("changed")
+        moved = ({str(item) for item in raw_changed if isinstance(item, str)}
+                 if isinstance(raw_changed, list) else set())
+        checked = moved or set(ALLOWED_PARAMS)
         params: dict[str, float] = {}
         rejected: list[str] = []
         for name, value in raw_params.items():
@@ -225,7 +236,7 @@ def parse_published(payload: Any) -> list[PolicyView]:
                 rejected.append(str(name)[:64])
                 continue
             low, high = PARAM_RANGES[name]
-            if not low <= number <= high:
+            if name in checked and not low <= number <= high:
                 rejected.append(f"{name}={number:g}(超出 {low:g}~{high:g})"[:64])
                 continue
             params[name] = number

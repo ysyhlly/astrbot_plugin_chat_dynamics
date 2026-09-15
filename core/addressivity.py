@@ -171,10 +171,19 @@ class AddressivityRouter:
         observe("temporal_gap", "temporal", time_diff, "message.timestamp")
         recent = dag.get_recent_nodes(limit=20)
         bot_idx = next((idx for idx, item in enumerate(recent) if item.msg_id == last_bot_node.msg_id), -1)
-        if bot_idx != -1:
+        if bot_idx == -1:
+            # The bot's turn has scrolled past the short window, which is exactly the
+            # case with the most divergence. Dropping the observation here removed the
+            # penalty and *raised* the score (measured 0.350 against 0.200 with ten
+            # intervening messages), so the count comes from the retained graph.
+            count = sum(
+                1 for item in dag.get_recent_nodes(limit=max(20, getattr(dag, "max_nodes", 20)))
+                if item.msg_id != node.msg_id
+                and last_bot_node.timestamp < item.timestamp <= node.timestamp)
+        else:
             count = sum(1 for item in recent[bot_idx + 1:] if item.msg_id != node.msg_id
                         and last_bot_node.timestamp < item.timestamp <= node.timestamp)
-            observe("intervening_messages", "dialogue", count, "dag.recent")
+        observe("intervening_messages", "dialogue", count, "dag.recent")
         text = node.text.strip()
         for cue in self.CONTINUATION_CUES:
             if time_diff < 120.0 and cue in text:

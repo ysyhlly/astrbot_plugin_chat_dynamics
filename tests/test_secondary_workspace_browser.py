@@ -80,6 +80,45 @@ def test_today_presence_scope_and_stale_read(browser, page_server):
         expect(page.locator('#oneLiner')).to_have_text('大家正在轻松聊天')
 
 
+def test_today_read_failure_is_not_reported_as_an_empty_state(browser, page_server):
+    """A failed read must not look like "this group is quiet"."""
+
+    with browser.new_context() as context:
+        setup_workspace(context)
+        page = context.new_page()
+        page.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint === 'read_air') throw new Error('read air unavailable');
+            return original(endpoint, params);
+          };
+        """)
+        page.goto(f'{page_server}/today/index.html')
+        expect(page.locator('#decisionError')).to_be_visible()
+        expect(page.locator('#decisionError')).to_contain_text('读空气暂时不可用')
+        # The empty-state copy ("等待会话产生新的活动") would send the user off to
+        # wait instead of fixing the connection.
+        expect(page.locator('#decisionEmpty')).to_be_hidden()
+        expect(page.locator('#occasionError')).to_be_visible()
+
+
+def test_manners_load_failure_says_so_instead_of_showing_blank_cards(browser, page_server):
+    with browser.new_context() as context:
+        setup_workspace(context)
+        page = context.new_page()
+        page.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint === 'config') throw new Error('config unavailable');
+            return original(endpoint, params);
+          };
+        """)
+        page.goto(f'{page_server}/manners/index.html')
+        expect(page.locator('#configError')).to_be_visible()
+        expect(page.locator('#configError')).to_contain_text('暂时读不到')
+        expect(page.locator('#socialChips')).to_be_empty()
+
+
 def test_manners_toggle_and_keyboard_focus(browser, page_server):
     with browser.new_context() as context:
         setup_workspace(context)
@@ -112,7 +151,12 @@ def test_memory_add_forget_draft_refresh_and_tabs(browser, page_server):
         page.locator('#btnAdd').click()
         expect(page.locator('#memoryCount')).to_have_text('2 条')
         assert page.evaluate('window.writes[0].body.umo') == 'group-a'
-        page.locator('.memory-card').filter(has_text='新的纪念日').get_by_role('button',name='忘掉').click()
+        # Forgetting is irreversible, so it asks for a second, explicit click.
+        card = page.locator('.memory-card').filter(has_text='新的纪念日')
+        card.get_by_role('button',name='忘掉').click()
+        expect(page.locator('#memoryCount')).to_have_text('2 条')
+        expect(card.get_by_role('button',name='确认忘掉')).to_be_visible()
+        card.get_by_role('button',name='确认忘掉').click()
         expect(page.locator('#memoryCount')).to_have_text('1 条')
         page.locator('#tab-anniversaries').focus()
         page.keyboard.press('ArrowRight')

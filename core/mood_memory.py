@@ -46,6 +46,11 @@ class MoodMemoryStore:
         self.bridge = bridge
         self.enabled = False
         self._cache: Dict[str, Dict[str, Any]] = {}
+        # (umo, peer) -> (stamp, rows) recalled from local notes plus the companion.
+        # The request hook reads this instead of awaiting a companion query in front
+        # of the model call, so a slow partner delays nothing.
+        self._recall_cache: Dict[tuple, tuple] = {}
+        self.recall_ttl = 120.0
 
     def configure(self, *, enabled: bool, bridge: Any = None) -> None:
         self.enabled = bool(enabled)
@@ -95,9 +100,15 @@ class MoodMemoryStore:
     def mute_tonight(self, umo: str, *, hours: float = 10.0, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)
         data = self._load(umo)
-        until = stamp + _finite_hours(hours) * 3600.0
+        clear = False
+        try:
+            clear = float(hours) <= 0.0
+        except (TypeError, ValueError):
+            clear = False
+        until = stamp if clear else stamp + _finite_hours(hours) * 3600.0
         data["mute_until"] = until
         self._save(umo, data)
+        self._invalidate_recall(umo)
         return until
 
     def forget(self, umo: str, peer_id: str = "", *, tag: str = "") -> bool:
@@ -112,12 +123,14 @@ class MoodMemoryStore:
             peer["tags"] = tags
             peers[peer_id] = peer
             self._save(umo, data)
+            self._invalidate_recall(umo, peer_id)
             return True
         if peer_id:
             peers.pop(peer_id, None)
             # Mark all tags for peer forgotten.
             forgotten[f"{peer_id}::*"] = time.time()
             self._save(umo, data)
+            self._invalidate_recall(umo, peer_id)
             return True
         data["peers"] = {}
         data["forgotten"] = {"*": time.time()}
@@ -165,6 +178,7 @@ class MoodMemoryStore:
         peer["tags"] = list(existing.values())[-12:]
         peer["last_seen"] = stamp
         self._save(umo, data)
+        self._invalidate_recall(umo, peer_id)
 
     def recall(
         self,
@@ -243,10 +257,61 @@ class MoodMemoryStore:
         if float(data.get("mute_until") or 0) > stamp or forgotten.get(f"{peer_id}::*") or forgotten.get("*"):
             return []
         remote = []
-        if self.bridge is not None:
+        # A member who asked to forget one tag gets no companion memories at all: an
+        # arbitrary prose tag cannot be matched against the forgotten word, so the
+        # conservative answer is to omit remote rows while that request stands. Local
+        # notes are unaffected and are filtered per tag below.
+        if self.bridge is not None and self.remote_context_allowed(umo, peer_id):
             remote = await self.bridge.fetch_approved_memories_async(umo=umo, peer_id=peer_id, limit=limit)
         # Re-read local policy after the await; a concurrent forget must win.
         return self.recall(umo, peer_id, now=now, limit=limit, remote_rows=remote)
+
+    async def refresh_async(self, umo: str, peer_id: str, *, limit: int = 3) -> List[Dict[str, Any]]:
+        """Warm the tag cache for one member; called from the message path.
+
+        This is where the selflearning companion is actually read (`recall_async` →
+        `fetch_approved_memories_async`, bounded by the bridge's own timeout). The
+        request hook then serves the result without touching disk or the companion.
+        """
+        rows = await self.recall_async(umo, peer_id, limit=limit)
+        self._recall_cache[(str(umo), str(peer_id))] = (time.time(), [dict(row) for row in rows])
+        self._prune_recall_cache()
+        return rows
+
+    def cached_recall(self, umo: str, peer_id: str, *, limit: int = 3) -> List[Dict[str, Any]]:
+        """Tags warmed by `refresh_async`, or [] when there is nothing fresh."""
+        entry = self._recall_cache.get((str(umo), str(peer_id)))
+        if not entry:
+            return []
+        stamp, rows = entry
+        if time.time() - float(stamp) > self.recall_ttl:
+            return []
+        return [dict(row) for row in list(rows)[: max(0, int(limit))]]
+
+    def recall_is_fresh(self, umo: str, peer_id: str) -> bool:
+        """Whether a warmed answer exists; an empty answer counts as an answer."""
+        entry = self._recall_cache.get((str(umo), str(peer_id)))
+        return bool(entry) and (time.time() - float(entry[0])) <= self.recall_ttl
+
+    def _prune_recall_cache(self, *, keep: int = 512) -> None:
+        stamp = time.time()
+        expired = [key for key, (at, _rows) in self._recall_cache.items()
+                   if stamp - float(at) > self.recall_ttl]
+        for key in expired:
+            self._recall_cache.pop(key, None)
+        if len(self._recall_cache) > keep:
+            oldest = sorted(self._recall_cache, key=lambda key: self._recall_cache[key][0])
+            for key in oldest[: len(self._recall_cache) - keep]:
+                self._recall_cache.pop(key, None)
+
+    def _invalidate_recall(self, umo: str, peer_id: str = "") -> None:
+        """A forget or a mute must not be answered from a warmed cache."""
+        target = str(umo)
+        if peer_id:
+            self._recall_cache.pop((target, str(peer_id)), None)
+            return
+        for key in [key for key in self._recall_cache if key[0] == target]:
+            self._recall_cache.pop(key, None)
 
     def remote_context_allowed(self, umo: str, peer_id: str) -> bool:
         """Honor local forgetting even for general companion memory context.

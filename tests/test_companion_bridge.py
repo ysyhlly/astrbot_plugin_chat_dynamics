@@ -103,6 +103,96 @@ async def test_relationship_hints_are_not_duplicated_in_main_request():
 
 
 @pytest.mark.asyncio
+async def test_companion_memories_reach_the_request_after_a_warmed_turn():
+    """搭档只有直连接口时，已批准记忆由消息路径预热、在请求里注入。
+
+    请求钩子本身绝不发起搭档 IO（那条契约由 test_normal_request_never_starts_direct_recall
+    钉住），所以读取发生在消息路径上，钩子只读缓存。
+    """
+    from astrbot_plugin_chat_dynamics.core.debounce import DebounceResult
+    from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import (
+        _plugin, _session_key, MockEvent,
+    )
+
+    calls = []
+
+    class Memories:
+        async def get_approved_memories(self, *, umo, user_id, limit):
+            calls.append((umo, user_id, limit))
+            return [{"tag": "加班", "weight": 0.9, "approved": True}]
+
+    # One companion instance: the bridge re-discovers after the await and treats a
+    # different object as the provider having gone away.
+    companion = Memories()
+    plugin = _plugin({"mood_memory_enabled": True, "vibe_llm_enabled": False})
+    plugin.context.get_all_stars = lambda: [metadata(companion)]
+    plugin.selflearning = SelfLearningBridge(plugin.context)
+    plugin.mood_memory.configure(enabled=True, bridge=plugin.selflearning)
+
+    event = MockEvent("hello", sender_id="alice", group_id="mood_group", message_id="m1")
+    key = _session_key("mood_group")
+    try:
+        await plugin.on_turn_flushed(
+            DebounceResult(key, event.sender_id, event.message_str, [], [event]))
+        assert await _wait_for_recall(plugin, key, "alice")
+        assert calls == [(key, "alice", 3)]
+
+        request = NS(prompt="original", extra_user_content_parts=[])
+        await plugin.on_llm_request(event, request)
+        injected = str(request.prompt) + str(getattr(request, "extra_user_content_parts", ""))
+        assert "加班" in injected
+    finally:
+        await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_tag_keeps_the_companion_memories_out_of_the_request():
+    """成员要求忘掉一个标签后，宁可不带搭档记忆，也不冒险把它读回来。"""
+    from astrbot_plugin_chat_dynamics.core.debounce import DebounceResult
+    from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import (
+        _plugin, _session_key, MockEvent,
+    )
+
+    calls = []
+
+    class Memories:
+        async def get_approved_memories(self, *, umo, user_id, limit):
+            calls.append((umo, user_id, limit))
+            return [{"tag": "加班", "weight": 0.9, "approved": True}]
+
+    companion = Memories()
+    plugin = _plugin({"mood_memory_enabled": True, "vibe_llm_enabled": False})
+    plugin.context.get_all_stars = lambda: [metadata(companion)]
+    plugin.selflearning = SelfLearningBridge(plugin.context)
+    plugin.mood_memory.configure(enabled=True, bridge=plugin.selflearning)
+
+    event = MockEvent("hello", sender_id="alice", group_id="mood_group_2", message_id="m2")
+    key = _session_key("mood_group_2")
+    plugin.notebook_mutate("forget", {"umo": key, "peer_id": "alice", "tag": "加班"})
+    try:
+        await plugin.on_turn_flushed(
+            DebounceResult(key, event.sender_id, event.message_str, [], [event]))
+        assert await _wait_for_recall(plugin, key, "alice")
+        assert calls == []
+
+        request = NS(prompt="original", extra_user_content_parts=[])
+        await plugin.on_llm_request(event, request)
+        injected = str(request.prompt) + str(getattr(request, "extra_user_content_parts", ""))
+        assert "加班" not in injected
+    finally:
+        await plugin.terminate()
+
+
+async def _wait_for_recall(plugin, key: str, peer: str) -> bool:
+    """Wait for the message-path warm-up; an empty answer counts as answered."""
+    for _ in range(100):
+        if plugin.mood_memory.recall_is_fresh(key, peer):
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+@pytest.mark.asyncio
 async def test_only_successful_owned_sends_are_learned_without_mutating_event(monkeypatch):
     import astrbot_plugin_chat_dynamics.main as main_module
     from astrbot_plugin_chat_dynamics.core.platform_bridge import SendResult, chain_plain_text

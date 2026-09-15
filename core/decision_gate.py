@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .media_gate import MediaAirGate, MediaGateVerdict
 from .occasion_skin import OccasionClassifier, OccasionSkin, apply_occasion_to_willingness, reason_to_zh
@@ -14,7 +14,6 @@ from .daily_rhythm import DailyRhythmGate, DailyRhythmVerdict, is_goodnight_text
 from .useful_proactive import UsefulProactiveGate, UsefulProactiveVerdict
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.decision_gate")
-
 
 @dataclass(frozen=True)
 class GateResult:
@@ -33,7 +32,8 @@ class GateResult:
 
 
 class DynamicsDecisionGate:
-    def __init__(self) -> None:
+    def __init__(self, *, wall_now: Callable[[], float] = time.time) -> None:
+        self._wall_now = wall_now
         self.occasion = OccasionClassifier()
         self.manners = SocialMannersGate()
         self.media = MediaAirGate()
@@ -65,6 +65,8 @@ class DynamicsDecisionGate:
         committed_reply: bool = False,
         node_now: Optional[float] = None,
     ) -> GateResult:
+        # Evaluation may replay historical wall time; DAG ages use node_now.
+        now = self._wall_now() if now is None else float(now)
         presence = str(getattr(cfg, "presence_knob", "sensible") or "sensible")
         scene_tags = tuple(getattr(telemetrics, "scene_tags", ()) or ())
         emotion_tags = tuple(getattr(telemetrics, "emotion_tags", ()) or ())
@@ -162,7 +164,7 @@ class DynamicsDecisionGate:
             # component types announced the media.
             media_verdict = MediaGateVerdict(
                 False, 0.0, "media_gate_error", "媒体门闩不可用，先旁听",
-                skip_memory=True, has_image=media_present,
+                has_image=media_present,
             ) if media_present else None
 
         if media_verdict is not None and (has_media or media_verdict.has_image or media_verdict.has_voice):
@@ -246,7 +248,7 @@ class DynamicsDecisionGate:
         snippet = str(public_memory_snippet or "").strip() if memory_on else ""
         if not snippet and gm is not None:
             try:
-                stamp = float(now) if now is not None else time.time()
+                stamp = now
                 snippet = str(self.useful._public_memory_line(gm, session_id, stamp=stamp) or "")
             except Exception:
                 snippet = ""
@@ -454,7 +456,12 @@ class DynamicsDecisionGate:
             delay_scale=delay_scale,
         )
 
-    def reset_session(self, session_id: str) -> None:
+    def reset_session(self, session_id: str, *, keep_cool: bool = False) -> None:
+        """Forget this session's gate state; ``keep_cool`` keeps a quiet window.
+
+        The idle sweep passes ``keep_cool=True``: forgetting a session to bound memory
+        must not cancel an operator instruction that outlives the silence.
+        """
         sid = str(session_id or "")
         if not sid:
             return
@@ -462,19 +469,40 @@ class DynamicsDecisionGate:
         self.useful.reset_session(sid)
         self.manners.reset_session(sid)
         try:
-            self.occasion.reset_session(sid)
+            self.occasion.reset_session(sid, keep_cool=keep_cool)
         except Exception as exc:
             logger.warning("occasion.reset_session failed: %s", type(exc).__name__)
+
+    def note_quiet(self, session_id: str, *, reason_code: str, reason_zh: str) -> None:
+        """Record a live silence using the gate-owned civil clock."""
+        self.manners.note_quiet(
+            session_id, reason_code=reason_code, reason_zh=reason_zh, now=self._wall_now(),
+        )
+
+    def note_intervene(
+        self,
+        session_id: str,
+        *,
+        occasion_kind: str = "neutral",
+        hyped: bool = False,
+        reason_code: str = "",
+        reason_zh: str = "",
+    ) -> None:
+        """Record a live intervention using the gate-owned civil clock."""
+        self.manners.note_intervene(
+            session_id, occasion_kind=occasion_kind, hyped=hyped,
+            reason_code=reason_code, reason_zh=reason_zh, now=self._wall_now(),
+        )
 
     def note_spoke(
         self,
         session_id: str,
         *,
         skin: OccasionSkin,
-        now: Optional[float] = None,
         proactive: Optional[UsefulProactiveVerdict] = None,
         rhythm: Optional[DailyRhythmVerdict] = None,
     ) -> None:
+        now = self._wall_now()
         reason_code = "spoke"
         reason_zh = "接了一句"
         if proactive is not None and getattr(proactive, "proactive", False):
@@ -506,7 +534,7 @@ class DynamicsDecisionGate:
             except Exception as exc:
                 logger.warning("rhythm.note_spoke failed: %s", type(exc).__name__)
 
-    def note_arbiter_silence(self, session_id: str, reason: str, *, now: Optional[float] = None) -> None:
+    def note_arbiter_silence(self, session_id: str, reason: str) -> None:
         zh = reason_to_zh(reason)
         code = "arbiter_silence"
         lowered = (reason or "").lower()
@@ -539,4 +567,4 @@ class DynamicsDecisionGate:
             for token in ("媒体·", "语音·", "图片·", "决策中", "主动配额", "新人·", "等待缺口", "收束中", "已睡", "短醒", "热聊中", "多数人已歇")
         ):
             zh = reason.split(":", 1)[-1].strip() if ":" in reason else reason
-        self.manners.note_quiet(session_id, reason_code=code, reason_zh=zh, now=now)
+        self.note_quiet(session_id, reason_code=code, reason_zh=zh)

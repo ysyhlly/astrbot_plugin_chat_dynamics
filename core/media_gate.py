@@ -77,7 +77,6 @@ class MediaGateVerdict:
     reason_zh: str
     labels: tuple[str, ...] = ()
     request_understand: bool = False
-    skip_memory: bool = False
     privacy_hit: bool = False
     has_image: bool = False
     has_voice: bool = False
@@ -91,7 +90,6 @@ class MediaGateVerdict:
             "reason_zh": self.reason_zh,
             "labels": list(self.labels),
             "request_understand": self.request_understand,
-            "skip_memory": self.skip_memory,
             "privacy_hit": self.privacy_hit,
             "has_image": self.has_image,
             "has_voice": self.has_voice,
@@ -319,13 +317,12 @@ class MediaAirGate:
 
         addressed = bool(explicit or quoted_bot)
         privacy_hit = image_label == "private_or_id_sensitive"
-        skip_memory = bool(privacy_hit and media_privacy_strict)
 
         # Privacy strict: no detail description path; prefer silence unless strongly addressed.
         if privacy_hit and media_privacy_strict and not addressed:
             return MediaGateVerdict(
                 False, 0.0, "image_privacy_skip", _REASON["image_privacy_skip"],
-                labels=tuple(labels), request_understand=False, skip_memory=True,
+                labels=tuple(labels), request_understand=False,
                 privacy_hit=True, has_image=has_image, has_voice=has_voice,
                 multimodal_degraded=multimodal_degraded,
             )
@@ -334,7 +331,7 @@ class MediaAirGate:
             return MediaGateVerdict(
                 True, 0.35, "image_privacy_skip", _REASON["image_privacy_skip"],
                 labels=tuple(labels) + ("privacy_ack_only",),
-                request_understand=False, skip_memory=True, privacy_hit=True,
+                request_understand=False, privacy_hit=True,
                 has_image=has_image, has_voice=has_voice,
                 multimodal_degraded=multimodal_degraded,
             )
@@ -428,7 +425,7 @@ class MediaAirGate:
             return MediaGateVerdict(
                 False, force, reason_code, reason_zh,
                 labels=tuple(labels), request_understand=False,
-                skip_memory=skip_memory, privacy_hit=privacy_hit,
+                privacy_hit=privacy_hit,
                 has_image=has_image, has_voice=has_voice,
                 multimodal_degraded=multimodal_degraded,
             )
@@ -436,7 +433,7 @@ class MediaAirGate:
         return MediaGateVerdict(
             True, force, reason_code, reason_zh,
             labels=tuple(labels), request_understand=request_understand,
-            skip_memory=skip_memory, privacy_hit=privacy_hit,
+            privacy_hit=privacy_hit,
             has_image=has_image, has_voice=has_voice,
             multimodal_degraded=multimodal_degraded,
         )

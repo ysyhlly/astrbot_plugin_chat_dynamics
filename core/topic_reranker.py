@@ -4,10 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from .llm_adapter import LLMAdapter
+
+# Same rule as TurnDecision.parse: one complete presentation fence is
+# tolerated, JSON is never dug out of prose.
+_FENCED_JSON = re.compile(r"`{3}(?:json)?[ \t]*\r?\n(.*?)\r?\n`{3}", re.DOTALL)
+
+
+def _unwrap_fenced_json(text: Any) -> str:
+    stripped = str(text or "").strip()
+    fenced = _FENCED_JSON.fullmatch(stripped)
+    return fenced.group(1) if fenced is not None else stripped
+
 
 _SYSTEM_PROMPT = (
     "Classify the incoming chat message into one of the supplied topics. "
@@ -97,7 +109,7 @@ class TopicReranker:
                                "Return only JSON: {\"title\":\"标题\"}."),
                 prompt=json.dumps({"messages": [str(m)[:320] for m in messages[:5]]}, ensure_ascii=False),
             ), timeout=self.timeout_seconds)
-            payload = json.loads(output)
+            payload = json.loads(_unwrap_fenced_json(output))
             title = payload.get("title") if isinstance(payload, dict) else None
             if isinstance(title, str) and 2 <= len(title.strip()) <= 24 and not any(c in title for c in "\n\r<>\x00"):
                 return title.strip()

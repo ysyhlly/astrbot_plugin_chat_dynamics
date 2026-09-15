@@ -1,4 +1,6 @@
 /** Shared AstrBot Plugin Page bridge helpers for Chat Dynamics wireframe pages. */
+export { friendlyError } from "./errors.js";
+
 export const PLUGIN = "astrbot_plugin_chat_dynamics";
 export const REQUEST_TIMEOUT_MS = 8000;
 

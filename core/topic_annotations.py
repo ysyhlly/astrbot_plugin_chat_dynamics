@@ -196,7 +196,9 @@ class TopicAnnotations:
                   "session_hash": self.digest(session),
                   "routing": {key: deepcopy(routing[key]) for key in ("topic_confidence", "ambiguous", "topic_ambiguous", "topic_status", "candidates", "topic_candidates", "topic_candidate_evidence", "boundary_score", "evidence") if key in routing}}
         record.update({key: deepcopy(body[key]) for key in RECIPIENT_FIELDS if key in body})
-        trace = node.metadata.get("routing_trace", node.metadata.get("decision_trace", {}))
+        # `decision_trace` is the live frozen snapshot; `trace_inputs` is the bounded
+        # copy that survives a restart. Both carry the same key names by construction.
+        trace = node.metadata.get("decision_trace") or node.metadata.get("trace_inputs") or {}
         trace = trace if isinstance(trace, dict) else {}
         # The outcome is read from the node rather than from the frozen trace:
         # the trace was snapshotted at decision time, and the gate, the generator

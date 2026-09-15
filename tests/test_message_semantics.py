@@ -45,6 +45,32 @@ def test_cached_quote_author_wins_over_platform_fallback():
     assert describe_message(node, dag, "bot").quoted_author_id == "alice"
 
 
+def test_the_inferred_parent_tier_follows_the_configured_threshold():
+    """parent_accept_threshold 必须同时管住检索与收件人分派。
+
+    检索按配置阈值接受了候选，收件人分派若再用字面量 0.72 复核，
+    [0.50, 0.72) 这一段配置和策略就都是死的。
+    """
+    from types import SimpleNamespace
+    from astrbot_plugin_chat_dynamics.core.recipient_resolver import RecipientResolver
+
+    dag = ConversationDAG()
+    parent = dag.add_message("p", "alice", "在吗", timestamp=1)
+    node = dag.add_message("n", "bob", "在的", timestamp=2)
+    runtime = SimpleNamespace(bot_id="bot", dag=dag)
+    kwargs = dict(node=node, dag=dag, runtime=runtime, topic_id="",
+                  inferred_parent=parent, inferred_confidence=0.65)
+
+    # 运维把 parent_accept_threshold 调到 0.60：检索层已经接受了 0.65 的候选，
+    # 收件人分派必须跟着配置走，而不是被字面量 0.72 挡回去。
+    accepted = RecipientResolver().infer(parent_threshold=0.60, **kwargs)
+    rejected = RecipientResolver().infer(**kwargs)
+
+    assert accepted.recipient_ids == ("alice",)
+    assert "inferred_reply" in accepted.evidence
+    assert "inferred_reply" not in rejected.evidence
+
+
 def test_mentions_unknown_and_semantic_guesses():
     dag = ConversationDAG()
     a = dag.add_message("a", "alice", "代码接口报错了", timestamp=1)

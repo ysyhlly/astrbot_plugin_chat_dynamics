@@ -8,6 +8,13 @@ from .graph import ConversationNode
 from .topic_identity import node_topic_id
 from .message_features import MessageFeatures, message_features
 
+# Default for callers that configure nothing. The router always passes its own
+# `parent_accept_threshold`, so a tuned (or policy-published) value reaches this
+# tier instead of being re-gated by a literal: the same score that `ParentRetriever`
+# accepted could otherwise be rejected here, and the tier, the DAG edge and the
+# learning layer's measurement of the knob would all disagree.
+DEFAULT_PARENT_THRESHOLD = 0.72
+
 
 @dataclass(frozen=True)
 class RecipientInference:
@@ -55,6 +62,7 @@ class RecipientResolver:
         quoted_node: Optional[ConversationNode] = None,
         inferred_parent: Optional[ConversationNode] = None,
         inferred_confidence: float = 0.0,
+        parent_threshold: float = DEFAULT_PARENT_THRESHOLD,
         ranked_topics: Sequence[Tuple[float, str]] = (),
         recent_nodes: Sequence[ConversationNode] = (),
         bot_names: Sequence[str] = (),
@@ -152,7 +160,7 @@ class RecipientResolver:
             node.metadata["_dialogue_score_evidence"] = list(continuity.entries())
 
         # Tier 3: Inferred Parent (from ParentRetriever)
-        elif inferred_parent is not None and inferred_confidence >= 0.72:
+        elif inferred_parent is not None and inferred_confidence >= parent_threshold:
             addressee_ids = [inferred_parent.user_id]
             addressee_confidence = inferred_confidence
             evidence.append("inferred_reply")

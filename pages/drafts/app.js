@@ -3,6 +3,7 @@ import {
   apiPost,
   escapeHtml,
   formatTs,
+  friendlyError,
   readyBridge,
   redactId,
   setLink,
@@ -74,6 +75,10 @@ function cardHtml(session, item) {
   const key = keyOf(session, item.msg_id);
   const checked = selected.has(key) ? " checked" : "";
   const disabled = busy ? " disabled" : "";
+  // Every card renders the same control names, so spell out which draft each
+  // one belongs to for screen readers.
+  const shortId = String(item.msg_id || "").slice(0, 8) || "未知";
+  const cardName = `草稿 ${shortId}`;
   const chips = [
     `该回复：${yesNo(item.expected_reply)}`,
     `对 Bot 说话：${yesNo(item.bot_targeted)}`,
@@ -92,7 +97,7 @@ function cardHtml(session, item) {
   const acceptTitle = item.saveable ? "" : " title=\"失效草稿无法采纳，只能忽略\"";
   const text = item.text || "（正文已隐藏；打开 console_show_message_content 后可显示）";
   return `<article class="draft-card${item.saveable ? "" : " is-stale"}">
-    <label class="draft-check" title="选择这条"><input type="checkbox" data-select data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${checked}${disabled}></label>
+    <label class="draft-check" title="选择这条"><input type="checkbox" aria-label="选择${escapeHtml(cardName)}" data-select data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${checked}${disabled}></label>
     <div class="draft-body">
       <p class="draft-text">${escapeHtml(text)}</p>
       <p class="ops-note">${escapeHtml(meta)}</p>
@@ -100,14 +105,19 @@ function cardHtml(session, item) {
       ${item.reason ? `<p class="ops-note">理由：${escapeHtml(item.reason)}</p>` : ""}
     </div>
     <div class="draft-actions">
-      <button type="button" class="button button-primary" data-accept data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${acceptDisabled ? " disabled" : ""}${item.saveable ? "" : " data-expired"}${acceptTitle}>采纳</button>
-      <button type="button" class="button button-quiet" data-dismiss data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${disabled}>忽略</button>
+      <button type="button" class="button button-primary" aria-label="采纳${escapeHtml(cardName)}" data-accept data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${acceptDisabled ? " disabled" : ""}${item.saveable ? "" : " data-expired"}${acceptTitle}>采纳</button>
+      <button type="button" class="button button-quiet" aria-label="忽略${escapeHtml(cardName)}" data-dismiss data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${disabled}>忽略</button>
     </div>
   </article>`;
 }
 
 function render() {
   const sessions = payload?.sessions || [];
+  // The option list is rebuilt from this payload, so a filter whose session is gone
+  // would leave the control reading "全部会话" while the card area stayed empty.
+  if (sessionFilter && !sessions.some(s => s.session_key === sessionFilter)) {
+    sessionFilter = "";
+  }
   els.sessionFilter.innerHTML = ['<option value="">全部会话</option>'].concat(
     sessions.map(s => `<option value="${escapeHtml(s.session_key)}"${s.session_key === sessionFilter ? " selected" : ""}>${escapeHtml(redactId(s.session_key))}（${(s.items || []).length} 条）</option>`),
   ).join("");
@@ -129,7 +139,7 @@ function render() {
     const head = `<div class="draft-session-head">
       <strong>会话 ${escapeHtml(redactId(group.session_key))}</strong>
       <span class="ops-note">${group.generated_at ? `生成于 ${escapeHtml(formatTs(group.generated_at))}` : ""}${group.provider_id ? ` · 模型 ${escapeHtml(group.provider_id)}` : ""}</span>
-      <button type="button" class="button button-quiet" data-clear-session="${escapeHtml(group.session_key)}"${busy ? " disabled" : ""}>清空该会话草稿</button>
+      <button type="button" class="button button-danger" data-clear-session="${escapeHtml(group.session_key)}"${busy ? " disabled" : ""} data-clear-count="${items.length}">清空该会话草稿</button>
     </div>`;
     // Expired drafts are kept visible — silently dropping them would hide the
     // fact that a restart ate them — but they are never offered as savable.
@@ -148,12 +158,28 @@ function render() {
   setEnabled();
 }
 
+function showLoading() {
+  els.listEmpty.classList.add("hidden");
+  els.listHost.setAttribute("aria-busy", "true");
+  els.listHost.innerHTML = '<p class="ops-note loading-note">正在读取待审草稿…</p>';
+}
+
+function showLoadError(message) {
+  payload = null;
+  els.listHost.removeAttribute("aria-busy");
+  els.listHost.innerHTML = "";
+  els.listEmpty.classList.remove("hidden");
+  els.listEmpty.classList.add("is-error");
+  els.listEmpty.textContent = message;
+}
+
 async function load() {
   const revision = ++loadRevision;
   try {
     const data = await apiGet("annotation_drafts");
     if (revision !== loadRevision) return;
     payload = data;
+    els.listEmpty.classList.remove("is-error");
     selected = new Set([...selected].filter(key => {
       const [session, mid] = key.split("::");
       const group = (data.sessions || []).find(s => s.session_key === session);
@@ -163,8 +189,11 @@ async function load() {
     render();
   } catch (err) {
     if (revision !== loadRevision) return;
-    setLink(els, false, (err && err.message) || "离线");
-    els.reviewStatus.textContent = err.message || "草稿列表读取失败";
+    const message = friendlyError(err, "草稿列表读取失败。");
+    setLink(els, false, message);
+    els.reviewStatus.classList.add("error");
+    els.reviewStatus.textContent = message;
+    showLoadError("草稿列表暂时读不到，请点上方「刷新」重试。");
   }
 }
 
@@ -181,8 +210,16 @@ async function apply(action, pairs, expiredSkipped = 0) {
   let removed = 0;
   let skipped = expiredSkipped;
   const failed = [];
+  const totalSessions = bySession.size;
+  let doneSessions = 0;
+  els.reviewStatus.classList.remove("error");
   try {
     for (const [session, msgIds] of bySession) {
+      doneSessions += 1;
+      // Cross-session batches run one request per session; say where we are.
+      if (totalSessions > 1) {
+        els.reviewStatus.textContent = `正在处理第 ${doneSessions}/${totalSessions} 个会话…`;
+      }
       const body = { action, session_key: session, msg_ids: msgIds };
       if (action === "accept") body.expected_topic = els.acceptTopic.value;
       const result = await apiPost("annotation_drafts", body);
@@ -195,17 +232,19 @@ async function apply(action, pairs, expiredSkipped = 0) {
       const topicLabel = els.acceptTopic.selectedOptions[0]?.textContent || "";
       const notes = [];
       if (skipped) notes.push(`${skipped} 条已失效的草稿被跳过（插件重启或消息超出保留窗口，只能忽略）`);
-      if (failed.length) notes.push(`${failed.length} 条失败：${failed[0].error}`);
+      if (failed.length) notes.push(`${failed.length} 条失败：${friendlyError(failed[0].error, "原因未知")}`);
       els.reviewStatus.textContent = saved
         ? `已采纳 ${saved} 条，按「${topicLabel}」写入标注（记录会注明采纳自草稿）。` + (notes.length ? `另有 ${notes.join("；")}。` : "")
         : `没有写入任何标注：${notes.join("；") || "这些草稿已经不能采纳了"}。`;
     } else {
       els.reviewStatus.textContent = `已忽略 ${removed} 条草稿，不会写入标注。`;
     }
+    els.reviewStatus.classList.remove("error");
     selected.clear();
     await load();
   } catch (err) {
-    els.reviewStatus.textContent = err.message || "操作失败";
+    els.reviewStatus.classList.add("error");
+    els.reviewStatus.textContent = friendlyError(err, "操作失败，请稍后重试。");
   } finally {
     busy = false;
     render();
@@ -214,7 +253,10 @@ async function apply(action, pairs, expiredSkipped = 0) {
 
 async function boot() {
   renderNav("drafts");
-  els.btnRefresh.addEventListener("click", () => void load());
+  els.btnRefresh.addEventListener("click", () => {
+    showLoading();
+    void load();
+  });
   els.sessionFilter.addEventListener("change", () => { sessionFilter = els.sessionFilter.value; render(); });
   els.btnSelectAll.addEventListener("click", () => {
     visibleSessions().forEach(group => (group.items || []).forEach(item => selected.add(keyOf(group.session_key, item.msg_id))));
@@ -229,12 +271,21 @@ async function boot() {
     const live = chosen.filter(pair => itemBy(pair)?.saveable);
     const expired = chosen.length - live.length;
     if (!live.length) {
+      els.reviewStatus.classList.add("error");
       els.reviewStatus.textContent = `选中的 ${chosen.length} 条都已失效（插件重启或消息超出保留窗口），无法采纳；可以直接「忽略选中」把它们清掉。`;
+      return;
+    }
+    // Accepting overwrites an existing human label; ask before that happens.
+    const overwritten = live.filter(pair => itemBy(pair)?.annotated).length;
+    if (overwritten && !window.confirm(`选中的 ${live.length} 条里有 ${overwritten} 条已经有人工标注，采纳会覆盖这些标注。继续吗？`)) {
       return;
     }
     void apply("accept", live, expired);
   });
   els.btnDismiss.addEventListener("click", () => {
+    const count = selected.size;
+    if (!count) return;
+    if (!window.confirm(`忽略后这 ${count} 条草稿会被丢弃（不会写入标注），且无法恢复。继续吗？`)) return;
     void apply("dismiss", selectedPairs());
   });
   els.listHost.addEventListener("change", event => {
@@ -257,16 +308,20 @@ async function boot() {
     }
     const clearBtn = event.target.closest("[data-clear-session]");
     if (clearBtn && !busy) {
+      const count = Number(clearBtn.dataset.clearCount || 0);
+      if (!window.confirm(`确定清空这个会话的 ${count} 条待审草稿吗？清空后无法恢复。`)) return;
       void (async () => {
         busy = true;
         setEnabled();
         try {
           await apiPost("annotation_drafts", { action: "clear_session", session_key: clearBtn.dataset.clearSession });
+          els.reviewStatus.classList.remove("error");
           els.reviewStatus.textContent = "已清空该会话的全部待审草稿。";
           selected.clear();
           await load();
         } catch (err) {
-          els.reviewStatus.textContent = err.message || "清空失败";
+          els.reviewStatus.classList.add("error");
+          els.reviewStatus.textContent = friendlyError(err, "清空失败，请稍后重试。");
         } finally {
           busy = false;
           render();
@@ -279,6 +334,7 @@ async function boot() {
   } catch {
     /* bridge may still work for api calls */
   }
+  showLoading();
   await load();
 }
 

@@ -1,3 +1,5 @@
+import { friendlyError } from "./api.js";
+
 const PLUGIN = "astrbot_plugin_chat_dynamics";
 const REQUEST_TIMEOUT_MS = 8000;
 const CHAT_PROVIDER_KEYS = new Set([
@@ -6,6 +8,9 @@ const CHAT_PROVIDER_KEYS = new Set([
   "vibe_provider",
   "decision_provider",
   "topic_reranker_provider",
+  // The draft provider is a model choice like the others; without it here the
+  // field rendered as a free-text box while every sibling offered the list.
+  "annotation_draft_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 const BASIC_HINTS = {
@@ -19,7 +24,10 @@ const BASIC_HINTS = {
 };
 const OPTION_LABELS = {
   decision_mode: { legacy: "规则模式（默认）", persona_model: "人设模式（模型判断）" },
-  presence_knob: { ghost: "安静", sensible: "适度（默认）", lively: "活跃" },
+  // Keep the wording identical to the schema hint and to 今日读空气/分寸台/控制台.
+  presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
+  pipeline_mode: { filter: "过滤（默认，不影响其它插件）", exclusive: "独占（会吞掉后续插件）" },
+  learning_policy_mode: { off: "关闭（默认，不读取学习层）", shadow: "观察（只对比不应用）", active: "应用（需通过三项检查）" },
 };
 
 const CONFIG_GROUPS = [
@@ -489,17 +497,37 @@ function configFieldValue(key) {
   return raw == null ? "" : String(raw);
 }
 
-function parseNumericField(key, type, raw) {
+function fieldError(key, message) {
+  const error = new Error(message);
+  error.configKey = key;
+  return error;
+}
+
+function parseNumericField(key, type, raw, schema = {}) {
+  // Speak in the field's own Chinese label: the raw key is shown next to it,
+  // but "防抖硬上限时间" is what the user just typed into.
+  const label = schema.description || key;
   const text = String(raw ?? "").trim();
   if (!text) {
-    throw new Error(`${key} 不能为空`);
+    throw fieldError(key, `「${label}」不能为空`);
   }
   const number = type === "int" ? Number.parseInt(text, 10) : Number.parseFloat(text);
   if (!Number.isFinite(number)) {
-    throw new Error(`${key} 不是有效数字`);
+    throw fieldError(key, `「${label}」必须是数字`);
   }
   if (type === "int" && !Number.isInteger(number)) {
-    throw new Error(`${key} 必须是整数`);
+    throw fieldError(key, `「${label}」必须是整数`);
+  }
+  // The schema publishes the usable range as `slider`; without this the panel
+  // accepted any number and left the bound to fail silently at runtime.
+  const slider = schema.slider && typeof schema.slider === "object" ? schema.slider : null;
+  const min = slider ? Number(slider.min) : NaN;
+  const max = slider ? Number(slider.max) : NaN;
+  if (Number.isFinite(min) && number < min) {
+    throw fieldError(key, `「${label}」不能小于 ${min}`);
+  }
+  if (Number.isFinite(max) && number > max) {
+    throw fieldError(key, `「${label}」不能大于 ${max}`);
   }
   return number;
 }
@@ -517,7 +545,7 @@ function collectConfigUpdates() {
       continue;
     }
     if (type === "int" || type === "float") {
-      updates[key] = parseNumericField(key, type, input.value);
+      updates[key] = parseNumericField(key, type, input.value, schema);
       continue;
     }
     if (type === "list") {
@@ -578,7 +606,13 @@ function renderField(key, mismatchSet) {
   } else if (type === "list") {
     control = `<textarea data-config-key="${escapeHtml(key)}" rows="2" placeholder="逗号或换行分隔">${escapeHtml(value)}</textarea>`;
   } else if (type === "int" || type === "float") {
-    control = `<input type="number" data-config-key="${escapeHtml(key)}" value="${escapeHtml(value)}" step="${type === "int" ? "1" : "any"}"/>`;
+    const slider = schema.slider && typeof schema.slider === "object" ? schema.slider : {};
+    const bounds = [
+      Number.isFinite(Number(slider.min)) ? ` min="${escapeHtml(String(slider.min))}"` : "",
+      Number.isFinite(Number(slider.max)) ? ` max="${escapeHtml(String(slider.max))}"` : "",
+    ].join("");
+    const step = slider.step ?? (type === "int" ? 1 : "any");
+    control = `<input type="number" data-config-key="${escapeHtml(key)}" value="${escapeHtml(value)}" step="${escapeHtml(String(step))}"${bounds}/>`;
   } else {
     control = `<input type="text" data-config-key="${escapeHtml(key)}" value="${escapeHtml(value)}"/>`;
   }
@@ -687,8 +721,13 @@ function renderConfigForm(panel) {
   });
   filterConfigFields();
   els.configForm.querySelectorAll("[data-config-key]").forEach((input) => {
-    input.addEventListener("change", updateEditedFields);
-    input.addEventListener("input", updateEditedFields);
+    const clearFieldError = () => {
+      if (!input.hasAttribute("aria-invalid")) return;
+      input.removeAttribute("aria-invalid");
+      input.closest(".config-field")?.classList.remove("has-error");
+    };
+    input.addEventListener("change", () => { clearFieldError(); updateEditedFields(); });
+    input.addEventListener("input", () => { clearFieldError(); updateEditedFields(); });
   });
 }
 
@@ -718,9 +757,19 @@ async function loadConfigPanel() {
       ? "配置已读取，模型列表暂时不可用；已保存的模型选择仍会保留。"
       : `已读取 · ${chatN} 个聊天模型 · ${embN} 个向量模型（均可选）`);
   } catch (err) {
-    setConfigNote((err && err.message) || "读取配置失败", true);
+    setConfigNote(friendlyError(err, "读取配置失败，请稍后重试。"), true);
     els.configForm.setAttribute("aria-busy", "false");
   }
+}
+
+function focusConfigField(key) {
+  if (!key) return;
+  const input = els.configForm.querySelector(`[data-config-key="${key}"]`);
+  if (!input) return;
+  input.setAttribute("aria-invalid", "true");
+  input.closest(".config-field")?.classList.add("has-error");
+  input.focus({ preventScroll: true });
+  input.scrollIntoView({ block: "center" });
 }
 
 async function saveConfigPanel() {
@@ -730,6 +779,7 @@ async function saveConfigPanel() {
     updates = collectConfigUpdates();
   } catch (err) {
     setConfigNote((err && err.message) || "表单校验失败", true);
+    focusConfigField(err && err.configKey);
     return;
   }
   setConfigNote("正在保存并应用…");
@@ -740,7 +790,7 @@ async function saveConfigPanel() {
     setConfigNote("已保存并应用到运行时");
   } catch (err) {
     setConfigDirty(true);
-    setConfigNote((err && err.message) || "保存失败", true);
+    setConfigNote(friendlyError(err, "保存失败，请稍后重试。"), true);
   }
 }
 
@@ -751,7 +801,7 @@ async function applyConfigPanel() {
     renderConfigForm(panel || {});
     setConfigNote("已强制同步到运行时");
   } catch (err) {
-    setConfigNote((err && err.message) || "应用失败", true);
+    setConfigNote(friendlyError(err, "应用失败，请稍后重试。"), true);
   }
 }
 
@@ -807,7 +857,13 @@ async function boot() {
     setLink(false, "本地预览");
   }
   els.btnConfigReload.addEventListener("click", () => {
+    if (configDirty && !window.confirm("有未保存的修改，重新读取会丢弃它们。继续吗？")) return;
     void loadConfigPanel();
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (!configDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
   els.btnConfigApply.addEventListener("click", () => {
     void applyConfigPanel();

@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import random
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from astrbot_plugin_chat_dynamics.core.agent_bridge import AgentOutput, AstrBotAgentBridge
 from astrbot_plugin_chat_dynamics.core.media_gate import MediaAirGate, detect_media_kinds
-from astrbot_plugin_chat_dynamics.core.poke import PokeReplyPolicy, next_poke_streak
+from astrbot_plugin_chat_dynamics.core.poke import (
+    PokeReplyDecision,
+    PokeReplyPolicy,
+    next_poke_streak,
+)
+from astrbot_plugin_chat_dynamics.core.turn_decision import PersonaSnapshot
 from astrbot_plugin_chat_dynamics.core.platform_bridge import (
     build_poke_chain,
     is_poke_placeholder,
@@ -205,4 +212,123 @@ async def test_poke_text_uses_reply_llm_and_commits_only_on_success(outcome):
         assert not event.replies_sent
         assert runtime.last_bot_node is None
         assert not plugin.arbiter.has_bot_spoken(event.unified_msg_origin)
+    await plugin.terminate()
+
+
+class _PersonaBridgeDouble:
+    """Stand-in for the host main agent: it carries the persona, not a vibe prompt."""
+
+    def __init__(self, response: str = "干嘛戳我呀。", fail: bool = False):
+        self.persona = PersonaSnapshot("v1", "conv", "quiet", "克制、简短，但认真回应")
+        self.response = response
+        self.fail = fail
+        self.requests = []
+        self.commits = []
+
+    def check(self) -> bool:
+        return True
+
+    async def snapshot(self, event):
+        return self.persona
+
+    async def current(self, event, persona) -> bool:
+        return persona == self.persona
+
+    @asynccontextmanager
+    async def session_lock(self, umo):
+        yield
+
+    async def generate(self, event, events, prompt, persona, provider, **kwargs):
+        self.requests.append({"prompt": prompt, "persona": persona, "provider": provider})
+        if self.fail:
+            raise RuntimeError("persona agent unavailable")
+        return AgentOutput(self.response, "conv", "[]", [])
+
+    async def commit(self, event, output, delivered) -> bool:
+        self.commits.append(delivered)
+        return True
+
+
+def _persona_poke_plugin(monkeypatch, bridge, policy=None):
+    """Persona-mode plugin whose poke reply must go through the agent bridge."""
+    monkeypatch.setattr(AstrBotAgentBridge, "check", lambda self: True)
+    plugin = _plugin({
+        "decision_mode": "persona_model",
+        "base_thinking_delay": 0,
+        "daily_rhythm_enabled": False,
+        "presence_knob": "sensible",
+    })
+    plugin.persona_engine.bridge = bridge
+    plugin.poke_policy = policy or PokeReplyPolicy(rng=random.Random(0))
+    llm_calls = []
+
+    async def generate_llm(**kwargs):
+        llm_calls.append(kwargs)
+        return SimpleNamespace(completion_text="没人格的回复。")
+
+    plugin.context.llm_generate = generate_llm
+    plugin.llm_calls = llm_calls
+    return plugin
+
+
+async def _poke_at_bot(plugin, *, group_id: str, message_id: str) -> MockEvent:
+    event = MockEvent("", group_id=group_id, message_id=message_id, self_id="bot_42",
+                      components=[Poke("bot_42")])
+    await plugin.on_group_message(event)
+    await plugin.debounce.flush(session_id=event.unified_msg_origin)
+    return event
+
+
+@pytest.mark.asyncio
+async def test_persona_mode_poke_reply_is_generated_with_the_persona(monkeypatch):
+    bridge = _PersonaBridgeDouble()
+    plugin = _persona_poke_plugin(monkeypatch, bridge)
+    event = await _poke_at_bot(plugin, group_id="poke-persona", message_id="poke-persona-1")
+
+    # The persona agent answered, and the generic vibe llm_generate never did.
+    assert len(bridge.requests) == 1
+    assert plugin.llm_calls == []
+    assert bridge.requests[0]["persona"] == bridge.persona
+    assert "连续第 1 次" in bridge.requests[0]["prompt"]
+    assert "戳一戳" in bridge.requests[0]["prompt"]
+    assert event.replies_sent == [bridge.response]
+    runtime = plugin._sessions[event.unified_msg_origin]
+    assert runtime.last_bot_node.text == bridge.response
+    assert bridge.commits == [bridge.response]
+    assert plugin._metrics.get("poke_replied", 0) == 1
+    assert plugin.arbiter.has_bot_spoken(event.unified_msg_origin) is True
+    await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_persona_mode_poke_releases_the_claim_when_the_agent_fails(monkeypatch):
+    bridge = _PersonaBridgeDouble(fail=True)
+    plugin = _persona_poke_plugin(monkeypatch, bridge)
+    event = await _poke_at_bot(plugin, group_id="poke-fail", message_id="poke-fail-1")
+
+    assert event.replies_sent == []
+    assert plugin._metrics.get("poke_replied", 0) == 0
+    assert plugin._metrics.get("poke_persona_failed", 0) == 1
+    runtime = plugin._sessions[event.unified_msg_origin]
+    assert runtime.last_bot_node is None
+    assert not plugin.arbiter.has_bot_spoken(event.unified_msg_origin)
+    # A failed persona attempt must not burn the poke for the rest of the session.
+    assert (event.unified_msg_origin, "poke-fail-1") not in plugin._poke_replied_ids
+    await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_persona_mode_poke_back_still_skips_the_persona_agent(monkeypatch):
+    class _PokeBackPolicy:
+        def decide(self, **kwargs) -> PokeReplyDecision:
+            return PokeReplyDecision(True, "", True, "poke_back_only")
+
+    bridge = _PersonaBridgeDouble()
+    plugin = _persona_poke_plugin(monkeypatch, bridge, policy=_PokeBackPolicy())
+    event = await _poke_at_bot(plugin, group_id="poke-back", message_id="poke-back-1")
+
+    # A poke-back is a message component, not prose: no model call at all.
+    assert bridge.requests == []
+    assert plugin.llm_calls == []
+    assert len(event.replies_sent) == 1
     await plugin.terminate()

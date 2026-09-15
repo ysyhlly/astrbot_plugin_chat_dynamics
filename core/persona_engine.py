@@ -456,6 +456,7 @@ class PersonaEngine:
         p = self.plugin
         task = asyncio.current_task()
         p._in_flight.add(runtime.session_key)
+        cancelled = False
         try:
             while True:
                 async with runtime.state_lock:
@@ -484,12 +485,22 @@ class PersonaEngine:
                     if runtime.active_model_turn is item:
                         runtime.active_model_turn = None
                     runtime.model_admission.release()
+        except asyncio.CancelledError:
+            # The worker is being torn down (reset, member stop, unload). Every
+            # turn still queued was queued with one admission permit held, and
+            # nothing will ever pop it once this task is gone: releasing them
+            # here keeps "queued turn == held permit" true by construction
+            # instead of depending on each cancel site clearing first.
+            cancelled = True
+            raise
         finally:
             # This owner check and cleanup have no await: they are atomic on
             # the event loop and cannot wait on a cancelling caller's lock.
             if runtime.generation_task is task:
                 runtime.generation_task = None
                 p._in_flight.discard(runtime.session_key)
+                if cancelled:
+                    runtime.clear_model_queue()
 
     async def process(self, runtime, item: ModelTurn) -> None:
         p, turn = self.plugin, item.context
@@ -573,10 +584,21 @@ class PersonaEngine:
                         decision = replace(decision, length="brief")
             elif gate_engine is not None and decision.action == "ignore":
                 gate_engine.note_arbiter_silence(
-                    runtime.session_key, decision.reason_code, now=gate_now
+                    runtime.session_key, decision.reason_code
                 )
-        except Exception:
+        except Exception as exc:
+            # Failing open here would send a reply the gate never authorised, and the
+            # media/rhythm flags left over from the previous turn would ride along with
+            # it (an image forwarded to the vision model on a turn the media gate never
+            # saw). A gate that cannot be read denies the turn, and says so.
             gate = None
+            runtime.request_media_understand = False
+            decision = replace(decision, action="ignore", reason_code="gate_unavailable")
+            p._metric("gate_unavailable")
+            logger.warning(
+                "[ChatDynamics] Participation gate unavailable code=CD_GATE_UNAVAILABLE type=%s",
+                type(exc).__name__,
+            )
         # Complete the trace only after the model decision and participation gates.
         for message in item.context.messages:
             node = _dag_node(runtime, message.message_id)
@@ -684,7 +706,6 @@ class PersonaEngine:
                                 gate_engine.note_spoke(
                                     runtime.session_key,
                                     skin=gate.skin,
-                                    now=p.time_service.wall_time(),
                                     proactive=gate.proactive,
                                     rhythm=gate.rhythm,
                                 )

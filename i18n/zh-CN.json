@@ -1,7 +1,7 @@
 {
   "plugin_name": "群间 · Chat Dynamics",
   "pages.console.title": "群聊动态控制台",
-  "pages.console.desc": "按 UMO 会话监视群聊氛围、冷却与对话图谱。",
+  "pages.console.desc": "按 UMO 会话监视群聊氛围、冷却与对话图谱，并手动冷却或重置状态。",
   "console_title": "群聊动态控制台",
   "observe_mode": "观察模式",
   "balanced_mode": "平衡模式",

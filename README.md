@@ -120,7 +120,7 @@ AstrBot 群聊互动插件：合并碎发、追踪话题、判断回应时机，
 - **设置页**：支持搜索设置项、全部展开或收起分组，并在当前浏览器记住分组展开状态；参数通过“保存设置”写入配置。
 - **媒体理解**：媒体门闩用于判断是否适合接话，深入理解需相应开关及宿主、适配器、Provider 支持；人设模式可向 Agent 传递附件。
 - **今日作息**：模拟群聊中的作息氛围。普通晚安仅在当地 22:00–06:00 进入夜间收束，白天不会因此睡到次日；管理员强制入睡仍生效。高级设置中的 `rhythm_timezone` 支持 `Asia/Shanghai` 等 IANA 时区，留空沿用宿主操作系统本地时区；UTC 容器可显式设为所在时区。
-- **记忆联动**：普通回复由 Self Learning / LivingMemory 原生宿主钩子增强；兼容直连接口只用于管理。绕过宿主请求钩子的内部 Agent 可选使用 Self Learning Hub v1。关闭 `selflearning_integration` 只关闭本插件的桥接，其他插件自己的钩子由其自身配置管理。
+- **记忆联动**：优先使用 Self Learning / LivingMemory 原生宿主钩子；没有原生钩子时，在消息处理阶段异步预热批准的记忆，请求钩子只读缓存，避免同步等待或重复注入。绕过宿主请求钩子的内部 Agent 可选使用 Self Learning Hub v1。关闭 `selflearning_integration` 只关闭本插件的桥接，其他插件自己的钩子由其自身配置管理。
 - **学习层联动**：Dynamics Learning 通过 `learning_policy_mode` 决定本插件是否采用它发布的阈值策略。默认 `off`，连读取都不做；`shadow` 只读取、校验并算出「会改成什么」，一个参数都不应用，同时把每条消息的 baseline 判定与策略判定一起写进 schema 3 决策轨迹，并把真实比较记进独立的匿名遥测（保留 30 天、最多 2 万条，不含正文与原始标识），供学习层统计覆盖率而非准确率；`active` 才应用，且必须通过发布协议版本、已验证本体版本与基线配置摘要三项检查。策略写在对方插件的共享首选项里，本插件只读、从不写入。
 - **调度兼容**：同一群建议由一个插件负责回复调度，避免与 Group Chat Plus 等插件竞争。
 
@@ -140,6 +140,7 @@ python scripts/check_release.py
 - [群聊优化设计（v1.4.2 起，v1.4.3 续作）](docs/v1.4.2-group-chat-optimization.md) · [实施记录](docs/group_chat_optimization.md)
 - [参与策略与证据账本](docs/participation_policy.md) · [路由证据一致性](docs/routing_evidence.md) · [资源观测](docs/routing_observability.md)
 - [收件人回放评估](docs/routing_evaluation.md) · [人工标注](docs/recipient_annotations.md)
+- [离线阈值建议](docs/threshold-suggestions.md)：读取人工标注导出，只打印有证据支持的建议，不写配置。
 - [话题优化评审](docs/topic_optimization.md) · [Embedding 行为与上限](docs/embedding_changes.md)
 - [记忆联动说明](docs/companion-integration-fix-2026-09-07.md)
 - [集成边界与路由证据](docs/integrations-routing.md)

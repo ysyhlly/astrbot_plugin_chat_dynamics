@@ -374,7 +374,11 @@ def test_console_responsive_layout_wraps_long_umo_and_keeps_controls_usable(
             stage_states = page.locator("#pipeline .stage-state")
             assert stage_states.count() == 5
             assert all(stage_states.nth(index).is_visible() for index in range(stage_states.count()))
-            assert all(stage_states.nth(index).inner_text() in {"活跃", "待命"} for index in range(stage_states.count()))
+            # Stage text is factual (counts / cooling / last reply), not a
+            # guessed live-standby flag: this fixture has no pending messages,
+            # no graph nodes, no samples and no recent bot reply.
+            stage_labels = [stage_states.nth(index).inner_text() for index in range(stage_states.count())]
+            assert stage_labels == ["空闲", "暂无节点", "无样本", "就绪", "未回复"], stage_labels
             assert all("：" in (stage_states.nth(index).get_attribute("aria-label") or "") for index in range(stage_states.count()))
             page.locator("#tab-policy").click()
             page.locator("#providerState").wait_for(state="visible")

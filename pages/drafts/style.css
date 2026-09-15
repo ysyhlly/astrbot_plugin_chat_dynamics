@@ -29,6 +29,15 @@
   gap: 10px;
 }
 
+.draft-list > .loading-note {
+  padding: 28px 4px;
+  margin: 0;
+}
+
+.empty-state.is-error {
+  color: var(--danger);
+}
+
 .draft-session-head {
   display: flex;
   flex-wrap: wrap;

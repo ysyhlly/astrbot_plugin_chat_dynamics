@@ -61,10 +61,22 @@ REASON = {
     "majority_asleep": "多数人已歇·入睡",
 }
 
-_GOODNIGHT_RE = re.compile(
-    r"(晚安|晚安啦|晚安哦|睡了|去睡|睡啦|睡觉了|好梦|拜拜.*睡|睡前|"
-    r"good\s*night|gn\b|nighty)",
+# An explicit farewell word settles the question wherever it appears: Chinese
+# farewells continue into an address ("晚安大家") and the boundary-anchored form
+# used elsewhere would miss them. The English tokens are word-bounded, because
+# `gn\b` matched the tail of "design" and "sign".
+_FAREWELL_RE = re.compile(
+    r"(晚安|好梦|去睡|睡啦|睡觉了|睡前|good\s*night|\bnighty\b|\bgn\b)",
     re.IGNORECASE,
+)
+# A bare "睡了" is a farewell too ("我睡了"), which is why it cannot simply be
+# dropped -- but only when it is not reporting sleep. This predicate drives a hard
+# state transition (wind-down, then asleep for the rest of the night), so
+# "我昨天睡了十个小时" must not end the day for the whole group.
+_SLEPT_RE = re.compile(r"睡了")
+_SLEPT_CONTEXT_RE = re.compile(
+    r"(昨天|昨晚|前天|今早|今天|今晚|早上|上午|中午|下午|晚上|夜里|午觉|小时|"
+    r"分钟|多久|几点|每天|经常|总是|吗|没)"
 )
 _MORNING_RE = re.compile(
     r"(早啊|早上好|早安|早呀|起来了|起床了|good\s*morning)",
@@ -170,10 +182,15 @@ def _local_hour(stamp: float, timezone: str = "") -> int:
 
 
 def is_goodnight_text(text: str) -> bool:
+    """Whether this utterance is a farewell, not merely a mention of sleeping."""
     clean = (text or "").strip()
     if not clean:
         return False
-    return bool(_GOODNIGHT_RE.search(clean))
+    if _FAREWELL_RE.search(clean):
+        return True
+    if not _SLEPT_RE.search(clean):
+        return False
+    return not _SLEPT_CONTEXT_RE.search(clean)
 
 
 def is_morning_text(text: str) -> bool:
@@ -560,10 +577,21 @@ class DailyRhythmGate:
             sess.pre_sleep_bot_msg_hint = (text or "")[:80]
 
     def status(self, session_id: str = "", *, now: Optional[float] = None) -> Dict[str, Any]:
+        """Read the rhythm state without creating it.
+
+        A read is not a message: `_ensure` here used to give every id the web API was
+        asked about a permanent session entry, and only a real session is ever swept.
+        """
         stamp = time.time() if now is None else float(now)
         if session_id:
-            sess = self._ensure(str(session_id), stamp)
-            self._maybe_end_overnight_sleep(sess, stamp)
+            sess = self._sessions.get(str(session_id))
+            if sess is None:
+                # The neutral answer is the same shape as a real one, built live so the
+                # keys cannot drift, but it is never stored: a read must not create the
+                # state it is asking about.
+                sess = _SessionRhythm(sid=str(session_id), day_key=_day_key(stamp, ""))
+            else:
+                self._maybe_end_overnight_sleep(sess, stamp)
             return {
                 "state": sess.state,
                 "state_zh": STATE_LABEL_ZH.get(sess.state, sess.state),
@@ -738,9 +766,9 @@ class DailyRhythmGate:
         # Cold or past deadline with non-hot → majority asleep.
         if heat == "hot":
             return
-        # Optional: if many still chatting lightly, wait until deadline hard cap 40min.
-        if elapsed < 40 * 60 and heat == "normal" and stamp < deadline:
-            return
+        # The grace that used to be claimed here ("wait until the 40-minute cap") was
+        # unreachable: reaching this line already means `stamp >= deadline`, so a guard
+        # that also required `stamp < deadline` could never be true.
         self._enter_asleep(sess, stamp, kind="after_wind", reason="majority_asleep")
         self._note_why(sess.sid or "",
             stamp,

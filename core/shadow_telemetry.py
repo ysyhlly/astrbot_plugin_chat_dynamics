@@ -22,8 +22,11 @@ class ShadowTelemetry:
         return hmac.new(self.salt.encode(), value.encode(), hashlib.sha256).hexdigest()
 
     def prune(self, now: float) -> None:
+        # Only the old side expires. Stamps come from the wall clock, which can step
+        # backwards (NTP, VM restore), and an upper bound of `now` deleted every row in
+        # that case — the whole A/B sample set, silently, on the next 30s snapshot.
         self.rows = {key: row for key, row in self.rows.items()
-                     if now - self.retention_seconds <= row["recorded_at"] <= now}
+                     if row["recorded_at"] >= now - self.retention_seconds}
         if len(self.rows) > self.max_records:
             recent = sorted(self.rows.values(), key=lambda row: row["recorded_at"])[-self.max_records:]
             self.rows = {row["observation_id"]: row for row in recent}

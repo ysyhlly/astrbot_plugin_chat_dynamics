@@ -283,6 +283,32 @@ async def test_send_failure_never_commits_history(model_plugin):
 
 
 @pytest.mark.asyncio
+async def test_a_gate_failure_denies_the_turn_instead_of_failing_open(model_plugin):
+    """门闩读不到时不能把未经批准的回复发出去，也不能沿用上一轮的媒体授权。"""
+    p, bridge = model_plugin
+    event = MockEvent("帮我回答", is_at_or_wake_command=True)
+    runtime = p._get_or_create_runtime(
+        event.unified_msg_origin, group_id=event.group_id,
+        umo=event.unified_msg_origin, bot_id=event.self_id)
+    runtime.request_media_understand = True
+
+    def explode(**_kwargs):
+        raise RuntimeError("gate exploded")
+
+    p.decision_gate.evaluate = explode
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+
+        assert bridge.requests == [], "门闩失败后仍然发起了生成"
+        assert runtime.request_media_understand is False, "沿用了上一轮的媒体授权"
+        assert p._metrics.get("gate_unavailable") == 1
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
 async def test_persona_gate_uses_civil_wall_time(model_plugin):
     p, bridge = model_plugin
     mono = 12_345.0
@@ -308,8 +334,10 @@ async def test_persona_gate_uses_civil_wall_time(model_plugin):
         return orig_eval(**kwargs)
 
     def wrap_spoke(*args, **kwargs):
-        seen["spoke_now"] = kwargs.get("now")
-        return orig_spoke(*args, **kwargs)
+        assert "now" not in kwargs
+        result = orig_spoke(*args, **kwargs)
+        seen["spoke_now"] = p.decision_gate.manners.today_stats(args[0])["why_spoke"][-1]["ts"]
+        return result
 
     p.decision_gate.evaluate = wrap_eval
     p.decision_gate.note_spoke = wrap_spoke

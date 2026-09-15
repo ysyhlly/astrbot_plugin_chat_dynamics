@@ -71,6 +71,15 @@ def test_banter_markers_lose_to_deciding():
     assert skin.kind == OccasionKind.DECIDING
 
 
+def test_an_english_or_inside_a_word_is_not_a_deciding_marker():
+    """`or` 作为子串会把 "sorry？" 变成决策场景，随后三分钟不接环境话。"""
+    assert OccasionClassifier.is_deciding_marker("sorry？") is False
+    assert OccasionClassifier.is_deciding_marker("for?") is False
+    assert OccasionClassifier.is_deciding_marker("world?") is False
+    assert OccasionClassifier.is_deciding_marker("A or B?") is True
+    assert OccasionClassifier.is_deciding_marker("选 A 还是 B？") is True
+
+
 def test_unclear_not_deciding():
     clf = OccasionClassifier()
     skin = clf.classify(session_id="g1", text="今天天气不错", now=1000.0)
@@ -233,7 +242,7 @@ def test_proactive_quota_zero_blocks_ambient_gap_fill():
 
 
 def test_hanging_question_gap_fill_once():
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: now)
     cfg = _cfg(presence_knob="sensible")
     now = 3000.0
     nodes = [_node("今晚还有人吗？", user_id="a", ts=now - 60)]
@@ -251,7 +260,7 @@ def test_hanging_question_gap_fill_once():
     assert first.should_speak is True
     assert first.proactive is not None and first.proactive.proactive is True
     assert first.proactive.gap_kind == "hanging_question"
-    gate.note_spoke("g1", skin=first.skin, now=now, proactive=first.proactive)
+    gate.note_spoke("g1", skin=first.skin, proactive=first.proactive)
 
     second = gate.evaluate(
         session_id="g1",
@@ -270,7 +279,7 @@ def test_hanging_question_gap_fill_once():
 
 
 def test_quota_exhausted_pure_response():
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: now)
     cfg = _cfg(presence_knob="sensible", proactive_quota_per_hour=1, proactive_quota_per_topic=1)
     now = 4000.0
     # Consume quota with one hanging question
@@ -287,7 +296,7 @@ def test_quota_exhausted_pure_response():
         bot_id="bot",
     )
     assert first.should_speak is True
-    gate.note_spoke("g1", skin=first.skin, now=now, proactive=first.proactive)
+    gate.note_spoke("g1", skin=first.skin, proactive=first.proactive)
 
     # New gap fingerprint but hour quota exhausted (question must be old enough to hang)
     nodes2 = [_node("还有人在吗？", user_id="b", ts=now + 10)]

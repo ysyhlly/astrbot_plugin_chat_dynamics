@@ -111,6 +111,13 @@ def snapshot_session(plugin: Any, session_id: str, include_nodes: bool = False) 
         "last_activity": getattr(runtime, "last_activity", 0.0) if runtime is not None else 0.0,
         "epoch": getattr(runtime, "epoch", 0) if runtime is not None else 0,
         "rate_series": plugin.telemetrics.get_rate_series(session_id, current_time=now, buckets=12),
+        # The sliding window is configurable (telemetrics_window_seconds), so the
+        # panel must not hardcode "60 秒" when labelling these buckets. The values
+        # are per-bucket message counts, not a rate.
+        "rate_series_buckets": 12,
+        "rate_series_window_seconds": round(
+            float(getattr(telemetrics, "window_duration", 60.0) or 60.0), 1
+        ),
         "last_arbitration": None if decision is None else {
             "should_speak": decision.should_speak,
             "willingness_score": decision.willingness_score,
@@ -395,6 +402,13 @@ def _read_air_summary(
     # group's totals under its name, and a named session's counters must be its
     # own — the global sums otherwise look like this group's activity.
     scoped = matched
+    # Matching accepts a group id, a umo or a session id, but the gates key their
+    # per-session state by the session id (the UMO). Looking the counters up under
+    # the raw query string reported zeroes for a group that was plainly active.
+    scoped_key = selected
+    if selected and matched:
+        row = matched[0]
+        scoped_key = str(row.get("session_key") or row.get("session_id") or selected)
     if not selected:
         stats = manners.today_stats() if manners is not None and hasattr(manners, "today_stats") else {
             "intervene": 0,
@@ -402,7 +416,7 @@ def _read_air_summary(
             "why_silent": [],
         }
     elif matched and manners is not None and hasattr(manners, "today_stats"):
-        stats = manners.today_stats(selected)
+        stats = manners.today_stats(scoped_key)
     else:
         stats = {"intervene": 0, "quiet": 0, "why_silent": [], "why_spoke": []}
     occasion = {"kind": "neutral", "reason_zh": "暂无活跃群", "confidence": 0.35}
@@ -456,7 +470,7 @@ def _read_air_summary(
     useful = getattr(gate, "useful", None) if gate is not None else None
     if useful is not None and hasattr(useful, "quota_status"):
         try:
-            qs = useful.quota_status(selected or "", now=None, hour_cap=hour_cap)
+            qs = useful.quota_status(scoped_key or "", now=None, hour_cap=hour_cap)
             raw_used = qs.get("proactive_used")
             proactive_used = int(raw_used) if raw_used is not None else 0
             raw_cap = qs.get("proactive_cap")
@@ -471,13 +485,13 @@ def _read_air_summary(
     }
     if rhythm_gate is not None and hasattr(rhythm_gate, "status"):
         try:
-            rhythm_status = dict(rhythm_gate.status(selected or "", now=None) or {})
+            rhythm_status = dict(rhythm_gate.status(scoped_key or "", now=None) or {})
             rhythm_status["enabled"] = bool(getattr(plugin, "daily_rhythm_enabled", True))
         except Exception as exc:
             logger.warning("rhythm.status failed: %s", type(exc).__name__)
     if rhythm_gate is not None and hasattr(rhythm_gate, "why_silent_rows"):
         try:
-            for item in rhythm_gate.why_silent_rows(selected or "", limit=8):
+            for item in rhythm_gate.why_silent_rows(scoped_key or "", limit=8):
                 why.append({
                     "reason_zh": item.get("reason_zh") or item.get("reason_code") or "作息安静",
                     "reason_code": item.get("reason_code") or "",
@@ -610,7 +624,8 @@ def _replay_node_topic(node: Any) -> str:
 
 def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     """Export only schema fields; never expose arbitrary node metadata."""
-    source = node.metadata.get("decision_trace", {})
+    source = (node.metadata.get("decision_trace")
+              or node.metadata.get("trace_inputs") or {})
     source = source if isinstance(source, dict) else {}
     def section(key):
         return source.get(key) if isinstance(source.get(key), dict) else {}

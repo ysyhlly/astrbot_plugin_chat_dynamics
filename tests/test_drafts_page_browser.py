@@ -122,9 +122,13 @@ def setup(context, payload=PAYLOAD):
     )
 
 
-def open_page(context, page_server, payload=PAYLOAD):
+def open_page(context, page_server, payload=PAYLOAD, dialogs=None):
     setup(context, payload)
     page = context.new_page()
+    # Batch writes are guarded by a confirmation dialog. Accept it, and record
+    # the copy so a test can assert the warning actually appears.
+    seen = dialogs if dialogs is not None else []
+    page.on("dialog", lambda dialog: (seen.append(dialog.message), dialog.accept()))
     page.goto(f"{page_server}/drafts/index.html?ui=day")
     page.wait_for_selector(".draft-card")
     return page
@@ -152,6 +156,49 @@ def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, pag
         assert page.locator("#listEmpty").is_hidden()
 
 
+def test_a_filter_that_vanishes_falls_back_to_every_session(browser, page_server):
+    """筛选的会话消失后，下拉显示“全部会话”，列表也必须真的回到全部。"""
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        page.select_option("#sessionFilter", "aiocqhttp:GroupMessage:10001")
+        assert page.locator(".draft-card").count() == 2
+
+        # That session's drafts are gone now (accepted or dismissed elsewhere).
+        remaining = json.loads(json.dumps(PAYLOAD))
+        remaining["sessions"] = [group for group in remaining["sessions"]
+                                if group["session_key"] != "aiocqhttp:GroupMessage:10001"]
+        remaining["total_drafts"] = sum(len(group["items"])
+                                        for group in remaining["sessions"])
+        page.evaluate("payload => { window.__payload = payload; }", remaining)
+        page.locator("#btnRefresh").click()
+        page.wait_for_function("document.querySelector('#sessionFilter').value === ''")
+
+        assert page.locator("#sessionFilter").input_value() == ""
+        assert page.locator(".draft-card").count() == 1, "列表空着，下拉却说全部会话"
+        assert page.locator("#listEmpty").is_hidden()
+
+
+def test_a_failed_load_says_so_instead_of_looking_empty(browser, page_server):
+    """An error is not an empty list."""
+
+    with browser.new_context() as context:
+        setup(context)
+        page = context.new_page()
+        page.add_init_script("""
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            if (endpoint === 'annotation_drafts') throw new Error('annotation drafts unavailable');
+            return original(endpoint, params);
+          };
+        """)
+        page.goto(f"{page_server}/drafts/index.html?ui=day")
+        page.wait_for_function("document.querySelector('#listEmpty')?.classList.contains('is-error')")
+        assert "is-error" in (page.locator("#listEmpty").get_attribute("class") or "")
+        assert "暂时读不到" in page.locator("#listEmpty").inner_text()
+        assert page.locator("#listHost").inner_text().strip() == ""
+        assert "草稿列表暂时读不到" in page.locator("#reviewStatus").inner_text()
+
+
 def test_text_is_shown_when_the_content_switch_is_on(browser, page_server):
     shown = json.loads(json.dumps(PAYLOAD))
     shown["content_hidden"] = False
@@ -165,7 +212,8 @@ def test_text_is_shown_when_the_content_switch_is_on(browser, page_server):
 
 def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browser, page_server):
     with browser.new_context() as context:
-        page = open_page(context, page_server)
+        dialogs = []
+        page = open_page(context, page_server, dialogs=dialogs)
 
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
@@ -183,6 +231,9 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         assert sorted(sum((call["body"]["msg_ids"] for call in calls), [])) == ["m1", "m3"]
         status = page.locator("#reviewStatus").inner_text()
         assert "已采纳 2 条" in status and "1 条已失效" in status
+        # m3 already carries a human label, so accepting overwrites it and must
+        # have asked first.
+        assert dialogs and "覆盖" in dialogs[-1], dialogs
 
         page.evaluate("window.__calls = []")
         page.locator("#acceptTopic").select_option("NEW")
@@ -191,6 +242,19 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         page.wait_for_function("window.__calls.length >= 2")
         assert all(call["body"]["expected_topic"] == "NEW"
                    for call in page.evaluate("window.__calls"))
+
+
+def test_dismissing_selected_drafts_asks_before_dropping_them(browser, page_server):
+    """Dismissing throws drafts away for good, so it must confirm first."""
+
+    with browser.new_context() as context:
+        dialogs = []
+        page = open_page(context, page_server, dialogs=dialogs)
+
+        page.locator("#btnSelectAll").click()
+        page.locator("#btnDismiss").click()
+        page.wait_for_function("window.__calls.length >= 1")
+        assert dialogs and "无法恢复" in dialogs[-1], dialogs
 
 
 def test_accepting_only_expired_drafts_explains_instead_of_failing(browser, page_server):
@@ -236,7 +300,8 @@ def test_accepting_only_expired_drafts_explains_instead_of_failing(browser, page
 
 def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_server):
     with browser.new_context() as context:
-        page = open_page(context, page_server)
+        dialogs = []
+        page = open_page(context, page_server, dialogs=dialogs)
 
         page.locator(".draft-card button[data-dismiss]").first.click()
         page.wait_for_function("window.__calls.length >= 1")
@@ -257,6 +322,8 @@ def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_serv
             "action": "clear_session",
             "session_key": "aiocqhttp:GroupMessage:10001",
         }
+        # Clearing a whole session's drafts asks first.
+        assert dialogs and "无法恢复" in dialogs[-1], dialogs
 
 
 def test_the_side_nav_links_every_page_and_marks_review_current(browser, page_server):

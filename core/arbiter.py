@@ -341,10 +341,11 @@ class InterventionArbiter:
         clean = (text or "").strip()
         if not clean:
             return 0.0
+        # One rule, not two: the suffix test that used to follow this branch ("a short
+        # question ending in 吗/呢/？ scores 0.7") could never be reached, because the
+        # same suffixes are already matched by this pattern.
         if re.search(r"[？?]|为什么|怎么|如何|哪[里儿]|吗|呢", clean):
             return 1.0 if len(clean) >= 8 else 0.55
-        if clean.endswith(("吗", "呢", "？", "?")):
-            return 0.7
         return 0.0
 
     @staticmethod

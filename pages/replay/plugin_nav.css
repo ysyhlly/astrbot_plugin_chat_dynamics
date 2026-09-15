@@ -107,6 +107,24 @@
   display: none !important;
 }
 
+/* Navigation feedback: a click that cannot resolve a signed page must say so. */
+.plugin-nav-note {
+  min-height: 1.4em;
+  margin: 10px 10px 0;
+  color: var(--muted, #8aa0ab);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.plugin-nav-note.error {
+  color: var(--danger, #b13d3b);
+}
+
+.plugin-side-item[aria-busy="true"] {
+  opacity: .6;
+}
+
 @media (max-width: 860px) {
   .plugin-layout {
     grid-template-columns: 1fr;

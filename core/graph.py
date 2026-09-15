@@ -59,8 +59,10 @@ class ConversationDAG:
         self.time_service = time_service
         self.semantic_match_fn = semantic_match_fn or semantic_match
         self.nodes: Dict[str, ConversationNode] = {}
-        # Chronological ordering of message IDs
+        # Chronological ordering of message IDs, maintained by add_message and only
+        # rebuilt when an out-of-order insert invalidated it (see _ordered_ids).
         self.chronological_ids: List[str] = []
+        self._order_dirty: bool = False
         # Children whose explicit reply target has not arrived yet.  Several
         # adapters can deliver quoted messages out of order after reconnects.
         self._waiting_children: Dict[str, Set[str]] = {}
@@ -120,6 +122,14 @@ class ConversationDAG:
         )
 
         self.nodes[msg_id] = node
+        # Chronological order is an invariant, not something every reader rebuilds:
+        # the list is appended in time order, and only an out-of-order insert (a
+        # debounce fragment carrying an earlier stamp, a restored snapshot) marks it
+        # for a lazy re-sort. get_recent_nodes is called several times per turn.
+        if self.chronological_ids:
+            last = self.nodes.get(self.chronological_ids[-1])
+            if last is not None and ts < last.timestamp:
+                self._order_dirty = True
         self.chronological_ids.append(msg_id)
 
         inherited = False
@@ -474,7 +484,7 @@ class ConversationDAG:
                 collected_ids.add(node.msg_id)
 
         result = [self.nodes[m_id] for m_id in collected_ids if m_id in self.nodes]
-        order = {mid: index for index, mid in enumerate(self.chronological_ids)}
+        order = {mid: index for index, mid in enumerate(self._ordered_ids())}
         result.sort(key=lambda n: (n.timestamp, order.get(n.msg_id, 0)))
         return result[-max_nodes:] if len(result) > max_nodes else result
 
@@ -514,22 +524,35 @@ class ConversationDAG:
             same_thread = bool(leaf.thread_id) and node.thread_id == leaf.thread_id
             if node.msg_id == leaf.msg_id or same_party or related_mention or same_turn or same_thread:
                 candidates.append(node)
-        order = {mid: index for index, mid in enumerate(self.chronological_ids)}
+        order = {mid: index for index, mid in enumerate(self._ordered_ids())}
         candidates.sort(key=lambda n: (n.timestamp, order.get(n.msg_id, 0)))
         return candidates[-max_nodes:]
 
+    def _ordered_ids(self) -> List[str]:
+        """Chronological ids, re-sorted only after an out-of-order insert.
+
+        Sorting here rather than in each reader matters: one turn asks for the recent
+        window five or six times (routing, addressivity, the decision gate, the model
+        context), and a busy group keeps hundreds of nodes. Python's sort is stable, so
+        a node that shares a timestamp with another keeps the order it was inserted in.
+        """
+        if self._order_dirty:
+            self.chronological_ids.sort(
+                key=lambda m_id: (self.nodes[m_id].timestamp if m_id in self.nodes else 0.0))
+            self._order_dirty = False
+        return self.chronological_ids
+
     def get_recent_nodes(self, limit: int = 20) -> List[ConversationNode]:
         """Returns the most recent messages in chronological order."""
-        selected_ids = self.chronological_ids[-limit:] if limit > 0 else self.chronological_ids
-        order = {m_id: index for index, m_id in enumerate(self.chronological_ids)}
-        result = [self.nodes[m_id] for m_id in selected_ids if m_id in self.nodes]
-        result.sort(key=lambda node: (node.timestamp, order.get(node.msg_id, 0)))
-        return result
+        ids = self._ordered_ids()
+        selected_ids = ids[-limit:] if limit > 0 else ids
+        return [self.nodes[m_id] for m_id in selected_ids if m_id in self.nodes]
 
     def last_timestamp(self) -> float:
-        if not self.chronological_ids:
+        ids = self._ordered_ids()
+        if not ids:
             return 0.0
-        node = self.nodes.get(self.chronological_ids[-1])
+        node = self.nodes.get(ids[-1])
         return float(node.timestamp) if node is not None else 0.0
 
     def prune(
@@ -555,6 +578,7 @@ class ConversationDAG:
         # 2. Evict oldest if exceeding capacity
         current_active = [m_id for m_id in self.chronological_ids if m_id not in evicted]
         if len(current_active) > cap:
+            current_active = [m_id for m_id in self._ordered_ids() if m_id not in evicted]
             overflow = len(current_active) - cap
             evicted.update(current_active[:overflow])
 
@@ -566,9 +590,29 @@ class ConversationDAG:
                     if p_id in self.nodes:
                         self.nodes[p_id].child_ids.discard(m_id)
                 for c_id in node.child_ids:
-                    if c_id in self.nodes:
-                        self.nodes[c_id].parent_ids.discard(m_id)
-                        self.nodes[c_id].edge_kinds.pop(m_id, None)
+                    child = self.nodes.get(c_id)
+                    if child is None:
+                        continue
+                    child.parent_ids.discard(m_id)
+                    child.edge_kinds.pop(m_id, None)
+                    # Eviction drops the edge, so a child that recorded this node
+                    # as its inferred parent must lose that pointer too. Leaving
+                    # it behind let a surviving message keep claiming a parent
+                    # that is no longer in the graph (see unlink_inferred_reply,
+                    # which performs the same cleanup for an explicit unlink).
+                    if child.metadata.get("inferred_parent_id") != m_id:
+                        continue
+                    for name in ("inferred_parent_id", "inferred_parent_confidence",
+                                 "inferred_parent_reason", "inferred_confidence",
+                                 "inferred_reason"):
+                        child.metadata.pop(name, None)
+                    edge_meta = child.metadata.get("edge_metadata")
+                    if isinstance(edge_meta, dict):
+                        edge_meta.pop(m_id, None)
+                    routing = child.metadata.get("routing")
+                    if isinstance(routing, dict) and routing.get("parent_message_id") == m_id:
+                        routing["parent_message_id"] = ""
+                        routing["parent_confidence"] = 0.0
 
         self.chronological_ids = [m_id for m_id in self.chronological_ids if m_id in self.nodes]
         self._waiting_children = {
@@ -582,4 +626,5 @@ class ConversationDAG:
     def reset(self) -> None:
         self.nodes.clear()
         self.chronological_ids.clear()
+        self._order_dirty = False
         self._waiting_children.clear()

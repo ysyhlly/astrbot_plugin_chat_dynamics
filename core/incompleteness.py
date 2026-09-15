@@ -84,9 +84,8 @@ class IncompletenessDetector:
     RE_TERMINAL_PUNCT = re.compile(r"[。！？!?\.][\s]*$")
     RE_MODAL_PARTICLES = re.compile(r"[了吧呢啊呀啦哦嘛哈呗么哇呐捏哒滴嗷耶][\s~～]*$")
 
-    RE_ZH_HANGING_TAIL = re.compile(
-        r"(?:看|听|说|想|觉得|查|做|写|发|找|用|改|问|知道|发现|包括|关于|对于|至于|根据|按照|的|地|得|个|次|遍|下|件|种|些|这|那|其|与|和|及|以|让|使|由|从|向|往|在|把|被|为)[~～\s]*$"
-    )
+    # Rule 7 only ever consults the head form; the dangling-tail regex that used to sit
+    # here was never applied anywhere.
     RE_ZH_HANGING_HEAD = re.compile(
         r"^\s*(?:我刚才|刚才|刚刚|关于|至于|对于|按照|根据|如果说|我说|我想说|实际上|其实|你看|还有)[^。！？!?]+$"
     )

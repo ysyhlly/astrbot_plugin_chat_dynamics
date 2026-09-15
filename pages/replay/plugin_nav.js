@@ -34,7 +34,7 @@ function currentTheme() {
 }
 
 export function resolvedUi() {
-  // theme.js owns chat_dynamics_ui and account persistence on all six pages.
+  // theme.js owns chat_dynamics_ui and account persistence on every page.
   return window.ChatDynamicsTheme?.current() || "day";
 }
 
@@ -144,13 +144,39 @@ export function siblingContentUrl(pageName) {
   return nextPath + (q ? `?${q}` : "");
 }
 
-export async function navigateToPluginPage(pageName) {
+const NAV_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, timeoutMs = NAV_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("页面跳转超时")), timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+/** Visible navigation feedback: a silent no-op reads as a broken button. */
+export function setNavNote(message, isError = false) {
+  const node = document.getElementById("pluginNavNote");
+  if (!node) return;
+  node.textContent = message || "";
+  node.classList.toggle("error", Boolean(isError));
+}
+
+export async function navigateToPluginPage(pageName, button = null) {
   const theme = currentTheme();
+  const label = (button ? button.textContent : pageName).trim() || pageName;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  setNavNote(`正在打开「${label}」…`);
   try {
     let bridge = window.AstrBotPluginPage || null;
     if (bridge && typeof bridge.ready === "function") {
       try {
-        await bridge.ready();
+        await withTimeout(bridge.ready());
       } catch {
         /* ready is optional; apiGet may still work */
       }
@@ -159,7 +185,7 @@ export async function navigateToPluginPage(pageName) {
     if (bridge && typeof bridge.apiGet === "function") {
       const params = { page: pageName };
       if (theme) params.theme = theme;
-      const raw = await bridge.apiGet("page_nav", params);
+      const raw = await withTimeout(bridge.apiGet("page_nav", params));
       await window.ChatDynamicsTheme?.flush();
       const signed = signedContentHref(extractContentPath(raw), theme);
       if (signed) {
@@ -167,11 +193,16 @@ export async function navigateToPluginPage(pageName) {
         return;
       }
     }
+    console.warn("[chat_dynamics] page_nav missing signed content_path; stay on current page");
+    setNavNote("打不开这个页面：没有拿到有效的跳转地址，请刷新后重试。", true);
   } catch (err) {
     console.warn("[chat_dynamics] page_nav failed", err);
+    setNavNote("打不开这个页面，请刷新后重试（详细信息见后台日志）。", true);
   }
-  // Never assign a tokenless sibling URL. AstrBot answers that with 未授权.
-  console.warn("[chat_dynamics] page_nav missing signed content_path; stay on current page");
+  if (button) {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
 }
 
 export function mountPluginSideNav(currentId) {
@@ -190,9 +221,16 @@ export function mountPluginSideNav(currentId) {
   root.querySelectorAll("[data-nav-page]").forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
-      void navigateToPluginPage(btn.getAttribute("data-nav-page"));
+      void navigateToPluginPage(btn.getAttribute("data-nav-page"), btn);
     });
   });
+
+  const note = document.createElement("p");
+  note.id = "pluginNavNote";
+  note.className = "plugin-nav-note";
+  note.setAttribute("role", "status");
+  note.setAttribute("aria-live", "polite");
+  root.insertAdjacentElement("afterend", note);
 
   // Back-compat: leave #pageNav empty so CSS can hide it.
   const legacy = document.getElementById("pageNav");

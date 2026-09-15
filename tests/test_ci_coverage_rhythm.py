@@ -76,6 +76,31 @@ def test_goodnight_and_morning_empty_text_are_false():
     assert dr.is_morning_text("早上好呀") is True
 
 
+def test_a_mention_of_sleeping_is_not_a_farewell():
+    """晚安判定驱动“收束→入睡”的硬状态，普通句子不能把整晚带走。"""
+    assert dr.is_goodnight_text("我昨天睡了十个小时") is False
+    assert dr.is_goodnight_text("孩子睡了吗") is False
+    assert dr.is_goodnight_text("睡了十个小时") is False
+    assert dr.is_goodnight_text("design review") is False
+    assert dr.is_goodnight_text("我先睡了") is True
+    assert dr.is_goodnight_text("晚安大家") is True
+    assert dr.is_goodnight_text("@bot 晚安") is True
+    assert dr.is_goodnight_text("拜拜，我先睡了") is True
+
+
+def test_a_sleep_report_at_night_does_not_start_the_wind_down():
+    """同样的句子在 23:10 曾经把会话拖进收束，之后整晚静默。"""
+    gate = dr.DailyRhythmGate()
+    sessions = dr._SessionRhythm(sid="s", day_key="20260315")
+    gate._sessions["s"] = sessions
+    verdict = gate.evaluate(
+        session_id="s", user_id="alice", text="我昨天睡了十个小时",
+        now=_stamp(23, 10), telemetrics=_tele(1.0), recent_nodes=[])
+
+    assert verdict.state != dr.STATE_WINDING_DOWN
+    assert gate.status("s", now=_stamp(23, 11))["state"] != dr.STATE_WINDING_DOWN
+
+
 def test_mentions_bot_dict_nodes_mention_match_and_noise():
     # dict nodes carry mentioned_users but no usable user_id -> no match.
     assert (

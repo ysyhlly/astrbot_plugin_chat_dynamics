@@ -443,6 +443,68 @@ def test_an_off_consumer_is_not_applied_either():
     assert runtime.last_apply_reason == lpr.APPLY_NOT_APPLIED
 
 
+def test_the_baseline_digest_is_read_from_the_stored_config():
+    """摘要必须来自存储配置，而不是已经折入策略的运行配置。
+
+    否则策略会在下一次刷新时拿自己的值去比对自己的基线摘要，把自己判成
+    incompatible，而 live 值仍然是策略值。
+    """
+    from dataclasses import replace
+
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+
+    runtime = _runtime_with(decide(publish()))
+    plugin = _plugin_with(runtime)
+    plugin.config = dict(BASE)
+    plugin._runtime_config = replace(_config(), strong_addressivity_threshold=0.67)
+
+    values = ChatDynamicsPlugin._learning_policy_effective_config(plugin)
+
+    assert values["strong_addressivity_threshold"] == pytest.approx(BASE["strong_addressivity_threshold"])
+    assert values["safe_hover_threshold"] == pytest.approx(BASE["safe_hover_threshold"])
+
+
+@pytest.mark.asyncio
+async def test_an_applied_policy_does_not_invalidate_itself_on_the_next_refresh():
+    """折入之后的第二次刷新仍然必须匹配基线，否则模式会在两轮之间抖动。"""
+    from dataclasses import replace
+
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+
+    class Sp:
+        @staticmethod
+        async def get_async(**_kwargs):
+            return publish()
+
+    runtime = _runtime_with(decide(publish()))
+    plugin = _plugin_with(runtime)
+    plugin.config = dict(BASE)
+    plugin._runtime_config = replace(_config(), strong_addressivity_threshold=0.67)
+
+    decision = await runtime.consumer.refresh(
+        sp_module=Sp(),
+        effective_config=ChatDynamicsPlugin._learning_policy_effective_config(plugin))
+
+    assert decision.applied is True
+    assert decision.status == lp.STATUS_ACTIVE
+
+
+def test_an_echoed_baseline_outside_the_policy_band_does_not_refuse_the_policy():
+    """生产者会回显整套参数，回显值不该按“策略可移动区间”被拒绝。
+
+    两个地址度阈值在配置里是 0..1，而策略只允许在自己的区间内移动它们；
+    如果按 PARAM_RANGES 检查回显值，运维把 safe_hover_threshold 设成 0.65
+    就会让每一份策略都因为一个它根本没打算改的参数被拒绝。
+    """
+    decision = decide(publish(params={"strong_addressivity_threshold": 0.67,
+                                      "safe_hover_threshold": 0.65}))
+
+    assert decision.applied is True
+    assert decision.status == lp.STATUS_ACTIVE
+    assert decision.overrides["safe_hover_threshold"] == pytest.approx(0.65)
+    assert not decision.view.rejected_params
+
+
 def test_an_applied_policy_reports_applied():
     from dataclasses import replace
 

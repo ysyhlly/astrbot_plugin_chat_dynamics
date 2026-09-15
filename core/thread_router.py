@@ -479,6 +479,7 @@ class ThreadRouter:
             quoted_node=quoted,
             inferred_parent=inferred_candidate_parent,
             inferred_confidence=inferred_candidate_score,
+            parent_threshold=self.parent_retriever.accept_threshold,
             ranked_topics=ranked_topics,
             recent_nodes=recent,
             bot_names=bot_names,

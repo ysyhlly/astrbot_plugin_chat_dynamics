@@ -110,7 +110,7 @@ def test_script1_morning_hi_ok_but_not_while_deciding():
 
 def test_script2_ten_goodnights_quota():
     """十人连续晚安最多 1～2 次文字."""
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: now + i)
     cfg = _cfg(presence_knob="sensible", rhythm_goodnight_text_quota=1)
     now = _stamp_at(23)
     spoke = 0
@@ -129,7 +129,7 @@ def test_script2_ten_goodnights_quota():
         )
         if res.should_speak:
             spoke += 1
-            gate.note_spoke("gn", skin=res.skin, now=now + i, proactive=res.proactive, rhythm=res.rhythm)
+            gate.note_spoke("gn", skin=res.skin, proactive=res.proactive, rhythm=res.rhythm)
         else:
             assert res.reason_code in {
                 "wind_later_silence",
@@ -273,7 +273,7 @@ def test_goodnight_quota_waits_for_note_spoke():
 
 def test_script3_first_wave_stays_winding_not_asleep():
     """首波回完仍收束中，不立刻已睡."""
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: now)
     cfg = _cfg(presence_knob="sensible")
     now = _stamp_at(23)
     res = gate.evaluate(
@@ -292,7 +292,7 @@ def test_script3_first_wave_stays_winding_not_asleep():
     assert res.rhythm is not None
     assert res.rhythm.state == STATE_WINDING_DOWN
     assert res.rhythm.action == "goodnight_reply"
-    gate.note_spoke("w1", skin=res.skin, now=now, rhythm=res.rhythm)
+    gate.note_spoke("w1", skin=res.skin, rhythm=res.rhythm)
     st = gate.rhythm.status("w1", now=now + 1)
     assert st["state"] == STATE_WINDING_DOWN
     assert st["state"] != STATE_ASLEEP_AFTER_WIND
@@ -347,7 +347,7 @@ def test_script4_cold_then_asleep_hot_delays():
 
 def test_script5_asleep_plain_gn_no_wake_at_can_brief_wake():
     """已睡串晚安不吵醒；@可短醒一次再睡."""
-    gate = DynamicsDecisionGate()
+    gate = DynamicsDecisionGate(wall_now=lambda: asleep_at + 20)
     cfg = _cfg(presence_knob="sensible", rhythm_allow_wake=True)
     now = _stamp_at(23)
     # Force into asleep via rhythm internals
@@ -401,7 +401,7 @@ def test_script5_asleep_plain_gn_no_wake_at_can_brief_wake():
     assert wake.rhythm is not None
     assert wake.rhythm.state == STATE_BRIEF_WAKE
     assert wake.rhythm.action == "wake_reply"
-    gate.note_spoke("s5", skin=wake.skin, now=asleep_at + 20, rhythm=wake.rhythm)
+    gate.note_spoke("s5", skin=wake.skin, rhythm=wake.rhythm)
 
     # After cooldown, back to sleep
     later = asleep_at + 20 + 11 * 60

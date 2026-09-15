@@ -117,3 +117,114 @@ def test_archive_diagnostics_and_late_parent(monkeypatch):
     assert restored.dag.nodes['child'].parent_ids == {'parent'}
     restore_runtime_state(target, snapshot)
     assert len(target._shadow_decisions) == 1
+
+
+def test_an_absurd_integer_does_not_abort_the_whole_restore(monkeypatch):
+    """一个 400 位整数曾经让整次恢复抛 OverflowError，连正常的会话一起丢掉。"""
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    target = plugin(10)
+    snapshot = {'version': 1, 'saved_wall': 1000, 'saved_clock': 10, 'sessions': [
+        {'session_key': 'bad', 'umo': 'bad', 'nodes': [
+            {'msg_id': 'x', 'user_id': 'u', 'text': 't', 'timestamp': 10 ** 400}]},
+        {'session_key': 'ok', 'umo': 'ok', 'nodes': [
+            {'msg_id': 'y', 'user_id': 'u', 'text': 't', 'timestamp': 90}]},
+    ]}
+
+    restore_runtime_state(target, snapshot)
+
+    assert 'ok' in target._registry.runtimes
+    assert 'y' in target._registry.runtimes['ok'].dag.nodes
+
+
+def test_metrics_recorded_outside_the_fixed_list_are_still_restored(monkeypatch):
+    """恢复循环只更新已存在的键，所以这些名字必须出现在 _METRIC_NAMES 里。"""
+    from astrbot_plugin_chat_dynamics.main import _METRIC_NAMES
+
+    for name in ("config_saved", "config_applied", "shadow_telemetry_persist_failed"):
+        assert name in _METRIC_NAMES
+
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    source._metrics = {name: 0 for name in _METRIC_NAMES}
+    source._metrics["config_saved"] = 3
+    snapshot = export_runtime_state(source)
+
+    target = plugin(30)
+    target._metrics = {name: 0 for name in _METRIC_NAMES}
+    restore_runtime_state(target, snapshot)
+
+    assert target._metrics["config_saved"] == 3
+
+
+def test_a_quiet_window_survives_a_restart(monkeypatch):
+    """“今天别闹”是六小时指令：重启不能把它连同内存会话一起丢掉。"""
+    from astrbot_plugin_chat_dynamics.core.occasion_skin import OccasionClassifier
+
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    source.decision_gate = SimpleNamespace(occasion=OccasionClassifier())
+    source.decision_gate.occasion.note_cool_command('room', duration=6 * 3600, now=1000)
+    snapshot = export_runtime_state(source)
+    assert snapshot['occasion_cool'] == {'room': 1000 + 6 * 3600}
+
+    monkeypatch.setattr(codec.time, 'time', lambda: 1010)
+    target = plugin(30)
+    target.decision_gate = SimpleNamespace(occasion=OccasionClassifier())
+    restore_runtime_state(target, snapshot)
+    assert target.decision_gate.occasion.cool_remaining('room', now=1010) == 6 * 3600 - 10
+
+    # 已经过期的窗口不能因为重启而复活。
+    expired = 1000 + 6 * 3600 + 1
+    monkeypatch.setattr(codec.time, 'time', lambda: expired)
+    late = plugin(30)
+    late.decision_gate = SimpleNamespace(occasion=OccasionClassifier())
+    restore_runtime_state(late, snapshot)
+    assert late.decision_gate.occasion.cool_remaining('room', now=expired) == 0
+
+
+def test_the_compact_trace_inputs_survive_a_restart(monkeypatch):
+    """重启后重建的 trace 仍要带上 participation —— 那是学习层回放阈值的唯一依据。"""
+    from astrbot_plugin_chat_dynamics.core.routing_trace import (
+        build_routing_trace, compact_trace_inputs,
+    )
+
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    runtime = source._registry.get_or_create('room', group_id='room', umo='room')
+    trace = build_routing_trace(
+        routing={'topic_id': 't', 'topic_confidence': 0.8, 'addressee_ids': ['bot']},
+        identity={'bot_reference': 'vocative', 'vocative': True,
+                  'mention': False, 'subject': False},
+        participation={'score': 0.81, 'level': 'strong', 'should_reply': True,
+                       'evidence': [{'code': 'vocative', 'family': 'recipient',
+                                     'source': 'identity_matcher', 'strength': 1.0,
+                                     'raw_value': 1.0}],
+                       'family_contributions': {'recipient': 0.31},
+                       'contribution_total': 0.81},
+        state={'pending_hover': False, 'intervening_users': 0},
+        mode='legacy', weights_version='v3')
+    runtime.dag.add_message('m1', 'user', 'hello', timestamp=90,
+                            metadata={'routing': {'topic_id': 't'},
+                                      'decision_trace': trace,
+                                      'trace_inputs': compact_trace_inputs(trace)})
+    snapshot = json.loads(json.dumps(export_runtime_state(source), allow_nan=False))
+
+    target = plugin(110)
+    restore_runtime_state(target, snapshot)
+
+    restored = target._registry.get('room').dag.nodes['m1']
+    assert 'decision_trace' not in restored.metadata, '完整快照只留在内存里'
+    inputs = restored.metadata['trace_inputs']
+    assert inputs['participation']['contribution_total'] == 0.81
+    assert inputs['participation']['evidence'][0]['code'] == 'vocative'
+    assert inputs['identity']['bot_reference'] == 'vocative'
+    assert inputs['mode'] == 'legacy'
+
+    # 用持久化下来的输入重建，得到的是同一个 trace，而不是一个全是 null 的骨架。
+    rebuilt = build_routing_trace(
+        routing=restored.metadata['routing'], identity=inputs['identity'],
+        participation=inputs['participation'], state=inputs['state'],
+        mode=inputs['mode'], weights_version=inputs['weights_version'])
+    assert rebuilt['participation']['score'] == 0.81
+    assert rebuilt['participation']['contribution_total'] == 0.81
+    assert rebuilt['participation']['evidence'][0]['code'] == 'vocative'

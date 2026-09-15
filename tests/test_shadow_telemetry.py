@@ -24,6 +24,17 @@ def test_dedup_survives_restore_and_sessions_remain_isolated():
     assert len(restored.rows) == 2
 
 
+def test_a_backwards_clock_step_does_not_wipe_the_observations():
+    """墙钟回拨（NTP/快照恢复）不能把整个 A/B 观测集删光。"""
+    store = ShadowTelemetry()
+    store.record(comparison(1000), session="s", message_id="1", host_version="v1")
+    assert len(store.rows) == 1
+
+    store.prune(880)  # 时钟倒退两分钟
+
+    assert len(store.rows) == 1
+
+
 def test_limits_expiry_and_unlabelled_real_comparisons():
     store = ShadowTelemetry(retention_seconds=10, max_records=2)
     for i in range(3):

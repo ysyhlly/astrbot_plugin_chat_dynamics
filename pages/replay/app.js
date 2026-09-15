@@ -3,6 +3,7 @@ import {
   apiPost,
   escapeHtml,
   formatTs,
+  friendlyError,
   PRESENCE_LABEL,
   readyBridge,
   redactId,
@@ -59,6 +60,19 @@ const annotationMetrics = document.getElementById("annotationMetrics");
 let annotationRevision = 0;
 let annotationData = null;
 const ERROR_LABELS = { correct: "判断正确", topic_merge: "不同话题被合并", topic_split: "同话题被拆分", wrong_assignment: "选错已有话题", premature_assignment: "过早归类", reopen_miss: "遗漏历史话题", unknown: "无法判断" };
+
+// Hand-typed annotations are not saved until the per-message button is pressed,
+// and the rows live only in the DOM. Guard every rebuild so switching a block,
+// closing the dialog, refreshing or leaving the page cannot silently drop them.
+function dirtyAnnotationCount() {
+  return annotationMessages.querySelectorAll('.annotation-row[data-dirty="true"]').length;
+}
+
+function confirmDiscardAnnotations() {
+  const dirty = dirtyAnnotationCount();
+  if (!dirty) return true;
+  return window.confirm(`有 ${dirty} 条标注还没保存，继续会丢掉这些修改。确定继续吗？`);
+}
 
 const RECIPIENT_ERRORS = { correct: "判断正确", missed_bot: "漏判 Bot", false_bot: "误判为对 Bot 说", wrong_recipient: "收件人错误", missing_recipient: "遗漏收件人", subject_confusion: "混淆提及与称呼", unknown: "无法判断" };
 const RECIPIENT_BOOLS = { recipient_correct: "收件人判断正确", bot_targeted: "在对 Bot 说话", expected_reply: "Bot 应该回复" };
@@ -164,7 +178,7 @@ async function renderAnnotations(block) {
   annotationMessages.innerHTML = (block.messages || []).map((message, index) => {
     const targetId = `annotation-target-${index}`;
     const errorId = `annotation-error-${index}`;
-    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="CORRECT">判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}">保存标注</button></div>`;
+    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="CORRECT">判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}" aria-label="保存第 ${index + 1} 条消息的标注">保存标注</button></div>`;
   }).join("");
   (block.messages || []).forEach((message, index) => {
     if (!Array.isArray(message.candidates) || !message.candidates.length) return;
@@ -178,7 +192,9 @@ async function renderAnnotations(block) {
     if (revision !== annotationRevision) return;
     applyAnnotationData(data, block, true);
   } catch (err) {
-    if (revision === annotationRevision) annotationStatus.textContent = err.message || "标注读取失败";
+    if (revision === annotationRevision) {
+      annotationStatus.textContent = friendlyError(err, "标注读取失败，请稍后重试。");
+    }
   }
 }
 
@@ -189,6 +205,7 @@ function setTonightEnabled(ok) {
 }
 
 function selectBlock(index) {
+  if (index !== selectedIndex && !confirmDiscardAnnotations()) return;
   selectedIndex = index;
   const nodes = els.replayRail.querySelectorAll(".replay-block");
   nodes.forEach(node => {
@@ -281,7 +298,7 @@ async function refresh() {
   } catch (err) {
     if (revision !== refreshRevision) return;
     online = false;
-    setLink(els, false, (err && err.message) || "离线");
+    setLink(els, false, friendlyError(err, "离线"));
     setTonightEnabled(false);
     els.replayRail.innerHTML = "";
     blocks = [];
@@ -298,15 +315,19 @@ async function refresh() {
 async function savePresence(value) {
   if (!online || busy) return;
   busy = true;
-  els.tonightNote.textContent = "正在保存今晚分寸…";
+  setTonightEnabled(false);
+  els.tonightNote.classList.remove("error");
+  els.tonightNote.textContent = "正在保存参与程度…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
-    els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」。`;
+    els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」，对所有会话生效。`;
     await refresh();
   } catch (err) {
-    els.tonightNote.textContent = (err && err.message) || "保存失败";
+    els.tonightNote.classList.add("error");
+    els.tonightNote.textContent = friendlyError(err, "保存失败，请稍后重试。");
   } finally {
     busy = false;
+    setTonightEnabled(online);
   }
 }
 
@@ -353,10 +374,18 @@ async function boot() {
       const data = await apiGet("topic_annotations", { session_key: block.session_id });
       if (revision !== annotationRevision) return;
       applyAnnotationData(data, block);
+      // The reload above is async; clear the dirty mark first so the guard does
+      // not fire on a block switch that happens right after a successful save.
+      delete row.dataset.dirty;
+      if (!row.querySelector("[data-saved-annotation]").textContent) {
+        row.querySelector("[data-saved-annotation]").textContent = "已保存标注。";
+      }
       annotationStatus.textContent = "已保存标注。";
 
     } catch (err) {
-      if (revision === annotationRevision) annotationStatus.textContent = err.message || "标注保存失败";
+      if (revision === annotationRevision) {
+        annotationStatus.textContent = friendlyError(err, "标注保存失败，请稍后重试。");
+      }
     } finally { button.disabled = false; }
   });
   document.getElementById("btnDraftAnnotations").addEventListener("click", async () => {
@@ -382,7 +411,7 @@ async function boot() {
       const refreshed = await apiGet("topic_annotations", { session_key: block.session_id });
       applyAnnotationData(refreshed, block);
     } catch (err) {
-      annotationStatus.textContent = err.message || "生成草稿失败";
+      annotationStatus.textContent = friendlyError(err, "生成草稿失败，请稍后重试。");
     } finally { button.disabled = false; }
   });
   document.getElementById("btnApplyDrafts").addEventListener("click", () => {
@@ -427,7 +456,18 @@ async function boot() {
     selectBlock(Number(btn.getAttribute("data-index")));
     els.detailDialog.showModal();
   });
-  els.btnCloseDetail.addEventListener("click", () => els.detailDialog.close());
+  els.btnCloseDetail.addEventListener("click", () => {
+    if (!confirmDiscardAnnotations()) return;
+    els.detailDialog.close();
+  });
+  els.detailDialog.addEventListener("cancel", (event) => {
+    if (!confirmDiscardAnnotations()) event.preventDefault();
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (!dirtyAnnotationCount()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
   els.btnRefresh.addEventListener("click", () => void refresh());
   els.btnGhostTonight.addEventListener("click", () => void savePresence("ghost"));
   els.btnSensibleTonight.addEventListener("click", () => void savePresence("sensible"));

@@ -1,3 +1,4 @@
+import { friendlyError } from "./errors.js";
 import { renderIntegrations } from "./integrations.js";
 import { mountWorkspace } from "./workspace.js";
 
@@ -190,8 +191,17 @@ function updateBusyState() {
 }
 
 function updateManagementControls() {
-  const detailAvailable = overviewOnline && Boolean(selectedId) && Boolean(lastDetail) && !detailLoading && !detailError;
-  const busy = refreshInFlight || operationInFlight;
+  // A quiet poll is not a reason to grey out the session controls: disabling a
+  // focused input drops the caret mid-typing every five seconds. Only a user
+  // initiated refresh or an operation may block the controls.
+  const quietRefresh = quietPoll && !operationInFlight;
+  const detailAvailable =
+    overviewOnline &&
+    Boolean(selectedId) &&
+    Boolean(lastDetail) &&
+    !detailError &&
+    (!detailLoading || quietRefresh);
+  const busy = operationInFlight || (!quietRefresh && (refreshInFlight || detailLoading));
   const canManage = detailAvailable && !busy;
   els.btnCool.disabled = !canManage;
   els.btnReset.disabled = !canManage;
@@ -523,7 +533,7 @@ function showOperationDetailError(message, err) {
   detailError = true;
   lastDetail = null;
   renderRoom(null, "操作未完成", "详情没有被旧数据覆盖。修复连接后可以重试读取。");
-  const reason = err && err.message ? ` ${err.message}` : "";
+  const reason = err ? ` ${friendlyError(err, "")}` : "";
   setDetailStatus(`${message}${reason}`, true, true);
   updateManagementControls();
 }
@@ -563,7 +573,7 @@ async function loadPresets() {
       return true;
     } catch (err) {
       presetRetryPending = true;
-      els.presetNote.textContent = (err && err.message) || "预设读取失败";
+      els.presetNote.textContent = friendlyError(err, "预设读取失败，请稍后重试。");
       return false;
     } finally {
       presetsLoadInFlight = null;
@@ -583,13 +593,15 @@ async function applyPreset() {
   try {
     const result = await apiPost("preset/apply", { name, confirm: true });
     if (token !== operationRequestToken) return;
-    els.presetNote.textContent = result && result.saved === false ? "预设已应用（配置对象未提供持久化接口）" : "预设已应用";
+    els.presetNote.textContent = result && result.saved === false
+      ? "预设已在运行时生效，但没能写入磁盘：重启后参数会回到原值。"
+      : "预设已应用并保存。";
     await refresh({ refreshDetail: true, operationToken: token });
     if (token === operationRequestToken && overviewOnline) setOps("预设已应用。");
   } catch (err) {
     if (token === operationRequestToken) {
-      els.presetNote.textContent = (err && err.message) || "预设应用失败";
-      setOps((err && err.message) || "预设应用失败。", true);
+      els.presetNote.textContent = friendlyError(err, "预设应用失败，请稍后重试。");
+      setOps(friendlyError(err, "预设应用失败，请稍后重试。"), true);
       if (sessionId && selectedId === sessionId) showOperationDetailError("预设应用失败，详情可重试。", err);
     }
   } finally {
@@ -734,7 +746,21 @@ function renderRoom(
     .map((value) => Number(value))
     .map((value) => (Number.isFinite(value) ? Math.max(0, value) : 0));
   const max = Math.max(1, ...series);
-  els.rateBars.setAttribute("aria-label", `最近 60 秒消息速率：${series.map((value) => value.toFixed(1)).join("，")} MPM`);
+  // The buckets are per-interval message counts over a configurable window, so
+  // describe them as counts and read the real span off the payload.
+  const windowSeconds = Number(detail.rate_series_window_seconds) > 0 ? Number(detail.rate_series_window_seconds) : 60;
+  const bucketSeconds = Number(detail.rate_series_buckets) > 0
+    ? windowSeconds / Number(detail.rate_series_buckets)
+    : windowSeconds / 12;
+  els.rateBars.setAttribute(
+    "aria-label",
+    `最近 ${Math.round(windowSeconds)} 秒的消息条数（每根柱子约 ${Math.round(bucketSeconds)} 秒）：${series.join("，")}`,
+  );
+  const axisLabels = document.querySelectorAll(".trace-axis span");
+  if (axisLabels.length === 2) {
+    axisLabels[0].textContent = `${Math.round(windowSeconds)} 秒前`;
+    axisLabels[1].textContent = "现在";
+  }
   const barsHtml = series
     .map((n) => `<span aria-hidden="true" style="height:${Math.min(100, Math.max(6, (n / max) * 100))}%"></span>`)
     .join("");
@@ -751,23 +777,40 @@ function renderRoom(
   }
   els.dagCount.textContent = `${detail.dag_nodes || 0} 节点`;
 
+  // Each stage reports the fact it actually knows. "活跃/待命" used to be
+  // derived from unrelated counters, so a muted session showed an "active"
+  // arbiter while a pacer that spoke hours ago stayed "active" forever.
+  const pendingCount = Number(detail.pending || 0);
+  const nodeCount = Number(detail.dag_nodes || 0);
+  const sampleCount = Number(detail.sample_size || 0);
+  const stageStates = {
+    debounce: pendingCount > 0
+      ? { label: `待合并 ${pendingCount} 条`, live: true }
+      : { label: "空闲", live: false },
+    graph: nodeCount > 0
+      ? { label: `${nodeCount} 节点`, live: false }
+      : { label: "暂无节点", live: false },
+    vibe: detail.vibe_llm_in_flight
+      ? { label: "LLM 校准中", live: true }
+      : sampleCount > 0
+        ? { label: `样本 ${sampleCount} 条`, live: false }
+        : { label: "无样本", live: false },
+    arbiter: detail.cooling
+      ? { label: `冷却中 ${Math.ceil((detail.cooling_remaining || 0) / 60)} 分`, live: false }
+      : { label: "就绪", live: false },
+    pacer: detail.last_bot_text ? { label: "最近有回复", live: false } : { label: "未回复", live: false },
+  };
   els.pipeline.querySelectorAll("li").forEach((item) => {
     const stage = item.getAttribute("data-stage");
-    const live =
-      (stage === "vibe" && detail.sample_size > 0) ||
-      (stage === "graph" && detail.dag_nodes > 0) ||
-      (stage === "debounce" && detail.pending > 0) ||
-      (stage === "arbiter" && detail.cooling) ||
-      (stage === "pacer" && Boolean(detail.last_bot_text));
-    item.classList.toggle("live", live);
-    const stateLabel = live ? "活跃" : "待命";
+    const info = stageStates[stage] || { label: "—", live: false };
     const stageName = item.querySelector(".stage-name")?.textContent || stage || "阶段";
-    item.setAttribute("aria-label", `${stageName}：${stateLabel}`);
+    item.classList.toggle("live", Boolean(info.live));
+    item.setAttribute("aria-label", `${stageName}：${info.label}`);
     const state = item.querySelector(".stage-state");
     if (state) {
-      state.textContent = stateLabel;
-      state.setAttribute("aria-label", `${stageName}：${stateLabel}`);
-      state.title = `${stageName}：${stateLabel}`;
+      state.textContent = info.label;
+      state.setAttribute("aria-label", `${stageName}：${info.label}`);
+      state.title = `${stageName}：${info.label}`;
     }
   });
 
@@ -851,8 +894,9 @@ async function selectSession(sessionId, { silent = false } = {}) {
       lastDetail = null;
       renderRoom(null, "无法加载会话详情", "当前详情已清空，请检查 session_key 或后端连接后重试。");
     }
-    setDetailStatus(`详情加载失败：${(err && err.message) || "会话详情请求失败"}`, true, true);
-    setOps((err && err.message) || "会话详情请求失败", true, "detail");
+    const detailMessage = friendlyError(err, "会话详情请求失败，请稍后重试。");
+    setDetailStatus(`详情加载失败：${detailMessage}`, true, true);
+    setOps(detailMessage, true, "detail");
     updateManagementControls();
   }
 }
@@ -921,8 +965,9 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
   } catch (err) {
     if (requestToken !== overviewRequestToken || (operationToken !== null && operationToken !== operationRequestToken)) return;
     console.warn("[ChatDynamics] overview failed", err);
-    setLink(false, (err && err.message) || "后端未响应");
-    renderOverviewUnavailable((err && err.message) || "后端未响应");
+    const overviewMessage = friendlyError(err, "后端未响应。");
+    setLink(false, overviewMessage);
+    renderOverviewUnavailable(overviewMessage);
     lastOverviewFp = "";
   } finally {
     refreshInFlight = false;
@@ -983,7 +1028,7 @@ async function coolSelected() {
     await refresh({ refreshDetail: true, operationToken: token });
   } catch (err) {
     if (token === operationRequestToken && selectedId === sessionId) {
-      setOps((err && err.message) || "冷却请求失败。", true);
+      setOps(friendlyError(err, "冷却请求失败，请稍后重试。"), true);
       showOperationDetailError("冷却失败，详情可重试。", err);
     }
   } finally {
@@ -1004,7 +1049,7 @@ async function resetSelected() {
     await refresh({ refreshDetail: true, operationToken: token });
   } catch (err) {
     if (token === operationRequestToken && selectedId === sessionId) {
-      setOps((err && err.message) || "重置失败。", true);
+      setOps(friendlyError(err, "重置失败，请稍后重试。"), true);
       showOperationDetailError("重置失败，详情可重试。", err);
     }
   } finally {
@@ -1016,7 +1061,7 @@ async function resetSelected() {
 async function boot() {
   mountWorkspace();
   els.pageTitle.textContent = t("pages.console.title", "群聊动态控制台");
-  els.pageDesc.textContent = t("pages.console.desc", "看见每一场对话，掌握机器人的参与节奏。");
+  els.pageDesc.textContent = t("pages.console.desc", "按 UMO 会话监视群聊氛围、冷却与对话图谱，并手动冷却或重置状态。");
   await wirePageNav("console");
   if (bridge && typeof bridge.ready === "function") {
     try {
@@ -1113,7 +1158,7 @@ async function applyPresenceKnob() {
     if (els.presenceNote) els.presenceNote.textContent = "分寸旋钮已保存。";
     await refresh({ quiet: false });
   } catch (err) {
-    if (els.presenceNote) els.presenceNote.textContent = (err && err.message) || "保存失败";
+    if (els.presenceNote) els.presenceNote.textContent = friendlyError(err, "保存失败，请稍后重试。");
   } finally {
     operationInFlight = false;
     updateManagementControls();
@@ -1148,7 +1193,7 @@ async function loadNotebookLite() {
     }
     if (els.notebookNote) els.notebookNote.textContent = "已加载（默认不展示隐私原文）。";
   } catch (err) {
-    if (els.notebookNote) els.notebookNote.textContent = (err && err.message) || "读取失败";
+    if (els.notebookNote) els.notebookNote.textContent = friendlyError(err, "读取失败，请稍后重试。");
     if (els.notebookPreview) els.notebookPreview.textContent = "";
   } finally {
     operationInFlight = false;

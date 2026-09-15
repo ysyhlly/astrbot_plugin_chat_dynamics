@@ -24,6 +24,7 @@ import json
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from collections.abc import Mapping
+from typing import Any
 from .evidence import routing_ledger, sanitize_ledger, finite_number
 from .outcome_recorder import OUTCOME_KEY
 from .participation_policy import EVIDENCE_CODES, EVIDENCE_FAMILIES, EVIDENCE_SOURCES
@@ -287,3 +288,26 @@ def build_routing_trace(*, routing, identity=None, participation=None,
                                      contribution=item["strength"]))
     snapshot["ledger"] = sanitize_ledger(ledger)
     return snapshot
+
+
+def compact_trace_inputs(trace: Any) -> dict:
+    """The sections a trace rebuild needs, small enough to persist per node.
+
+    The frozen snapshot itself is deliberately not snapshotted: it carries the
+    ledger and the per-candidate evidence, and a few kilobytes per node times every
+    retained session is what turns the panel snapshot into a payload nobody can
+    write. These sections have no other source on a node, so they travel on their
+    own and an annotation saved after a restart still records what the turn was
+    scored on instead of a participation block of nulls.
+    """
+    source = trace if isinstance(trace, Mapping) else {}
+    compact: dict[str, Any] = {}
+    for key in ("identity", "participation", "state"):
+        value = source.get(key)
+        if isinstance(value, Mapping):
+            compact[key] = dict(value)
+    for key in ("mode", "weights_version"):
+        value = source.get(key)
+        if isinstance(value, str) and value:
+            compact[key] = value[:64]
+    return compact

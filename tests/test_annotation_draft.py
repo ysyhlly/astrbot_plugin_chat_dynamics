@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,15 +16,19 @@ from astrbot_plugin_chat_dynamics.core.annotation_draft import (
     build_batch, build_prompt, parse_drafts,
 )
 from astrbot_plugin_chat_dynamics.core.graph import ConversationNode
+from astrbot_plugin_chat_dynamics.core.time_service import SystemClock
 from astrbot_plugin_chat_dynamics.core.topic_annotations import TopicAnnotations
 from astrbot_plugin_chat_dynamics.tests.test_topic_annotations import fixture_plugin, label
 
 FENCE = chr(96) * 3
 
 
+BOT_ID = "bot"
+
+
 def node(msg_id, text, *, user="user", bot=False, mentions=(), reply_to=""):
-    metadata = {"is_bot": bot} if bot else {}
-    return ConversationNode(msg_id, user, text, 1, metadata=metadata,
+    """A node authored by the bot is just a node whose author is the bot id."""
+    return ConversationNode(msg_id, BOT_ID if bot else user, text, 1, metadata={},
                             mentioned_users=list(mentions), reply_to_id=reply_to or None)
 
 
@@ -41,14 +46,32 @@ def reply(*rows):
 # ---- 批次 ---------------------------------------------------------------
 
 def test_bot_messages_are_context_and_never_draft_targets():
-    nodes = [node("m1", "在吗"), node("m2", "在的", user="bot", bot=True), node("m3", "帮我看看")]
+    nodes = [node("m1", "在吗"), node("m2", "在的", bot=True), node("m3", "帮我看看")]
 
-    batch, stats = build_batch(nodes, {}, limit=5)
+    batch, stats = build_batch(nodes, {}, limit=5, bot_id=BOT_ID)
 
     assert [item["msg_id"] for item in batch] == ["m1", "m2", "m3"]
     assert batch[1]["from_bot"] is True and batch[1]["draft_this"] is False
     assert [item["msg_id"] for item in batch if item["draft_this"]] == ["m1", "m3"]
     assert stats == {"window": 3, "draftable": 2, "asked": 2}
+
+
+def test_a_bot_node_is_excluded_by_identity_not_by_a_metadata_key():
+    """没有任何生产代码写节点的 is_bot 字段，所以归属只能由 bot_id 判定。"""
+    nodes = [node("m1", "在吗"), node("m2", "在的", user="bot_9"), node("m3", "帮我看看")]
+
+    batch, stats = build_batch(nodes, {}, limit=5, bot_id="bot_9")
+
+    assert batch[1]["from_bot"] is True and batch[1]["draft_this"] is False
+    assert [item["msg_id"] for item in batch if item["draft_this"]] == ["m1", "m3"]
+    assert stats == {"window": 3, "draftable": 2, "asked": 2}
+
+
+def test_an_unidentified_bot_node_is_still_draftable_without_bot_id():
+    """没有 bot_id 时不能凭猜测排除，否则会把人类消息一起丢掉。"""
+    batch, _stats = build_batch([node("m1", "在的", user="bot_9")], {}, limit=5)
+
+    assert batch[0]["from_bot"] is False and batch[0]["draft_this"] is True
 
 
 def test_an_already_labelled_message_stays_as_context_only():
@@ -120,7 +143,8 @@ def test_a_numeric_msg_id_is_the_same_message_without_quotes():
 
 
 def test_a_bot_message_cannot_be_drafted_even_if_the_model_answers_for_it():
-    batch, _stats = build_batch([node("m1", "在的", bot=True)], {}, limit=5)
+    batch, _stats = build_batch([node("m1", "在的", bot=True)], {}, limit=5,
+                                bot_id=BOT_ID)
 
     assert parse_drafts(reply(reply_for("m1")), batch) is None
 
@@ -233,6 +257,11 @@ def draft_runtime(*, nodes=(), enabled=True, reply="", error=None, records=(), l
     from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
 
     plugin = ChatDynamicsPlugin.__new__(ChatDynamicsPlugin)
+    # The approval payload converts DAG (monotonic) stamps at the presentation
+    # boundary, so the double needs the clock a real plugin always has.
+    plugin._time_service = SystemClock()
+    # Draft ownership is the bot identity, which a live plugin reads from the session.
+    plugin._sessions = {"a": SimpleNamespace(bot_id=BOT_ID)}
     kv = {}
 
     async def get(key, default):
@@ -291,6 +320,21 @@ async def test_a_window_that_is_already_labelled_is_not_drafted_again():
 
     assert payload["state"] == "nothing_to_draft"
     assert plugin.llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_running_plugin_never_drafts_its_own_replies():
+    """运行期路径：机器人自己发的消息不进草稿集，不占配额。"""
+    plugin, _kv = draft_runtime(
+        nodes=[node("m1", "在吗"), node("m2", "在的", user="bot_9")],
+        reply=reply(reply_for("m1")))
+    plugin._sessions = {"a": SimpleNamespace(bot_id="bot_9")}
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert payload["state"] == "fresh"
+    assert payload["stats"]["draftable"] == 1 and payload["stats"]["asked"] == 1
+    assert list(payload["drafts"]) == ["m1"]
 
 
 @pytest.mark.asyncio
@@ -440,6 +484,19 @@ async def test_the_approval_list_gathers_pending_drafts_without_plaintext():
     assert item["msg_id"] == "m1" and item["saveable"] is True
     assert item["annotated"] is False and item["text"] == ""
     assert item["expected_reply"] is True and item["confidence"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_the_approval_list_reports_wall_clock_timestamps():
+    """列表里的时间要能当日期渲染：DAG 存的是单调时钟，页面要的是日历时间。"""
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    item = (await plugin.annotation_drafts_payload("a"))["sessions"][0]["items"][0]
+
+    assert item["ts"] > 1e9, "单调时钟被直接下发给了页面"
+    assert abs(item["ts"] - time.time()) < 86400
 
 
 @pytest.mark.asyncio

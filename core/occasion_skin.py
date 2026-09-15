@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -173,10 +174,47 @@ class OccasionClassifier:
     def note_cool_command(self, session_id: str, *, duration: float = 6 * 3600, now: Optional[float] = None) -> None:
         stamp = time.time() if now is None else float(now)
         self._cool_until[str(session_id)] = stamp + float(duration)
+        self._prune_cool(stamp)
+
+    def _prune_cool(self, stamp: float, *, keep: int = 512) -> None:
+        """Drop expired windows, then the oldest ones past the cap."""
+        expired = [sid for sid, until in self._cool_until.items() if until <= stamp]
+        for sid in expired:
+            self._cool_until.pop(sid, None)
+        if len(self._cool_until) > keep:
+            oldest = sorted(self._cool_until, key=lambda sid: self._cool_until[sid])
+            for sid in oldest[: len(self._cool_until) - keep]:
+                self._cool_until.pop(sid, None)
 
     def cool_remaining(self, session_id: str, *, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)
         return max(0.0, self._cool_until.get(str(session_id), 0.0) - stamp)
+
+    def export_cool_until(self, *, now: Optional[float] = None) -> Dict[str, float]:
+        """The live quiet windows as wall-clock expiries, for the panel snapshot.
+
+        \"今天别闹\" lasts six hours, which is longer than both the one-hour idle sweep
+        and a plugin restart; without this the instruction silently expires with the
+        in-memory session and the bot goes back to lively in the same evening.
+        """
+        stamp = time.time() if now is None else float(now)
+        self._prune_cool(stamp)
+        return {sid: float(until) for sid, until in self._cool_until.items() if until > stamp}
+
+    def restore_cool_until(self, mapping: Any, *, now: Optional[float] = None) -> None:
+        stamp = time.time() if now is None else float(now)
+        if not isinstance(mapping, Dict) and not hasattr(mapping, "items"):
+            return
+        restored: Dict[str, float] = {}
+        for sid, until in list(mapping.items())[:512]:
+            try:
+                expiry = float(until)
+            except (TypeError, ValueError):
+                continue
+            if expiry > stamp and isinstance(sid, str) and sid:
+                restored[sid[:256]] = expiry
+        if restored:
+            self._cool_until.update(restored)
 
     def note_deciding(self, session_id: str, *, duration: float = 180.0, now: Optional[float] = None) -> None:
         stamp = time.time() if now is None else float(now)
@@ -189,10 +227,17 @@ class OccasionClassifier:
         stamp = time.time() if now is None else float(now)
         return max(0.0, self._deciding_until.get(str(session_id), 0.0) - stamp)
 
-    def reset_session(self, session_id: str) -> None:
+    def reset_session(self, session_id: str, *, keep_cool: bool = False) -> None:
+        """Clear this session's occasion state.
+
+        ``keep_cool`` is for the idle sweep, which forgets a session to bound memory
+        rather than because anything changed: dropping the quiet window there turns an
+        operator's \"今天别闹\" into one that only lasts until the group goes quiet.
+        """
         sid = str(session_id or "")
-        self._cool_until.pop(sid, None)
         self._deciding_until.pop(sid, None)
+        if not keep_cool:
+            self._cool_until.pop(sid, None)
 
     @staticmethod
     def is_cool_command(text: str) -> bool:
@@ -210,7 +255,10 @@ class OccasionClassifier:
         if any(m in clean for m in _DECIDING_MARKERS):
             return True
         # Short Q/A vote shape: "A还是B？" / "选1还是2"
-        if ("还是" in clean or "or" in clean.lower()) and ("?" in clean or "？" in clean):
+        # `or` needs a word boundary: as a substring it matched "sorry?", "for?",
+        # "world?" and put the session into DECIDING (no banter) for three minutes.
+        if ("还是" in clean or re.search(r"\bor\b", clean, re.IGNORECASE)) and (
+                "?" in clean or "？" in clean):
             if len(clean) <= 40:
                 return True
         return False

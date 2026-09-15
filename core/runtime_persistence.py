@@ -63,9 +63,27 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 # `shadow_decision` is in the allowlist for the same reason `outcome` is: it is
 # written after the fact and can be written after a restart. Losing it would
 # drop exactly the turns a shadow run is measuring.
-META_FIELDS = ('topic_id', 'routing', 'is_bot', 'source', 'addressivity', 'decision',
-               'outcome', 'shadow_decision', 'vibe_mode', 'sender_name', 'display_name',
-               'turn_id', 'topic_title', 'edge_metadata', 'inferred_parent_id', 'is_wake')
+# `trace_inputs` is the compact half of the frozen decision trace (see
+# routing_trace.compact_trace_inputs): identity/participation/state have no other
+# source on a node, so without it an annotation saved after a restart records a
+# participation block of nulls. The full trace stays in memory only.
+# `trigger_user_id` is the member a bot message answered. active_dialogue and
+# addressivity read it as the per-message dialogue anchor; without it they fall back
+# to the session-level interlocutor.
+#
+# The two groups are kept apart because they answer different questions, and
+# `tests/test_static_contracts.py` holds them apart: every name in the first group
+# must have a producer in this tree (a key nobody writes is a phantom that a reader
+# will one day trust), and nothing may start writing a name in the second.
+_WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
+                       'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',
+                       'inferred_parent_id', 'is_wake', 'trigger_user_id')
+# Restored for snapshots written by earlier builds, which carried a richer node
+# metadata. Nothing in this version writes or reads them; they stay so a round trip
+# through an older release does not silently drop fields that release preserved.
+_LEGACY_META_FIELDS = ('source', 'addressivity', 'decision', 'vibe_mode',
+                       'sender_name', 'display_name')
+META_FIELDS = _WRITTEN_META_FIELDS + _LEGACY_META_FIELDS
 SHADOW_FIELDS = ('session_key', 'timestamp', 'action', 'reason', 'willingness_score',
                  'threshold', 'topic_relevance', 'professionalism', 'question_value',
                  'participation', 'state', 'length', 'target_message_ids')
@@ -83,7 +101,12 @@ def _json(value, depth=0):
     if isinstance(value, str):
         return value[:16000]
     if isinstance(value, (int, float)):
-        return value if math.isfinite(value) else None
+        try:
+            return value if math.isfinite(value) else None
+        except OverflowError:
+            # Same reason as _number: this runs inside the save path, where an escaping
+            # OverflowError would stop the snapshot from ever being written again.
+            return None
     if isinstance(value, dict):
         return {k[:256]: _json(v, depth + 1) for k, v in list(value.items())[:128]
                 if isinstance(k, str) and not k.startswith('_')}
@@ -97,7 +120,16 @@ def _fields(obj, names):
 
 
 def _number(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError('invalid number')
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        # A 400-digit integer literal converts to float with OverflowError, not with
+        # ValueError, and the per-row handlers only catch the latter: one such value
+        # used to abort the entire restore (every session, not just its own row).
+        raise ValueError('invalid number') from None
+    if not finite:
         raise ValueError('invalid number')
     return float(value)
 
@@ -108,6 +140,22 @@ def _strings(value):
 
 def _wall(plugin):
     return getattr(plugin.time_service, 'wall_time', time.time)()
+
+
+def _occasion_cool(plugin) -> dict:
+    """The live quiet windows ("今天别闹"), which outlive the idle sweep and a restart.
+
+    They are wall-clock expiries, so they need no rebasing: the same stamp means the
+    same instant in the next process.
+    """
+    occasion = getattr(getattr(plugin, 'decision_gate', None), 'occasion', None)
+    exporter = getattr(occasion, 'export_cool_until', None)
+    if not callable(exporter):
+        return {}
+    try:
+        return _json(exporter(now=_wall(plugin))) or {}
+    except Exception:
+        return {}
 
 
 def _encoded_size(value) -> int:
@@ -139,6 +187,7 @@ def export_runtime_state(plugin) -> dict:
               # consumer has no basis for anything stronger than shadow.
               'plugin_version': host_version(),
               'saved_clock': plugin.time_service.time(),
+              'occasion_cool': _occasion_cool(plugin),
               'metrics': _json(plugin._metrics),
               'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
                                    for row in list(plugin._shadow_decisions)[-50:]]}
@@ -244,6 +293,8 @@ def restore_runtime_state(plugin, payload) -> None:
                 if node.msg_id not in runtime.dag.nodes:
                     runtime.dag.nodes[node.msg_id] = node
                     runtime.dag.chronological_ids.append(node.msg_id)
+                    # Snapshots bypass add_message, including its ordering flag.
+                    runtime.dag._order_dirty = True
             except (TypeError, ValueError):
                 continue
         for row in nodes[-MAX_NODES:] if isinstance(nodes, list) else []:
@@ -355,6 +406,13 @@ def restore_runtime_state(plugin, payload) -> None:
             value = metrics.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**63 - 1:
                 plugin._metrics[key] = value
+    occasion = getattr(getattr(plugin, 'decision_gate', None), 'occasion', None)
+    restorer = getattr(occasion, 'restore_cool_until', None)
+    if callable(restorer):
+        try:
+            restorer(payload.get('occasion_cool'), now=_wall(plugin))
+        except Exception:
+            pass
     decisions = payload.get('shadow_decisions', [])
     for row in decisions[-50:] if isinstance(decisions, list) else []:
         try:

@@ -2,6 +2,7 @@ import {
   apiGet,
   apiPost,
   escapeHtml,
+  friendlyError,
   PRESENCE_LABEL,
   PRESENCE_PREVIEW,
   readyBridge,
@@ -53,11 +54,35 @@ const els = {
   mediaChips: document.getElementById("mediaChips"),
   chipNote: document.getElementById("chipNote"),
   btnRefresh: document.getElementById("btnRefresh"),
+  configError: document.getElementById("configError"),
 };
 
 let stored = {};
 let busy = false;
 let online = false;
+// Per-chip feedback: one shared note at the bottom of the page could not say
+// which of the sixteen switches was still saving or had failed.
+let chipBusyKey = "";
+let chipError = null;
+
+function showLoadError(message) {
+  if (!els.configError) return;
+  els.configError.textContent = message;
+  els.configError.classList.remove("hidden");
+}
+
+function hideLoadError() {
+  if (!els.configError) return;
+  els.configError.textContent = "";
+  els.configError.classList.add("hidden");
+}
+
+function showChipsLoading() {
+  hideLoadError();
+  const note = '<p class="ops-note loading-note">正在读取全局设置…</p>';
+  els.socialChips.innerHTML = note;
+  els.mediaChips.innerHTML = note;
+}
 
 function currentPresence() {
   return PRESENCE_ORDER[Number(els.presenceRange.value)] || "sensible";
@@ -72,22 +97,38 @@ function paintPresenceMarks() {
   });
 }
 
+function chipHtml(chip) {
+  const on = Boolean(stored[chip.key]);
+  const warn = chip.warn ? " warn" : "";
+  const saving = chipBusyKey === chip.key;
+  const error = chipError && chipError.key === chip.key ? chipError.message : "";
+  const state = saving ? "保存中…" : on ? "已开启" : "已关闭";
+  const attrs = [
+    `class="chip${warn}${error ? " has-error" : ""}"`,
+    `data-key="${escapeHtml(chip.key)}"`,
+    `data-warn="${chip.warn ? "1" : "0"}"`,
+    `aria-pressed="${on ? "true" : "false"}"`,
+    saving ? 'aria-busy="true" disabled' : "",
+    error ? 'aria-invalid="true"' : "",
+    `title="${escapeHtml(chip.blurb || "")}"`,
+  ].filter(Boolean).join(" ");
+  const body =
+    `<span class="setting-copy"><strong>${escapeHtml(chip.label)}</strong><small>${escapeHtml(chip.blurb || "")}</small></span>` +
+    `<span class="switch-state" aria-hidden="true">${state}</span>`;
+  const note = error ? `<p class="chip-error" role="status">${escapeHtml(error)}</p>` : "";
+  return `<div class="chip-wrap"><button type="button" ${attrs}>${body}</button>${note}</div>`;
+}
+
 function renderChips(host, defs) {
-  host.innerHTML = defs
-    .map((chip) => {
-      const on = Boolean(stored[chip.key]);
-      const warn = chip.warn ? " warn" : "";
-      return `<button type="button" class="chip${warn}" data-key="${escapeHtml(chip.key)}" data-warn="${
-        chip.warn ? "1" : "0"
-      }" aria-pressed="${on ? "true" : "false"}" title="${escapeHtml(chip.blurb || "")}"><span class="setting-copy"><strong>${escapeHtml(chip.label)}</strong><small>${escapeHtml(chip.blurb || "")}</small></span><span class="switch-state" aria-hidden="true">${on ? "已开启" : "已关闭"}</span></button>`;
-    })
-    .join("");
+  host.innerHTML = defs.map(chipHtml).join("");
 }
 
 async function loadConfig() {
+  showChipsLoading();
   try {
     const panel = await apiGet("config");
     stored = { ...(panel.stored || panel.effective || {}) };
+    chipError = null;
     const knob = String(stored.presence_knob || "sensible");
     const idx = Math.max(0, PRESENCE_ORDER.indexOf(knob));
     els.presenceRange.value = String(idx);
@@ -97,29 +138,49 @@ async function loadConfig() {
     online = true;
     setLink(els, true, "已连接");
     els.btnSavePresence.disabled = false;
+    hideLoadError();
   } catch (err) {
     online = false;
-    setLink(els, false, (err && err.message) || "离线");
+    const message = friendlyError(err, "离线");
+    setLink(els, false, message);
     els.btnSavePresence.disabled = true;
+    showLoadError(`${message} 开关暂时读不到状态，请点右上角「刷新」重试。`);
+    els.socialChips.innerHTML = "";
+    els.mediaChips.innerHTML = "";
   }
 }
 
-async function saveConfig(patch, noteEl) {
+async function saveConfig(patch, noteEl, chipKey = "") {
   if (!online || busy) return;
   busy = true;
-  if (noteEl) noteEl.textContent = "保存中…";
+  const focusedKey = chipKey || document.activeElement?.dataset.key || "";
+  chipBusyKey = chipKey;
+  chipError = null;
+  if (noteEl) {
+    noteEl.classList.remove("error");
+    noteEl.textContent = "保存中…";
+  }
+  if (chipKey) {
+    renderChips(els.socialChips, SOCIAL_CHIPS);
+    renderChips(els.mediaChips, MEDIA_CHIPS);
+  }
   try {
     const panel = await apiPost("config", { config: patch });
     stored = { ...(panel.stored || panel.effective || stored), ...patch };
     if (noteEl) noteEl.textContent = "已保存并应用到运行时。";
-    const focusedKey = document.activeElement?.dataset.key;
+  } catch (err) {
+    const message = friendlyError(err, "保存失败，请稍后重试。");
+    if (chipKey) chipError = { key: chipKey, message };
+    if (noteEl) {
+      noteEl.classList.add("error");
+      noteEl.textContent = chipKey ? "这个开关没有保存成功，请看它下面的提示。" : message;
+    }
+  } finally {
+    busy = false;
+    chipBusyKey = "";
     renderChips(els.socialChips, SOCIAL_CHIPS);
     renderChips(els.mediaChips, MEDIA_CHIPS);
     if (focusedKey) document.querySelector(`[data-key="${focusedKey}"]`)?.focus();
-  } catch (err) {
-    if (noteEl) noteEl.textContent = (err && err.message) || "保存失败";
-  } finally {
-    busy = false;
   }
 }
 
@@ -135,7 +196,7 @@ function onChipClick(event) {
     );
     if (!ok) return;
   }
-  void saveConfig({ [key]: next }, els.chipNote);
+  void saveConfig({ [key]: next }, els.chipNote, key);
 }
 
 async function boot() {

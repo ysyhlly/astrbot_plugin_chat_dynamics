@@ -231,6 +231,47 @@ def test_arbiter_hover_from_other_user_does_not_count(arbiter, sample_telemetric
     assert arbiter._low_effort_streaks.get(("group_1", "bob"), 0) == 0
 
 
+def test_arbiter_energy_gate_only_counts_the_same_thread(arbiter, sample_telemetrics):
+    """同一个人换了话题的“6”不算把机器人聊死：门闩按线程判定，而不是按人。"""
+    from types import SimpleNamespace
+
+    weak = AddressivityScore(score=0.2, level=AddressivityLevel.WEAK, is_bot_targeted=False)
+    runtime = SimpleNamespace(
+        routing_state=SimpleNamespace(last_bot_topic_id="t1"),
+        last_bot_node=SimpleNamespace(msg_id="b1"),
+    )
+    arbiter.record_bot_spoke("group_1", timestamp=990.0, user_id="alice",
+                             topic_id="t1", msg_id="b1")
+
+    arbiter.evaluate("group_1", weak, sample_telemetrics, GroupChatMode.FAST_BANTER,
+                     "alice", "666", 1000.0, topic_id="t2", parent_id="", runtime=runtime)
+    off_topic = arbiter.evaluate("group_1", weak, sample_telemetrics, GroupChatMode.FAST_BANTER,
+                                 "alice", "哦", 1005.0, topic_id="t2", parent_id="", runtime=runtime)
+
+    assert off_topic.is_energy_asymmetric is False
+    assert arbiter._low_effort_streaks.get(("group_1", "alice"), 0) == 0
+
+
+def test_arbiter_energy_gate_still_counts_a_same_thread_continuation(arbiter, sample_telemetrics):
+    """同一个话题（或直接回复机器人）里的连续敷衍仍然要计数。"""
+    from types import SimpleNamespace
+
+    weak = AddressivityScore(score=0.2, level=AddressivityLevel.WEAK, is_bot_targeted=False)
+    runtime = SimpleNamespace(
+        routing_state=SimpleNamespace(last_bot_topic_id="t1"),
+        last_bot_node=SimpleNamespace(msg_id="b1"),
+    )
+    arbiter.record_bot_spoke("group_1", timestamp=990.0, user_id="alice",
+                             topic_id="t1", msg_id="b1")
+
+    arbiter.evaluate("group_1", weak, sample_telemetrics, GroupChatMode.FAST_BANTER,
+                     "alice", "666", 1000.0, topic_id="t1", parent_id="", runtime=runtime)
+    same_thread = arbiter.evaluate("group_1", weak, sample_telemetrics, GroupChatMode.FAST_BANTER,
+                                   "alice", "哦", 1005.0, topic_id="t1", parent_id="", runtime=runtime)
+
+    assert same_thread.is_energy_asymmetric is True
+
+
 def test_arbiter_same_user_hover_after_bot_counts(arbiter, sample_telemetrics):
     hover = AddressivityScore(score=0.50, level=AddressivityLevel.SAFE_HOVER, is_bot_targeted=False)
     arbiter.record_bot_spoke("group_1", timestamp=990.0, user_id="alice")

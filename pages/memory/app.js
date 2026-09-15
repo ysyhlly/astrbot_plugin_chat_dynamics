@@ -3,6 +3,7 @@ import {
   apiPost,
   escapeHtml,
   formatTs,
+  friendlyError,
   readyBridge,
   redactId,
   setLink,
@@ -26,6 +27,7 @@ const els = {
   addNote: document.getElementById("addNote"),
   btnAdd: document.getElementById("btnAdd"),
   btnMuteTonight: document.getElementById("btnMuteTonight"),
+  btnUnmute: document.getElementById("btnUnmute"),
   btnLoad: document.getElementById("btnLoad"),
   btnRefresh: document.getElementById("btnRefresh"),
 };
@@ -35,12 +37,25 @@ let tab = "anniversaries";
 let notebook = { anniversaries: [], reminders: [], slang_trials: [], mute_until: 0 };
 let online = false;
 let busy = false;
+let loadFailed = false;
 let notebookRevision = 0;
+
+function showListLoading() {
+  els.listEmpty.classList.add("hidden");
+  els.listHost.setAttribute("aria-busy", "true");
+  els.listHost.innerHTML = '<p class="ops-note loading-note">正在加载记忆小本…</p>';
+}
+
+function addFormHasInput() {
+  return [...els.addFields.querySelectorAll("input")].some((input) =>
+    input.type === "checkbox" ? input.checked : Boolean(input.value.trim()));
+}
 
 function setEnabled() {
   const ok = online && Boolean(selectedUmo) && !busy;
   els.btnAdd.disabled = !ok;
   els.btnMuteTonight.disabled = !ok;
+  if (els.btnUnmute) els.btnUnmute.disabled = !ok;
   els.btnLoad.disabled = !ok;
   els.sessionSelect.disabled = busy;
   els.btnRefresh.disabled = busy;
@@ -88,15 +103,35 @@ function softText(value, fallback = "（已记一条）") {
   return `${text.slice(0, 20)}…`;
 }
 
+function forgetBlock(actionsHtml) {
+  return `<div class="actions">${actionsHtml}</div>
+    <div class="confirm-row hidden" data-confirm>
+      <span>忘掉后无法恢复，确定吗？</span>
+      <button type="button" class="button button-danger" data-act="forget-confirm">确认忘掉</button>
+      <button type="button" class="button button-quiet" data-act="forget-cancel">取消</button>
+    </div>
+    <p class="ops-note error hidden" data-card-note role="status"></p>`;
+}
+
 function renderList() {
   paintTabs();
+  els.listHost.removeAttribute("aria-busy");
   document.getElementById("memoryResults").setAttribute("aria-labelledby", `tab-${tab}`);
   let rows = [];
   if (tab === "anniversaries") rows = notebook.anniversaries || [];
   else if (tab === "reminders") rows = notebook.reminders || [];
   else rows = notebook.slang_trials || [];
 
+  if (loadFailed) {
+    document.getElementById("memoryCount").textContent = "读取失败";
+    els.listHost.innerHTML = "";
+    els.listEmpty.classList.remove("hidden");
+    els.listEmpty.classList.add("is-error");
+    els.listEmpty.textContent = "记忆小本暂时读不到，请点右上角「刷新」重试。";
+    return;
+  }
   document.getElementById("memoryCount").textContent = `${rows.length} 条`;
+  els.listEmpty.classList.remove("is-error");
   if (!selectedUmo) {
     els.listHost.innerHTML = "";
     els.listEmpty.classList.remove("hidden");
@@ -125,9 +160,7 @@ function renderList() {
           <span class="meta">${escapeHtml(`${item.month || "?"}/${item.day || "?"}`)}${
             item.note ? ` · ${escapeHtml(softText(item.note, ""))}` : ""
           }</span>
-          <div class="actions">
-            <button type="button" class="button button-quiet" data-act="forget">忘掉</button>
-          </div>
+          ${forgetBlock('<button type="button" class="button button-quiet" data-act="forget">忘掉</button>')}
         </article>`;
       }
       if (tab === "reminders") {
@@ -136,10 +169,7 @@ function renderList() {
           <span class="meta">到期 ${escapeHtml(formatTs(item.due_at) || "—")}${
             item.nudged ? " · 已提醒" : ""
           }</span>
-          <div class="actions">
-            <button type="button" class="button button-quiet" data-act="done">标完成</button>
-            <button type="button" class="button" data-act="forget">忘掉</button>
-          </div>
+          ${forgetBlock('<button type="button" class="button button-quiet" data-act="done">标完成</button><button type="button" class="button button-quiet" data-act="forget">忘掉</button>')}
         </article>`;
       }
       return `<article class="memory-card" data-id="${id}">
@@ -147,12 +177,33 @@ function renderList() {
         <span class="meta">试用 ${escapeHtml(String(item.uses || 0))} 次${
           item.cold_retract ? " · 已冷却" : ""
         }</span>
-        <div class="actions">
-          <button type="button" class="button button-quiet" data-act="forget">忘掉</button>
-        </div>
+        ${forgetBlock('<button type="button" class="button button-quiet" data-act="forget">忘掉</button>')}
       </article>`;
     })
     .join("");
+  els.listHost.querySelectorAll(".memory-card").forEach((card) => {
+    const title = (card.querySelector("strong")?.textContent || "").trim();
+    if (!title) return;
+    const forget = card.querySelector('[data-act="forget"]');
+    if (forget) forget.setAttribute("aria-label", `忘掉：${title}`);
+    const confirm = card.querySelector('[data-act="forget-confirm"]');
+    if (confirm) confirm.setAttribute("aria-label", `确认忘掉：${title}`);
+  });
+}
+
+function openForgetConfirm(card) {
+  const actions = card.querySelector(".actions");
+  const row = card.querySelector("[data-confirm]");
+  if (!actions || !row) return;
+  actions.classList.add("hidden");
+  row.classList.remove("hidden");
+  row.querySelector('[data-act="forget-confirm"]')?.focus();
+}
+
+function closeForgetConfirm(card) {
+  card.querySelector("[data-confirm]")?.classList.add("hidden");
+  card.querySelector(".actions")?.classList.remove("hidden");
+  card.querySelector('[data-act="forget"]')?.focus();
 }
 
 async function loadSessions() {
@@ -163,7 +214,7 @@ async function loadSessions() {
     setLink(els, true, "已连接");
   } catch (err) {
     online = false;
-    setLink(els, false, (err && err.message) || "离线");
+    setLink(els, false, friendlyError(err, "离线"));
   }
   setEnabled();
 }
@@ -181,31 +232,51 @@ async function loadNotebook() {
     if (revision !== notebookRevision) return;
     notebook = result;
     online = true;
+    loadFailed = false;
     setLink(els, true, "已连接");
     const mute = Number(notebook.mute_until || 0);
-    els.sessionNote.textContent = mute > Date.now() / 1000
+    const muted = mute > Date.now() / 1000;
+    els.sessionNote.textContent = muted
       ? `今晚别提生效中 · 至 ${formatTs(mute)} · 会话 ${redactId(selectedUmo)}`
       : `已加载 · 会话 ${redactId(selectedUmo)}（正文默认脱敏展示）`;
+    // A ten-hour silence with no way back was the only irreversible switch on
+    // this page; offer the cancel path whenever a mute is running.
+    if (els.btnUnmute) els.btnUnmute.classList.toggle("hidden", !muted);
   } catch (err) {
     if (revision !== notebookRevision) return;
     online = false;
+    loadFailed = true;
     notebook = { anniversaries: [], reminders: [], slang_trials: [] };
     setLink(els, false, "读取失败");
-    els.sessionNote.textContent = (err && err.message) || "读取失败";
+    els.sessionNote.textContent = friendlyError(err, "读取失败，请稍后重试。");
   }
   setEnabled();
   renderList();
 }
 
-async function mutate(action, payload = {}) {
+async function mutate(action, payload = {}, card = null) {
   if (!selectedUmo || busy) return;
   busy = true;
   setEnabled();
+  const note = card ? card.querySelector("[data-card-note]") : null;
+  if (note) {
+    note.textContent = "处理中…";
+    note.classList.remove("hidden", "error");
+  }
   try {
     await apiPost("notebook", { action, umo: selectedUmo, ...payload });
     await loadNotebook();
   } catch (err) {
-    els.addNote.textContent = (err && err.message) || "操作失败";
+    // Report next to the record that was clicked, not in the add-record card.
+    const message = friendlyError(err, "操作失败，请稍后重试。");
+    if (note) {
+      note.textContent = message;
+      note.classList.add("error");
+      note.classList.remove("hidden");
+    } else {
+      els.addNote.textContent = message;
+      els.addNote.classList.add("error");
+    }
   } finally {
     busy = false;
     setEnabled();
@@ -247,15 +318,23 @@ async function onAdd(event) {
         approved: Boolean(fd.get("approved")),
       });
     }
+    els.addNote.classList.remove("error");
     els.addNote.textContent = "已记下。";
     els.addForm.reset();
     await loadNotebook();
   } catch (err) {
-    els.addNote.textContent = (err && err.message) || "写入失败";
+    els.addNote.classList.add("error");
+    els.addNote.textContent = friendlyError(err, "写入失败，请稍后重试。");
   } finally {
     busy = false;
     setEnabled();
   }
+}
+
+function removeActionForTab() {
+  if (tab === "anniversaries") return "remove_anniversary";
+  if (tab === "reminders") return "remove_reminder";
+  return "remove_slang";
 }
 
 function onListClick(event) {
@@ -265,12 +344,22 @@ function onListClick(event) {
   const id = card && card.getAttribute("data-id");
   if (!id) return;
   const act = btn.getAttribute("data-act");
-  if (tab === "anniversaries" && act === "forget") {
-    void mutate("remove_anniversary", { id });
-  } else if (tab === "reminders" && (act === "forget" || act === "done")) {
-    void mutate(act === "done" ? "mark_done" : "remove_reminder", { id });
-  } else if (tab === "slang" && act === "forget") {
-    void mutate("remove_slang", { id });
+  // Forgetting is irreversible and has no undo server-side, so it takes two
+  // deliberate clicks; the first one only asks.
+  if (act === "forget") {
+    openForgetConfirm(card);
+    return;
+  }
+  if (act === "forget-cancel") {
+    closeForgetConfirm(card);
+    return;
+  }
+  if (act === "forget-confirm") {
+    void mutate(removeActionForTab(), { id }, card);
+    return;
+  }
+  if (act === "done" && tab === "reminders") {
+    void mutate("mark_done", { id }, card);
   }
 }
 
@@ -283,8 +372,12 @@ async function boot() {
   }
   document.querySelectorAll(".tab").forEach((node) => {
     node.addEventListener("click", () => {
-      tab = node.getAttribute("data-tab") || "anniversaries";
+      const next = node.getAttribute("data-tab") || "anniversaries";
+      if (next === tab) return;
+      if (addFormHasInput() && !window.confirm("切换分类会清空「新增记录」里填写的内容，继续吗？")) return;
+      tab = next;
       els.addNote.textContent = "";
+      els.addNote.classList.remove("error");
       paintAddForm();
       renderList();
     });
@@ -299,23 +392,36 @@ async function boot() {
     });
   });
   els.sessionSelect.addEventListener("change", () => {
-    selectedUmo = els.sessionSelect.value || "";
+    const next = els.sessionSelect.value || "";
+    if (next !== selectedUmo && addFormHasInput()
+        && !window.confirm("切换会话会清空「新增记录」里填写的内容，继续吗？")) {
+      els.sessionSelect.value = selectedUmo;
+      return;
+    }
+    selectedUmo = next;
     storageSet(UMO_KEY, selectedUmo);
     notebook = { anniversaries: [], reminders: [], slang_trials: [] };
+    loadFailed = false;
     paintAddForm();
-    renderList();
+    showListLoading();
     setEnabled();
     void loadNotebook();
   });
   els.btnRefresh.addEventListener("click", async () => {
+    showListLoading();
     await loadSessions();
     await loadNotebook();
   });
-  els.btnLoad.addEventListener("click", () => void loadNotebook());
+  els.btnLoad.addEventListener("click", () => {
+    showListLoading();
+    void loadNotebook();
+  });
   els.btnMuteTonight.addEventListener("click", () => void mutate("mute_tonight", { hours: 10 }));
+  els.btnUnmute?.addEventListener("click", () => void mutate("mute_tonight", { hours: 0 }));
   els.addForm.addEventListener("submit", onAdd);
   els.listHost.addEventListener("click", onListClick);
   paintAddForm();
+  showListLoading();
   await loadSessions();
   await loadNotebook();
 }

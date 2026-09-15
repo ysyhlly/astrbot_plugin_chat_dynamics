@@ -729,6 +729,32 @@ async def test_llm_adapter_legacy_provider_success_path():
 
 
 @pytest.mark.asyncio
+async def test_llm_adapter_legacy_path_keeps_the_three_providers_apart():
+    """没有 llm_generate 的宿主上，草稿不能悄悄走 vibe 模型。"""
+    seen = []
+
+    class Provider:
+        async def text_chat(self, **_kwargs):
+            return MockLLMProvider.make_response()
+
+    class LegacyContext:
+        def get_provider_by_id(self, provider_id):
+            seen.append(provider_id)
+            return Provider()
+
+        def get_using_provider(self, _umo=None):
+            raise AssertionError("配置好的 provider 不该回落到会话默认值")
+
+    adapter = LLMAdapter(LegacyContext(), reply_provider_id="reply-1",
+                         vibe_provider_id="vibe-1", draft_provider_id="draft-1")
+
+    await adapter.generate(prompt="hi", umo="room", system_prompt="sys", purpose="draft")
+    await adapter.generate(prompt="hi", umo="room", system_prompt="sys", purpose="vibe")
+
+    assert seen == ["draft-1", "vibe-1"]
+
+
+@pytest.mark.asyncio
 async def test_llm_adapter_does_not_switch_from_unavailable_configured_provider():
     class LegacyContext:
         def get_provider_by_id(self, _provider_id):

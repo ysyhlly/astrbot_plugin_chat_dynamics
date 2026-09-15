@@ -3,13 +3,13 @@
 AstrBot plugin pages cannot load `../shared/*` (path escape blocked → 404).
 Keep canonical files here, then copy into each page before packaging:
 
-Run `python scripts/sync_page_assets.py` from the repository root to publish all shared assets: `base.css`, `theme.js`, `theme.css`, `plugin_nav.js`, `plugin_nav.css` go to all seven pages (console included); `shell.css`, `shell.js`, `api.js` go to every page except console, which keeps its own workspace chrome. `theme.css` must be the last stylesheet; `theme.js` runs synchronously in the head before styles for the initial local preference. `python scripts/sync_page_assets.py --check` exits non-zero on drift without modifying stale copies, and release validation treats drift as a failure. Page-private files (e.g. `console/style.css`, `console/workspace.js`) are not managed by the script.
+Run `python scripts/sync_page_assets.py` from the repository root to publish all shared assets: `base.css`, `theme.js`, `theme.css`, `plugin_nav.js`, `plugin_nav.css`, `errors.js` go to all seven pages (console included); `shell.css`, `shell.js`, `api.js` go to every page except console, which keeps its own workspace chrome. `theme.css` must be the last stylesheet; `theme.js` runs synchronously in the head before styles for the initial local preference. `python scripts/sync_page_assets.py --check` exits non-zero on drift without modifying stale copies, and release validation treats drift as a failure. Page-private files (e.g. `console/style.css`, `console/workspace.js`) are not managed by the script.
 
 The manual equivalent:
 
 ```bash
 for p in console config today manners memory replay drafts; do
-  cp base.css plugin_nav.js plugin_nav.css theme.js theme.css ../$p/
+  cp base.css plugin_nav.js plugin_nav.css theme.js theme.css errors.js ../$p/
 done
 for p in config today manners memory replay drafts; do
   cp shell.css api.js shell.js ../$p/   # config included to avoid stray 404s

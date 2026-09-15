@@ -11,7 +11,7 @@ PAGES = ("console", "config", "today", "manners", "memory", "replay", "drafts")
 def asset_pairs(root: Path):
     """Yield canonical and published paths for assets managed by this script."""
     for page in PAGES:
-        assets = ["plugin_nav.js", "plugin_nav.css", "theme.js", "theme.css", "base.css"]
+        assets = ["plugin_nav.js", "plugin_nav.css", "theme.js", "theme.css", "base.css", "errors.js"]
         if page != "console":
             assets += ["shell.css", "shell.js", "api.js"]
         for name in assets:

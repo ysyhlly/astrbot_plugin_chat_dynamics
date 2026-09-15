@@ -85,7 +85,7 @@ def test_privacy_skip_no_understand_no_memory():
     )
     assert v.allow_speak is False
     assert v.privacy_hit is True
-    assert v.skip_memory is True
+    assert v.privacy_hit is True and v.request_understand is False
     assert v.request_understand is False
     assert "隐私" in v.reason_zh
 
@@ -101,7 +101,7 @@ def test_privacy_addressed_ack_without_l2():
         media_understand_reply_enabled=True,
     )
     assert v.allow_speak is True
-    assert v.skip_memory is True
+    assert v.privacy_hit is True and v.request_understand is False
     assert v.request_understand is False  # never full multimodal describe for privacy
 
 

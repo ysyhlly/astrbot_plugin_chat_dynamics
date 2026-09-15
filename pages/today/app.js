@@ -3,6 +3,7 @@ import {
   apiPost,
   escapeHtml,
   formatTs,
+  friendlyError,
   OCCASION_LABEL,
   PRESENCE_LABEL,
   readyBridge,
@@ -35,6 +36,8 @@ const els = {
   btnSensibleTonight: document.getElementById("btnSensibleTonight"),
   btnLivelyTonight: document.getElementById("btnLivelyTonight"),
   btnMuteTonight: document.getElementById("btnMuteTonight"),
+  decisionError: document.getElementById("decisionError"),
+  occasionError: document.getElementById("occasionError"),
 };
 
 let online = false;
@@ -150,9 +153,12 @@ async function refresh() {
     renderThermo(air);
     renderDecisions(air);
     setTonightEnabled(true);
+    if (els.decisionError) els.decisionError.classList.add("hidden");
+    if (els.occasionError) els.occasionError.classList.add("hidden");
   } catch (err) {
     if (revision !== refreshRevision) return;
     online = false;
+    const message = friendlyError(err, "读空气暂时不可用。");
     els.partnerSheet.innerHTML = "";
     els.occasionCapsule.textContent = "暂无数据";
     els.knobTarget.textContent = "目标：—";
@@ -160,43 +166,66 @@ async function refresh() {
     els.thermoFill.parentElement.setAttribute("aria-valuenow", "0");
     els.thermoQuiet.textContent = "安静 —";
     els.thermoIntervene.textContent = "插话 —";
-    setLink(els, false, (err && err.message) || "离线");
+    setLink(els, false, message);
     setTonightEnabled(false);
-    els.oneLiner.textContent = "读空气暂时不可用，请稍后刷新。";
-    els.decisionEmpty.classList.remove("hidden");
+    els.oneLiner.textContent = "读空气暂时不可用，请点右上角「刷新」重试。";
+    // A failed read is not an empty state: saying "还没有决策记录" would send the
+    // user off to wait for activity instead of fixing the connection.
+    els.decisionEmpty.classList.add("hidden");
     els.decisionList.innerHTML = "";
+    if (els.decisionError) {
+      els.decisionError.textContent = message;
+      els.decisionError.classList.remove("hidden");
+    }
+    if (els.occasionError) {
+      els.occasionError.textContent = "当前氛围读不到，请稍后刷新。";
+      els.occasionError.classList.remove("hidden");
+    }
   }
 }
 
 async function savePresence(value) {
   if (!online || busy) return;
   busy = true;
+  // Disable while the request is in flight: a second click used to vanish
+  // without any feedback.
+  setTonightEnabled(false);
+  els.tonightNote.classList.remove("error");
   els.tonightNote.textContent = "正在保存全局参与档位…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
-    els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」。`;
+    els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」，对所有会话生效。`;
     await refresh();
   } catch (err) {
-    els.tonightNote.textContent = (err && err.message) || "保存失败";
+    els.tonightNote.classList.add("error");
+    els.tonightNote.textContent = friendlyError(err, "保存失败，请稍后重试。");
   } finally {
     busy = false;
+    setTonightEnabled(online);
   }
 }
 
 async function muteTonight() {
   if (!online || busy || !selectedUmo) {
+    els.tonightNote.classList.add("error");
     els.tonightNote.textContent = "请先选择具体群会话，再静音记忆。";
     return;
   }
+  if (!window.confirm("这个会话 10 小时内不会主动提起记忆小本的内容。继续吗？")) return;
   busy = true;
-  els.tonightNote.textContent = "正在设置今晚别提…";
+  if (els.btnMuteTonight) els.btnMuteTonight.disabled = true;
+  els.tonightNote.classList.remove("error");
+  els.tonightNote.textContent = "正在设置…";
   try {
     await apiPost("notebook", { action: "mute_tonight", umo: selectedUmo, hours: 10 });
-    els.tonightNote.textContent = "今晚先不提记忆小本内容。";
+    // There is no cancel endpoint, so say how it ends.
+    els.tonightNote.textContent = "已设置：10 小时内不主动提起记忆内容，到期后自动恢复。";
   } catch (err) {
-    els.tonightNote.textContent = (err && err.message) || "设置失败";
+    els.tonightNote.classList.add("error");
+    els.tonightNote.textContent = friendlyError(err, "设置失败，请稍后重试。");
   } finally {
     busy = false;
+    setTonightEnabled(online);
   }
 }
 

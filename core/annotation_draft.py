@@ -50,14 +50,21 @@ def _bool(value: Any) -> bool | None:
 # ---- the batch ----------------------------------------------------------
 
 def build_batch(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
-                limit: int = DEFAULT_DRAFTS) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                limit: int = DEFAULT_DRAFTS,
+                bot_id: str = "") -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The window in order, and which of its messages are up for drafting.
 
     `/nodes/` is the host DAG recent nodes (oldest first is what the reader wants
     to read). Every message is included for context; only the ones that are not
     the bot own and have no label yet are draftable, and only the newest
     `limit` of those are asked for.
+
+    Ownership is `bot_id` against the node's author. That is the only rule: nothing
+    in the plugin writes an `is_bot` node field, and the metadata check that used to
+    stand beside it left every bot reply in the draftable set, so the model was asked
+    whether the bot should have answered its own message.
     """
+    bot_owner = str(bot_id or "")
     window: list[dict[str, Any]] = []
     draftable: list[str] = []
     cap = max(1, min(MAX_MESSAGES, int(limit) * 3 if limit else DEFAULT_DRAFTS * 3))
@@ -69,14 +76,15 @@ def build_batch(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
             continue
         metadata = getattr(node, "metadata", None)
         metadata = metadata if isinstance(metadata, Mapping) else {}
-        user_id = _text(getattr(node, "user_id", ""), 64)
+        raw_user = str(getattr(node, "user_id", "") or "")
+        user_id = _text(raw_user, 64)
         window.append({
             "msg_id": msg_id,
             "order": order,
             "text": text,
             "mentions_bot": bool(getattr(node, "mentioned_users", None)),
             "quotes": _text(getattr(node, "reply_to_id", ""), 64),
-            "from_bot": bool(metadata.get("is_bot")),
+            "from_bot": bool(bot_owner) and raw_user == bot_owner,
             "user": user_id[:8],
         })
     for item in window:

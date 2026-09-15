@@ -265,6 +265,11 @@
     "description": "Dynamics Learning 策略消费模式",
     "type": "string",
     "default": "off",
+    "options": [
+      "off",
+      "shadow",
+      "active"
+    ],
     "hint": "off：不读取学习层发布的策略（默认）。shadow：读取并解析、算出会改成什么，但不应用，只用于对比与收集分歧数据。active：应用，且必须通过发布协议版本、已验证本体版本、基线配置摘要三项检查；任何一项不通过都会拒绝而不是降级应用。"
   },
   "learning_policy_source_id": {
@@ -671,7 +676,7 @@
     "description": "媒体隐私严格档",
     "type": "bool",
     "default": true,
-    "hint": "证件/私密感图片不描述细节、不写记忆；未强点名时优先沉默。"
+    "hint": "证件/私密感图片不描述细节；未强点名时优先沉默。"
   },
   "deciding_detect_enabled": {
     "description": "识别决策中场合",

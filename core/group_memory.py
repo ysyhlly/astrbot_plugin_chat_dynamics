@@ -24,6 +24,14 @@ _CACHE_LIMIT = 256
 _MAX_MUTE_HOURS = 720.0
 
 
+def _clears_mute(value: Any) -> bool:
+    """True when the caller asked to end a mute rather than start one."""
+    try:
+        return float(value) <= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def _finite_hours(value: Any, default: float = 10.0) -> float:
     try:
         hours = float(value)
@@ -102,7 +110,11 @@ class GroupMemoryNotebook:
     def mute_tonight(self, umo: str, *, hours: float = 10.0, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)
         data = self._load(umo)
-        until = stamp + _finite_hours(hours) * 3600.0
+        # A non-positive duration clears an active mute instead of clamping up
+        # to an hour: moving the deadline to now is exactly what every reader
+        # treats as "not muted", and the panel needs a way to end a ten-hour
+        # silence early.
+        until = stamp if _clears_mute(hours) else stamp + _finite_hours(hours) * 3600.0
         data["mute_until"] = until
         self._save(umo, data)
         return until

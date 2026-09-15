@@ -193,10 +193,16 @@ class ConsoleWebAPI:
             value = None
         return str(value or "anonymous")[:128]
 
-    def _rate_limit(self, method: str, limit: int) -> Any:
+    def _rate_limit(self, endpoint: str, limit: int) -> Any:
+        """Per-endpoint budget for one user.
+
+        The key has to name the endpoint: keying it by the HTTP method put nine
+        unrelated GETs into a single 60/min bucket, so ordinary use of the console,
+        the replay page and the drafts page exhausted each other's allowance.
+        """
         now = time.monotonic()
         identity = self._request_identity()
-        key = (method, identity)
+        key = (endpoint, identity)
         bucket = [stamp for stamp in self._rate_buckets.get(key, []) if now - stamp < 60.0]
         if len(bucket) >= limit:
             self._rate_buckets[key] = bucket
@@ -227,7 +233,7 @@ class ConsoleWebAPI:
         return None
 
     async def overview(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("overview", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -238,7 +244,7 @@ class ConsoleWebAPI:
             return _json_err("runtime state unavailable", 503)
 
     async def sessions(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("sessions", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -249,7 +255,7 @@ class ConsoleWebAPI:
             return _json_err("runtime state unavailable", 503)
 
     async def session(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("session", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -276,7 +282,7 @@ class ConsoleWebAPI:
         return _json_ok(data)
 
     async def cool(self):
-        if (limited := self._rate_limit("POST", 20)) is not None:
+        if (limited := self._rate_limit("cool", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -314,7 +320,7 @@ class ConsoleWebAPI:
         return _json_ok(data)
 
     async def reset(self):
-        if (limited := self._rate_limit("POST", 20)) is not None:
+        if (limited := self._rate_limit("reset", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -540,7 +546,7 @@ class ConsoleWebAPI:
             return _json_err("config could not be applied", 503)
 
     async def presets(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("presets", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -554,7 +560,7 @@ class ConsoleWebAPI:
             return _json_err("preset catalog unavailable", 503)
 
     async def apply_preset(self):
-        if (limited := self._rate_limit("POST", 20)) is not None:
+        if (limited := self._rate_limit("apply_preset", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -580,7 +586,7 @@ class ConsoleWebAPI:
 
 
     async def read_air(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("read_air", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -588,6 +594,10 @@ class ConsoleWebAPI:
             data = snapshot_overview(self.plugin)
             air = dict(data.get("read_air") or {})
             umo = (_query_param("umo") or _query_param("session_key") or "").strip()
+            if len(umo) > _MAX_SESSION_ID_LENGTH:
+                # Same bound as the sibling endpoints: an arbitrary id reaches the
+                # gates, and the rhythm gate keeps per-session state keyed by it.
+                return _json_err("umo too long", 400)
             if umo:
                 from .dashboard import _read_air_summary
 
@@ -625,7 +635,7 @@ class ConsoleWebAPI:
             return _json_err("read air unavailable", 503)
 
     async def replay(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("replay", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -639,7 +649,7 @@ class ConsoleWebAPI:
             return _json_err("replay unavailable", 503)
 
     async def annotations_get(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("annotations_get", 60)) is not None:
             return limited
         session = (_query_param("session_key") or "").strip()
         if not session or len(session) > _MAX_SESSION_ID_LENGTH:
@@ -669,7 +679,7 @@ class ConsoleWebAPI:
 
     async def annotation_draft(self):
         """Draft labels for the current window. Read-only for routing; writes drafts only."""
-        if (limited := self._rate_limit("POST", 10)) is not None:
+        if (limited := self._rate_limit("annotation_draft", 10)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -691,7 +701,7 @@ class ConsoleWebAPI:
             return _json_err("annotation draft failed", 503)
     async def annotation_drafts_get(self):
         """Pending drafts across sessions; text hidden under the same switch as replay."""
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("annotation_drafts_get", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -707,7 +717,7 @@ class ConsoleWebAPI:
 
     async def annotation_drafts_post(self):
         """One request per review decision, however many drafts it covers."""
-        if (limited := self._rate_limit("POST", 10)) is not None:
+        if (limited := self._rate_limit("annotation_drafts_post", 10)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -724,7 +734,7 @@ class ConsoleWebAPI:
                          type(exc).__name__)
             return _json_err("annotation drafts apply failed", 503)
     async def annotations_post(self):
-        if (limited := self._rate_limit("POST", 20)) is not None:
+        if (limited := self._rate_limit("annotations_post", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -737,7 +747,7 @@ class ConsoleWebAPI:
             return _json_err("annotation write failed", 503)
 
     async def notebook_get(self):
-        if (limited := self._rate_limit("GET", 60)) is not None:
+        if (limited := self._rate_limit("notebook_get", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
@@ -756,7 +766,7 @@ class ConsoleWebAPI:
             return _json_err("notebook unavailable", 503)
 
     async def notebook_post(self):
-        if (limited := self._rate_limit("POST", 20)) is not None:
+        if (limited := self._rate_limit("notebook_post", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)

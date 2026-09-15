@@ -583,6 +583,20 @@ class DebounceBuffer:
             default=0.0,
         )
 
+    def session_activity_snapshot(self) -> tuple[dict[str, float], set[str]]:
+        """Collect activity and busy sessions in one event-loop-local pass.
+
+        Callers must consume this snapshot without awaiting: timers and ingestion
+        may change slot state as soon as control returns to the event loop.
+        """
+        touched: dict[str, float] = {}
+        active: set[str] = set()
+        for (session_id, _user_id), slot in self._slots.items():
+            touched[session_id] = max(touched.get(session_id, 0.0), slot.last_touch_time)
+            if not slot.is_empty or slot.has_active_timer:
+                active.add(session_id)
+        return touched, active
+
     def prune_idle_slots(self, max_idle_seconds: float = 300.0) -> int:
         """Prunes empty, inactive slots older than max_idle_seconds to prevent memory growth.
 
