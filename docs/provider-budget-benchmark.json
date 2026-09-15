@@ -1,0 +1,497 @@
+{
+  "kind": "controlled synthetic provider delay; not production performance",
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "parameters": {
+    "measured_rounds_per_case": 12,
+    "warmup_rounds_per_case": 2,
+    "provider_delay_seconds": 0.06,
+    "capacity": 2,
+    "reserved_background_capacity": 1,
+    "background_calls_per_round": 4,
+    "reply_calls_per_round": 1,
+    "reply_arrival_delay_seconds": 0.01,
+    "quantile": "linear interpolation at (n-1)*q"
+  },
+  "cases": {
+    "fifo_semaphore": {
+      "reply_queue": {
+        "p50_seconds": 0.12498794999919483,
+        "p95_seconds": 0.12625692000037816,
+        "mean_seconds": 0.12488521666637098,
+        "samples": 12
+      },
+      "background_queue": {
+        "p50_seconds": 0.03077725000184728,
+        "p95_seconds": 0.06326474000343296,
+        "mean_seconds": 0.03132171874995038,
+        "samples": 48
+      },
+      "total_duration": {
+        "p50_seconds": 0.18667295000341255,
+        "p95_seconds": 0.18931012499633654,
+        "mean_seconds": 0.18685747499997282,
+        "samples": 12
+      },
+      "rounds": [
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12517269999807468
+            ],
+            "background": [
+              4.3000036384910345e-06,
+              1.0000003385357559e-06,
+              0.06328140000550775,
+              0.06323379999957979
+            ]
+          },
+          "total_seconds": 0.18722239999624435,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12410569999337895
+            ],
+            "background": [
+              6.200003554113209e-06,
+              1.3999961083754897e-06,
+              0.06154830000014044,
+              0.06157669999811333
+            ]
+          },
+          "total_seconds": 0.185667799996736,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12677370000164956
+            ],
+            "background": [
+              3.999994078185409e-06,
+              1.2999953469261527e-06,
+              0.06366659999912372,
+              0.06367779999709455
+            ]
+          },
+          "total_seconds": 0.18941159999667434,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12547780000022613
+            ],
+            "background": [
+              3.9000005926936865e-06,
+              1.0000003385357559e-06,
+              0.06285460000071907,
+              0.06286540000292007
+            ]
+          },
+          "total_seconds": 0.18712819999927888,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.1246026000007987
+            ],
+            "background": [
+              4.0000013541430235e-06,
+              1.0999938240274787e-06,
+              0.06279920000088168,
+              0.06281070000113687
+            ]
+          },
+          "total_seconds": 0.1857155999969109,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12583409999933792
+            ],
+            "background": [
+              5.199995939619839e-06,
+              1.0999938240274787e-06,
+              0.06299440000293544,
+              0.06300490000285208
+            ]
+          },
+          "total_seconds": 0.18922709999606013,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.1252124000020558
+            ],
+            "background": [
+              4.499997885432094e-06,
+              1.2999953469261527e-06,
+              0.06274590000248281,
+              0.06275620000087656
+            ]
+          },
+          "total_seconds": 0.18723429999954533,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12357470000279136
+            ],
+            "background": [
+              5.299996701069176e-06,
+              1.500004145782441e-06,
+              0.061734200004138984,
+              0.061748500003886875
+            ]
+          },
+          "total_seconds": 0.18599560000438942,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12499110000499059
+            ],
+            "background": [
+              5.100002454128116e-06,
+              1.5999976312741637e-06,
+              0.06256430000212276,
+              0.06257600000390084
+            ]
+          },
+          "total_seconds": 0.18661160000192467,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12498479999339906
+            ],
+            "background": [
+              4.699999408330768e-06,
+              1.2000018614344299e-06,
+              0.06284489999961806,
+              0.06286460000410443
+            ]
+          },
+          "total_seconds": 0.18673430000490043,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.1236572999987402
+            ],
+            "background": [
+              4.099994839634746e-06,
+              1.3999961083754897e-06,
+              0.06245870000566356,
+              0.06246810000448022
+            ]
+          },
+          "total_seconds": 0.18525860000227112,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              0.12423570000100881
+            ],
+            "background": [
+              3.899993316736072e-06,
+              1.1000010999850929e-06,
+              0.062135799998941366,
+              0.06216129999666009
+            ]
+          },
+          "total_seconds": 0.1860826000047382,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        }
+      ]
+    },
+    "reserved_provider_budget": {
+      "reply_queue": {
+        "p50_seconds": 7.600003300467506e-06,
+        "p95_seconds": 9.910000153467987e-06,
+        "mean_seconds": 7.866667147027329e-06,
+        "samples": 12
+      },
+      "background_queue": {
+        "p50_seconds": 0.09329890000299201,
+        "p95_seconds": 0.1870419149978261,
+        "mean_seconds": 0.09308431250019567,
+        "samples": 48
+      },
+      "total_duration": {
+        "p50_seconds": 0.24852145000113524,
+        "p95_seconds": 0.2512413150001521,
+        "mean_seconds": 0.24872034166704302,
+        "samples": 12
+      },
+      "rounds": [
+        {
+          "queue_seconds": {
+            "reply": [
+              6.70000008540228e-06
+            ],
+            "background": [
+              1.8600003386382014e-05,
+              0.06199890000425512,
+              0.12377869999909308,
+              0.1850440999987768
+            ]
+          },
+          "total_seconds": 0.24717080000118585,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.600006938446313e-06
+            ],
+            "background": [
+              1.6900004993658513e-05,
+              0.061037200001010206,
+              0.12288500000431668,
+              0.18491489999723854
+            ]
+          },
+          "total_seconds": 0.24860610000177985,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.800001185387373e-06
+            ],
+            "background": [
+              2.010000025620684e-05,
+              0.06166590000066208,
+              0.12562199999956647,
+              0.1880438000007416
+            ]
+          },
+          "total_seconds": 0.2501810000030673,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.299997378140688e-06
+            ],
+            "background": [
+              1.7599995771888644e-05,
+              0.06258759999764152,
+              0.12404909999895608,
+              0.18677199999365257
+            ]
+          },
+          "total_seconds": 0.24883350000163773,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.399998139590025e-06
+            ],
+            "background": [
+              1.960000372491777e-05,
+              0.06114759999763919,
+              0.1241472999972757,
+              0.18633820000104606
+            ]
+          },
+          "total_seconds": 0.24843680000049062,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.700000423938036e-06
+            ],
+            "background": [
+              0.00015590000111842528,
+              0.06247140000050422,
+              0.12464249999902677,
+              0.18685139999433886
+            ]
+          },
+          "total_seconds": 0.24797779999789782,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.299997378140688e-06
+            ],
+            "background": [
+              3.139999898849055e-05,
+              0.061385900000459515,
+              0.12321910000173375,
+              0.18525290000252426
+            ]
+          },
+          "total_seconds": 0.24874419999832753,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              1.200000406242907e-05
+            ],
+            "background": [
+              2.8599999495781958e-05,
+              0.06165270000201417,
+              0.12518509999790695,
+              0.18714449999970384
+            ]
+          },
+          "total_seconds": 0.2508503999997629,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              8.199996955227107e-06
+            ],
+            "background": [
+              2.5499997718725353e-05,
+              0.06281909999961499,
+              0.12316949999512872,
+              0.1856102000019746
+            ]
+          },
+          "total_seconds": 0.24792470000102185,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.100003131199628e-06
+            ],
+            "background": [
+              1.6199999663513154e-05,
+              0.06131699999968987,
+              0.12333010000293143,
+              0.1848318000047584
+            ]
+          },
+          "total_seconds": 0.24717239999881713,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.599999662488699e-06
+            ],
+            "background": [
+              2.2000000171829015e-05,
+              0.06123920000391081,
+              0.12401839999802178,
+              0.18489989999943646
+            ]
+          },
+          "total_seconds": 0.2470272999998997,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        },
+        {
+          "queue_seconds": {
+            "reply": [
+              7.700000423938036e-06
+            ],
+            "background": [
+              1.5900004655122757e-05,
+              0.06371280000166735,
+              0.1259012000009534,
+              0.18897170000127517
+            ]
+          },
+          "total_seconds": 0.2517191000006278,
+          "calls": {
+            "reply": 1,
+            "background": 4
+          }
+        }
+      ]
+    }
+  },
+  "interpretation": "Reply reservation trades background queue latency and overall completion time for reply responsiveness. No production benefit is inferred."
+}

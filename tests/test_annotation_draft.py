@@ -162,7 +162,7 @@ def test_one_usable_field_is_enough_for_a_draft():
     batch, _stats = build_batch([node("m1", "在吗")], {}, limit=5)
 
     parsed = parse_drafts(reply({"msg_id": "m1", "expected_reply": True,
-                                 "confidence": 2, "reason": "x"}), batch)
+                                 "confidence": 1, "reason": "x"}), batch)
 
     assert parsed["drafts"]["m1"] == {"msg_id": "m1", "expected_reply": True,
                                       "confidence": 1.0, "reason": "x"}
@@ -622,7 +622,7 @@ async def test_evicted_message_and_missing_session_are_different_reasons():
 
 
 @pytest.mark.asyncio
-async def test_a_session_leaves_the_index_once_it_has_no_drafts_left():
+async def test_a_session_retains_recovery_index_once_it_has_no_drafts_left():
     plugin, _kv = draft_runtime(nodes=[node("m1", "在吗"), node("m2", "在的")],
                                 reply=reply(reply_for("m1"), reply_for("m2")))
     await plugin.annotation_draft_payload("a")
@@ -634,11 +634,12 @@ async def test_a_session_leaves_the_index_once_it_has_no_drafts_left():
     await plugin.annotation_drafts_apply(
         {"action": "dismiss", "session_key": "a", "msg_ids": ["m2"]})
 
-    assert await plugin.topic_annotations.known_sessions() == []
+    assert await plugin.topic_annotations.known_sessions() == ["a"]
+    assert not (await plugin.topic_annotations.read_drafts("a"))["drafts"]
 
 
 @pytest.mark.asyncio
-async def test_clearing_a_session_also_drops_it_from_the_index():
+async def test_clearing_a_session_preserves_recovery_index():
     plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
                                 reply=reply(reply_for("m1")))
     await plugin.annotation_draft_payload("a")
@@ -646,7 +647,8 @@ async def test_clearing_a_session_also_drops_it_from_the_index():
     await plugin.annotation_drafts_apply(
         {"action": "clear_session", "session_key": "a"})
 
-    assert await plugin.topic_annotations.known_sessions() == []
+    assert await plugin.topic_annotations.known_sessions() == ["a"]
+    assert not (await plugin.topic_annotations.read_drafts("a"))["drafts"]
     assert (await plugin.annotation_drafts_payload(""))["sessions"] == []
 
 

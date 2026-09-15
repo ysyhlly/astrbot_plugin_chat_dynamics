@@ -181,3 +181,34 @@ def test_trace_exports_safe_evidence_and_family_totals():
     assert "private message" not in json.dumps(trace)
     diagnostics["family_contributions"]["recipient"] = 999
     assert result.family_contributions["recipient"] != 999
+
+
+@pytest.mark.parametrize("name", CASES)
+def test_online_evidence_preserves_each_legacy_branch(name):
+    router, node, dag, kwargs = legacy_case(name)
+    plain = router.compute_addressivity(node, dag, **kwargs)
+    result = router.compute_addressivity(node, dag, **kwargs, evidence_context={
+        "session_id": "s", "message_id": node.msg_id, "epoch": 2,
+        "config_id": "config", "policy_id": "policy", "visible_before": node.timestamp})
+    assert public_result(result) == public_result(plain)
+    assert result.turn_evidence is not None
+    frozen_result = result.turn_evidence.evaluate()
+    node.metadata["routing"] = {"bot_is_addressee": False}
+    router.strong_threshold = 0.99
+    assert result.turn_evidence.evaluate() == frozen_result
+    assert round(frozen_result.score, 4) == result.score
+
+
+def test_addressivity_ignores_future_parent_and_last_bot_without_mutating_dag():
+    router, node, dag, kwargs = legacy_case("no_bot")
+    future = dag.add_message("future", "bot", "beta", timestamp=node.timestamp + 1)
+    node.reply_to_id = future.msg_id
+    original_ids = set(dag.nodes)
+    result = router.compute_addressivity(node, dag, last_bot_node=future,
+        evidence_context={"session_id": "s", "message_id": node.msg_id, "epoch": 1,
+            "config_id": "c", "policy_id": "p", "visible_before": node.timestamp})
+    assert result.turn_evidence.participation.has_prior_bot is False
+    assert result.turn_evidence.participation.parent_user_id is None
+    assert all(item.code != "bot_reply" for item in result.evidence)
+    assert set(dag.nodes) == original_ids
+    assert node.reply_to_id == "future"

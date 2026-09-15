@@ -56,7 +56,8 @@ def test_multiturn_real_router_is_deterministic():
 @pytest.mark.parametrize("messages, constraint", [
     ([{"text": "显卡风扇怎么设置？", "expected_topic": "a"},
       {"text": "自动模式", "reply_to": "0", "expected_topic": "b"}], "topic_wrong_merge"),
-    ([{"text": "你好", "expected_parent": "missing"}], "parent_exact"),
+    ([{"text": "first"}, {"text": "second", "reply_to": "0"},
+      {"text": "third", "reply_to": "1", "expected_parent": "0"}], "parent_exact"),
 ])
 def test_check_rejects_supervised_metric_errors(tmp_path, monkeypatch, capsys, messages, constraint):
     root = Path(__file__).resolve().parents[1]
@@ -70,3 +71,22 @@ def test_check_rejects_supervised_metric_errors(tmp_path, monkeypatch, capsys, m
     report = json.loads(capsys.readouterr().out)
     assert report["failed"] == 0
     assert constraint in report["metric_failures"]
+
+
+def test_cli_reports_invalid_parent_as_structured_input_error(tmp_path, monkeypatch, capsys):
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("eval_invalid_cli", root / "scripts/evaluate_routing.py")
+    evaluator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evaluator)
+    fixtures = tmp_path / "invalid.json"
+    output = tmp_path / "report.json"
+    fixtures.write_text(json.dumps([{"id": "invalid", "messages": [
+        {"text": "hello", "expected_parent": "missing"}]}]), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["evaluate_routing.py", "--fixtures", str(fixtures),
+                                    "--output", str(output), "--check"])
+    assert evaluator.main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report == json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == "input_error"
+    assert "visible earlier" in report["error"]
+    assert report["effectiveness_gate"]["status"] == "not_ready"

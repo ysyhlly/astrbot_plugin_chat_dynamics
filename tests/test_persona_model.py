@@ -791,3 +791,89 @@ async def test_persona_owned_agent_request_is_allowed_through_hooks(model_plugin
         assert p._metrics["duplicate_native_request_blocked"] == 0
     finally:
         await p.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidation", ["reset", "stop", "node_removed"])
+async def test_persona_revalidates_after_bridge_current_wait(model_plugin, monkeypatch, invalidation):
+    from copy import deepcopy
+    p, bridge = model_plugin
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def current(event, persona):
+        entered.set()
+        await release.wait()
+        return True
+    bridge.current = current
+    event = MockEvent("help me", message_id="race", is_at_or_wake_command=True)
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await asyncio.wait_for(entered.wait(), 2)
+        runtime = p._sessions[event.unified_msg_origin]
+        assert not runtime.state_lock.locked()
+        traces = {key: deepcopy(node.metadata.get("decision_trace")) for key, node in runtime.dag.nodes.items()}
+        gate_calls = []
+        monkeypatch.setattr(p.decision_gate, "evaluate", lambda **kw: gate_calls.append(kw))
+        old_diagnostic = deepcopy(runtime.model_diagnostic)
+        old_state = runtime.interaction_state
+        async with runtime.state_lock:
+            if invalidation == "reset":
+                runtime.epoch += 1
+            elif invalidation == "stop":
+                author = runtime.active_model_turn.context.author
+                runtime.user_revisions[author] = runtime.user_revisions.get(author, 0) + 1
+            else:
+                runtime.dag.nodes.clear()
+        release.set()
+        await drain(p)
+        assert not gate_calls and not bridge.requests and not event.replies_sent
+        assert runtime.model_diagnostic == old_diagnostic
+        assert runtime.interaction_state == old_state
+        for key, node in runtime.dag.nodes.items():
+            assert node.metadata.get("decision_trace") == traces[key]
+    finally:
+        release.set()
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_persona_decision_uses_shared_routing_budget(model_plugin, monkeypatch):
+    p, bridge = model_plugin
+    calls = []
+    original = p.llm.provider_budget.run
+    async def recording(provider, purpose, invoke):
+        calls.append((provider, purpose))
+        return await original(provider, purpose, invoke)
+    monkeypatch.setattr(p.llm.provider_budget, "run", recording)
+    try:
+        event = MockEvent("help me", message_id="budget", is_at_or_wake_command=True)
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert p.decision_calls
+        assert any(purpose == "routing" for _, purpose in calls)
+        assert not p.llm.provider_budget.active and not p.llm.provider_budget.waiters
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_persona_decision_timeout_includes_provider_queue(model_plugin):
+    from contextlib import AsyncExitStack
+    from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
+    p, bridge = model_plugin
+    p._runtime_config = replace(p._runtime_config, decision_provider_id="queued", decision_timeout=0.01)
+    turn = TurnContext("room", "user", "help", (MessageSnapshot("m", "user", "help"),), (), 0, 0, 0, True)
+    item = ModelTurn(turn, (), {}, False)
+    budget = p.llm.provider_budget
+    try:
+        async with AsyncExitStack() as stack:
+            for _ in range(budget.capacity):
+                await stack.enter_async_context(budget.slot("queued", "reply"))
+            decision = await p.persona_engine.decide(item, bridge.persona, "observing")
+            assert decision.reason_code == "decision_timeout"
+            assert not p.decision_calls
+            assert not budget.waiters
+        assert not budget.active
+    finally:
+        await p.terminate()

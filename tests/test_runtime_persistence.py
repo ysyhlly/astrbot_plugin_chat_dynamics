@@ -1,6 +1,7 @@
 from collections import deque
 from types import SimpleNamespace
 import json
+import pytest
 
 from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRegistry, TopicState
 from astrbot_plugin_chat_dynamics.core.telemetrics import TelemetricsTracker
@@ -16,6 +17,102 @@ def plugin(now):
     return SimpleNamespace(time_service=clock, _registry=SessionRegistry(clock),
         telemetrics=TelemetricsTracker(time_service=clock), _metrics={'received': 0},
         _shadow_decisions=deque(maxlen=50), _umo_by_session={}, _vibe_msg_counts={}, _last_bot_nodes={})
+
+
+@pytest.mark.parametrize('kind', ['reply', 'mention', 'fragment', 'inferred_reply', 'semantic'])
+def test_edge_contract_roundtrip(kind, monkeypatch):
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    runtime = source._registry.get_or_create('room')
+    runtime.dag.add_message('p', 'bot', 'parent', timestamp=90)
+    child = runtime.dag.add_message('c', 'u', 'child', timestamp=95,
+                                   reply_to_id='p' if kind == 'reply' else None)
+    runtime.dag._link_parent('c', 'p', kind=kind)
+    child.metadata.update(quoted_author_id='bot', topic_source_text='完整语义')
+    target = plugin(100)
+    restore_runtime_state(target, export_runtime_state(source))
+    dag = target._registry.get('room').dag
+    assert dag.nodes['c'].edge_kinds == {'p': kind}
+    assert dag.nodes['c'].metadata['quoted_author_id'] == 'bot'
+    assert dag.nodes['c'].metadata['topic_source_text'] == '完整语义'
+    assert dag.unlink_inferred_reply('c') is (kind in {'inferred_reply', 'semantic'})
+
+
+def test_unknown_saved_edge_is_not_platform_fact(monkeypatch, caplog):
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    dag = source._registry.get_or_create('room').dag
+    dag.add_message('p', 'u', 'p', timestamp=90)
+    dag.add_message('c', 'u', 'c', timestamp=95)
+    snapshot = export_runtime_state(source)
+    row = snapshot['sessions'][0]['nodes'][1]
+    row.update(parent_ids=['p'], edge_kinds={'p': 'unknown'})
+    target = plugin(100)
+    restore_runtime_state(target, snapshot)
+    assert not target._registry.get('room').dag.nodes['c'].parent_ids
+    assert 'Skipped snapshot edge with unknown or missing kind' in caplog.text
+
+
+def test_first_large_session_obeys_complete_utf8_budget(monkeypatch):
+    monkeypatch.setattr(codec, 'MAX_TOTAL_BYTES', 12000)
+    source = plugin(100)
+    dag = source._registry.get_or_create('room').dag
+    for index in range(10):
+        dag.add_message(str(index), 'u', '中' * 1000, timestamp=90 + index)
+    snapshot = export_runtime_state(source)
+    assert len(json.dumps(snapshot, ensure_ascii=False).encode('utf-8')) <= 12000
+    assert snapshot['truncated'] is True
+    assert snapshot['dropped_nodes'] > 0
+    assert snapshot['sessions'][0]['nodes'][-1]['msg_id'] == '9'
+
+
+def test_restored_inference_can_be_replaced_but_reply_is_protected(monkeypatch):
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    dag = source._registry.get_or_create('room').dag
+    dag.add_message('p', 'bot', 'p', timestamp=90)
+    dag.add_message('q', 'bot', 'q', timestamp=91)
+    dag.add_message('c', 'u', 'c', timestamp=95)
+    dag.add_message('explicit', 'u', 'reply', timestamp=96, reply_to_id='p')
+    assert dag.link_inferred_reply('c', 'p', confidence=0.8, reason='test')
+    target = plugin(100)
+    restore_runtime_state(target, export_runtime_state(source))
+    restored = target._registry.get('room').dag
+    assert restored.link_inferred_reply('c', 'q', confidence=0.9, reason='replacement')
+    assert restored.nodes['c'].parent_ids == {'q'}
+    assert not restored.link_inferred_reply('explicit', 'q', confidence=0.9, reason='test')
+    assert not restored.link_related('explicit', 'p')
+    assert restored.nodes['explicit'].edge_kinds == {'p': 'reply'}
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_legacy_missing_edge_kind_requires_platform_reply(explicit, monkeypatch):
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    dag = source._registry.get_or_create('room').dag
+    dag.add_message('c', 'u', 'child first', timestamp=95,
+                    reply_to_id='p' if explicit else None)
+    dag.add_message('p', 'u', 'parent later', timestamp=90)
+    snapshot = export_runtime_state(source)
+    child = next(row for row in snapshot['sessions'][0]['nodes'] if row['msg_id'] == 'c')
+    child.update(parent_ids=['p'], edge_kinds={})
+    target = plugin(100)
+    restore_runtime_state(target, snapshot)
+    restored = target._registry.get('room').dag
+    assert restored.nodes['c'].edge_kinds == ({'p': 'reply'} if explicit else {})
+    # Clock restoration retains natural expiration; no fresh TTL is granted.
+    assert restored.prune(ttl_seconds=2, current_time=100) == 2
+
+
+def test_snapshot_budget_includes_global_diagnostics(monkeypatch):
+    monkeypatch.setattr(codec, 'MAX_TOTAL_BYTES', 1000)
+    source = plugin(100)
+    source._shadow_decisions.append({'reason': '中' * 16000})
+    source._registry.get_or_create('room').dag.add_message('m', 'u', 'text', timestamp=99)
+    snapshot = export_runtime_state(source)
+    assert codec._encoded_size(snapshot) <= 1000
+    assert snapshot['truncated']
+    assert snapshot['dropped_sessions'] == 1
 
 
 def test_roundtrip_rebases_clocks_and_preserves_isolation(monkeypatch):

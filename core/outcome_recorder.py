@@ -31,6 +31,7 @@ what it did, and it has no knowledge of who reads it.
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from collections.abc import Mapping
 
 OUTCOME_KEY = "outcome"
@@ -99,14 +100,24 @@ def _write(node: object, value: str, *, delivered: bool, reason: str = "",
         return block
     if not _should_write(metadata.get(OUTCOME_KEY), value):
         return dict(metadata[OUTCOME_KEY])
-    metadata[OUTCOME_KEY] = block
+    if value == VALUE_DELIVERED:
+        latency = metadata.get("turn_latency")
+        if isinstance(latency, dict) and "first_send_seconds" not in latency:
+            started = latency.get("started")
+            if isinstance(started, (int, float)) and not isinstance(started, bool):
+                elapsed = time.perf_counter() - started
+                if 0 <= elapsed < float("inf"):
+                    latency["first_send_seconds"] = elapsed
+    metadata[OUTCOME_KEY] = dict(block)
     trace = metadata.get("decision_trace")
     if isinstance(trace, dict):
         # The trace was frozen before any of this was known, so the fact is
         # written into it afterwards. A reader that kept only the trace — the
         # learning plugin does exactly that — would otherwise see an admitted
         # turn with no ending, which is schema 2 all over again.
-        trace[OUTCOME_KEY] = dict(block)
+        updated = deepcopy(trace)
+        updated[OUTCOME_KEY] = dict(block)
+        metadata["decision_trace"] = updated
     return block
 
 

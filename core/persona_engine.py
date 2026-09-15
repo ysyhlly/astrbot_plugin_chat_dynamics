@@ -14,6 +14,8 @@ from .topic_identity import node_topic_id
 from .platform_bridge import chain_plain_text
 from .message_semantics import describe_message
 from .presence_policy import participation_policy
+from .persona_trace import record_outcome, stage_trace
+from . import outcome_recorder as outcomes
 from .turn_decision import (
     DECISION_INSTRUCTIONS, MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
@@ -33,6 +35,7 @@ class ModelTurn:
     shadow: bool
     fallback: bool = False
     platform_message_ids: frozenset[str] = frozenset()
+    outcome_nodes: tuple[Any, ...] = ()
 
 
 def _node_metadata(node: Any) -> dict:
@@ -385,7 +388,8 @@ def snapshot_turn(
         for parsed, resolved in zip(events, resolved_nodes)
         if getattr(parsed, "message_id", "") and resolved.msg_id == getattr(parsed, "message_id", "")
     )
-    return ModelTurn(turn, tuple(result.raw_events), observations, shadow, platform_message_ids=platform_ids)
+    return ModelTurn(turn, tuple(result.raw_events), observations, shadow, platform_message_ids=platform_ids,
+                     outcome_nodes=tuple(_dag_node(runtime, message.message_id) for message in turn.messages))
 
 
 class PersonaEngine:
@@ -436,11 +440,15 @@ class PersonaEngine:
         async def request():
             async with self.slots:
                 provider_id = p._runtime_config.decision_provider_id or await p.llm.resolve_provider_id(turn.session_key)
-                response = await p.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
-                    prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
-                )
+                from .provider_budget import context_budget
+                budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
+                async def invoke():
+                    return await p.context.llm_generate(
+                        chat_provider_id=provider_id,
+                        system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
+                        prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
+                    )
+                response = await budget.run(provider_id, "routing", invoke)
                 return TurnDecision.parse(completion_text(response), turn)
         try:
             # Timeout covers global admission and the single request, with no automatic retry.
@@ -475,11 +483,17 @@ class PersonaEngine:
                 except asyncio.CancelledError:
                     raise
                 except asyncio.TimeoutError:
+                    if self.valid(runtime, item):
+                        record_outcome(runtime, item, outcomes.mark_generation_failed, "reply_timeout")
                     self.diagnostic(runtime, "reply_timeout")
                     p._metric("llm_reply_unavailable")
                 except PersonaChanged:
+                    if self.valid(runtime, item):
+                        record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                     self.diagnostic(runtime, "persona_changed")
                 except Exception as exc:
+                    if self.valid(runtime, item):
+                        record_outcome(runtime, item, outcomes.mark_generation_failed, "agent_failed")
                     self.diagnostic(runtime, "agent_failed", error_type=type(exc).__name__)
                 finally:
                     if runtime.active_model_turn is item:
@@ -507,130 +521,166 @@ class PersonaEngine:
         event = item.events[-1]
         started = p.time_service.time()
         persona = await self.bridge.snapshot(event)
-        decision = await self.decide(item, persona, runtime.interaction_state)
-        if not self.valid(runtime, item) or not await self.bridge.current(event, persona):
+        interaction_state = runtime.interaction_state
+        decision = await self.decide(item, persona, interaction_state)
+        proposed = decision
+        if not self.valid(runtime, item):
             return
-        now = p.time_service.time()
-        while runtime.ambient_openings and now - runtime.ambient_openings[0] >= 60:
-            runtime.ambient_openings.popleft()
-        continuation = turn_is_continuation(runtime, turn, now)
-        addressed = turn_is_addressed(runtime, turn, now)
-        opening = not addressed and not continuation
-        opening_limit = participation_policy(p._runtime_config.presence_knob)["ambient_openings_per_minute"]
-        if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:
-            decision = replace(decision, action="ignore", reason_code="ambient_budget")
-        # Social manners + occasion skin (persona path): quiet degrade, never raise.
-        # Quotas are committed only after a successful send, never on observe/fail.
-        # Civil wall time is only for hour/day gates; interval math above stays monotonic.
-        gate = None
-        gate_engine = getattr(p, "decision_gate", None)
-        gate_now = p.time_service.wall_time()
-        try:
-            cfg = getattr(p, "_runtime_config", None)
-            if gate_engine is not None and decision.action != "ignore":
-                dag = getattr(runtime, "dag", None)
-                recent = dag.get_recent_nodes(limit=12) if dag is not None and hasattr(dag, "get_recent_nodes") else []
-                tele = None
-                try:
-                    tele = p.vibe_analyzer.get_telemetrics(runtime.session_key, current_time=now)
-                except Exception:
-                    tele = None
-                vibe = None
-                try:
-                    vibe = p.vibe_analyzer.peek_mode(runtime.session_key, current_time=now)
-                except Exception:
-                    vibe = None
-                media_types = []
-                for msg in getattr(turn, "messages", ()) or ():
-                    media_types.extend(list(getattr(msg, "attachments", ()) or ()))
-                turn_text = str(turn.text or "")
-                has_media_turn = bool(media_types) or any(
-                    marker in turn_text for marker in ("[媒体", "[图片", "[语音", "[视频", "[文件")
-                )
-                gate = gate_engine.evaluate(
-                    session_id=runtime.session_key,
-                    user_id=str(turn.author or ""),
-                    text=str(turn.text or ""),
-                    vibe_mode=vibe,
-                    telemetrics=tele,
-                    recent_nodes=recent,
-                    bot_id=str(getattr(runtime, "bot_id", "") or ""),
-                    explicit=addressed,
-                    willingness=1.0 if addressed else 0.55,
-                    cfg=cfg,
-                    now=gate_now,
-                    node_now=now,
-                    has_media=has_media_turn,
-                    media_component_types=media_types,
-                    quoted_bot=bool(turn.explicit),
-                    group_memory=getattr(p, "group_memory", None),
-                    committed_reply=decision.action != "ignore",
-                )
-                runtime.last_occasion = gate.skin.as_dict()
-                runtime.last_manners = gate.manners.as_dict()
-                runtime.last_media_gate = gate.media.as_dict() if gate.media is not None else {}
-                runtime.request_media_understand = bool(gate.request_understand)
-                runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
-                runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-                if not gate.should_speak:
-                    decision = replace(decision, action="ignore", reason_code=gate.reason_code[:48] if gate.reason_code else "manners_silence")
-                else:
-                    runtime.last_length_hint = gate.length_hint or "normal"
-                    runtime.last_delay_scale = float(gate.delay_scale or 1.0)
-                    runtime.last_rhythm_action = (
-                        gate.rhythm.action if gate.rhythm is not None else ""
-                    )
-                    if gate.length_hint == "brief" and decision.length != "brief":
-                        decision = replace(decision, length="brief")
-            elif gate_engine is not None and decision.action == "ignore":
-                gate_engine.note_arbiter_silence(
-                    runtime.session_key, decision.reason_code
-                )
-        except Exception as exc:
-            # Failing open here would send a reply the gate never authorised, and the
-            # media/rhythm flags left over from the previous turn would ride along with
-            # it (an image forwarded to the vision model on a turn the media gate never
-            # saw). A gate that cannot be read denies the turn, and says so.
+        if not await self.bridge.current(event, persona):
+            record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
+            return
+        async with runtime.state_lock:
+            # current() awaited host state; stop/reset may have invalidated this
+            # turn while it was suspended. Validate again before any gate writes.
+            if not self.valid(runtime, item) or any(
+                _dag_node(runtime, message.message_id) is None for message in turn.messages
+            ):
+                return
+            now = p.time_service.time()
+            while runtime.ambient_openings and now - runtime.ambient_openings[0] >= 60:
+                runtime.ambient_openings.popleft()
+            continuation = turn_is_continuation(runtime, turn, now)
+            addressed = turn_is_addressed(runtime, turn, now)
+            opening = not addressed and not continuation
+            opening_limit = participation_policy(p._runtime_config.presence_knob)["ambient_openings_per_minute"]
+            if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:
+                decision = replace(decision, action="ignore", reason_code="ambient_budget")
+            # Social manners + occasion skin (persona path): quiet degrade, never raise.
+            # Quotas are committed only after a successful send, never on observe/fail.
+            # Civil wall time is only for hour/day gates; interval math above stays monotonic.
             gate = None
-            runtime.request_media_understand = False
-            decision = replace(decision, action="ignore", reason_code="gate_unavailable")
-            p._metric("gate_unavailable")
-            logger.warning(
-                "[ChatDynamics] Participation gate unavailable code=CD_GATE_UNAVAILABLE type=%s",
-                type(exc).__name__,
-            )
-        # Complete the trace only after the model decision and participation gates.
-        for message in item.context.messages:
-            node = _dag_node(runtime, message.message_id)
-            trace = getattr(node, "metadata", {}).get("decision_trace")
-            if isinstance(trace, dict) and isinstance(trace.get("participation"), dict):
-                trace["participation"]["should_reply"] = decision.action != "ignore"
+            gate_engine = getattr(p, "decision_gate", None)
+            gate_now = p.time_service.wall_time()
+            try:
+                cfg = getattr(p, "_runtime_config", None)
+                if gate_engine is not None and decision.action != "ignore":
+                    dag = getattr(runtime, "dag", None)
+                    recent = dag.get_recent_nodes(limit=12) if dag is not None and hasattr(dag, "get_recent_nodes") else []
+                    tele = None
+                    try:
+                        tele = p.vibe_analyzer.get_telemetrics(runtime.session_key, current_time=now)
+                    except Exception:
+                        tele = None
+                    vibe = None
+                    try:
+                        vibe = p.vibe_analyzer.peek_mode(runtime.session_key, current_time=now)
+                    except Exception:
+                        vibe = None
+                    media_types = []
+                    for msg in getattr(turn, "messages", ()) or ():
+                        media_types.extend(list(getattr(msg, "attachments", ()) or ()))
+                    turn_text = str(turn.text or "")
+                    has_media_turn = bool(media_types) or any(
+                        marker in turn_text for marker in ("[媒体", "[图片", "[语音", "[视频", "[文件")
+                    )
+                    gate = gate_engine.evaluate(
+                        session_id=runtime.session_key,
+                        user_id=str(turn.author or ""),
+                        text=str(turn.text or ""),
+                        vibe_mode=vibe,
+                        telemetrics=tele,
+                        recent_nodes=recent,
+                        bot_id=str(getattr(runtime, "bot_id", "") or ""),
+                        explicit=addressed,
+                        willingness=1.0 if addressed else 0.55,
+                        cfg=cfg,
+                        now=gate_now,
+                        node_now=now,
+                        has_media=has_media_turn,
+                        media_component_types=media_types,
+                        quoted_bot=bool(turn.explicit),
+                        group_memory=getattr(p, "group_memory", None),
+                        committed_reply=decision.action != "ignore",
+                    )
+                    runtime.last_occasion = gate.skin.as_dict()
+                    runtime.last_manners = gate.manners.as_dict()
+                    runtime.last_media_gate = gate.media.as_dict() if gate.media is not None else {}
+                    runtime.request_media_understand = bool(gate.request_understand)
+                    runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
+                    runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
+                    if not gate.should_speak:
+                        decision = replace(decision, action="ignore", reason_code=gate.reason_code[:48] if gate.reason_code else "manners_silence")
+                    else:
+                        runtime.last_length_hint = gate.length_hint or "normal"
+                        runtime.last_delay_scale = float(gate.delay_scale or 1.0)
+                        runtime.last_rhythm_action = (
+                            gate.rhythm.action if gate.rhythm is not None else ""
+                        )
+                        if gate.length_hint == "brief" and decision.length != "brief":
+                            decision = replace(decision, length="brief")
+                elif gate_engine is not None and decision.action == "ignore":
+                    gate_engine.note_arbiter_silence(
+                        runtime.session_key, decision.reason_code
+                    )
+            except Exception as exc:
+                # Failing open here would send a reply the gate never authorised, and the
+                # media/rhythm flags left over from the previous turn would ride along with
+                # it (an image forwarded to the vision model on a turn the media gate never
+                # saw). A gate that cannot be read denies the turn, and says so.
+                gate = None
+                runtime.request_media_understand = False
+                decision = replace(decision, action="ignore", reason_code="gate_unavailable")
+                p._metric("gate_unavailable")
+                logger.warning(
+                    "[ChatDynamics] Participation gate unavailable code=CD_GATE_UNAVAILABLE type=%s",
+                    type(exc).__name__,
+                )
+            # Complete the trace only after the model decision and participation gates.
+            for message in (() if item.shadow else item.context.messages):
+                node = _dag_node(runtime, message.message_id)
+                trace = getattr(node, "metadata", {}).get("decision_trace")
+                if isinstance(trace, dict) and isinstance(trace.get("participation"), dict):
+                    from .routing_trace import finalize_decision_trace, compact_trace_inputs
+                    trace = stage_trace(trace, persona=persona, interaction_state=interaction_state,
+                                        presence=p._runtime_config.presence_knob, turn=turn,
+                                        proposed=proposed, final=decision, gate=gate)
+                    node.metadata["decision_trace"] = finalize_decision_trace(
+                        trace, should_reply=decision.action != "ignore", branch=decision.reason_code)
+                    node.metadata["trace_inputs"] = compact_trace_inputs(node.metadata["decision_trace"])
 
-        self.diagnostic(runtime, decision.reason_code, action=decision.action, state=decision.state,
-                        target_message_ids=list(decision.target_message_ids), length=decision.length,
-                        latency_ms=round((now - started) * 1000), shadow=item.shadow)
-        if item.shadow:
-            p._record_shadow_decision(
-                turn.session_key,
-                action=decision.action,
-                reason=decision.reason_code,
-                decision=decision,
-                timestamp=now,
-            )
-            p._metric("shadow_decision")
-            return
-        if decision.action == "ignore":
-            runtime.interaction_state = decision.state
-            return
+            self.diagnostic(runtime, decision.reason_code, action=decision.action, state=decision.state,
+                            target_message_ids=list(decision.target_message_ids), length=decision.length,
+                            latency_ms=round((now - started) * 1000), shadow=item.shadow)
+            if item.shadow:
+                p._record_shadow_decision(
+                    turn.session_key,
+                    action=decision.action,
+                    reason=decision.reason_code,
+                    decision=decision,
+                    timestamp=now,
+                )
+                p._metric("shadow_decision")
+                return
+            if decision.action == "ignore":
+                if proposed.reason_code in ("decision_timeout", "decision_invalid_or_failed", "queue_overload"):
+                    record_outcome(runtime, item, outcomes.mark_generation_failed, proposed.reason_code)
+                else:
+                    record_outcome(runtime, item, outcomes.mark_suppressed, decision.reason_code,
+                                   stage="persona" if proposed.action == "ignore" else "gate")
+                runtime.interaction_state = decision.state
+                return
         async with self.bridge.session_lock(turn.session_key):
-            if not self.valid(runtime, item) or not await self.bridge.current(event, persona):
+            if not self.valid(runtime, item):
+                return
+            if not await self.bridge.current(event, persona):
+                record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                 return
             provider = await p.llm.resolve_provider_id(turn.session_key)
+            async with runtime.state_lock:
+                if not self.valid(runtime, item) or any(
+                    _dag_node(runtime, message.message_id) is None for message in turn.messages
+                ):
+                    return
             understand = bool(getattr(runtime, "request_media_understand", False))
+            record_outcome(runtime, item, outcomes.mark_in_flight)
             output = await self.bridge.generate(
                 event,
                 item.events,
-                reply_prompt(turn, decision),
+                reply_prompt(turn, decision, delivery_constraints={
+                    "length_hint": decision.length,
+                    "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
+                    "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
+                }),
                 persona,
                 provider,
                 execution_log=runtime.tool_executions,
@@ -640,12 +690,16 @@ class PersonaEngine:
             # A first request may create the host conversation; keep that exact identity for sending.
             effective = await self.bridge.snapshot(event)
             if persona.conversation_id and effective.fingerprint != persona.fingerprint:
+                record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                 return
             if (effective.persona_id, effective.prompt) != (persona.persona_id, persona.prompt):
+                record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                 return
             if not self.valid(runtime, item):
                 return
             fragments = delivery_fragments(output.chains, output.text, p.pacer)
+            if not fragments:
+                record_outcome(runtime, item, outcomes.mark_generation_failed, "empty_reply")
             rhythm_action = ""
             if gate is not None and gate.rhythm is not None:
                 rhythm_action = gate.rhythm.action
@@ -667,14 +721,17 @@ class PersonaEngine:
                     if delay:
                         await p.time_service.sleep(delay)
                     if not await self.bridge.current(event, effective):
+                        record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                         break
                     async with runtime.send_lock:
                         if not self.valid(runtime, item):
                             break
                         sent = await p._send_owned(runtime, event, fragment, reply_to_id=platform_parent_id)
                     if not sent.success:
+                        record_outcome(runtime, item, outcomes.mark_delivery_failed, "send_failed")
                         p._metric("send_failed")
                         break
+                    record_outcome(runtime, item, outcomes.mark_delivered)
                     delivered_text = fragment if isinstance(fragment, str) else "".join(
                         getattr(c, "text", "[已发送媒体]") for c in fragment.chain)
                     delivered.append(delivered_text)

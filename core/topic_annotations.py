@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from copy import deepcopy
 
-from .routing_trace import build_routing_trace
+from .routing_trace import build_routing_trace, trace_with_updates
 
 ERROR_TYPES = {"correct", "topic_merge", "topic_split", "wrong_assignment", "premature_assignment", "reopen_miss", "unknown", "unreviewed"}
 
@@ -35,6 +35,91 @@ class TopicAnnotations:
         self.plugin = plugin
         self.lock = asyncio.Lock()
 
+    @classmethod
+    def state_key(cls, session):
+        return "annotation_review_state_v2_" + cls.digest(session)
+
+    @classmethod
+    def request_archive_key(cls, session, request_id):
+        return "annotation_request_v2_" + cls.digest(session) + "_" + cls.digest(request_id)
+
+    async def _request_entry(self, session, request_id, entries):
+        entry = entries.get(request_id)
+        if entry is None:
+            entry = await self.plugin.get_kv_data(self.request_archive_key(session, request_id), None)
+        return entry
+
+    async def _archive_requests(self, session, entries):
+        # Archive-before-prune: a crash can duplicate a committed result, never
+        # forget one. Only call on already committed records, under the lock.
+        for request_id in list(entries)[:-256]:
+            await self.plugin.put_kv_data(self.request_archive_key(session, request_id), entries[request_id])
+            del entries[request_id]
+
+    async def _state(self, session):
+        state = await self.plugin.get_kv_data(self.state_key(session), None)
+        if isinstance(state, dict):
+            return deepcopy(state)
+        rows = await self.plugin.get_kv_data(self.key(session), [])
+        return {"labels": deepcopy(rows) if isinstance(rows, list) else [], "requests": {}}
+
+    async def request_result(self, session, request_id, *, fingerprint=None):
+        state = await self._state(session)
+        entry = await self._request_entry(session, request_id, state.get("requests", {}))
+        if entry is None:
+            return None
+        if fingerprint is not None and entry["fingerprint"] != fingerprint:
+            raise ValueError("request_id reused with different input")
+        # Repair the legacy projection after an interrupted commit.
+        await self.plugin.put_kv_data(self.key(session), state["labels"])
+        return deepcopy(entry["result"])
+
+    async def read_request(self, session, request_id):
+        async with self.lock:
+            result = await self.request_result(session, request_id)
+            if result is not None:
+                return result
+            raw = await self.plugin.get_kv_data(self.draft_key(session), {})
+            return deepcopy(raw.get("requests", {}).get(request_id, {}).get("result")) if isinstance(raw, dict) else None
+
+    async def record_request(self, session, request_id, body, result):
+        async with self.lock:
+            state = await self._state(session)
+            fingerprint = self.revision(body)
+            entry = await self._request_entry(session, request_id, state.setdefault("requests", {}))
+            if entry is not None:
+                if entry["fingerprint"] != fingerprint:
+                    raise ValueError("request_id reused with different input")
+                return deepcopy(entry["result"])
+            await self._archive_requests(session, state["requests"])
+            state["requests"][request_id] = {"fingerprint": fingerprint, "result": deepcopy(result)}
+            await self._index_session(session)
+            await self.plugin.put_kv_data(self.state_key(session), state)
+            return result
+
+    async def reconcile(self):
+        async with self.lock:
+            sessions = await self.known_sessions()
+            repaired = 0
+            for session in sessions:
+                state = await self.plugin.get_kv_data(self.state_key(session), None)
+                if isinstance(state, dict) and state.get("projection_pending"):
+                    await self.plugin.put_kv_data(self.key(session), deepcopy(state["labels"]))
+                    state = deepcopy(state)
+                    state["projection_pending"] = False
+                    await self.plugin.put_kv_data(self.state_key(session), state)
+                    repaired += 1
+                if isinstance(state, dict):
+                    state = deepcopy(state)
+                    await self._archive_requests(session, state.setdefault("requests", {}))
+                    await self.plugin.put_kv_data(self.state_key(session), state)
+                draft = await self.plugin.get_kv_data(self.draft_key(session), None)
+                if isinstance(draft, dict):
+                    draft = deepcopy(draft)
+                    await self._archive_requests(session, draft.setdefault("requests", {}))
+                    await self.plugin.put_kv_data(self.draft_key(session), draft)
+            return {"sessions": len(sessions), "repaired": repaired}
+
     @staticmethod
     def digest(session):
         """Stable per-session key that does not carry the group id itself.
@@ -60,11 +145,13 @@ class TopicAnnotations:
             return {}
         drafts = raw.get("drafts")
         return {
+            "draft_epoch": int(raw.get("draft_epoch", 0)),
+            "requests": deepcopy(raw.get("requests", {})),
             "draft_schema_version": raw.get("draft_schema_version"),
             "generated_at": raw.get("generated_at"),
             "provider_id": str(raw.get("provider_id") or ""),
             "model": str(raw.get("model") or ""),
-            "dismissed_ids": [mid for mid in raw.get("dismissed_ids", []) if isinstance(mid, str)][:2000]
+            "dismissed_ids": [mid for mid in raw.get("dismissed_ids", []) if isinstance(mid, str)]
             if isinstance(raw.get("dismissed_ids"), list) else [],
             "drafts": {str(mid): draft for mid, draft in drafts.items()
                        if isinstance(draft, dict)} if isinstance(drafts, dict) else {},
@@ -72,19 +159,28 @@ class TopicAnnotations:
 
     async def _index_session(self, session, *, remove: bool = False) -> None:
         """Remember (or forget) a session that has drafts. Caller holds the lock."""
-        rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY, [])
+        if remove:
+            return  # Retain tombstones so interrupted writes remain discoverable.
+        key = DRAFT_INDEX_KEY + "_shard_" + self.digest(session)[:2]
+        rows = await self.plugin.get_kv_data(key, [])
         rows = [str(row) for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
         rows = [row for row in rows if row != session]
         if not remove:
             rows.insert(0, session)
-        await self.plugin.put_kv_data(DRAFT_INDEX_KEY, rows[:MAX_INDEXED_SESSIONS])
+        await self.plugin.put_kv_data(key, rows)
 
     async def known_sessions(self) -> list:
         """Sessions with stored drafts, newest first, whether or not they are live."""
         rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY, [])
-        return [str(row) for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
+        result = [row for row in rows if isinstance(row, str)] if isinstance(rows, list) else []
+        for shard in range(256):
+            rows = await self.plugin.get_kv_data(DRAFT_INDEX_KEY + "_shard_" + format(shard, "02x"), [])
+            if isinstance(rows, list):
+                result.extend(row for row in rows if isinstance(row, str))
+        return list(dict.fromkeys(result))
 
-    async def save_drafts(self, session, payload, *, merge=False, is_current=None) -> dict | None:
+    async def save_drafts(self, session, payload, *, merge=False, is_current=None,
+                          expected_epoch=None, regenerate_dismissed=False) -> dict | None:
         raw = payload.get("drafts")
         record = {
             "draft_schema_version": payload.get("draft_schema_version") or 1,
@@ -95,57 +191,91 @@ class TopicAnnotations:
                        if isinstance(mid, str) and isinstance(draft, dict)},
         }
         async with self.lock:
-            if merge:
-                previous = await self.read_drafts(session)
-                labels = await self.plugin.get_kv_data(self.key(session), [])
-                labelled = {row.get("msg_id") for row in labels if isinstance(row, dict)} if isinstance(labels, list) else set()
-                record["dismissed_ids"] = previous.get("dismissed_ids", [])
-                combined = {**previous.get("drafts", {}), **record["drafts"]}
-                record["drafts"] = dict(list((mid, draft) for mid, draft in combined.items()
-                                           if mid not in labelled)[-2000:])
+            previous = await self.read_drafts(session)
+            epoch = previous.get("draft_epoch", 0)
+            if expected_epoch is not None and expected_epoch != epoch:
+                return None
+            labels = (await self._state(session))["labels"]
+            labelled = {row.get("msg_id") for row in labels if isinstance(row, dict)}
+            dismissed = set(previous.get("dismissed_ids", []))
+            if regenerate_dismissed:
+                dismissed.difference_update(record["drafts"])
+            record["dismissed_ids"] = sorted(dismissed)
+            record["draft_epoch"] = epoch
+            record["requests"] = previous.get("requests", {})
+            combined = {**(previous.get("drafts", {}) if merge else {}), **record["drafts"]}
+            record["drafts"] = dict(list((mid, draft) for mid, draft in combined.items()
+                                       if mid not in labelled and mid not in dismissed)[-2000:])
             if is_current is not None and not is_current():
                 return None
-            await self.plugin.put_kv_data(self.draft_key(session), record)
             await self._index_session(session)
+            await self.plugin.put_kv_data(self.draft_key(session), record)
         return record
 
-    async def clear_drafts(self, session) -> None:
+    async def clear_drafts(self, session, *, request_id=None):
         async with self.lock:
             previous = await self.read_drafts(session)
-            dismissed = list(dict.fromkeys(previous.get("dismissed_ids", []) + list(previous.get("drafts", {}))))[-2000:]
-            await self.plugin.put_kv_data(self.draft_key(session), {"drafts": {}, "dismissed_ids": dismissed})
+            requests = previous.get("requests", {})
+            entry = await self._request_entry(session, request_id, requests) if request_id is not None else None
+            if entry is not None:
+                if entry["fingerprint"] != "clear":
+                    raise ValueError("request_id reused with different input")
+                return deepcopy(entry["result"])
+            dismissed = list(dict.fromkeys(previous.get("dismissed_ids", []) + list(previous.get("drafts", {}))))
+            result = {"cleared": True, "draft_epoch": previous.get("draft_epoch", 0) + 1}
+            if request_id is not None:
+                await self._archive_requests(session, requests)
+                requests[request_id] = {"fingerprint": "clear", "result": result}
+            await self._index_session(session)
+            await self.plugin.put_kv_data(self.draft_key(session), {"drafts": {}, "dismissed_ids": dismissed,
+                                                                  "requests": requests,
+                                                                  "draft_epoch": previous.get("draft_epoch", 0) + 1})
             await self._index_session(session, remove=True)
+            return result
 
-    async def remove_drafts(self, session, msg_ids, *, revisions=None) -> int:
+    async def remove_drafts(self, session, msg_ids, *, revisions=None, request_id=None) -> int:
         """Drop drafts a reviewer dismissed or accepted; returns the count removed."""
         wanted = {str(mid) for mid in msg_ids if str(mid).strip()}
         if not wanted:
             return 0
         async with self.lock:
-            raw = await self.plugin.get_kv_data(self.draft_key(session), {})
+            raw = deepcopy(await self.plugin.get_kv_data(self.draft_key(session), {}))
             if not isinstance(raw, dict):
                 return 0
+            fingerprint = self.revision({"remove": sorted(wanted), "revisions": revisions})
+            requests = raw.setdefault("requests", {})
+            entry = await self._request_entry(session, request_id, requests) if request_id is not None else None
+            if entry is not None:
+                if entry["fingerprint"] != fingerprint:
+                    raise ValueError("request_id reused with different input")
+                return entry["result"]
             drafts = raw.get("drafts")
             if not isinstance(drafts, dict):
-                return 0
+                drafts = {}
             removed = 0
+            removed_ids = []
             for mid in wanted:
                 if revisions is not None and self.revision(drafts.get(mid)) != revisions.get(mid):
                     continue
                 if drafts.pop(mid, None) is not None:
                     removed += 1
+                    removed_ids.append(mid)
             raw["drafts"] = drafts
             previous = raw.get("dismissed_ids", [])
             previous = previous if isinstance(previous, list) else []
             raw["dismissed_ids"] = list(dict.fromkeys(
-                [mid for mid in previous if isinstance(mid, str)] + sorted(wanted)))[-2000:]
+                [mid for mid in previous if isinstance(mid, str)] + sorted(removed_ids)))
+            if request_id is not None:
+                await self._archive_requests(session, requests)
+                requests[request_id] = {"fingerprint": fingerprint, "result": removed}
+            await self._index_session(session)
             await self.plugin.put_kv_data(self.draft_key(session), raw)
             if not drafts:
                 await self._index_session(session, remove=True)
             return removed
 
     async def read(self, session):
-        rows = await self.plugin.get_kv_data(self.key(session), [])
+        rows = (await self._state(session))["labels"]
         rows = deepcopy(rows) if isinstance(rows, list) else []
         # A stored row is only trusted while it still carries the fields this
         # schema requires: one legacy or truncated row used to break both the
@@ -178,7 +308,15 @@ class TopicAnnotations:
                     "expected_reply": sum(row.get("expected_reply") is True for row in recipient_rows),
                     "sample_note": "仅统计人工标注样本，不代表真实准确率"}}
 
-    async def save(self, body, *, partial=False, draft_revision=None):
+    async def save(self, body, *, partial=False, draft_revision=None, request_id=None):
+        fingerprint = self.revision({"body": body, "partial": partial, "draft_revision": draft_revision})
+        if request_id is not None:
+            if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
+                raise ValueError("invalid request_id")
+            async with self.lock:
+                result = await self.request_result(body.get("session_key", ""), request_id, fingerprint=fingerprint)
+                if result is not None:
+                    return result
         if not isinstance(body, dict) or not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision"}:
             raise ValueError("invalid annotation fields")
         if any(not isinstance(v, str) or not v or len(v) > 256 for v in (body[key] for key in REQUIRED_FIELDS)):
@@ -204,6 +342,10 @@ class TopicAnnotations:
             raise ValueError("message no longer available; refresh replay")
         routing = node.metadata.get("routing", {})
         predicted = str(routing.get("topic_id") or "UNKNOWN")
+        frozen_trace = node.metadata.get("decision_trace") or node.metadata.get("trace_inputs") or {}
+        if isinstance(frozen_trace, dict) and frozen_trace.get("trace_schema_version"):
+            predicted = str(frozen_trace.get("routing", {}).get("selected_topic")
+                            or frozen_trace.get("topic", {}).get("topic_id") or predicted)
         expected = body["expected_topic"]
         known = {str(n.metadata.get("routing", {}).get("topic_id")) for n in dag.nodes.values()}
         runtime = getattr(self.plugin, "_sessions", {}).get(session)
@@ -237,10 +379,19 @@ class TopicAnnotations:
             outcome=node.metadata.get("outcome") or trace.get("outcome"),
             shadow=node.metadata.get("shadow_decision") or trace.get("shadow"),
         )
+        if trace.get("trace_schema_version"):
+            record["decision_trace"] = trace_with_updates(
+                trace, outcome=node.metadata.get("outcome") or trace.get("outcome"),
+                shadow=node.metadata.get("shadow_decision") or trace.get("shadow"))
         # Only submitted labels and bounded diagnostics, never automatic message collection.
         if getattr(self.plugin, "console_show_message_content", False):
             record["text"] = node.text[:2000]
         async with self.lock:
+            state = await self._state(session)
+            if request_id is not None:
+                result = await self.request_result(session, request_id, fingerprint=fingerprint)
+                if result is not None:
+                    return result
             rows = (await self.read(session))["records"]
             previous = next((row for row in rows if row["msg_id"] == mid), None)
             if partial and previous and "expected_revision" not in body:
@@ -274,5 +425,13 @@ class TopicAnnotations:
                     record["draft_confidence"] = draft.get("confidence")
             rows = [row for row in rows if row["msg_id"] != mid]
             rows.append(record)
-            await self.plugin.put_kv_data(self.key(session), rows[-2000:])
-        return {"saved": True, "record": record}
+            state["labels"] = rows[-2000:]
+            result = {"saved": True, "record": record, "accepted_draft_revision": self.revision(draft)}
+            if request_id is not None:
+                await self._archive_requests(session, state.setdefault("requests", {}))
+                state.setdefault("requests", {})[request_id] = {"fingerprint": fingerprint, "result": result}
+            state["projection_pending"] = True
+            await self._index_session(session)
+            await self.plugin.put_kv_data(self.state_key(session), state)
+            await self.plugin.put_kv_data(self.key(session), state["labels"])
+        return result

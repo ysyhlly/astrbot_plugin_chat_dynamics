@@ -1,0 +1,22 @@
+[
+  {
+    "id": "visible_explicit_parent_chain",
+    "corpus_kind": "synthetic",
+    "label_source": "synthetic",
+    "split": "regression",
+    "messages": [
+      {"user": "A", "text": "GPU fan configuration", "expected_topic": "hardware", "expected_parent": null},
+      {"user": "B", "text": "Use automatic GPU fan control", "reply_to": "0", "expected_topic": "hardware", "expected_parent": "0"},
+      {"user": "C", "text": "Confirm automatic control", "reply_to": "1", "expected_topic": "hardware", "expected_parent": "1"}
+    ]
+  },
+  {
+    "id": "explicit_null_parent_is_labeled",
+    "corpus_kind": "synthetic",
+    "label_source": "synthetic",
+    "split": "regression",
+    "messages": [
+      {"text": "A new independent conversation", "expected_topic": "new", "expected_parent": null}
+    ]
+  }
+]

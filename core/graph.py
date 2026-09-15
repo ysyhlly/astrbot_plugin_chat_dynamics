@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .semantics import SemanticMatch, semantic_match
+from .routing_contract import EDGE_KINDS, INFERRED_EDGE_KINDS
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.graph")
 
@@ -160,9 +161,13 @@ class ConversationDAG:
 
     def _link_parent(self, child_id: str, parent_id: str, kind: str = "reply") -> bool:
         """Link parent -> child while preserving the DAG invariant."""
+        if kind not in EDGE_KINDS:
+            return False
         child = self.nodes.get(child_id)
         parent = self.nodes.get(parent_id)
         if child is None or parent is None or child_id == parent_id:
+            return False
+        if child.edge_kinds.get(parent_id) == 'reply' and kind != 'reply':
             return False
 
         # Adding parent -> child would create a cycle if parent is already
@@ -323,7 +328,7 @@ class ConversationDAG:
 
         # 7. Atomic replacement of previous inferred_reply or semantic edges on child
         for existing_parent_id, kind in list(child.edge_kinds.items()):
-            if kind in {"inferred_reply", "semantic"} and existing_parent_id != parent_id:
+            if kind in INFERRED_EDGE_KINDS and existing_parent_id != parent_id:
                 child.parent_ids.discard(existing_parent_id)
                 child.edge_kinds.pop(existing_parent_id, None)
                 if existing_parent_id in self.nodes:
@@ -364,11 +369,11 @@ class ConversationDAG:
         if parent_id is not None:
             targets = [parent_id]
         else:
-            targets = [p for p, k in list(child.edge_kinds.items()) if k in {"inferred_reply", "semantic"}]
+            targets = [p for p, k in list(child.edge_kinds.items()) if k in INFERRED_EDGE_KINDS]
 
         removed = False
         for p_id in targets:
-            if child.edge_kinds.get(p_id) in {"inferred_reply", "semantic"}:
+            if child.edge_kinds.get(p_id) in INFERRED_EDGE_KINDS:
                 child.parent_ids.discard(p_id)
                 child.edge_kinds.pop(p_id, None)
                 p_node = self.nodes.get(p_id)

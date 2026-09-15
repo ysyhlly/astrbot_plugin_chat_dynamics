@@ -45,6 +45,7 @@ class AddressivityScore:
         evidence=(),
         family_contributions=(),
         contribution_total=None,
+        turn_evidence=None,
     ):
         self.score: float = round(float(score), 4)
         self.level: AddressivityLevel = level
@@ -53,6 +54,7 @@ class AddressivityScore:
         self.reasons: List[str] = list(reasons) if reasons else []
         self.topic_relevance: float = max(0.0, min(1.0, round(float(topic_relevance), 4)))
 
+        self.turn_evidence = turn_evidence
         self.evidence = tuple(evidence)
         self.family_contributions = dict(family_contributions)
         self.contribution_total = self.score if contribution_total is None else contribution_total
@@ -100,6 +102,7 @@ class AddressivityRouter:
         prior_hovers: Optional[List[ConversationNode]] = None,
         semantic_match_fn: Optional[Any] = None,
         runtime: Optional[Any] = None,
+        evidence_context: Optional[dict] = None,
     ) -> AddressivityScore:
         """Scores whether a message is directed at the bot.
 
@@ -113,6 +116,18 @@ class AddressivityRouter:
         Returns:
             AddressivityScore instance.
         """
+        cutoff = min(float(node.timestamp), float((evidence_context or {}).get("visible_before", node.timestamp)))
+
+        def visible(candidate):
+            return candidate is not None and candidate.timestamp <= cutoff
+
+        def recent_visible(limit):
+            # Filter before taking the window so future messages cannot evict history.
+            return [item for item in dag.get_recent_nodes(
+                limit=max(limit, getattr(dag, "max_nodes", limit))) if visible(item)][-limit:]
+
+        if not visible(last_bot_node):
+            last_bot_node = None
         b_id = bot_id if bot_id is not None else self.bot_id
         names = set(bot_names) if bot_names is not None else self.bot_names
         routing = node.metadata.get("routing") or {}
@@ -134,6 +149,24 @@ class AddressivityRouter:
         policy = ParticipationPolicy(self.strong_threshold, self.hover_threshold)
         facts, details = [], []
 
+        def evaluate(snapshot, *, explicit_only=False):
+            from .turn_evidence import TurnEvidence
+            envelope = None
+            if evidence_context is not None:
+                context = dict(evidence_context)
+                context["visible_before"] = cutoff
+                envelope = TurnEvidence.capture(**context, participation=snapshot,
+                    policy=policy, routing=routing)
+                decision = envelope.evaluate(explicit_only=explicit_only)
+            else:
+                decision = policy.explicit(snapshot) if explicit_only else policy.evaluate(snapshot)
+            if decision is None:
+                return None
+            result = self._policy_score(decision)
+            result.turn_evidence = envelope
+            return result
+
+
         def observe(code, family, strength, source, reason=None):
             facts.append(Evidence(code, family, strength, source))
             if reason is not None:
@@ -154,22 +187,24 @@ class AddressivityRouter:
                 observe("vocative", "recipient", 1.0, "identity_matcher", f"Bot name '{name}' used as a vocative")
                 break
         parent_node = dag.get_node(node.reply_to_id) if node.reply_to_id else None
+        if not visible(parent_node):
+            parent_node = None
         if parent_node is not None and parent_node.user_id == b_id:
             observe("bot_reply", "recipient", 1.0, "message.reply", f"Explicit reply to bot message {node.reply_to_id}")
         snapshot = ParticipationSnapshot(b_id, recipient, tuple(facts), tuple(details),
                                          parent_node.user_id if parent_node else None)
-        direct = policy.explicit(snapshot)
+        direct = evaluate(snapshot, explicit_only=True)
         if direct is not None:
-            return self._policy_score(direct)
+            return direct
         if parent_node is not None and parent_node.user_id != b_id:
             observe("human_quote", "recipient", 1.0, "message.reply")
         if not last_bot_node:
-            return self._policy_score(policy.evaluate(replace(snapshot, observations=tuple(facts))))
+            return evaluate(replace(snapshot, observations=tuple(facts)))
         if node.metadata.get("is_wake"):
             observe("platform_wake", "platform", 1.0, "message.is_wake")
         time_diff = max(0.0, node.timestamp - last_bot_node.timestamp)
         observe("temporal_gap", "temporal", time_diff, "message.timestamp")
-        recent = dag.get_recent_nodes(limit=20)
+        recent = recent_visible(20)
         bot_idx = next((idx for idx, item in enumerate(recent) if item.msg_id == last_bot_node.msg_id), -1)
         if bot_idx == -1:
             # The bot's turn has scrolled past the short window, which is exactly the
@@ -177,7 +212,7 @@ class AddressivityRouter:
             # penalty and *raised* the score (measured 0.350 against 0.200 with ten
             # intervening messages), so the count comes from the retained graph.
             count = sum(
-                1 for item in dag.get_recent_nodes(limit=max(20, getattr(dag, "max_nodes", 20)))
+                1 for item in recent_visible(max(20, getattr(dag, "max_nodes", 20)))
                 if item.msg_id != node.msg_id
                 and last_bot_node.timestamp < item.timestamp <= node.timestamp)
         else:
@@ -200,7 +235,7 @@ class AddressivityRouter:
         interlocutor_id = ""
         if last_bot_node.reply_to_id:
             trigger_node = dag.get_node(last_bot_node.reply_to_id)
-            if trigger_node:
+            if visible(trigger_node):
                 interlocutor_id = trigger_node.user_id
         interlocutor_id = (interlocutor_id or last_bot_node.metadata.get("trigger_user_id", "")
                            or (getattr(runtime, "last_interlocutor", "") if runtime else ""))
@@ -215,9 +250,9 @@ class AddressivityRouter:
             observe("explicit_thread", "dialogue", 1.0, "dag.thread")
         hover_nodes = []
         for candidate in list(prior_hovers or []):
-            if candidate is not None and candidate not in hover_nodes:
+            if visible(candidate) and candidate not in hover_nodes:
                 hover_nodes.append(candidate)
-        if prior_hover is not None and prior_hover not in hover_nodes:
+        if visible(prior_hover) and prior_hover not in hover_nodes:
             hover_nodes.append(prior_hover)
         for hover in hover_nodes:
             if hover.user_id != node.user_id or not (0.0 <= node.timestamp - hover.timestamp <= 120.0):
@@ -227,7 +262,7 @@ class AddressivityRouter:
                 observe("pending_hover", "dialogue", float(follows_hover), "pending_hover")
         snapshot = replace(snapshot, observations=tuple(facts), reason_details=tuple(details),
                            has_prior_bot=True, semantic_score=match.score, lexical_overlap=tuple(overlap))
-        return self._policy_score(policy.evaluate(snapshot))
+        return evaluate(snapshot)
 
     @staticmethod
     def _policy_score(decision) -> AddressivityScore:

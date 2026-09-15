@@ -1,5 +1,52 @@
 # Routing regression evaluation
 
+## Independent effectiveness gate
+
+`--check` checks deterministic regressions. `--check-effectiveness` independently
+requires `effectiveness_gate.status == "passed"`; missing supervision produces
+`not_ready` with `insufficient_labels`, even when every regression passes.
+The two switches can be combined. Current fixtures cannot establish real-world
+accuracy: they are synthetic examples, not 30–50 independently reviewed sessions.
+The evaluation tooling is implemented; the user currently has no real labeled
+corpus, so effectiveness remains `not_ready`. CI publishes
+`routing-supervised.json` from the labeled synthetic boundary regression; its
+embedded gate preserves this status without making the regression job fail.
+Invalid fixture contracts return exit code 2 and a JSON `input_error` report;
+direct Python `evaluate()` callers still receive the validation exception.
+
+Import a UTF-8 JSON array using the existing `--fixtures` option. Real validation
+cases must carry `corpus_kind: "real"`, `label_source: "independent_human"`,
+`split: "validation"`, a stable pseudonymous `session_id`, and `reviewer_id`.
+Use stable human topic cluster labels in `expected_topic`, never predicted topic
+IDs; mark unreviewed labels `topic_reviewed: false`. `expected_parent` is a
+visible earlier zero-based string message ID, or explicit null for no parent.
+Each counted session needs at least two valid topic labels and a parent label.
+Keep all cases from one session in one split: cross-split sessions are rejected.
+For time-held-out collection, assign whole sessions according to the cutoff;
+do not move later messages from the same session into validation. Include train
+and validation partitions together when checking isolation. Separate input files
+cannot prove absence of overlap with an unseen training corpus.
+
+The gate requires at least 30 such real sessions and zero supervised topic merge,
+fragmentation, and parent errors. This deliberately strict initial acceptance
+protocol must be reviewed before changing thresholds; do not tune it after looking
+at held-out results. Provenance is a declared import contract, not something the
+evaluator can independently authenticate. AI-drafted labels reviewed by a human
+must retain `label_source: "ai_assisted"`; they are reported separately and do
+not satisfy independent-human coverage. Missing sources remain `unspecified`.
+
+Reports retain candidate recall and conditional ranking metrics separately,
+recipient confusion separately, and participation admission separately. Execution
+is explicitly `not_measured`, since this replay does not invoke a final model
+decision or send. The effectiveness gate concerns supervised topic/parent quality;
+it does not certify delivery quality, production latency, or candidate-oracle
+recall. Every observation is captured before future turns are available; future
+parent references and decreasing replay timestamps are rejected.
+
+Example: `python scripts/evaluate_routing.py --fixtures private/validation.json
+--check --check-effectiveness --output private/validation-report.json`.
+Keep authorized, de-identified real conversation imports outside public fixtures.
+
 ## Stateful replay
 
 Replay is not "route every message, then score the last one". Each scored turn runs

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 import asyncio
-from .annotation_draft import build_batch, build_prompt as build_draft_prompt, parse_drafts
+import hashlib
+from .annotation_draft import build_batches, build_prompt as build_draft_prompt, parse_drafts
 from .llm_adapter import LLMUnavailable
 
 _ANNOTATION_DRAFT_WINDOW = 120
@@ -17,6 +18,7 @@ class AnnotationReview:
 
     async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False,
                                        automatic: bool = False,
+                                       regenerate_dismissed: bool = False,
                                        is_valid: Callable[[], bool] | None = None) -> dict[str, Any]:
         """Draft reply labels for the current window, for a human to accept.
 
@@ -50,20 +52,21 @@ class AnnotationReview:
             return payload
         existing = await self.host.topic_annotations.read(session_key)
         annotated = {row.get("msg_id"): row for row in existing.get("records") or []}
+        stored = await self.host.topic_annotations.read_drafts(session_key)
+        draft_epoch = stored.get("draft_epoch", 0)
+        if not regenerate_dismissed:
+            annotated.update({mid: True for mid in stored.get("dismissed_ids", [])})
         if automatic:
             annotated.update(existing.get("drafts") or {})
-            stored = await self.host.topic_annotations.read_drafts(session_key)
-            annotated.update({mid: True for mid in stored.get("dismissed_ids", [])})
         runtime = (getattr(self.host, "_sessions", None) or {}).get(session_key)
         epoch = getattr(runtime, "epoch", None)
         bot_id = str(getattr(runtime, "bot_id", "") or "")
-        if not bot_id:
-            bot_id = str(getattr(getattr(self.host, "addressivity_router", None), "bot_id", "") or "")
-        batch, stats = build_batch(dag.get_recent_nodes(_ANNOTATION_DRAFT_WINDOW), annotated,
-                                   limit=int(self.host.annotation_draft_limit or 20), bot_id=bot_id)
+        batches, stats = build_batches(dag.get_recent_nodes(_ANNOTATION_DRAFT_WINDOW), annotated,
+            limit=int(self.host.annotation_draft_limit or 20), bot_id=bot_id,
+            max_prompt_chars=_MAX_TURN_CHARS)
         payload["stats"] = stats
         asked_nodes = {row["msg_id"]: dag.nodes.get(row["msg_id"])
-                       for row in batch if row["draft_this"]}
+                       for batch in batches for row in batch if row["draft_this"]}
 
         def is_current() -> bool:
             return bool(not getattr(self.host, "_shutting_down", False)
@@ -82,12 +85,31 @@ class AnnotationReview:
             return payload
         provider_id = self.host.llm.configured_provider(purpose="draft")
         payload["provider_id"] = provider_id
-        system_prompt, prompt = build_draft_prompt(batch)
+        parsed = {"drafts": {}, "drafted": 0, "invented": [], "undecided": [],
+                  "missing": [], "duplicate": [], "out_of_window": [], "invalid_confidence": []}
+        deadline = asyncio.get_running_loop().time() + float(self.host.annotation_draft_timeout or 60.0)
         try:
-            reply = await self.host.llm.generate(
-                prompt=self.host._bounded_text(prompt, _MAX_TURN_CHARS),
-                umo=session_key, system_prompt=system_prompt, purpose="draft",
-                timeout=float(self.host.annotation_draft_timeout or 60.0))
+            for batch in batches:
+                if not is_current():
+                    return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise LLMUnavailable("draft window deadline exceeded")
+                system_prompt, prompt = build_draft_prompt(batch)
+                reply = await self.host.llm.generate(
+                    prompt=prompt, umo=session_key, system_prompt=system_prompt,
+                    purpose="auto_draft" if automatic else "draft", timeout=remaining)
+                if not is_current():
+                    return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
+                part = parse_drafts(reply, batch, diagnostics=True)
+                if part is None:
+                    parsed["missing"].extend(row["msg_id"] for row in batch if row["draft_this"])
+                    continue
+                parsed["drafts"].update(part["drafts"])
+                for field in ("invented", "undecided", "missing", "duplicate", "out_of_window", "invalid_confidence"):
+                    parsed[field].extend(part.get(field, []))
+                for field in ("draft_schema_version", "prompt_version"):
+                    parsed[field] = part[field]
         except asyncio.CancelledError:
             raise
         except LLMUnavailable as exc:
@@ -99,8 +121,10 @@ class AnnotationReview:
             payload["state"] = "failed"
             payload["reason"] = f"调用模型失败（{type(exc).__name__}）。"
             return payload
-        parsed = parse_drafts(reply, batch)
-        if parsed is None:
+        parsed["drafted"] = len(parsed["drafts"])
+        payload["diagnostics"] = {key: parsed[key] for key in
+            ("missing", "duplicate", "out_of_window", "invalid_confidence", "undecided")}
+        if not parsed["drafts"]:
             self.host._metric("annotation_draft_failed")
             payload["state"] = "failed"
             payload["reason"] = "模型返回的不是可解析的 JSON 对象。"
@@ -109,7 +133,8 @@ class AnnotationReview:
             return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
         saved = await self.host.topic_annotations.save_drafts(
             session_key, {**parsed, "provider_id": provider_id, "model": ""},
-            merge=True, is_current=is_current)
+            merge=True, is_current=is_current, expected_epoch=draft_epoch,
+            regenerate_dismissed=regenerate_dismissed)
         if saved is None:
             return {**payload, "state": "cancelled", "reason": "会话或设置已变更，本次生成已取消"}
         self.host._metric("annotation_draft_succeeded", amount=int(parsed.get("drafted") or 0))
@@ -186,7 +211,8 @@ class AnnotationReview:
                 "provider_id": str(stored.get("provider_id") or ""),
                 "items": items,
             })
-        return {"sessions": sessions, "total_drafts": total, "content_hidden": not show_content}
+        return {"sessions": sessions, "total_drafts": total, "content_hidden": not show_content,
+                "reconciliation": getattr(self.host, '_review_reconciliation', {'state': 'not_started'})}
 
 
     async def annotation_drafts_apply(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -207,17 +233,33 @@ class AnnotationReview:
         session = str(body.get("session_key") or "").strip()
         if not session or len(session) > 256:
             raise ValueError("session_key is required")
+        request_id = body.get('request_id')
+        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128):
+            raise ValueError('invalid request_id')
+        store = self.host.topic_annotations
+        if request_id:
+            # Persist input identity before any per-item effects. A retry after
+            # a partial commit must not reuse this ID with a different batch.
+            await store.record_request(session, request_id + ':input', body, {'accepted': True})
+            async with store.lock:
+                completed = await store.request_result(session, request_id, fingerprint=store.revision(body))
+            if completed is not None:
+                return completed
+        async def complete(result):
+            if request_id:
+                return await store.record_request(session, request_id, body, result)
+            return result
         if action == "clear_session":
-            await self.host.topic_annotations.clear_drafts(session)
-            return {"cleared": True}
+            await store.clear_drafts(session, request_id=request_id + ':clear' if request_id else None)
+            return await complete({"cleared": True})
         if not isinstance(body.get("msg_ids"), list) or len(body["msg_ids"]) > 200:
             raise ValueError("msg_ids must contain at most 200 entries")
         msg_ids = list(dict.fromkeys(str(mid)[:128] for mid in body["msg_ids"] if str(mid).strip()))
         if not msg_ids:
             raise ValueError("msg_ids is required")
         if action == "dismiss":
-            removed = await self.host.topic_annotations.remove_drafts(session, msg_ids)
-            return {"removed": removed}
+            removed = await store.remove_drafts(session, msg_ids, request_id=request_id + ':dismiss' if request_id else None)
+            return await complete({"removed": removed})
         if action != "accept":
             raise ValueError("unknown action")
         topic = str(body.get("expected_topic") or "KEEP")
@@ -227,9 +269,18 @@ class AnnotationReview:
         drafts = stored.get("drafts") or {}
         dag = self.host.dags.get(session)
         saved: list[str] = []
+        cleanup_revisions: dict[str, str] = {}
         skipped: list[dict[str, str]] = []
         failed: list[dict[str, str]] = []
         for mid in msg_ids:
+            item_request = (request_id + ':' + hashlib.sha256(mid.encode()).hexdigest()) if request_id else None
+            if item_request:
+                previous_result = await store.read_request(session, item_request)
+                if previous_result is not None:
+                    saved.append(mid)
+                    if isinstance(previous_result.get('accepted_draft_revision'), str):
+                        cleanup_revisions[mid] = previous_result['accepted_draft_revision']
+                    continue
             draft = drafts.get(mid)
             if not isinstance(draft, dict):
                 failed.append({"msg_id": mid, "error": "草稿不存在或已处理"})
@@ -259,8 +310,8 @@ class AnnotationReview:
             if "annotation_revision" in baseline:
                 record["expected_revision"] = baseline["annotation_revision"]
             try:
-                await self.host.topic_annotations.save(record, partial=True,
-                    draft_revision=baseline.get("draft_revision"))
+                result = await self.host.topic_annotations.save(record, partial=True,
+                    draft_revision=baseline.get("draft_revision", store.revision(draft)), request_id=item_request)
             except ValueError as exc:
                 if "no longer available" in str(exc):
                     skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
@@ -268,7 +319,8 @@ class AnnotationReview:
                     failed.append({"msg_id": mid, "error": str(exc)})
                 continue
             saved.append(mid)
+            cleanup_revisions[mid] = result.get('accepted_draft_revision', store.revision(draft))
         if saved:
             await self.host.topic_annotations.remove_drafts(session, saved,
-                revisions={mid: self.host.topic_annotations.revision(drafts[mid]) for mid in saved})
-        return {"saved": len(saved), "saved_ids": saved, "skipped": skipped, "failed": failed}
+                revisions=cleanup_revisions)
+        return await complete({"saved": len(saved), "saved_ids": saved, "skipped": skipped, "failed": failed})

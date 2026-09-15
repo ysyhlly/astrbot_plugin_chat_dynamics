@@ -68,7 +68,7 @@ class AnnotationDraftScheduler:
                     and session_key in self.host.dags)
 
     async def generate(self, session_key: str, *, refresh: bool = False,
-                       automatic: bool = False) -> dict[str, Any]:
+                       automatic: bool = False, regenerate_dismissed: bool = False) -> dict[str, Any]:
         if self.closed or getattr(self.host, "_shutting_down", False):
             return {"state": "cancelled", "reason": "插件正在关闭", "session_key": session_key}
         running = self.jobs.get(session_key)
@@ -80,6 +80,7 @@ class AnnotationDraftScheduler:
         self._tokens[session_key] = token
         task = asyncio.create_task(AnnotationReview(self.host).annotation_draft_payload(
             session_key, refresh=refresh, automatic=automatic,
+            regenerate_dismissed=regenerate_dismissed and not automatic,
             is_valid=lambda: not self.closed and self._tokens.get(session_key) is token))
         self.jobs[session_key] = task
         try:

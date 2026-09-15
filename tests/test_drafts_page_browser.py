@@ -307,6 +307,7 @@ def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_serv
         page.wait_for_function("window.__calls.length >= 1")
         dismissed = page.evaluate("window.__calls[0]")
         assert dismissed["endpoint"] == "annotation_drafts"
+        assert dismissed["body"].pop("request_id")
         assert dismissed["body"] == {
             "action": "dismiss",
             "session_key": "aiocqhttp:GroupMessage:10001",
@@ -318,6 +319,7 @@ def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_serv
         page.locator("[data-clear-session]").first.click()
         page.wait_for_function("window.__calls.length >= 1")
         cleared = page.evaluate("window.__calls[0]")
+        assert cleared["body"].pop("request_id")
         assert cleared["body"] == {
             "action": "clear_session",
             "session_key": "aiocqhttp:GroupMessage:10001",
@@ -381,13 +383,83 @@ def test_large_batch_chunks_and_preserves_failed_selection(browser, page_server)
         page.evaluate("""() => {
           window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
             window.__calls.push({body});
-            if (window.__calls.length === 2) throw new Error('network failure');
+            if (body.msg_ids[0] === 'item200') throw new Error('network failure');
             return {ok:true, data:{saved:body.msg_ids.length,saved_ids:body.msg_ids,failed:[]}};
           };
         }""")
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
-        page.wait_for_function("window.__calls.length === 3 && !document.querySelector('#btnRefresh').disabled")
-        assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [200, 200, 1]
+        page.wait_for_function("window.__calls.length === 4 && !document.querySelector('#btnRefresh').disabled")
+        assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [200, 200, 200, 1]
         assert page.locator("[data-select]:checked").count() == 200
-        assert "201" in page.locator("#reviewStatus").inner_text()
+        assert "请求结果待确认" in page.locator("#reviewStatus").inner_text()
+        assert page.evaluate("window.__calls[1].body.request_id === window.__calls[2].body.request_id")
+
+
+def test_slow_success_is_confirmed_by_query_without_second_write(browser, page_server):
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        page.evaluate("""() => {
+          const get = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params={}) => params.request_id
+            ? {ok:true,data:{state:'complete',result:{saved:1,saved_ids:['m1'],failed:[]}}} : get(endpoint,params);
+          window.AstrBotPluginPage.apiPost = async (endpoint,body) => {
+            window.__calls.push({body});
+            await new Promise(resolve => setTimeout(resolve, 9000));
+            return {ok:true,data:{saved:1,saved_ids:['m1'],failed:[]}};
+          };
+        }""")
+        page.locator('[data-accept][data-mid="m1"]').click()
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('已采纳 1')", timeout=15000)
+        assert page.evaluate("window.__calls.length") == 1
+        assert page.evaluate("JSON.parse(sessionStorage.getItem('chat-dynamics:draft-review:pending:v1')).length") == 0
+
+
+def test_pending_survives_refresh_and_query_restores_result(browser, page_server):
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        page.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint,body) => {
+            window.__calls.push({body}); throw new Error('network failure');
+          };
+        }""")
+        page.locator('[data-accept][data-mid="m1"]').click()
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('请求结果待确认')")
+        bodies = page.evaluate("window.__calls.map(c=>c.body)")
+        assert len(bodies) == 2 and bodies[0] == bodies[1]
+        assert page.locator('[data-accept][data-mid="m1"]').is_disabled()
+        page.reload()
+        page.wait_for_selector('#btnCheckPending:visible')
+        assert page.locator('[data-accept][data-mid="m1"]').is_disabled()
+        page.evaluate("""() => {
+          const get = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint,params={}) => params.request_id
+            ? {ok:true,data:{state:'complete',result:{saved:1,saved_ids:['m1'],failed:[]}}} : get(endpoint,params);
+        }""")
+        page.locator('#btnCheckPending').click()
+        page.wait_for_function("document.querySelector('#btnCheckPending').hidden")
+        assert page.evaluate("window.__calls.length") == 0
+        assert page.locator('[data-accept][data-mid="m1"]').is_enabled()
+
+
+def test_clear_pending_response_is_retained_until_confirmed(browser, page_server):
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        page.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint,body) => {
+            window.__calls.push({body}); return {ok:true,data:{state:'pending',request_id:body.request_id}};
+          };
+        }""")
+        page.locator('[data-clear-session]').first.click()
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('请求结果待确认')")
+        stored = page.evaluate("JSON.parse(sessionStorage.getItem('chat-dynamics:draft-review:pending:v1'))")
+        assert len(stored) == 1 and stored[0]['action'] == 'clear_session'
+        assert page.locator('[data-clear-session]').first.is_disabled()
+        page.evaluate("""() => {
+          const get = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint,params={}) => params.request_id
+            ? {ok:true,data:{state:'complete',result:{cleared:true}}} : get(endpoint,params);
+        }""")
+        page.locator('#btnCheckPending').click()
+        page.wait_for_function("document.querySelector('#btnCheckPending').hidden")
+        assert page.evaluate("window.__calls.length") == 1

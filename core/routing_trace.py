@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
+from copy import deepcopy
 from enum import Enum
 from collections.abc import Mapping
 from typing import Any
@@ -211,6 +212,11 @@ def redact_trace_identifiers(trace):
     if isinstance(routing, dict):
         routing["selected_topic"] = ""
         routing["topic_candidates"] = []
+    turn = result.get("turn")
+    if isinstance(turn, dict):
+        turn["session_id"] = ""
+        turn["message_id"] = ""
+        turn["turn_id"] = ""
     state = result.get("state", {})
     state["active_interlocutor"] = None
     state["last_bot_message_id"] = None
@@ -291,23 +297,34 @@ def build_routing_trace(*, routing, identity=None, participation=None,
 
 
 def compact_trace_inputs(trace: Any) -> dict:
-    """The sections a trace rebuild needs, small enough to persist per node.
+    """Persist the complete historical decision, detached from mutable node state.
 
-    The frozen snapshot itself is deliberately not snapshotted: it carries the
-    ledger and the per-candidate evidence, and a few kilobytes per node times every
-    retained session is what turns the panel snapshot into a payload nobody can
-    write. These sections have no other source on a node, so they travel on their
-    own and an annotation saved after a restart still records what the turn was
-    scored on instead of a participation block of nulls.
+    The name is retained for compatibility. The trace itself is already
+    allowlisted and bounded; the global persistence budget controls retention.
     """
-    source = trace if isinstance(trace, Mapping) else {}
-    compact: dict[str, Any] = {}
-    for key in ("identity", "participation", "state"):
-        value = source.get(key)
-        if isinstance(value, Mapping):
-            compact[key] = dict(value)
-    for key in ("mode", "weights_version"):
-        value = source.get(key)
-        if isinstance(value, str) and value:
-            compact[key] = value[:64]
-    return compact
+    # The complete allowlisted decision is required: rebuilding from live routing
+    # changes history after a reroute. Global persistence budgets bound retention.
+    return deepcopy(dict(trace)) if isinstance(trace, Mapping) else {}
+
+
+def finalize_decision_trace(trace, *, should_reply: bool, branch: str = "") -> dict:
+    """Finalize admission once, preserving the actual short-circuit branch."""
+    result = deepcopy(dict(trace))
+    if result.get("decision_finalized"):
+        return result
+    result.setdefault("participation", {})["should_reply"] = bool(should_reply)
+    result["decision_branch"] = str(branch)[:96]
+    result["decision_finalized"] = True
+    return result
+
+
+def trace_with_updates(trace, *, outcome=None, shadow=None) -> dict:
+    """Attach later observations without rebuilding the historical decision."""
+    result = deepcopy(dict(trace))
+    block = _outcome_block(outcome)
+    if block is not None:
+        result[OUTCOME_KEY] = block
+    block = _shadow_block(shadow)
+    if block is not None:
+        result[SHADOW_KEY] = block
+    return result

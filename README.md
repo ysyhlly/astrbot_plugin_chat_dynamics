@@ -134,6 +134,13 @@ AI 草稿会为当前会话还没标注的消息起草两个标签：**该不该
 
 ## 开发与文档
 
+本轮审计实现覆盖输入契约、审核对账、有效评估、冻结证据和回合生命周期：
+
+- [预标注输入契约](docs/annotation-input-contract.md)与[审核存储契约](docs/review-storage-contract.md)
+- [回合证据](docs/turn-evidence-contract.md)、[回合流水线](docs/turn-pipeline.md)与[Provider 预算](docs/provider-budget.md)
+- [路由评估](docs/routing_evaluation.md)：真实效果状态与合成回归分开，缺少独立真实标签时为 `not_ready`。
+- [快照兼容与裁剪](docs/snapshot-contract.md)
+
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q

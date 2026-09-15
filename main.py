@@ -13,10 +13,11 @@ import json
 import math
 import re
 import threading
+import time
 from collections import deque
 from copy import deepcopy
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from .core.conversation_context import build_conversation_context, context_statistics
 from typing import Any, List, Optional, Set
 
@@ -29,7 +30,7 @@ except ImportError as exc:
         "Chat Dynamics 需要在 AstrBot (>=4.16,<5) 运行时中加载，当前环境无法导入 astrbot.api。"
     ) from exc
 
-from .core.addressivity import AddressivityLevel, AddressivityRouter
+from .core.addressivity import AddressivityRouter
 from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .core.data_paths import resolve_data_root
@@ -42,6 +43,7 @@ from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
 from .core.annotation_review import AnnotationReview
 from .core.annotation_scheduler import AnnotationDraftScheduler
+from .core.turn_latency import start_turn, record_stage
 from .core.config_panel import ConfigPanel, _PRESETS  # noqa: F401 (compatibility re-export)
 from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
 from .core.mood_memory import MoodMemoryStore
@@ -49,17 +51,18 @@ from .core.learning_policy import MODE_OFF
 from .core.learning_policy_runtime import APPLY_OVERLAP, LearningPolicyRuntime
 from .core.runtime_persistence import host_version as _host_plugin_version
 from .core.shadow_telemetry import ShadowTelemetry, KV_KEY as _KV_SHADOW, SALT_KEY as _KV_SHADOW_SALT
-from .core.native_delivery import NativeDeliveryGuard
+from .core.native_delivery import NativeDeliveryGuard, _NativeEventContext, after_message_sent as _native_after_message_sent
+from .core import turn_pipeline as _turn_pipeline
+from .core.turn_pipeline import _PokeJob, _PreparedTurn
+from .core.turn_limits import MAX_INPUT_CHARS as _MAX_INPUT_CHARS, MAX_TURN_CHARS as _MAX_TURN_CHARS
 from .core.outcome_recorder import (
-    STAGE_GATE, VALUE_IN_FLIGHT, mark_delivered, mark_delivery_failed, mark_generation_failed,
-    mark_in_flight, mark_not_attempted, mark_suppressed, read_outcome,
+    VALUE_IN_FLIGHT, mark_delivered, mark_delivery_failed, mark_generation_failed,
+    mark_in_flight, read_outcome,
 )
 from .core.pacer import PacingShaper, is_rhythm_short_act
 from .core.persona_engine import (
     PersonaEngine,
     delivery_fragments,
-    is_request_supplement,
-    snapshot_turn,
 )
 from .core.poke import PokeReplyPolicy, drop_poke_streaks, next_poke_streak
 from .core.platform_bridge import (
@@ -76,7 +79,8 @@ from .core.platform_bridge import (
     send_plain,
 )
 from .core.integrations.registry import IntegrationRegistry
-from .core.session_runtime import FollowupBatch, PendingTurn, SessionRegistry, SessionRuntime
+from .core.session_runtime import PendingTurn, SessionRegistry, SessionRuntime
+from .core.session_runtime import FollowupBatch  # noqa: F401 (compatibility re-export)
 from .core.style_shaper import StyleShaper
 from .core.telemetrics import TelemetricsTracker
 from .core.topic_annotations import TopicAnnotations
@@ -104,8 +108,6 @@ _VIBE_LLM_FAILURE_BACKOFF = 15.0
 _SESSION_IDLE_SECONDS = 3600.0
 _SESSION_SWEEP_INTERVAL = 300.0
 _MAX_SESSIONS = 1000
-_MAX_INPUT_CHARS = 4000
-_MAX_TURN_CHARS = 8000
 _MAX_TURN_FRAGMENTS = 32
 _KV_COOLING = "cooling_until"
 _KV_RUNTIME = "panel_runtime_v1"
@@ -222,50 +224,10 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
 
 
 
-@dataclass
-class _PokeJob:
-    node: Any
-    event: Any
-    parsed: Any
-    now: float
 
 
-@dataclass
-class _PreparedTurn:
-    """Local routing snapshot carried across optional model work."""
-
-    result: DebounceResult
-    runtime: SessionRuntime
-    dag: ConversationDAG
-    node: ConversationNode
-    turn_nodes: tuple[ConversationNode, ...]
-    parsed_events: tuple[Any, ...]
-    explicit_platform: bool
-    now: float
-    analysis_text: str
-    vibe_mode: GroupChatMode
-    telemetrics: Any
-    neural_ready: Any
-    epoch: int
-    revision: int
-    owner_revision: int
 
 
-@dataclass
-class _NativeEventContext:
-    """Delivery state retained until the host completes one native result."""
-
-    event: Any = None
-    trigger_node: Any = None
-    vibe_mode: Any = None
-    guard: Optional[NativeDeliveryGuard] = None
-    result: Any = None
-    fragments: tuple[str, ...] = ()
-    epoch: int = 0
-    owner_user_id: str = ""
-    owner_revision: int = 0
-    platform_message_id: Optional[str] = None
-    installed: bool = False
 
 
 
@@ -913,11 +875,12 @@ class ChatDynamicsPlugin(Star):
             return {"items": store.due_anniversaries(umo)}
         raise ValueError(f"unknown notebook action: {action}")
 
-    async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False) -> dict[str, Any]:
+    async def annotation_draft_payload(self, session_key: str, *, refresh: bool = False,
+                                       regenerate_dismissed: bool = False) -> dict[str, Any]:
         scheduler = getattr(self, "_annotation_scheduler", None)
         if scheduler is None:
             scheduler = self._annotation_scheduler = AnnotationDraftScheduler(self)
-        return await scheduler.generate(session_key, refresh=refresh)
+        return await scheduler.generate(session_key, refresh=refresh, regenerate_dismissed=regenerate_dismissed)
     async def annotation_drafts_payload(self, session_key: str = "") -> dict[str, Any]:
         return await AnnotationReview(self).annotation_drafts_payload(session_key)
 
@@ -1326,6 +1289,11 @@ class ChatDynamicsPlugin(Star):
         await self._load_persisted_cooling()
         await self._load_panel_runtime()
         await self._load_shadow_telemetry()
+        try:
+            self._review_reconciliation = {'state': 'complete', **await self.topic_annotations.reconcile()}
+        except Exception as exc:
+            self._review_reconciliation = {'state': 'pending', 'error_type': type(exc).__name__}
+            logger.warning('[ChatDynamics] Review reconciliation pending type=%s', type(exc).__name__)
         if self._runtime_persist_task is None or self._runtime_persist_task.done():
             self._runtime_persist_stop.clear()
             self._runtime_persist_task = self._create_background_task(self._panel_persistence_loop())
@@ -2134,7 +2102,11 @@ class ChatDynamicsPlugin(Star):
                 self._metric("stale_turn_ignored")
                 return
             runtime.touch(self.time_service.time())
+            prepare_started = time.perf_counter()
             model_turn = self._prepare_turn_locked(result)
+            if isinstance(model_turn, _PreparedTurn):
+                start_turn(model_turn.node, prepare_started)
+                record_stage(model_turn.node, 'prepare', prepare_started)
         if isinstance(model_turn, _PreparedTurn):
             prepared = model_turn
             if not prepared.explicit_platform:
@@ -2143,7 +2115,9 @@ class ChatDynamicsPlugin(Star):
                 if not self._prepared_turn_current(prepared):
                     self._metric("stale_turn_ignored")
                     return
+                decision_started = time.perf_counter()
                 model_turn = self._finish_turn_locked(prepared)
+                record_stage(prepared.node, 'decision', decision_started)
                 self._create_background_task(self._enrich_topic_background(prepared))
         if isinstance(model_turn, _PokeJob):
             await self._deliver_poke_reply(
@@ -2159,256 +2133,28 @@ class ChatDynamicsPlugin(Star):
 
     @staticmethod
     def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
-        """Stage gate state; actual quota accounting happens after successful send."""
-        runtime._pending_gate_skin = gate.skin
-        runtime._pending_gate_proactive = gate.proactive
-        runtime._pending_gate_rhythm = gate.rhythm
-        runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
-        runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-        if gate.length_hint:
-            runtime.last_length_hint = gate.length_hint
-        if gate.delay_scale:
-            runtime.last_delay_scale = gate.delay_scale
-        runtime.last_rhythm_action = gate.rhythm.action if gate.rhythm is not None else ""
+        return _turn_pipeline._commit_gate_result(runtime, gate)
 
     def _resolve_gate_result(
         self, runtime: SessionRuntime, session_id: str, arb_res: ArbitrationResult,
         gate: GateResult, wall_now: float,
     ) -> ArbitrationResult:
-        """Apply hard blocks, gate vetoes and explicit proactive exceptions in order.
-
-        ``wall_now`` is the civil clock, not the monotonic turn clock: the gate's
-        bookkeeping (manners daily counters and why-silent stamps) rolls its day with
-        ``time.localtime``, so a monotonic value resets that day to 1970 on every
-        withheld turn and wipes today's counters with it.
-        """
-        hard_block = bool(
-            arb_res.in_deep_cooling or arb_res.is_energy_asymmetric or arb_res.private_topic
-        )
-        whitelist_open = bool(
-            gate.should_speak
-            and not hard_block
-            and (
-                (gate.proactive is not None and bool(getattr(gate.proactive, "proactive", False)))
-                or (
-                    gate.rhythm is not None
-                    and gate.rhythm.allow
-                    and gate.rhythm.action
-                    in {
-                        "goodnight_reply",
-                        "wake_reply",
-                        "morning_hi",
-                        "day_share",
-                        "insomnia_line",
-                    }
-                )
-            )
-        )
-        if arb_res.should_speak and not gate.should_speak:
-            # WTS already authorized this turn. useful_proactive's idle vetoes
-            # (no gap / newcomer ambient-name) must not cancel that; manners,
-            # media, rhythm, deciding and quota still win.
-            if gate.reason_code in {"no_gap", "newcomer_caution"} and not hard_block:
-                self._commit_gate_result(runtime, gate)
-            else:
-                arb_res = replace(
-                    arb_res, should_speak=False,
-                    reason=f"{gate.reason_code}: {gate.reason_zh}",
-                )
-                self.arbiter.remember_decision(session_id, arb_res)
-        elif not arb_res.should_speak and whitelist_open:
-            arb_res = replace(
-                arb_res, should_speak=True,
-                willingness_score=max(float(arb_res.willingness_score or 0.0), arb_res.threshold),
-                reason=f"{gate.reason_code}: {gate.reason_zh}",
-            )
-            self.arbiter.remember_decision(session_id, arb_res)
-            self._commit_gate_result(runtime, gate)
-        elif not arb_res.should_speak:
-            self.decision_gate.note_arbiter_silence(session_id, arb_res.reason)
-        else:
-            # Will speak — remember hyped quota / intervene counts after pass.
-            self._commit_gate_result(runtime, gate)
-
-        return arb_res
+        return _turn_pipeline._resolve_gate_result(self, runtime, session_id, arb_res, gate, wall_now)
 
     def _prepare_turn_locked(self, result: DebounceResult) -> _PreparedTurn | _PokeJob | None:
-        """Mutate a session after its state lock has been acquired."""
-        if self._shutting_down:
-            return
-        if not self.debounce.is_result_current(result):
-            logger.info(
-                "[ChatDynamics] Ignored stale debounced turn for reset session %s",
-                self._session_label(result.session_id),
-            )
-            return
-        session_id = result.session_id
-        user_id = result.user_id
-        text = self._bounded_text(result.consolidated_text, _MAX_TURN_CHARS)
-        analysis_text = self._bounded_text(text, _MAX_INPUT_CHARS)
-        if text != result.consolidated_text or result.metadata.get("truncated"):
-            self._metric("turn_truncated")
-        now = self.time_service.time()
-        last_event = result.last_event
-        parsed_last = parse_group_event(last_event) if last_event is not None else None
-        parsed_events = []
-        turn_mentions: List[str] = []
-        is_wake = False
-
-        runtime = self._sessions.get(session_id)
-        for raw in result.raw_events:
-            parsed = parse_group_event(raw)
-            if runtime is None:
-                runtime = self._get_or_create_runtime(
-                    session_id,
-                    group_id=parsed.group_id or session_id,
-                    umo=parsed.unified_msg_origin or session_id,
-                    bot_id=parsed.self_id,
-                )
-            elif parsed.self_id:
-                runtime.bot_id = parsed.self_id
-            parsed_events.append(parsed)
-            for mention in parsed.mentions:
-                if mention not in turn_mentions:
-                    turn_mentions.append(mention)
-            if parsed.is_at_or_wake:
-                is_wake = True
-
-        if runtime is None:
-            runtime = self._get_or_create_runtime(session_id, group_id=session_id, umo=session_id)
-        if parsed_last and parsed_last.self_id:
-            runtime.bot_id = parsed_last.self_id
-
-        dag = runtime.dag
-        if dag is None:
-            raise RuntimeError("session DAG is unavailable")
-        self._mark_panel_runtime_dirty()
-        runtime.turn_sequence += 1
-        turn_id = f"turn_{runtime.turn_sequence}_{user_id}"
-        turn_nodes: List[ConversationNode] = []
-        previous_node: Optional[ConversationNode] = None
-        for index, parsed in enumerate(parsed_events):
-            item = result.messages[index] if index < len(result.messages) else None
-            fragment_text = self._bounded_text(
-                (getattr(item, "text", "") or parsed.text or "").strip(),
-                _MAX_INPUT_CHARS,
-            )
-            fragment_time = float(getattr(item, "timestamp", now) or now)
-            fragment_id = parsed.message_id or f"{turn_id}_{index}"
-            actual_mentions = list(dict.fromkeys(parsed.mentions))
-            current_node = dag.add_message(
-                msg_id=fragment_id,
-                user_id=parsed.sender_id or user_id,
-                text=fragment_text,
-                timestamp=fragment_time,
-                reply_to_id=parsed.reply_to_id,
-                mentioned_users=actual_mentions,
-                metadata={
-                    "turn_id": turn_id,
-                    "turn_index": index,
-                    "topic_source_text": parsed.text or "",
-                    "message_count": result.message_count,
-                    "duration": result.duration,
-                    "is_wake": parsed.is_at_or_wake,
-                    "actual_mentions": actual_mentions,
-                    "quoted_author_id": getattr(parsed, "reply_sender_id", ""),
-                    "platform_message_id": bool(parsed.message_id),
-                },
-            )
-            current_node.metadata["platform_message_id"] = bool(parsed.message_id)
-            if previous_node is not None and not parsed.reply_to_id:
-                dag.link_related(current_node.msg_id, previous_node.msg_id)
-            turn_nodes.append(current_node)
-            previous_node = current_node
-
-        if not turn_nodes:
-            node = dag.add_message(
-                msg_id=f"{turn_id}_0",
-                user_id=user_id,
-                text=text,
-                timestamp=now,
-                mentioned_users=turn_mentions,
-                metadata={
-                    "turn_id": turn_id,
-                    "message_count": result.message_count,
-                    "is_wake": is_wake,
-                    "platform_message_id": False,
-                },
-            )
-            node.metadata["platform_message_id"] = False
-        else:
-            node = turn_nodes[-1]
-            # Addressivity is evaluated for the complete debounced turn, so
-            # carry forward pointers that appeared in an earlier fragment.
-            node.mentioned_users = list(dict.fromkeys(node.mentioned_users + turn_mentions))
-            node.metadata["is_wake"] = is_wake
-            node.metadata["consolidated_text"] = text
-
-        poke_events = [item for item in parsed_events if getattr(item, "has_poke", False)]
-        poke_only = bool(parsed_events) and all(
-            getattr(item, "has_poke", False)
-            and not getattr(item, "has_media", False)
-            and is_poke_placeholder(getattr(item, "text", "") or "")
-            for item in parsed_events
-        )
-        poke_at_bot = any(getattr(item, "poke_at_bot", False) for item in poke_events)
-        if poke_only:
-            if last_event is not None and not self.shadow_mode:
-                if poke_at_bot:
-                    self._claim_poke_event(last_event)
-                else:
-                    self._block_native_for_mode(last_event)
-            if poke_at_bot:
-                return _PokeJob(node=node, event=last_event, parsed=poke_events[-1], now=now)
-            return None
-
-        atmosphere = self.vibe_analyzer.get_atmosphere(session_id, current_time=now)
-        vibe_mode = self.vibe_analyzer.get_mode(session_id, current_time=now)
-        telemetrics = atmosphere.energy
-        runtime.vibe_message_count += 1
-        self._vibe_msg_counts[session_id] = runtime.vibe_message_count
-        if not self.shadow_mode and not self._persona_mode():
-            self._schedule_vibe_llm(session_id, analysis_text, now)
-        if not self.shadow_mode:
-            # Both decision modes dispatch the LLM-request hook, so the partner's
-            # approved memories are warmed here for either of them.
-            self._schedule_mood_recall(session_id, user_id)
-
-        # Resolve all fragments before constructing the immutable persona snapshot.
-        for turn_node in turn_nodes or [node]:
-            self._route_message(runtime, turn_node)
-        task = self._schedule_neural_embed(session_id, node)
-        for turn_node in turn_nodes:
-            if turn_node is not node:
-                self._schedule_neural_embed(session_id, turn_node)
-        explicit_platform = any(self._looks_like_strong_address(p, runtime) for p in parsed_events)
-        routing = node.metadata.get("routing", {})
-        neural_ready = None
-        if (task is not None and not explicit_platform
-                and getattr(self._runtime_config, "conversation_router_enabled", True)
-                and (routing.get("ambiguous") or len(node.text.strip()) <= 16)):
-            neural_ready = getattr(task, "routing_ready", None)
-        return _PreparedTurn(
-            result=result, runtime=runtime, dag=dag, node=node,
-            turn_nodes=tuple(turn_nodes), parsed_events=tuple(parsed_events),
-            explicit_platform=explicit_platform, now=now, analysis_text=analysis_text,
-            vibe_mode=vibe_mode, telemetrics=telemetrics, neural_ready=neural_ready,
-            epoch=runtime.epoch, revision=runtime.revision,
-            owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
-        )
+        return _turn_pipeline._prepare_turn_locked(self, result)
 
     def _prepared_turn_current(self, turn: _PreparedTurn) -> bool:
-        runtime = turn.runtime
-        return bool(
-            not self._shutting_down
-            and self._sessions.get(turn.result.session_id) is runtime
-            and self.debounce.is_result_current(turn.result)
-            and runtime.epoch == turn.epoch
-            and runtime.revision == turn.revision
-            and runtime.user_revisions.get(str(turn.result.user_id or ""), 0) == turn.owner_revision
-            and runtime.dag is turn.dag
-            and turn.dag.get_node(turn.node.msg_id) is turn.node
-        )
+        return _turn_pipeline._prepared_turn_current(self, turn)
+
+    def _turn_config_identity(self) -> str:
+        return hashlib.sha256(repr(self._runtime_config).encode('utf-8')).hexdigest()
+
+    def _turn_policy_identity(self) -> str:
+        from .core.routing_contract import ROUTING_WEIGHTS_VERSION
+        consumer = getattr(getattr(self, 'learning_policy', None), 'consumer', None)
+        return ROUTING_WEIGHTS_VERSION + ':' + hashlib.sha256(
+            repr(getattr(consumer, 'decision', None)).encode('utf-8')).hexdigest()
 
     def _topic_reranker(self) -> TopicReranker | None:
         cfg = self._runtime_config
@@ -2421,332 +2167,13 @@ class ChatDynamicsPlugin(Star):
         )
 
     async def _enrich_turn(self, turn: _PreparedTurn) -> None:
-        if turn.neural_ready is not None:
-            try:
-                await asyncio.wait_for(
-                    turn.neural_ready.wait(),
-                    timeout=max(0.0, float(self._runtime_config.routing_neural_timeout)),
-                )
-            except asyncio.TimeoutError:
-                pass
-        async with turn.runtime.state_lock:
-            if not self._prepared_turn_current(turn):
-                return
-            if turn.neural_ready is not None:
-                query = build_contextual_query(turn.node, turn.dag)
-                if self.embeddings.cached(query) is not None:
-                    self._route_message(turn.runtime, turn.node)
-            reranker = self._topic_reranker()
-        if reranker is not None:
-            await self.thread_router.rerank_pending(turn.runtime, turn.node, reranker)
-            self._mark_panel_runtime_dirty()
+        return await _turn_pipeline._enrich_turn(self, turn)
 
     async def _enrich_topic_background(self, turn: _PreparedTurn) -> None:
-        """Optional display enrichment never delays a reply or outlives reset."""
-        self._track_hook_task(turn.result.session_id)
-        runtime = turn.runtime
-        async with runtime.state_lock:
-            if (self._shutting_down or self._sessions.get(turn.result.session_id) is not runtime
-                    or runtime.epoch != turn.epoch or runtime.dag is not turn.dag
-                    or turn.dag.get_node(turn.node.msg_id) is not turn.node):
-                return
-            reranker = self._topic_reranker()
-        if reranker is not None:
-            if turn.explicit_platform:
-                await self.thread_router.rerank_pending(runtime, turn.node, reranker)
-            async with runtime.state_lock:
-                if (self._shutting_down or runtime.epoch != turn.epoch
-                        or self._sessions.get(turn.result.session_id) is not runtime
-                        or runtime.dag is not turn.dag
-                        or turn.dag.get_node(turn.node.msg_id) is not turn.node):
-                    return
-            await self.thread_router.title_topic(runtime, turn.node, reranker)
-            self._mark_panel_runtime_dirty()
+        return await _turn_pipeline._enrich_topic_background(self, turn)
 
     def _finish_turn_locked(self, turn: _PreparedTurn) -> Any:
-        result, runtime, dag, node = turn.result, turn.runtime, turn.dag, turn.node
-        session_id, user_id = result.session_id, result.user_id
-        turn_nodes, parsed_events = turn.turn_nodes, turn.parsed_events
-        explicit_platform, now = turn.explicit_platform, turn.now
-        analysis_text, vibe_mode, telemetrics = turn.analysis_text, turn.vibe_mode, turn.telemetrics
-        last_event = result.last_event
-        last_bot_node = runtime.last_bot_node
-        runtime.expire_hovers(now)
-        addressivity = self.addressivity_router.compute_addressivity(
-            node=node,
-            dag=dag,
-            last_bot_node=last_bot_node,
-            bot_id=runtime.bot_id,
-            prior_hover=runtime.pending_hover,
-            prior_hovers=list(runtime.pending_hovers),
-            semantic_match_fn=self.embeddings.match,
-        )
-
-        from .core.bot_identity import BotIdentityMatcher
-        from .core.routing_trace import build_routing_trace, compact_trace_inputs
-        from .core.routing_contract import ROUTING_WEIGHTS_VERSION
-        identity = BotIdentityMatcher.match(node.text, self.bot_names,
-            mentions=node.mentioned_users, bot_id=runtime.bot_id)
-        dialogue = runtime.active_dialogue
-        trace_recent = dag.get_recent_nodes(limit=80)
-        # Phase one of a shadow run: the runtime keeps the baseline behaviour and
-        # the policy's decision is computed beside it. Computed here, before the
-        # trace is frozen, so the comparison travels inside the same snapshot the
-        # rest of the decision does.
-        shadow_runtime = getattr(self, "learning_policy", None)
-        shadow_recorded = (
-            shadow_runtime.shadow_decision(
-                score=float(addressivity.contribution_total or 0.0),
-                level=addressivity.level.value if hasattr(addressivity.level, "value")
-                else str(addressivity.level),
-                evidence_codes=[item.code for item in addressivity.evidence],
-                has_prior_bot=last_bot_node is not None,
-                baseline_threshold=float(self.addressivity_router.strong_threshold),
-                now=self.time_service.wall_time(),
-            ) if shadow_runtime is not None else None)
-        if shadow_recorded is not None:
-            node.metadata["shadow_decision"] = shadow_recorded
-            self.shadow_telemetry.record(
-                shadow_recorded, session=session_id, message_id=node.msg_id,
-                host_version=_host_plugin_version())
-        node.metadata["decision_trace"] = build_routing_trace(
-            routing=node.metadata.get("routing", {}), identity=identity,
-            participation={"score": addressivity.score, "level": addressivity.level,
-                           "should_reply": None,
-                           "evidence": addressivity.evidence,
-                           "family_contributions": addressivity.family_contributions,
-                           "contribution_total": addressivity.contribution_total},
-            state={"pending_hover": bool(runtime.pending_hover),
-                   "active_interlocutor": dialogue.user_id if dialogue else runtime.last_interlocutor,
-                   "last_bot_message_id": dialogue.last_bot_message_id if dialogue else None,
-                   "last_bot_was_question": dialogue.last_bot_was_question if dialogue else None,
-                   "waiting_for_answer": dialogue.accepts_answer(node, trace_recent) if dialogue else False,
-                   "intervening_users": len({n.user_id for n in trace_recent
-                       if last_bot_node is not None and last_bot_node.timestamp < n.timestamp < node.timestamp
-                       and n.user_id not in {runtime.bot_id, node.user_id}})},
-            mode="persona" if self._persona_mode() else "legacy",
-            weights_version=ROUTING_WEIGHTS_VERSION,
-            shadow=shadow_recorded)
-        # Every processed turn starts as "the reply flow was never entered" and
-        # is upgraded as the turn progresses. Recording a default beats leaving
-        # the field out: "we did not try" and "we never found out" are different
-        # facts, and only a written one can be counted.
-        # The frozen trace lives only in memory, so the sections a rebuild needs are
-        # kept separately for the panel snapshot: an annotation saved after a
-        # restart would otherwise record a participation block of nulls, and that
-        # block is the learning layer's only basis for threshold replay.
-        node.metadata["trace_inputs"] = compact_trace_inputs(node.metadata["decision_trace"])
-        mark_not_attempted(node)
-
-        if self._persona_mode():
-            explicit = explicit_platform
-            if not explicit and is_request_supplement(runtime, user_id, now):
-                # Same-user addendum to a recent @/wake request is not ambient chatter.
-                explicit = True
-            observations = {"mpm": telemetrics.mpm, "mode": vibe_mode.value,
-                            "addressivity": addressivity.score, "scene_tags": list(telemetrics.scene_tags)}
-            canonical_ids = tuple(turn_node.msg_id for turn_node in turn_nodes) or (node.msg_id,)
-            return snapshot_turn(
-                runtime,
-                result,
-                canonical_ids,
-                parsed_events,
-                explicit,
-                observations,
-                self.shadow_mode,
-            )
-
-        logger.debug(
-            "[ChatDynamics] Session %s turn flushed: vibe=%s addressivity=%s (%.2f)",
-            self._session_label(session_id),
-            vibe_mode.value,
-            addressivity.level.value,
-            addressivity.score,
-        )
-
-        if not self.shadow_mode:
-            self.arbiter.maybe_auto_cool(
-                session_id=session_id,
-                vibe_mode=vibe_mode,
-                telemetrics=telemetrics,
-                current_time=now,
-            )
-
-        # The thread identity is what makes the energy gate "same-thread": without it
-        # every message from the last interlocutor counted as continuing the bot's
-        # own conversation, and an off-topic "6" could be scored as a dying exchange.
-        arb_res = self.arbiter.evaluate(
-            session_id=session_id,
-            addressivity=addressivity,
-            telemetrics=telemetrics,
-            vibe_mode=vibe_mode,
-            user_id=user_id,
-            text=analysis_text,
-            topic_id=str((node.metadata.get("routing") or {}).get("topic_id") or ""),
-            parent_id=str(node.reply_to_id or ""),
-            runtime=runtime,
-            current_time=now,
-            allow_ambient=self._allow_ambient(),
-        )
-
-        explicit_addr = addressivity.level == AddressivityLevel.STRONG
-        if not explicit_addr and is_request_supplement(runtime, user_id, now):
-            explicit_addr = True
-        recent_nodes = dag.get_recent_nodes(limit=12) if dag is not None and hasattr(dag, "get_recent_nodes") else []
-        media_types = []
-        outline_bits = []
-        for pe in parsed_events:
-            media_types.extend(list(getattr(pe, "media_component_types", None) or []))
-            if getattr(pe, "outline", None):
-                outline_bits.append(str(pe.outline))
-        has_media_turn = any(bool(getattr(pe, "has_media", False)) for pe in parsed_events) or bool(media_types)
-        quoted_bot = False
-        try:
-            bot = str(getattr(runtime, "bot_id", "") or "")
-            if bot and last_bot_node is not None and str(getattr(node, "reply_to_id", "") or "") == str(
-                getattr(last_bot_node, "msg_id", "") or ""
-            ):
-                quoted_bot = True
-            if bot and bot in list(getattr(node, "mentioned_users", None) or []):
-                quoted_bot = True
-        except Exception:
-            quoted_bot = False
-        gate = self.decision_gate.evaluate(
-            session_id=session_id,
-            user_id=str(user_id or ""),
-            text=analysis_text,
-            vibe_mode=vibe_mode,
-            telemetrics=telemetrics,
-            recent_nodes=recent_nodes,
-            bot_id=str(getattr(runtime, "bot_id", "") or ""),
-            explicit=explicit_addr,
-            willingness=float(getattr(arb_res, "willingness_score", 0.0) or 0.0),
-            cfg=self._runtime_config,
-            now=self.time_service.wall_time(),
-            node_now=now,
-            has_media=has_media_turn,
-            media_component_types=media_types,
-            outline=" ".join(outline_bits),
-            quoted_bot=quoted_bot,
-            group_memory=getattr(self, "group_memory", None),
-            committed_reply=False,
-        )
-        runtime.last_occasion = gate.skin.as_dict()
-        runtime.last_manners = gate.manners.as_dict()
-        runtime.last_media_gate = gate.media.as_dict() if gate.media is not None else {}
-        runtime.request_media_understand = bool(gate.request_understand)
-        # Gate bookkeeping runs on the civil clock while the turn clock is monotonic
-        # (node timestamps, cooldowns). Passing the turn clock here made every
-        # withheld turn roll the manners day bucket back to 1970.
-        arb_res = self._resolve_gate_result(
-            runtime, session_id, arb_res, gate, self.time_service.wall_time())
-        node.metadata["decision_trace"]["participation"]["should_reply"] = bool(arb_res.should_speak)
-
-        runtime.commit_participation(node, addressivity.level, now)
-
-        native_pipeline = bool(result.metadata.get("native_pipeline"))
-        if self.shadow_mode:
-            predicted_action = (
-                "suppress"
-                if not arb_res.should_speak
-                else ("native_pass" if native_pipeline else "generate")
-            )
-            self._record_shadow_decision(
-                session_id,
-                action=predicted_action,
-                reason=arb_res.reason,
-                decision=arb_res,
-                timestamp=now,
-            )
-            self._metric("shadow_decision")
-            # Shadow mode answers "what would the gate have decided" and then
-            # does nothing, so the turn is suppressed by *this* plugin rather
-            # than by the gate. Saying so keeps the reason honest: the learning
-            # layer reads every reason it does not recognise as unclassified
-            # instead of filing it under the gate.
-            mark_suppressed(node, "shadow_mode", stage=STAGE_GATE, now=now)
-            self._clear_pending_gate(runtime)
-            return
-        if not arb_res.should_speak:
-            logger.info(
-                "[ChatDynamics] Speech withheld for session %s: %s",
-                self._session_label(session_id),
-                arb_res.reason,
-            )
-            mark_suppressed(node, arb_res.reason, stage=STAGE_GATE, now=now)
-            self._metric("speech_withheld")
-            if native_pipeline:
-                self._suppress_native_llm(last_event)
-            return
-
-        if native_pipeline:
-            runtime.native_trigger_node = node
-            runtime.native_vibe_mode = vibe_mode
-            if last_event is not None:
-                self._set_native_context(
-                    (session_id, id(last_event)),
-                    _NativeEventContext(
-                        event=last_event,
-                        trigger_node=node,
-                        vibe_mode=vibe_mode,
-                        epoch=runtime.epoch,
-                        owner_user_id=str(user_id or ""),
-                        owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
-                    ),
-                    overwrite=True,
-                )
-                try:
-                    setattr(last_event, "_chat_dynamics_epoch", runtime.epoch)
-                except Exception:
-                    pass
-            self._metric("native_pass")
-            logger.info(
-                "[ChatDynamics] Native pipeline released for session %s: %s",
-                self._session_label(session_id),
-                arb_res.reason,
-            )
-            return
-
-        generation_active = runtime.generation_task is not None and not runtime.generation_task.done()
-        if generation_active:
-            existing_strong = runtime.generation_level == AddressivityLevel.STRONG or (
-                runtime.latest_pending is not None
-                and runtime.latest_pending.addressivity_level == AddressivityLevel.STRONG
-            )
-            if existing_strong and addressivity.level != AddressivityLevel.STRONG:
-                logger.info(
-                    "[ChatDynamics] Kept STRONG turn; ignored weaker follow-up for %s",
-                    self._session_label(session_id),
-                )
-                return
-        # Only accepted replacements may invalidate the in-flight response.
-        runtime.revision += 1
-        pending = PendingTurn(
-            result=result,
-            revision=runtime.revision,
-            node=node,
-            vibe_mode=vibe_mode,
-            raw_event=last_event,
-            addressivity_level=addressivity.level,
-            epoch=runtime.epoch,
-            owner_user_id=str(user_id or ""),
-            owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
-        )
-        if generation_active:
-            runtime.latest_pending = pending
-            logger.info(
-                "[ChatDynamics] Replaced pending speech for session %s",
-                self._session_label(session_id),
-            )
-            return
-        logger.info(
-            "[ChatDynamics] Speech approved for session %s: %s",
-            self._session_label(session_id),
-            arb_res.reason,
-        )
-        runtime.generation_level = addressivity.level
-        task = self._create_background_task(self._run_generation_loop(runtime, pending))
-        runtime.generation_task = task
+        return _turn_pipeline._finish_turn_locked(self, turn)
 
     async def _run_generation_loop(self, runtime: SessionRuntime, pending: PendingTurn) -> None:
         self._in_flight.add(runtime.session_key)
@@ -4086,279 +3513,7 @@ class ChatDynamicsPlugin(Star):
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent) -> None:
-        if self._persona_mode():
-            return
-        if self._shutting_down or self.shadow_mode:
-            return
-        if self._is_command_event(event):
-            return
-        session_key = self._event_in_scope(event)
-        if not session_key:
-            return
-        if self._is_owned_send(event, session_key):
-            return
-        self._track_hook_task(session_key)
-        runtime = self._sessions.get(session_key)
-        if runtime is None or runtime.dag is None:
-            return
-        context_key = (session_key, id(event))
-        native_context = self._native_context_by_event.get(context_key)
-        # A native result must have an installed guard and an observed host
-        # outcome before it can mutate DAG, sent IDs, arbiter state, or tails.
-        # This also makes an unsupported event.send wrapper fail open for the
-        # host while keeping this plugin's bookkeeping side-effect free.
-        if native_context is None:
-            return
-        if not native_context.installed or native_context.guard is None:
-            self._drop_native_context(context_key)
-            return
-        guard = native_context.guard
-        outcome = guard.outcome
-        if outcome is None:
-            self._drop_native_context(context_key)
-            return
-        if not outcome.success:
-            self._metric("send_failed")
-            self._clear_pending_gate(runtime)
-            self._drop_native_context(context_key)
-            return
-
-        # A reset/cool changes the session epoch and must discard even a
-        # successful late native callback.  A member stop only changes the
-        # owner revision, so a first segment that already entered send() is
-        # retained below while its unsent tail is suppressed.
-        event_epoch = getattr(event, "_chat_dynamics_epoch", None)
-        try:
-            stale_epoch = (
-                event_epoch is not None and int(event_epoch) != runtime.epoch
-            ) or native_context.epoch != runtime.epoch
-        except (TypeError, ValueError):
-            stale_epoch = True
-        if stale_epoch:
-            self._metric("stale_hook_ignored")
-            self._drop_native_context(context_key)
-            return
-
-        getter = getattr(event, "get_result", None)
-        result = getter() if callable(getter) else None
-        text = self._bounded_text(chain_plain_text(result), _MAX_TURN_CHARS) if result is not None else ""
-        if not (text or "").strip() and native_context.fragments:
-            text = self._bounded_text(native_context.fragments[0], _MAX_TURN_CHARS)
-        batch: Optional[FollowupBatch] = None
-        rest: list[str] = []
-        delivery_token = 0
-        previous_bot_msg_id: Optional[str] = None
-        previous_platform_msg_id: Optional[str] = None
-        try:
-            async with runtime.state_lock:
-                if self._sessions.get(session_key) is not runtime or runtime.epoch != native_context.epoch:
-                    self._metric("stale_hook_ignored")
-                    return
-
-                trigger_node = native_context.trigger_node or runtime.native_trigger_node
-                platform_msg_id = outcome.message_id or native_context.platform_message_id
-                if (text or "").strip():
-                    bot_msg_id = platform_msg_id or self._next_outgoing_id()
-                    trigger = trigger_node
-                    bot_node = runtime.dag.add_message(
-                        msg_id=bot_msg_id,
-                        user_id=runtime.bot_id or "bot",
-                        text=self._bounded_text(text.strip()),
-                        timestamp=self.time_service.time(),
-                        reply_to_id=trigger.msg_id if trigger is not None else None,
-                        metadata={"platform_message_id": bool(platform_msg_id),
-                                  "trigger_user_id": getattr(trigger, "user_id", "")},
-                    )
-                    bot_node.metadata["platform_message_id"] = bool(platform_msg_id)
-                    self._observe_routed_bot(runtime, bot_node)
-                    runtime.last_bot_node = bot_node
-                    runtime.touch(self.time_service.time())
-                    self._last_bot_nodes[session_key] = bot_node
-                    self._remember_sent_id(session_key, bot_msg_id)
-                    self._metric("send_succeeded")
-                    self._schedule_neural_embed(session_key, bot_node)
-                    self.arbiter.record_bot_spoke(
-                        session_key,
-                        timestamp=self.time_service.time(),
-                        user_id=trigger.user_id if trigger is not None else None,
-                        topic_id=str(getattr(runtime.routing_state, "last_bot_topic_id", "") or ""),
-                        msg_id=str(getattr(bot_node, "msg_id", "") or ""),
-                    )
-                    self._commit_pending_gate_spoke(runtime, session_key)
-                    previous_bot_msg_id = bot_msg_id
-                    previous_platform_msg_id = platform_msg_id
-
-                owner_current = self._user_revision_is_current(
-                    runtime,
-                    native_context.owner_user_id,
-                    native_context.owner_revision,
-                )
-                # ``cancelled`` covers a stop/reset that raced an in-flight
-                # host send.  The successful first segment is already real;
-                # only its not-yet-sent tail is invalid in that case.
-                if owner_current and not guard.cancelled and len(native_context.fragments) > 1:
-                    fragments = native_context.fragments[1:]
-                    queue_full = (
-                        runtime.followup_queue.maxlen is not None
-                        and len(runtime.followup_queue) >= runtime.followup_queue.maxlen
-                    )
-                    followup = FollowupBatch(
-                        fragments=deque(fragments),
-                        epoch=runtime.epoch,
-                        trigger_node=trigger_node,
-                        vibe_mode=native_context.vibe_mode,
-                        event_id=id(event),
-                        batch_id=f"native_{int(self.time_service.time() * 1000)}_{id(event)}",
-                        sent_count=1,
-                        trigger_user_id=native_context.owner_user_id,
-                        delivery_token=runtime.next_followup_delivery_token(),
-                    )
-                    runtime.followup_queue.append(followup)
-                    if queue_full:
-                        self._metric("followup_dropped")
-
-                if not runtime.followup_queue and not any(
-                    key[0] == session_key and key != context_key
-                    for key in self._native_context_by_event
-                ):
-                    runtime.native_trigger_node = None
-                    runtime.native_vibe_mode = None
-
-                # A user stop may have arrived after the first send completed.
-                # It must preserve the first node but prevent all tail work.
-                if not owner_current or guard.cancelled:
-                    for candidate in list(runtime.followup_queue):
-                        if candidate.event_id == id(event):
-                            candidate.invalidate()
-                    runtime.followup_queue = deque(
-                        (
-                            candidate
-                            for candidate in runtime.followup_queue
-                            if candidate.event_id != id(event)
-                        ),
-                        maxlen=runtime.followup_queue.maxlen,
-                    )
-
-            if not owner_current or guard.cancelled:
-                return
-            candidate_index = next(
-                (
-                    index
-                    for index, candidate in enumerate(runtime.followup_queue)
-                    if candidate.event_id == id(event)
-                ),
-                None,
-            )
-            if candidate_index is not None:
-                candidate = runtime.followup_queue[candidate_index]
-                del runtime.followup_queue[candidate_index]
-                if candidate.epoch == runtime.epoch and not candidate.invalidated:
-                    batch = candidate
-                    rest = batch.remaining()
-                    delivery_token = runtime.register_active_followup_batch(batch)
-                else:
-                    self._metric("stale_followup_dropped")
-        finally:
-            # Restore the exact event.send callable before delivering any
-            # plugin-owned tail; _send_owned has its own explicit bypass.
-            self._drop_native_context(context_key)
-        if batch is None or not rest:
-            if batch is not None:
-                batch.fragments.clear()
-                if delivery_token:
-                    runtime.unregister_active_followup_batch(delivery_token, batch)
-            return
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            def cleanup_cancelled_followup(_done: asyncio.Task) -> None:
-                batch.fragments.clear()
-                runtime.unregister_active_followup_batch(delivery_token, batch)
-
-            current_task.add_done_callback(cleanup_cancelled_followup)
-        async with runtime.send_lock:
-            try:
-                for fragment in rest:
-                    if (
-                        self._shutting_down
-                        or runtime.active_followup_batches.get(delivery_token) is not batch
-                        or batch.invalidated
-                        or batch.delivery_token != delivery_token
-                        or batch.epoch != runtime.epoch
-                    ):
-                        self._metric("followup_dropped")
-                        return
-                    await self.time_service.sleep(
-                        self.pacer.calculate_inter_burst_delay(
-                            mode=batch.vibe_mode or runtime.native_vibe_mode or GroupChatMode.CHILL_FADE,
-                            fragment_text=fragment,
-                            mpm=self.vibe_analyzer.get_telemetrics(session_key).mpm,
-                            delay_scale=getattr(runtime, "last_delay_scale", 1.0),
-                        )
-                    )
-                    if (
-                        self._shutting_down
-                        or runtime.active_followup_batches.get(delivery_token) is not batch
-                        or batch.invalidated
-                        or batch.delivery_token != delivery_token
-                        or batch.epoch != runtime.epoch
-                    ):
-                        self._metric("followup_dropped")
-                        return
-                    send_result = await self._send_owned(
-                        runtime,
-                        event,
-                        fragment,
-                        reply_to_id=previous_platform_msg_id,
-                    )
-                    if not send_result.success:
-                        self._metric("send_failed")
-                        logger.error(
-                            "[ChatDynamics] Native follow-up send failed for session %s (send_failed)",
-                            self._session_label(session_key),
-                        )
-                        return
-                    self._metric("send_succeeded")
-                    batch.sent_count += 1
-                    platform_msg_id = send_result.message_id
-                    bot_msg_id = platform_msg_id or self._next_outgoing_id()
-                    # Delivery already happened, so this identity is real no
-                    # matter what the guards below decide. Recording it after
-                    # the guard let an invalidated tail leave the platform echo
-                    # of a delivered message unrecognized, which is exactly the
-                    # input the reboot-loop defence is supposed to catch.
-                    self._remember_sent_id(session_key, bot_msg_id)
-                    async with runtime.state_lock:
-                        if (
-                            self._shutting_down
-                            or runtime.active_followup_batches.get(delivery_token) is not batch
-                            or batch.invalidated
-                            or batch.delivery_token != delivery_token
-                            or batch.epoch != runtime.epoch
-                        ):
-                            self._metric("followup_dropped")
-                            return
-                        bot_node = runtime.dag.add_message(
-                            msg_id=bot_msg_id,
-                            user_id=runtime.bot_id or "bot",
-                            text=self._bounded_text(fragment),
-                            timestamp=self.time_service.time(),
-                            reply_to_id=previous_bot_msg_id,
-                            metadata={"platform_message_id": bool(platform_msg_id),
-                                      "trigger_user_id": (getattr(batch.trigger_node,
-                                                           "user_id", "")
-                                                           or batch.trigger_user_id)},
-                        )
-                        bot_node.metadata["platform_message_id"] = bool(platform_msg_id)
-                        self._observe_routed_bot(runtime, bot_node)
-                        runtime.last_bot_node = bot_node
-                        runtime.touch(self.time_service.time())
-                        self._last_bot_nodes[session_key] = bot_node
-                        self._schedule_neural_embed(session_key, bot_node)
-                        previous_bot_msg_id = bot_msg_id
-                        previous_platform_msg_id = platform_msg_id
-            finally:
-                batch.fragments.clear()
-                runtime.unregister_active_followup_batch(delivery_token, batch)
+        return await _native_after_message_sent(self, event)
 
     async def _reply_text(self, event: Any, text: str) -> None:
         parsed = parse_group_event(event) if event is not None else None

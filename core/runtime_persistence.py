@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
@@ -10,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .graph import ConversationNode
+from .routing_contract import EDGE_KINDS
 from .session_runtime import TopicState
 from .topic_archive import ArchivedTopic
 from .telemetrics import _MessageRecord
@@ -18,6 +20,7 @@ from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
 MAX_SESSIONS = 1000
+logger = logging.getLogger(__name__)
 
 # The host version the learning layer records, resolved from the same file the
 # plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the
@@ -77,7 +80,8 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 # will one day trust), and nothing may start writing a name in the second.
 _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
                        'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',
-                       'inferred_parent_id', 'is_wake', 'trigger_user_id')
+                       'inferred_parent_id', 'is_wake', 'trigger_user_id',
+                       'quoted_author_id', 'topic_source_text')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.
@@ -191,11 +195,14 @@ def export_runtime_state(plugin) -> dict:
               'metrics': _json(plugin._metrics),
               'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
                                    for row in list(plugin._shadow_decisions)[-50:]]}
-    budget = max(0, MAX_TOTAL_BYTES - _encoded_size(extras))
+    extras.update(dropped_nodes=0, dropped_sessions=0, truncated=False)
+    # Reserve counter growth and include the sessions key and list separators.
+    budget = max(0, MAX_TOTAL_BYTES - _encoded_size({**extras, 'sessions': []}) - 128)
     # Newest first, so running out of budget drops the least recently active
     # sessions; the list is reversed back to chronological order below because
     # restore() reads the end of it.
     runtimes = sorted(plugin._registry.runtimes.values(), key=lambda r: r.last_activity, reverse=True)
+    extras['dropped_sessions'] = max(0, len(runtimes) - MAX_SESSIONS)
     for runtime in runtimes[:MAX_SESSIONS]:
         item = _fields(runtime, RUNTIME_FIELDS)
         item.update(session_key=runtime.session_key, group_id=runtime.group_id,
@@ -227,16 +234,40 @@ def export_runtime_state(plugin) -> dict:
             item['arbitration'] = _fields(decision, ARBITRATION_FIELDS) if decision else None
         item['telemetrics'] = [_fields(record, ('timestamp', 'char_count', 'emoji_count', 'media_count', 'has_formal_punc', 'text', 'user_id'))
                                for record in list(plugin.telemetrics._records.get(runtime.session_key, ()))[-200:]]
-        # Stopping at the first session that does not fit keeps the most
-        # recently active ones; restore() reads from the end of the list, so
-        # the order is flipped back to chronological below.
-        item_bytes = _encoded_size(item)
-        if sessions and used + item_bytes > budget:
-            break
+        # Prefer recent sessions and recent nodes within an oversized session.
+        # Restore reads from the end, so reverse session order below.
+        item_bytes = _encoded_size(item) + 2
+        if used + item_bytes > budget:
+            # Keep the newest suffix; binary search avoids repeatedly encoding
+            # a large session once per discarded node. Live state is untouched.
+            nodes = item['nodes']
+            low, high = 0, len(nodes)
+            while low < high:
+                count = (low + high + 1) // 2
+                item['nodes'] = nodes[-count:]
+                if used + _encoded_size(item) + 2 <= budget:
+                    low = count
+                else:
+                    high = count - 1
+            item['nodes'] = nodes[-low:] if low else []
+            extras['dropped_nodes'] += len(nodes) - low
+            item_bytes = _encoded_size(item) + 2
+            if used + item_bytes > budget:
+                extras['dropped_sessions'] += 1
+                extras['dropped_nodes'] += low
+                continue
         used += item_bytes
         sessions.append(item)
     sessions.reverse()
-    return {**extras, 'sessions': sessions}
+    extras['truncated'] = bool(extras['dropped_nodes'] or extras['dropped_sessions'])
+    result = {**extras, 'sessions': sessions}
+    # Fixed diagnostics alone can exceed the limit. Drop optional global data
+    # before returning, and refuse an impossible envelope rather than overshoot.
+    if _encoded_size(result) > MAX_TOTAL_BYTES:
+        result.update(metrics={}, shadow_decisions=[], truncated=True)
+    if _encoded_size(result) > MAX_TOTAL_BYTES:
+        raise ValueError('runtime snapshot budget is smaller than its envelope')
+    return result
 
 
 def restore_runtime_state(plugin, payload) -> None:
@@ -302,8 +333,15 @@ def restore_runtime_state(plugin, payload) -> None:
                 continue
             kinds = row.get('edge_kinds', {})
             for parent in _strings(row.get('parent_ids')):
-                kind = kinds.get(parent, 'reply') if isinstance(kinds, dict) else 'reply'
-                runtime.dag._link_parent(row['msg_id'], parent, kind=kind if kind in ('reply', 'mention', 'semantic') else 'reply')
+                kind = kinds.get(parent) if isinstance(kinds, dict) else None
+                # Missing legacy kinds are recoverable only from an explicit
+                # platform reply field. Unknown kinds must not gain authority.
+                if kind is None and row.get('reply_to_id') == parent:
+                    kind = 'reply'
+                if not isinstance(kind, str) or kind not in EDGE_KINDS:
+                    logger.warning('Skipped snapshot edge with unknown or missing kind: %r', kind)
+                    continue
+                runtime.dag._link_parent(row['msg_id'], parent, kind=kind)
         for node in runtime.dag.nodes.values():
             if node.reply_to_id and node.reply_to_id not in runtime.dag.nodes:
                 runtime.dag._waiting_children.setdefault(node.reply_to_id, set()).add(node.msg_id)

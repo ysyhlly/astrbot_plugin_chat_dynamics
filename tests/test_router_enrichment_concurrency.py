@@ -21,6 +21,27 @@ def setup():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['rerank_pending', 'title_topic'])
+async def test_real_router_rejects_result_after_commit_permission_revoked(method):
+    rt, router, first, node = setup()
+    entered, release = asyncio.Event(), asyncio.Event()
+    permission = [True]
+    async def model(**kwargs):
+        entered.set()
+        await release.wait()
+        return 'Late title' if method == 'title_topic' else SimpleNamespace(choice='A', topic_id=first.msg_id)
+    before = node.metadata['routing']['topic_id']
+    worker = asyncio.create_task(getattr(router, method)(
+        rt, node, SimpleNamespace(title=model, rerank=model), is_current=lambda: permission[0]))
+    await asyncio.wait_for(entered.wait(), 1)
+    permission[0] = False
+    release.set()
+    await worker
+    assert node.metadata['routing']['topic_id'] == before
+    assert 'topic_title' not in node.metadata
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["rerank_pending", "title_topic"])
 async def test_enrichment_snapshots_and_commits_under_lock_but_releases_for_io(method):
     rt, router, first, node = setup()

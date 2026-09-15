@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from typing import Any
 
 from .platform_bridge import collect_media_urls
+from .provider_budget import context_budget
 from .vibe_analyzer import GroupChatMode
 
 
@@ -103,8 +105,10 @@ class LLMAdapter:
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
         integrations: Any = None,
+        provider_budget: Any = None,
     ) -> None:
         self.context = context
+        self.provider_budget = provider_budget if provider_budget is not None else context_budget(context)
         self.configured_provider_id = str(configured_provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
@@ -137,11 +141,11 @@ class LLMAdapter:
         a background reading, and a draft is an offline labelling aid. Sharing one
         of them with another would make one setting silently move two costs.
         """
-        if purpose == "reply":
+        if purpose in ("reply", "routing", "title"):
             return self.reply_provider_id
-        if purpose == "draft":
+        if purpose in ("draft", "auto_draft"):
             return self.draft_provider_id
-        return self.vibe_provider_id
+        return self.vibe_provider_id if purpose == "vibe" else ""
 
     def configured_provider(self, purpose: str = "reply") -> str:
         """Return the configured preference before UMO-specific resolution."""
@@ -167,6 +171,13 @@ class LLMAdapter:
         return bool(_supported_kwargs(generate, _media_kwargs(["probe-image"], ["probe-audio"])))
 
     async def resolve_provider_id(self, umo: str, purpose: str = "reply") -> str:
+        started = time.monotonic()
+        try:
+            return await self._resolve_provider_id(umo, purpose)
+        finally:
+            self.provider_budget.observe(purpose, "lookup", time.monotonic()-started)
+
+    async def _resolve_provider_id(self, umo: str, purpose: str = "reply") -> str:
         explicit = self._dedicated_provider(purpose)
         if explicit:
             return explicit
@@ -214,7 +225,7 @@ class LLMAdapter:
                 timeout=self.reply_timeout if timeout is None else float(timeout),
             )
         except asyncio.TimeoutError as exc:
-            raise LLMUnavailable(f"LLM reply timed out after {self.reply_timeout:g}s") from exc
+            raise LLMUnavailable(f"LLM {purpose} timed out after {(self.reply_timeout if timeout is None else float(timeout)):g}s") from exc
 
     async def _generate(
         self,
@@ -233,12 +244,12 @@ class LLMAdapter:
         generate = getattr(ctx, "llm_generate", None)
         if callable(generate):
             prov_id = await self.resolve_provider_id(umo, purpose=purpose)
-            resp = generate(
+            resp = await self.provider_budget.run(prov_id, purpose, lambda: generate(
                 chat_provider_id=prov_id,
                 prompt=prompt,
                 system_prompt=system_prompt,
                 **_supported_kwargs(generate, _media_kwargs(image_urls, audio_urls)),
-            )
+            ))
             if inspect.isawaitable(resp):
                 resp = await resp
             return completion_text(resp)
@@ -321,13 +332,13 @@ class LLMAdapter:
         tool_loop = getattr(ctx, "tool_loop_agent", None)
         if callable(tool_loop):
             prov_id = await self.resolve_provider_id(target_umo, purpose="reply")
-            resp = tool_loop(
+            resp = await self.provider_budget.run(prov_id, "reply", lambda: tool_loop(
                 event=event,
                 chat_provider_id=prov_id,
                 prompt=user_prompt,
                 **_supported_kwargs(tool_loop, request_kwargs),
                 **_supported_kwargs(tool_loop, media_kwargs),
-            )
+            ))
             if inspect.isawaitable(resp):
                 resp = await resp
             return completion_text(resp)
@@ -357,38 +368,43 @@ class LLMAdapter:
         explicit = self._dedicated_provider(purpose)
         if not explicit:
             explicit = self.configured_provider_id
-        provider = None
-        by_id = getattr(ctx, "get_provider_by_id", None)
-        if explicit:
-            # A configured provider is an explicit routing decision. If the
-            # legacy host cannot resolve it, fail closed instead of silently
-            # switching to the session's default provider (which can change
-            # persona, cost, or data routing).
-            if not callable(by_id):
-                raise LLMUnavailable("Configured provider lookup is unavailable")
-            provider = by_id(explicit)
-            if inspect.isawaitable(provider):
-                provider = await provider
+        lookup_started = time.monotonic()
+        try:
+            provider = None
+            by_id = getattr(ctx, "get_provider_by_id", None)
+            if explicit:
+                # A configured provider is an explicit routing decision. If the
+                # legacy host cannot resolve it, fail closed instead of silently
+                # switching to the session's default provider (which can change
+                # persona, cost, or data routing).
+                if not callable(by_id):
+                    raise LLMUnavailable("Configured provider lookup is unavailable")
+                provider = by_id(explicit)
+                if inspect.isawaitable(provider):
+                    provider = await provider
+                if provider is None:
+                    raise LLMUnavailable("Configured provider is unavailable")
+            else:
+                getter = getattr(ctx, "get_using_provider", None)
+                if not callable(getter):
+                    raise LLMUnavailable("AstrBot context does not expose llm_generate")
+                try:
+                    provider = getter(umo)
+                except TypeError:
+                    # A few pre-4.x Context shims expose a no-argument getter;
+                    # retain compatibility without broadening the modern path.
+                    provider = getter()
+                if inspect.isawaitable(provider):
+                    provider = await provider
             if provider is None:
-                raise LLMUnavailable("Configured provider is unavailable")
-        else:
-            getter = getattr(ctx, "get_using_provider", None)
-            if not callable(getter):
-                raise LLMUnavailable("AstrBot context does not expose llm_generate")
-            try:
-                provider = getter(umo)
-            except TypeError:
-                # A few pre-4.x Context shims expose a no-argument getter;
-                # retain compatibility without broadening the modern path.
-                provider = getter()
-            if inspect.isawaitable(provider):
-                provider = await provider
-        if provider is None:
-            raise LLMUnavailable(f"No provider instance is available for {umo}")
+                raise LLMUnavailable(f"No provider instance is available for {umo}")
+        finally:
+            self.provider_budget.observe(purpose, "lookup", time.monotonic()-lookup_started)
         text_chat = getattr(provider, "text_chat", None)
         if not callable(text_chat):
             raise LLMUnavailable("Provider does not expose text_chat")
-        resp = text_chat(prompt=prompt, system_prompt=system_prompt)
+        resp = await self.provider_budget.run(explicit or str(id(provider)), purpose,
+                                              lambda: text_chat(prompt=prompt, system_prompt=system_prompt))
         if inspect.isawaitable(resp):
             resp = await resp
         return completion_text(resp)

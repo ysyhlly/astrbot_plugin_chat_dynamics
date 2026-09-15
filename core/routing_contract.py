@@ -3,6 +3,10 @@
 
 ROUTING_WEIGHTS_VERSION = "recipient-v2"
 
+# Legacy semantic edges remain retractable inference, never platform replies.
+INFERRED_EDGE_KINDS = frozenset({'inferred_reply', 'semantic'})
+EDGE_KINDS = frozenset({'reply', 'mention', 'fragment'}) | INFERRED_EDGE_KINDS
+
 # Codes that justify a pending/unformed topic. They contradict a stored
 # conclusion of "this message already belongs to a resolved topic".
 TOPIC_AMBIGUITY_EVIDENCE = frozenset({"topic_ambiguous", "topic_not_formed"})

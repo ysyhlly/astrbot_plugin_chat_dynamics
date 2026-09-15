@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from .routing_trace import build_routing_trace, redact_trace_identifiers
+from .routing_trace import build_routing_trace, redact_trace_identifiers, trace_with_updates
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
@@ -627,6 +627,13 @@ def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     source = (node.metadata.get("decision_trace")
               or node.metadata.get("trace_inputs") or {})
     source = source if isinstance(source, dict) else {}
+    if source.get("trace_schema_version"):
+        result = trace_with_updates(source,
+            outcome=node.metadata.get("outcome"), shadow=node.metadata.get("shadow_decision"))
+        if not show_content:
+            result = redact_trace_identifiers(result)
+        result["identifiers_redacted"] = not show_content
+        return result
     def section(key):
         return source.get(key) if isinstance(source.get(key), dict) else {}
     topic, recipient = section("topic"), section("recipient")

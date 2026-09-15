@@ -69,7 +69,8 @@ async def test_review_only_saves_explicitly_accepted_live_messages():
             "gone": {"expected_reply": False},
             "unselected": {"expected_reply": True},
         }}),
-        save=AsyncMock(), remove_drafts=AsyncMock(), revision=lambda value: "revision",
+        save=AsyncMock(return_value={"saved": True, "accepted_draft_revision": "revision"}),
+        remove_drafts=AsyncMock(), revision=lambda value: "revision",
     )
     host = SimpleNamespace(topic_annotations=store, dags={"umo-a": SimpleNamespace(nodes={"live": object(), "unselected": object()})})
     result = await AnnotationReview(host).annotation_drafts_apply({
@@ -81,7 +82,7 @@ async def test_review_only_saves_explicitly_accepted_live_messages():
     store.save.assert_awaited_once_with({
         "session_key": "umo-a", "msg_id": "live", "expected_topic": "NEW",
         "error_type": "topic_merge", "expected_reply": True, "bot_targeted": False,
-    }, partial=True, draft_revision=None)
+    }, partial=True, draft_revision="revision", request_id=None)
     store.remove_drafts.assert_awaited_once_with("umo-a", ["live"], revisions={"live": "revision"})
 
 

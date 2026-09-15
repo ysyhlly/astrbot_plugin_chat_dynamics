@@ -10,6 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
+sys.path.insert(0, str(ROOT / 'scripts'))
+from routing_evaluation_contract import effectiveness, validate_cases  # noqa: E402
 
 from astrbot_plugin_chat_dynamics.core import thread_router  # noqa: E402
 from astrbot_plugin_chat_dynamics.core.addressivity import AddressivityRouter  # noqa: E402
@@ -97,6 +99,7 @@ def mismatches(expected, actual):
 
 
 def evaluate(cases):
+    validate_cases(cases)
     results = []
     sessions = []
     for case in cases:
@@ -205,6 +208,7 @@ def evaluate(cases):
             "confusion": confusion,
             "recipient_groups": groups, "routing_metrics": metrics,
             "checked_constraints": constraints,
+            "effectiveness_gate": effectiveness(cases, results),
             "metric_failures": [key for key, passed in constraints.items() if not passed],
             "total": len(results), "failed": sum(bool(row["failures"]) for row in results),
             "results": results}
@@ -216,6 +220,8 @@ def main():
     parser.add_argument("--fixtures", type=Path, default=ROOT / "tests/fixtures/routing_golden.json")
     parser.add_argument("--baseline", type=Path, help="Read-only comparison with a prior JSON report")
     parser.add_argument("--check", action="store_true", help="Exit nonzero for golden mismatches")
+    parser.add_argument("--check-effectiveness", action="store_true",
+                        help="Require independent real validation labels and passing quality")
     parser.add_argument("--benchmark", action="store_true", help="Include nondeterministic elapsed evaluation time")
     args = parser.parse_args()
     if Path(thread_router.__file__).resolve() != ROOT / "core" / "thread_router.py":
@@ -224,7 +230,18 @@ def main():
         parser.error("--output must not overwrite --baseline")
     if args.output and args.output.resolve() == args.fixtures.resolve():
         parser.error("--output must not overwrite --fixtures")
-    cases = json.loads(args.fixtures.read_text(encoding="utf-8"))
+    try:
+        cases = json.loads(args.fixtures.read_text(encoding="utf-8"))
+        validate_cases(cases)
+    except (ValueError, TypeError, KeyError) as exc:
+        report = {"schema_version": 1, "status": "input_error", "error": str(exc),
+                  "effectiveness_gate": {"status": "not_ready", "reasons": ["invalid_input"]}}
+        payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(payload, encoding="utf-8")
+        print(payload)
+        return 2
     if args.benchmark:
         from time import perf_counter
         started = perf_counter()
@@ -238,7 +255,8 @@ def main():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload, encoding="utf-8")
     print(payload)
-    return int(args.check and (report["failed"] > 0 or bool(report["metric_failures"])))
+    return int((args.check and (report["failed"] > 0 or bool(report["metric_failures"])))
+               or (args.check_effectiveness and report['effectiveness_gate']['status'] != 'passed'))
 
 
 if __name__ == "__main__":

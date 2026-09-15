@@ -65,6 +65,7 @@ function markAnnotationDirty(row) {
   row.dataset.editVersion = String(Number(row.dataset.editVersion || 0) + 1);
 }
 const draftButton = document.getElementById("btnDraftAnnotations");
+const regenerateDraftButton = document.getElementById("btnRegenerateDismissed");
 const draftGenerationStatus = document.getElementById("draftGenerationStatus");
 const draftRequests = new Set();
 const draftStatuses = new Map();
@@ -72,6 +73,7 @@ let sessionRevision = 0;
 
 function renderDraftGeneration() {
   draftButton.disabled = !online || !selectedUmo || draftRequests.has(selectedUmo);
+  regenerateDraftButton.disabled = draftButton.disabled;
   draftButton.textContent = draftRequests.has(selectedUmo) ? "正在生成 AI 草稿…" : "一键生成 AI 草稿";
   draftGenerationStatus.textContent = !selectedUmo
     ? "选择一个会话即可生成，无需打开话题。"
@@ -416,7 +418,7 @@ async function boot() {
       }
     } finally { button.disabled = false; }
   });
-  document.getElementById("btnDraftAnnotations").addEventListener("click", async () => {
+  const generateDrafts = async (regenerateDismissed = false) => {
     const sessionKey = selectedUmo;
     if (!online || !sessionKey || draftRequests.has(sessionKey)) return;
     const revision = sessionRevision;
@@ -426,7 +428,7 @@ async function boot() {
     try {
       // The model call is not a panel read: it needs its own budget.
       const data = await apiPost("annotation_draft",
-        { session_key: sessionKey, refresh: true }, { timeoutMs: 180000 });
+        { session_key: sessionKey, refresh: true, ...(regenerateDismissed ? { regenerate_dismissed: true } : {}) }, { timeoutMs: 180000 });
       const asked = data?.stats?.asked ?? 0;
       const drafts = data?.drafts || {};
       const drafted = Number.isFinite(data?.drafted) ? data.drafted : Object.keys(drafts).length;
@@ -446,7 +448,9 @@ async function boot() {
       draftRequests.delete(sessionKey);
       renderDraftGeneration();
     }
-  });
+  };
+  draftButton.addEventListener("click", () => void generateDrafts());
+  regenerateDraftButton.addEventListener("click", () => void generateDrafts(true));
   document.getElementById("btnApplyDrafts").addEventListener("click", () => {
     const block = blocks[selectedIndex];
     let filled = 0;

@@ -629,12 +629,13 @@ class ThreadRouter:
             logger.debug("[Router] Neural escalation timed out or failed (%s); using hashed fallback", type(exc).__name__)
             return sync_result
 
-    async def rerank_pending(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
+    async def rerank_pending(self, runtime: Any, node: ConversationNode, reranker: Any,
+                             *, is_current=None) -> None:
         from .topic_reranker import RerankCandidate
 
         async with _state_guard(runtime):
             dag, state = runtime.dag, runtime.routing_state
-            if dag is None or dag.get_node(node.msg_id) is not node:
+            if dag is None or dag.get_node(node.msg_id) is not node or (is_current is not None and not is_current()):
                 return
             snapshot = node.metadata.get("routing", {})
             if snapshot.get("topic_status") == "unformed":
@@ -645,6 +646,9 @@ class ThreadRouter:
             # attempt counter and a bounded backoff mirror the topic-title retry
             # policy, so a timeout is retried later instead of never.
             attempts = int(snapshot.get("rerank_attempts") or 0)
+            if attempts >= 3:
+                snapshot['rerank_exhausted'] = True
+                return
             if (not snapshot.get("topic_ambiguous") and not new_topic):
                 return
             if attempts and time.monotonic() < float(snapshot.get("rerank_retry_at") or 0.0):
@@ -682,6 +686,7 @@ class ThreadRouter:
 
         async with _state_guard(runtime):
             if (runtime.dag is not dag or runtime.routing_state is not state
+                    or (is_current is not None and not is_current())
                     or getattr(runtime, "revision", None) != revision or getattr(runtime, "epoch", None) != epoch
                     or dag.get_node(node.msg_id) is not node
                     or node.metadata.get("routing") is not snapshot
@@ -711,16 +716,18 @@ class ThreadRouter:
             node.metadata["topic_id"] = topic_id
             state.last_topic_id = topic_id
 
-    async def title_topic(self, runtime: Any, node: ConversationNode, reranker: Any) -> None:
+    async def title_topic(self, runtime: Any, node: ConversationNode, reranker: Any,
+                          *, is_current=None) -> None:
         """Generate display metadata without holding the session lock during I/O."""
         async with _state_guard(runtime):
             state, dag = runtime.routing_state, runtime.dag
-            if dag is None or dag.get_node(node.msg_id) is not node:
+            if dag is None or dag.get_node(node.msg_id) is not node or (is_current is not None and not is_current()):
                 return
             snapshot = node.metadata.get("routing", {})
             topic_id = snapshot.get("topic_id")
             topic = state.topics.get(topic_id)
             if (topic is None or topic.generated_title or topic.title_in_flight
+                    or topic.title_failures >= 3
                     or time.monotonic() < topic.title_retry_at):
                 return
             messages = [dag.nodes[mid].text for mid in topic.message_ids if mid in dag.nodes][-5:]
@@ -744,6 +751,7 @@ class ThreadRouter:
                     topic.title_failures = min(topic.title_failures + 1, 5)
                     topic.title_retry_at = time.monotonic() + min(300.0, 30.0 * 2 ** (topic.title_failures - 1))
                 if (title and runtime.routing_state is state and runtime.dag is dag
+                        and (is_current is None or is_current())
                         and getattr(runtime, "revision", None) == revision
                         and getattr(runtime, "epoch", None) == epoch
                         and state.topics.get(topic_id) is topic

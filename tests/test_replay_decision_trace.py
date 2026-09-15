@@ -66,3 +66,26 @@ def test_replay_trace_whitelist_redaction_and_copy():
     assert visible["recipient"]["ids"] == ["alice"]
     visible["recipient"]["ids"].append("mutation")
     assert node.metadata["decision_trace"]["recipient"]["ids"] == ["alice"]
+
+
+def test_dashboard_preserves_frozen_trace_after_late_reroute_and_redacts_turn():
+    from astrbot_plugin_chat_dynamics.core.dashboard import _replay_decision_trace
+    from astrbot_plugin_chat_dynamics.core.routing_trace import build_routing_trace
+    frozen = build_routing_trace(routing={"topic_id": "original", "addressee_ids": ["original-user"]})
+    frozen["turn"] = {"session_id": "private-session", "message_id": "private-message",
+                      "epoch": 3, "visible_before": 7.0}
+    node = SimpleNamespace(metadata={"decision_trace": frozen,
+        "routing": {"topic_id": "late-topic", "addressee_ids": ["late-user"]},
+        "outcome": {"final_outcome": "delivered", "delivered": True}})
+    shown = _replay_decision_trace(node, True)
+    assert shown["topic"]["topic_id"] == "original"
+    assert shown["recipient"]["ids"] == ["original-user"]
+    assert shown["outcome"]["delivered"] is True
+    hidden = _replay_decision_trace(node, False)
+    assert hidden["turn"]["session_id"] == hidden["turn"]["message_id"] == ""
+    assert "private-session" not in str(hidden) and "private-message" not in str(hidden)
+    assert hidden["turn"]["epoch"] == 3
+    assert frozen["turn"]["session_id"] == "private-session"
+    assert "outcome" not in frozen
+    node.metadata["trace_inputs"] = node.metadata.pop("decision_trace")
+    assert _replay_decision_trace(node, True)["topic"]["topic_id"] == "original"

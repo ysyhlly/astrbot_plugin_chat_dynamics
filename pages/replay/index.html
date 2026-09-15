@@ -69,8 +69,10 @@
         <div class="replay-draft-tools">
           <div class="ops-actions">
             <button type="button" class="button" id="btnDraftAnnotations" disabled>一键生成 AI 草稿</button>
+            <button type="button" class="button button-quiet" id="btnRegenerateDismissed" aria-describedby="regenerateDismissedNote" disabled>重新生成已忽略</button>
             <button type="button" class="button button-quiet" id="btnOpenSessionDrafts">打开审批页</button>
           </div>
+          <p class="ops-note" id="regenerateDismissedNote">「重新生成已忽略」会将当前会话窗口发送给已配置模型，重新起草已忽略的消息，不覆盖人工标注。普通生成不会恢复已忽略项。</p>
           <p class="ops-note" id="draftGenerationStatus" role="status" aria-live="polite">选择一个会话即可生成，无需打开话题。</p>
           <p class="ops-note">生成范围为所选会话最近未标注的消息，包含尚未形成话题的消息。草稿需人工审批后才成为标注。启用 AI 草稿后，手动生成或已开启的定时生成会将正文发送给模型。</p>
         </div>

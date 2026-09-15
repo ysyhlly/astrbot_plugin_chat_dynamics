@@ -64,6 +64,63 @@ def test_trace_consumes_enum_without_retaining_objects():
     assert trace["participation"]["level"] == "strong"
 
 
+def test_unlabeled_regression_pass_is_not_effectiveness_pass():
+    report = load_evaluator().evaluate([{'id': 'empty_truth', 'messages': [{'text': 'hello'}]}])
+    assert report['failed'] == 0
+    assert report['effectiveness_gate']['status'] == 'not_ready'
+    assert 'insufficient_labels' in report['effectiveness_gate']['reasons']
+
+
+def test_synthetic_truth_and_ai_labels_are_separate_from_real_validation():
+    cases = json.loads((ROOT / 'tests/fixtures/routing_multiturn.json').read_text(encoding='utf-8'))
+    cases[0]['label_source'] = 'ai_assisted'
+    report = load_evaluator().evaluate(cases)
+    gate = report['effectiveness_gate']
+    assert gate['status'] == 'not_ready'
+    assert gate['by_label_source']['ai_assisted']['topic']['pairs'] > 0
+    assert gate['independent_validation_sessions'] == 0
+    assert gate['execution']['status'] == 'not_measured'
+
+
+def test_replay_rejects_future_parent_and_session_split_leakage():
+    import pytest
+    evaluator = load_evaluator()
+    with pytest.raises(ValueError, match='visible earlier'):
+        evaluator.evaluate([{'id': 'future', 'messages': [{'text': 'x', 'expected_parent': '1'}]}])
+    with pytest.raises(ValueError, match='crosses dataset splits'):
+        evaluator.evaluate([{'id': str(i), 'session_id': 'same', 'split': split,
+                             'messages': [{'text': 'x'}]}
+                            for i, split in enumerate(['train', 'validation'])])
+
+
+def test_observation_is_causally_prefix_stable():
+    evaluator = load_evaluator()
+    case = {'id': 'prefix', 'messages': [{'text': 'GPU fan', 'expected_topic': 'hardware'},
+            {'text': 'GPU fan again', 'reply_to': '0', 'expected_topic': 'hardware'}]}
+    short = evaluator.evaluate([{**case, 'messages': case['messages'][:1]}])
+    long = evaluator.evaluate([case])
+    assert short['results'][0]['observations'][0] == long['results'][0]['observations'][0]
+
+
+def test_effectiveness_requires_labeled_sessions_and_rejects_measured_errors():
+    evaluator = load_evaluator()
+    # Contract unit data, never represented as a collected real corpus.
+    cases = [{'id': str(i), 'session_id': str(i), 'reviewer_id': 'reviewer',
+              'split': 'validation', 'label_source': 'independent_human',
+              'corpus_kind': 'real'} for i in range(30)]
+    rows = [{'observations': [
+        {'expected_topic': 'human-label', 'topic_id': 'runtime-id',
+         'expected_parent': None, 'parent_message_id': None},
+        {'expected_topic': 'human-label', 'topic_id': 'runtime-id'}]} for _ in cases]
+    assert evaluator.effectiveness(cases, rows)['status'] == 'passed'
+    rows[0]['observations'][1]['topic_id'] = 'different'
+    assert evaluator.effectiveness(cases, rows)['status'] == 'failed'
+    rows[0]['observations'] = []
+    gate = evaluator.effectiveness(cases, rows)
+    assert gate['status'] == 'not_ready'
+    assert gate['independent_validation_sessions'] == 29
+
+
 def test_baseline_comparison_is_read_only():
     evaluator = load_evaluator()
     baseline = {"failed": 1, "results": [{"id": "a", "actual": {"bot_targeted": False}}]}

@@ -22,6 +22,8 @@ jobs:
       # The host bridge must be exercised by the actual SDK, not mirrored SDK doubles.
       - run: python -m pip install "AstrBot==4.27.5"
       - run: python scripts/evaluate_routing.py --check --output artifacts/routing.json
+      - run: python scripts/evaluate_routing.py --fixtures tests/fixtures/routing_multiturn.json --check --output artifacts/routing-multiturn.json
+      - run: python scripts/evaluate_routing.py --fixtures tests/fixtures/routing_supervised_boundaries.json --check --output artifacts/routing-supervised.json
       - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 python -m pytest integration -q --cov=astrbot_plugin_chat_dynamics.main --cov=astrbot_plugin_chat_dynamics.core --cov-append --cov-report=json:artifacts/coverage.json --cov-report=xml:artifacts/coverage.xml --cov-report=term --cov-fail-under=90
       - run: python scripts/check_coverage.py --json artifacts/coverage.json
       - run: python -m compileall -q main.py core tests integration scripts

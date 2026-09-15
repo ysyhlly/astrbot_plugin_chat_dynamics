@@ -34,6 +34,80 @@ let sessionFilter = "";
 let busy = false;
 let loadRevision = 0;
 
+const pendingKey = "chat-dynamics:draft-review:pending:v1";
+let pendingRequests = [];
+try {
+  const stored = JSON.parse(sessionStorage.getItem(pendingKey) || "[]");
+  if (Array.isArray(stored)) pendingRequests = stored.filter(body => body?.request_id && body?.session_key);
+} catch { /* A corrupt record must not cause a new write. */ }
+const checkPending = document.createElement("button");
+checkPending.type = "button";
+checkPending.className = "button button-primary";
+checkPending.id = "btnCheckPending";
+checkPending.textContent = "核对待确认请求";
+els.reviewStatus.insertAdjacentElement("afterend", checkPending);
+function persistPending() {
+  // Persist before dispatch. If storage fails, do not risk an unrecoverable write.
+  sessionStorage.setItem(pendingKey, JSON.stringify(pendingRequests));
+}
+function pendingNotice() {
+  if (pendingRequests.length) {
+    els.reviewStatus.textContent = `请求结果待确认：${pendingRequests.length} 个请求可能已生效，请核对待确认请求。`;
+    els.reviewStatus.classList.add("error");
+  }
+}
+async function confirmRequest(body, initial = false) {
+  let result;
+  if (!initial) {
+    try {
+      const status = await apiGet("annotation_drafts", {session_key: body.session_key, request_id: body.request_id});
+      if (status.state === "complete") result = status.result;
+    } catch { /* Query failure is not evidence of write failure. */ }
+  }
+  if (result === undefined) {
+    try { result = await apiPost("annotation_drafts", body); }
+    catch {
+      if (initial) return confirmRequest(body, false);
+      const error = new Error("请求结果待确认");
+      error.pending = true;
+      throw error;
+    }
+  }
+  if (!result || result.state === "pending") {
+    const error = new Error("请求结果待确认");
+    error.pending = true;
+    throw error;
+  }
+  pendingRequests = pendingRequests.filter(item => item.request_id !== body.request_id);
+  persistPending();
+  return result;
+}
+async function reviewPost(body) {
+  body.request_id = crypto.randomUUID();
+  pendingRequests.push(body);
+  persistPending();
+  return confirmRequest(body, true);
+}
+async function reconcilePending() {
+  if (busy) return;
+  busy = true;
+  setEnabled();
+  let confirmed = 0;
+  try {
+    for (const body of [...pendingRequests]) {
+      try { await confirmRequest(body); confirmed += 1; }
+      catch { /* Retain the original body and request id for another check. */ }
+    }
+    els.reviewStatus.textContent = `已核对 ${confirmed} 个请求。`;
+    await load();
+  } finally {
+    busy = false;
+    pendingNotice();
+    setEnabled();
+  }
+}
+checkPending.addEventListener("click", () => void reconcilePending());
+
 const keyOf = (session, mid) => `${session}::${mid}`;
 
 function pairOf(key) {
@@ -57,8 +131,11 @@ function itemBy(pair) {
 
 function setEnabled() {
   const count = selected.size;
-  els.btnAccept.disabled = busy || !count;
-  els.btnDismiss.disabled = busy || !count;
+  const blocked = busy || pendingRequests.length > 0;
+  checkPending.hidden = !pendingRequests.length;
+  checkPending.disabled = busy;
+  els.btnAccept.disabled = blocked || !count;
+  els.btnDismiss.disabled = blocked || !count;
   els.btnSelectAll.disabled = busy;
   els.btnSelectNone.disabled = busy || !count;
   els.btnRefresh.disabled = busy;
@@ -67,7 +144,7 @@ function setEnabled() {
   // `data-expired` marks controls that stay disabled regardless of busy: an
   // expired draft has no label to write, so re-enabling it here would break it.
   els.listHost.querySelectorAll("button, input").forEach(node => {
-    node.disabled = busy || node.hasAttribute("data-expired");
+    node.disabled = blocked || node.hasAttribute("data-expired");
   });
 }
 
@@ -204,7 +281,7 @@ async function load() {
 }
 
 async function apply(action, pairs, expiredSkipped = 0) {
-  if (!pairs.length || busy) return;
+  if (!pairs.length || busy || pendingRequests.length) return;
   if (action === "accept") {
     const overwritten = pairs.filter(pair => itemBy(pair)?.annotated).length;
     const changes = pairs.filter(pair => itemBy(pair)?.annotated).slice(0, 12).map(pair => {
@@ -246,9 +323,9 @@ async function apply(action, pairs, expiredSkipped = 0) {
         }));
       }
       let result;
-      try { result = await apiPost("annotation_drafts", body); }
+      try { result = await reviewPost(body); }
       catch (err) {
-        chunk.forEach(mid => { selected.add(keyOf(session, mid)); failed.push({msg_id: mid, error: friendlyError(err, "请求失败")}); });
+        chunk.forEach(mid => selected.add(keyOf(session, mid)));
         continue;
       }
       const unresolved = new Set([...(result.failed || []), ...(result.skipped || [])].map(row => row.msg_id));
@@ -261,7 +338,9 @@ async function apply(action, pairs, expiredSkipped = 0) {
       for (const row of result.failed || []) failed.push(row);
       }
     }
-    if (action === "accept") {
+    if (pendingRequests.length) {
+      pendingNotice();
+    } else if (action === "accept") {
       const topicLabel = els.acceptTopic.selectedOptions[0]?.textContent || "";
       const notes = [];
       if (skipped) notes.push(`${skipped} 条已失效的草稿被跳过（插件重启或消息超出保留窗口，只能忽略）`);
@@ -281,6 +360,7 @@ async function apply(action, pairs, expiredSkipped = 0) {
   } finally {
     busy = false;
     render();
+    pendingNotice();
   }
 }
 
@@ -335,24 +415,25 @@ async function boot() {
       return;
     }
     const clearBtn = event.target.closest("[data-clear-session]");
-    if (clearBtn && !busy) {
+    if (clearBtn && !busy && !pendingRequests.length) {
       const count = Number(clearBtn.dataset.clearCount || 0);
       if (!window.confirm(`确定清空这个会话的 ${count} 条待审草稿吗？清空后无法恢复。`)) return;
       void (async () => {
         busy = true;
         setEnabled();
         try {
-          await apiPost("annotation_drafts", { action: "clear_session", session_key: clearBtn.dataset.clearSession });
+          await reviewPost({ action: "clear_session", session_key: clearBtn.dataset.clearSession });
           els.reviewStatus.classList.remove("error");
           els.reviewStatus.textContent = "已清空该会话的全部待审草稿。";
           selected.clear();
           await load();
         } catch (err) {
           els.reviewStatus.classList.add("error");
-          els.reviewStatus.textContent = friendlyError(err, "清空失败，请稍后重试。");
+          els.reviewStatus.textContent = "请求结果待确认，请核对后再操作。";
         } finally {
           busy = false;
           render();
+          pendingNotice();
         }
       })();
     }
@@ -364,6 +445,7 @@ async function boot() {
   }
   showLoading();
   await load();
+  pendingNotice();
 }
 
 void boot();

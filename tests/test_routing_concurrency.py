@@ -15,7 +15,7 @@ class Barrier:
         self.release = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def wait(self, *_args):
+    async def wait(self, *_args, **_kwargs):
         self.entered.set()
         try:
             await self.release.wait()
@@ -59,7 +59,7 @@ async def test_model_wait_releases_lock_and_explicit_wake_finishes(monkeypatch, 
     barrier = Barrier()
     first = turn('ambient')
     if slow_stage == 'rerank':
-        async def rerank(_runtime, node, _reranker):
+        async def rerank(_runtime, node, _reranker, *, is_current=None):
             if node.msg_id == 'ambient':
                 await barrier.wait()
         monkeypatch.setattr(plugin.thread_router, 'rerank_pending', rerank)

@@ -597,7 +597,13 @@ class ConsoleWebAPI:
             return _json_err("plugin is shutting down", 503)
         try:
             data = snapshot_overview(self.plugin)
+            from .turn_latency import summarize_turn_latencies
+            provider_budget = getattr(getattr(self.plugin, 'llm', None), 'provider_budget', None)
+            data['latency'] = summarize_turn_latencies(getattr(self.plugin, 'dags', {}))
+            data['provider_budget'] = provider_budget.diagnostics() if provider_budget is not None else {}
             air = dict(data.get("read_air") or {})
+            air['latency'] = data['latency']
+            air['provider_budget'] = data['provider_budget']
             umo = (_query_param("umo") or _query_param("session_key") or "").strip()
             if len(umo) > _MAX_SESSION_ID_LENGTH:
                 # Same bound as the sibling endpoints: an arbitrary id reaches the
@@ -697,7 +703,8 @@ class ConsoleWebAPI:
             return _json_err("session_key is required", 400)
         try:
             return _json_ok(await self.plugin.annotation_draft_payload(
-                session, refresh=bool(body.get("refresh"))))
+                session, refresh=bool(body.get("refresh")),
+                regenerate_dismissed=bool(body.get("regenerate_dismissed"))))
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:
@@ -714,6 +721,13 @@ class ConsoleWebAPI:
         if len(session) > _MAX_SESSION_ID_LENGTH:
             return _json_err("session_key too long", 400)
         try:
+            request_id = (_query_param('request_id') or '').strip()
+            if request_id:
+                if not session or len(request_id) > 128:
+                    return _json_err('session_key and valid request_id are required', 400)
+                result = await self.topic_annotations.read_request(session, request_id)
+                return _json_ok({'state': 'complete', 'result': result, 'request_id': request_id}
+                                if result is not None else {'state': 'pending', 'request_id': request_id})
             return _json_ok(await self.plugin.annotation_drafts_payload(session))
         except Exception as exc:
             logger.error("[ChatDynamics] annotation drafts read failed code=CD_ANNOTATION_DRAFTS type=%s",

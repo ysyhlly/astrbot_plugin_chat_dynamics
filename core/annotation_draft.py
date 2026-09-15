@@ -21,11 +21,12 @@ draft that has been shown the answer is not a draft, it is a rubber stamp.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, Mapping, Sequence
 
 DRAFT_SCHEMA_VERSION = 1
-DRAFT_PROMPT_VERSION = 1
+DRAFT_PROMPT_VERSION = 2
 
 MAX_MESSAGES = 60
 DEFAULT_DRAFTS = 20
@@ -69,6 +70,20 @@ def build_batch(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
     draftable: list[str] = []
     cap = max(1, min(MAX_MESSAGES, int(limit) * 3 if limit else DEFAULT_DRAFTS * 3))
     selected = list(nodes)[-cap:]
+    identities: dict[str, str] = {}
+    def identity(value: Any) -> str | None:
+        raw = str(value or "")
+        if not raw:
+            return None
+        if bot_owner and raw == bot_owner:
+            return "BOT"
+        if raw not in identities:
+            identities[raw] = "U" + str(len(identities) + 1)
+        return identities[raw]
+
+    authors = {str(getattr(n, "msg_id", "")): getattr(n, "user_id", "") for n in nodes}
+    for n in selected:
+        identity(getattr(n, "user_id", ""))
     for order, node in enumerate(selected):
         msg_id = _text(getattr(node, "msg_id", ""), 128)
         text = _text(getattr(node, "text", ""), MAX_TEXT)
@@ -77,15 +92,20 @@ def build_batch(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
         metadata = getattr(node, "metadata", None)
         metadata = metadata if isinstance(metadata, Mapping) else {}
         raw_user = str(getattr(node, "user_id", "") or "")
-        user_id = _text(raw_user, 64)
+        mentions = [str(v) for v in (getattr(node, "mentioned_users", None) or []) if v]
+        quoted_id = str(getattr(node, "reply_to_id", "") or "")
+        quoted_author = metadata.get("quoted_author_id") or authors.get(quoted_id)
         window.append({
             "msg_id": msg_id,
             "order": order,
             "text": text,
-            "mentions_bot": bool(getattr(node, "mentioned_users", None)),
+            "mentions_bot": (bot_owner in mentions) if bot_owner else None,
+            "mentions_anyone": bool(mentions),
+            "mentioned_users": [identity(v) for v in mentions],
+            "quoted_author": identity(quoted_author),
             "quotes": _text(getattr(node, "reply_to_id", ""), 64),
             "from_bot": bool(bot_owner) and raw_user == bot_owner,
-            "user": user_id[:8],
+            "user": identity(raw_user),
         })
     for item in window:
         if item["from_bot"] or item["msg_id"] in annotated:
@@ -99,6 +119,55 @@ def build_batch(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
         batch.append(row)
     stats = {"window": len(window), "draftable": len(draftable), "asked": len(wanted)}
     return batch, stats
+
+
+def build_batches(nodes: Sequence[Any], annotated: Mapping[str, Any], *,
+                  limit: int = DEFAULT_DRAFTS, bot_id: str = "",
+                  max_prompt_chars: int = 8000) -> tuple[list[list[dict[str, Any]]], dict[str, Any]]:
+    """Split targets before serialization; identities remain stable across batches.
+
+    Each target occurs exactly once. A target and its available quoted message
+    take priority over nearest chronological context. No serialized JSON is cut.
+    The budget includes both system and user prompts.
+    """
+    window, stats = build_batch(nodes, annotated, limit=limit, bot_id=bot_id)
+    def fits(rows):
+        return sum(map(len, build_prompt(rows))) <= max_prompt_chars
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    def required(targets):
+        ids = {row["msg_id"] for row in targets}
+        quotes = {row["quotes"] for row in targets}
+        return [dict(row, draft_this=row["msg_id"] in ids) for row in window
+                if row["msg_id"] in ids | quotes]
+    for row in window:
+        if not row["draft_this"]:
+            continue
+        candidate = current + [row]
+        if current and not fits(required(candidate)):
+            groups.append(current)
+            current = []
+        if not fits(required([row])):
+            raise ValueError("prompt budget cannot fit target and quoted context")
+        current.append(row)
+    if current:
+        groups.append(current)
+    batches = []
+    for targets in groups:
+        rows = required(targets)
+        included = {row["msg_id"] for row in rows}
+        target_orders = [row["order"] for row in targets]
+        neighbors = sorted(window, key=lambda row: (
+            min(abs(row["order"] - order) for order in target_orders), row["order"]))
+        for row in neighbors:
+            if row["msg_id"] in included:
+                continue
+            candidate = sorted(rows + [dict(row, draft_this=False)], key=lambda r: r["order"])
+            if fits(candidate):
+                rows = candidate
+                included.add(row["msg_id"])
+        batches.append(rows)
+    return batches, dict(stats, batches=len(batches))
 
 
 # ---- the prompt ---------------------------------------------------------
@@ -157,7 +226,7 @@ def _confidence(value: Any) -> float:
     return max(0.0, min(1.0, round(float(value), 3)))
 
 
-def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]], *, diagnostics: bool = False) -> dict[str, Any] | None:
     """Validate a model reply into drafts; None when nothing survives.
 
     Only the messages the batch asked about can become drafts: an id that was not
@@ -171,7 +240,13 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
     drafts: dict[str, dict[str, Any]] = {}
     invented: list[str] = []
     undecided: list[str] = []
-    for raw in payload.get("rows") or []:
+    duplicate: list[str] = []
+    invalid_confidence: list[str] = []
+    seen: set[str] = set()
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        return None
+    for raw in rows:
         if not isinstance(raw, Mapping):
             continue
         msg_id = raw.get("msg_id")
@@ -183,8 +258,12 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
             msg_id = str(msg_id)
         else:
             msg_id = ""
-        if not msg_id or msg_id in drafts:
+        if not msg_id:
             continue
+        if msg_id in seen:
+            duplicate.append(msg_id)
+            continue
+        seen.add(msg_id)
         if msg_id not in asked:
             if msg_id not in invented and len(invented) < MAX_INVENTED:
                 invented.append(msg_id[:64])
@@ -193,6 +272,11 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
         targeted = _bool(raw.get("bot_targeted"))
         if reply is None and targeted is None:
             undecided.append(msg_id)
+            continue
+        confidence = raw.get("confidence")
+        if (isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+            invalid_confidence.append(msg_id)
             continue
         draft: dict[str, Any] = {
             "confidence": _confidence(raw.get("confidence")),
@@ -204,7 +288,7 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
         if targeted is not None:
             draft["bot_targeted"] = targeted
         drafts[msg_id] = draft
-    if not drafts:
+    if not drafts and not diagnostics:
         return None
     return {
         "draft_schema_version": DRAFT_SCHEMA_VERSION,
@@ -213,10 +297,14 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]]) -> dict[str, Any
         "drafted": len(drafts),
         "undecided": undecided[:MAX_INVENTED * 2],
         "invented": invented,
+        "out_of_window": invented,
+        "missing": [msg_id for msg_id in asked if msg_id not in seen],
+        "duplicate": duplicate,
+        "invalid_confidence": invalid_confidence,
     }
 
 
 __all__ = [
     "DEFAULT_DRAFTS", "DRAFT_PROMPT_VERSION", "DRAFT_SCHEMA_VERSION", "MAX_MESSAGES",
-    "SYSTEM_PROMPT", "build_batch", "build_prompt", "parse_drafts",
+    "SYSTEM_PROMPT", "build_batch", "build_batches", "build_prompt", "parse_drafts",
 ]
