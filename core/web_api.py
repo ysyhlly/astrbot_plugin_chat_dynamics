@@ -370,7 +370,7 @@ class ConsoleWebAPI:
         if getattr(self.plugin, "_shutting_down", False):
             return _json_err("plugin is shutting down", 503)
         body = await _json_body()
-        invalid = self._validate_fields(body, {"config", "values"})
+        invalid = self._validate_fields(body, {"config", "values", "baseline"})
         if invalid is not None:
             return invalid
         updates = body.get("config")
@@ -379,7 +379,12 @@ class ConsoleWebAPI:
         if not isinstance(updates, dict):
             return _json_err("config must be an object", 400)
         try:
-            panel = await self.plugin.save_config_values(updates)
+            if "baseline" in body:
+                if not isinstance(body["baseline"], dict):
+                    return _json_err("baseline must be an object", 400)
+                panel = await self.plugin.save_config_values(updates, baseline=body["baseline"])
+            else:
+                panel = await self.plugin.save_config_values(updates)
             return _json_ok(panel)
         except ValueError as exc:
             return _json_err(str(exc), 400)

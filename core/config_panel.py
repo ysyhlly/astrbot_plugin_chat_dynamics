@@ -296,9 +296,11 @@ class ConfigPanel:
         return value if isinstance(value, str) else str(value)
 
 
-    async def save_config_values(self, updates: dict[str, Any]) -> dict[str, Any]:
+    async def save_config_values(self, updates: dict[str, Any], *, baseline: dict[str, Any] | None = None) -> dict[str, Any]:
         if not isinstance(updates, dict):
             raise ValueError("config must be an object")
+        if baseline is not None and not isinstance(baseline, dict):
+            raise ValueError("baseline must be an object")
         schema = self._config_schema()
         unknown = sorted(set(updates) - set(schema))
         if unknown:
@@ -308,6 +310,11 @@ class ConfigPanel:
             field_schema = schema.get(key) if isinstance(schema.get(key), dict) else {}
             normalized[key] = self._normalize_config_update_value(key, value, field_schema)
         async with self.host._config_lock:
+            if baseline is not None:
+                conflicts = [key for key in normalized if key not in baseline or
+                             self.host.config.get(key) != baseline[key]]
+                if conflicts:
+                    raise ValueError("配置冲突：这些字段已被其他页面修改，请重新读取后再保存：" + ", ".join(conflicts))
             missing = object()
             original = {key: self.host.config.get(key, missing) for key in normalized}
             self.host._config_save_in_progress = True
@@ -483,4 +490,3 @@ class ConfigPanel:
         self.host._sync_runtime_from_config(validated_config=candidate)
         self.host._metric("preset_applied")
         return {"name": name, "changed": changed, "saved": saved}
-

@@ -113,6 +113,20 @@ async def test_notebook_read_write_and_validation(api, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_baseline_forwarding_and_validation(api, monkeypatch):
+    updates = {"bot_names": ["new"]}
+    baseline = {"bot_names": ["old"]}
+    monkeypatch.setattr(web, "request_json", AsyncMock(return_value={"config": updates, "baseline": baseline}))
+    api.plugin.save_config_values = AsyncMock(return_value={"saved": True})
+    assert (await api.config_save())["data"]["saved"]
+    api.plugin.save_config_values.assert_awaited_once_with(updates, baseline=baseline)
+    api.plugin.save_config_values.reset_mock()
+    monkeypatch.setattr(web, "request_json", AsyncMock(return_value={"config": updates, "baseline": []}))
+    assert (await api.config_save())["status_code"] == 400
+    api.plugin.save_config_values.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_config_values_alias_and_preset_validation(api, monkeypatch):
     monkeypatch.setattr(web, "request_json", AsyncMock(return_value={"values": {"enabled": True}}))
     api.plugin.save_config_values = AsyncMock(return_value={"saved": True})

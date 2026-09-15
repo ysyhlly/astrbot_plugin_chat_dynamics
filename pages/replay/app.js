@@ -59,6 +59,11 @@ const annotationStatus = document.getElementById("annotationStatus");
 const annotationMetrics = document.getElementById("annotationMetrics");
 let annotationRevision = 0;
 let annotationData = null;
+const annotationBindings = new WeakMap();
+function markAnnotationDirty(row) {
+  row.dataset.dirty = "true";
+  row.dataset.editVersion = String(Number(row.dataset.editVersion || 0) + 1);
+}
 const draftButton = document.getElementById("btnDraftAnnotations");
 const draftGenerationStatus = document.getElementById("draftGenerationStatus");
 const draftRequests = new Set();
@@ -126,7 +131,7 @@ function applyDraftToRow(row, draft) {
     if (value === undefined || value === null) return;
     input.value = typeof value === "boolean" ? String(value) : Array.isArray(value) ? value.join(", ") : String(value);
   });
-  row.dataset.dirty = "true";
+  markAnnotationDirty(row);
   return true;
 }
 function draftFor(message) {
@@ -153,10 +158,10 @@ function applyAnnotationData(data, block, prefill = false) {
       if (Array.isArray(record[key])) descriptions.push(`${label}：${record[key].join(", ") || "无"}`);
     }
     if (record.recipient_error_type) descriptions.push(RECIPIENT_ERRORS[record.recipient_error_type] || record.recipient_error_type);
-    row.querySelector("[data-saved-annotation]").textContent = `已保存：话题 ${record.expected_topic}${descriptions.length ? " · " + descriptions.join(" · ") : ""}`;
+    row.querySelector("[data-saved-annotation]").textContent = `已保存：话题 ${record.topic_reviewed === false ? "未审核" : record.expected_topic}${descriptions.length ? " · " + descriptions.join(" · ") : ""}`;
     if (prefill && !row.dataset.dirty) {
       const target = row.querySelector("[data-target]");
-      target.value = record.error_type === "correct" ? "CORRECT" : record.expected_topic;
+      target.value = record.topic_reviewed === false ? "UNREVIEWED" : record.error_type === "correct" ? "CORRECT" : record.expected_topic;
       if (!target.value) target.value = "CORRECT";
       if (record.error_type !== "correct") row.querySelector("[data-error]").value = record.error_type;
       row.querySelectorAll("[data-recipient]").forEach(input => {
@@ -191,9 +196,10 @@ async function renderAnnotations(block) {
   annotationMessages.innerHTML = (block.messages || []).map((message, index) => {
     const targetId = `annotation-target-${index}`;
     const errorId = `annotation-error-${index}`;
-    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="CORRECT">判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}" aria-label="保存第 ${index + 1} 条消息的标注">保存标注</button></div>`;
+    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="UNREVIEWED">话题未审核</option><option value="CORRECT" selected>判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}" aria-label="保存第 ${index + 1} 条消息的标注">保存标注</button></div>`;
   }).join("");
   (block.messages || []).forEach((message, index) => {
+    annotationBindings.set(annotationMessages.children[index], { block, message });
     if (!Array.isArray(message.candidates) || !message.candidates.length) return;
     const hint = document.createElement("p");
     hint.className = "ops-note";
@@ -217,8 +223,8 @@ function setTonightEnabled(ok) {
   }
 }
 
-function selectBlock(index) {
-  if (index !== selectedIndex && !confirmDiscardAnnotations()) return;
+function selectBlock(index, discardConfirmed = false) {
+  if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
   selectedIndex = index;
   const nodes = els.replayRail.querySelectorAll(".replay-block");
   nodes.forEach(node => {
@@ -249,7 +255,8 @@ function selectBlock(index) {
   }
 }
 
-function renderRail(data) {
+function renderRail(data, discardConfirmed = false) {
+  if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
   replayData = data;
   archivedTopics = Array.isArray(data.archived_topics) ? data.archived_topics : [];
   blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
@@ -275,7 +282,7 @@ function renderRail(data) {
   if (!blocks.length) {
     els.replayRail.innerHTML = "";
     els.railEmpty.classList.remove("hidden");
-    selectBlock(-1);
+    selectBlock(-1, true);
     return;
   }
   els.railEmpty.classList.add("hidden");
@@ -293,7 +300,7 @@ function renderRail(data) {
     const session = !selectedUmo && block.session_id ? `<small>会话 ${escapeHtml(redactId(block.session_id))}</small>` : "";
     return `<div class="gantt-label lane-${lane}"><span>${label}${session}</span></div><div class="gantt-track"><button type="button" class="replay-block lane-${lane}" data-index="${index}" style="left:min(${left}%, calc(100% - 84px));width:clamp(84px, ${width}%, 100%)" title="${label}" aria-label="${escapeHtml(`${title} · ${formatTs(block.start_ts)} · 查看详情`)}" aria-haspopup="dialog" aria-pressed="false"><span class="scene-reason">${label}</span></button></div>`;
   }).join("")}</div>`;
-  selectBlock(-1);
+  selectBlock(-1, true);
 
 }
 
@@ -303,6 +310,7 @@ async function refresh() {
     const params = selectedUmo ? { umo: selectedUmo } : {};
     const data = await apiGet("replay", params);
     if (revision !== refreshRevision) return;
+    if (!confirmDiscardAnnotations()) return;
     online = true;
     setLink(els, true, "已连接");
     fillSessionSelect(els.sessionSelect, data.sessions || [], selectedUmo);
@@ -312,7 +320,7 @@ async function refresh() {
       storageSet(UMO_KEY, selectedUmo);
     }
     renderDraftGeneration();
-    renderRail(data);
+    renderRail(data, true);
     setTonightEnabled(true);
   } catch (err) {
     if (revision !== refreshRevision) return;
@@ -320,12 +328,13 @@ async function refresh() {
     renderDraftGeneration();
     setLink(els, false, friendlyError(err, "离线"));
     setTonightEnabled(false);
+    if (dirtyAnnotationCount()) return;
     els.replayRail.innerHTML = "";
     blocks = [];
     replayData = null;
     for (const id of ["summaryTopics", "summaryMessages", "summaryDecisions"]) document.getElementById(id).textContent = "—";
     els.railEmpty.textContent = "回放暂时不可用，请检查连接后刷新。";
-    selectBlock(-1);
+    selectBlock(-1, true);
     els.railCounts.textContent = "主题 —";
     els.railEmpty.classList.remove("hidden");
     els.blockDetail.textContent = "回放暂时不可用，请稍后刷新。";
@@ -357,7 +366,7 @@ async function boot() {
   document.getElementById("decisionFilter").addEventListener("change", () => { if (replayData) renderRail(replayData); });
   const markDirty = event => {
     const row = event.target.closest(".annotation-row");
-    if (row) row.dataset.dirty = "true";
+    if (row) markAnnotationDirty(row);
   };
   annotationMessages.addEventListener("input", markDirty);
   annotationMessages.addEventListener("change", event => {
@@ -370,8 +379,7 @@ async function boot() {
     const applyButton = event.target.closest("[data-apply-draft]");
     if (applyButton) {
       const row = applyButton.closest(".annotation-row");
-      const index = [...annotationMessages.children].indexOf(row);
-      const message = blocks[selectedIndex]?.messages?.[index];
+      const message = annotationBindings.get(row)?.message;
       if (applyDraftToRow(row, draftFor(message))) {
         annotationStatus.textContent = ("已按草稿填写收件人与回复标签；话题仍由你选择，确认后按保存标注。"
           + "保存后记录里会写明这条采纳了草稿。");
@@ -380,12 +388,12 @@ async function boot() {
     }
     const button = event.target.closest("[data-annotate]");
     if (!button || button.disabled) return;
-    const block = blocks[selectedIndex];
-    const message = block?.messages?.[Number(button.dataset.annotate)];
-    if (!message) return;
     const row = button.closest(".annotation-row");
+    const { block, message } = annotationBindings.get(row) || {};
+    if (!message) return;
+    const editVersion = row.dataset.editVersion;
     const expected = row.querySelector("[data-target]").value;
-    const error = row.querySelector("[data-error]").value;
+    const error = expected === "UNREVIEWED" ? "unreviewed" : row.querySelector("[data-error]").value;
     const revision = annotationRevision;
     button.disabled = true;
     try {
@@ -396,11 +404,11 @@ async function boot() {
       applyAnnotationData(data, block);
       // The reload above is async; clear the dirty mark first so the guard does
       // not fire on a block switch that happens right after a successful save.
-      delete row.dataset.dirty;
+      if (row.dataset.editVersion === editVersion) delete row.dataset.dirty;
       if (!row.querySelector("[data-saved-annotation]").textContent) {
         row.querySelector("[data-saved-annotation]").textContent = "已保存标注。";
       }
-      annotationStatus.textContent = "已保存标注。";
+      annotationStatus.textContent = row.dataset.dirty ? "已保存提交时的标注；后续修改尚未保存。" : "已保存标注。";
 
     } catch (err) {
       if (revision === annotationRevision) {
@@ -474,6 +482,11 @@ async function boot() {
     /* bridge may still work for api calls */
   }
   els.sessionSelect.addEventListener("change", () => {
+    if (!confirmDiscardAnnotations()) {
+      els.sessionSelect.value = selectedUmo;
+      return;
+    }
+    selectBlock(-1, true);
     selectedUmo = els.sessionSelect.value || "";
     sessionRevision += 1;
     ++annotationRevision;
@@ -494,8 +507,15 @@ async function boot() {
   els.detailDialog.addEventListener("cancel", (event) => {
     if (!confirmDiscardAnnotations()) event.preventDefault();
   });
+  let navigationDiscardConfirmed = false;
+  window.ChatDynamicsBeforeNavigate = () => {
+    if (!confirmDiscardAnnotations()) return false;
+    navigationDiscardConfirmed = true;
+    setTimeout(() => { navigationDiscardConfirmed = false; }, 1000);
+    return true;
+  };
   window.addEventListener("beforeunload", (event) => {
-    if (!dirtyAnnotationCount()) return;
+    if (navigationDiscardConfirmed || !dirtyAnnotationCount()) return;
     event.preventDefault();
     event.returnValue = "";
   });

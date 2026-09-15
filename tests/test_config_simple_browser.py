@@ -22,8 +22,8 @@ def setup_config(context, theme="day"):
         if (endpoint !== 'config') return post(endpoint, body);
         if (window.__failSave) throw new Error('save failed');
         window.__savedConfig = body.config;
-        window.__stored = body.config;
-        return {ok:true,data:{schema:window.__schema,stored:body.config,effective:body.config}};
+        window.__stored = {...window.__stored, ...body.config};
+        return {ok:true,data:{schema:window.__schema,stored:window.__stored,effective:window.__stored}};
       };
     })();""")
 
@@ -64,10 +64,11 @@ def test_simple_config_preserves_advanced_edits_and_saves(browser, page_server, 
         page.evaluate("window.__failSave = false")
         page.locator('#btnConfigSave').click()
         page.wait_for_function("window.__savedConfig?.decision_timeout === 12")
-        assert page.evaluate("window.__savedConfig.reply_provider") == "existing-model"
+        assert page.evaluate("window.__stored.reply_provider") == "existing-model"
+        assert page.evaluate("!('reply_provider' in window.__savedConfig)")
         assert page.evaluate("window.__savedConfig.takeover_groups") == ["123", "456", "123"]
         assert "当前：对 1 个指定群生效" in page.locator('#configScopeStatus').inner_text()
-        assert page.evaluate("Object.keys(window.__savedConfig).length === Object.keys(window.__schema).length")
+        assert set(page.evaluate("Object.keys(window.__savedConfig)")) == {"takeover_groups", "exclude_groups", "decision_timeout"}
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not errors
 
@@ -88,7 +89,8 @@ def test_config_loads_without_provider_list_and_storage(browser, page_server):
         assert "观察模式" in page.locator('#configScopeStatus').inner_text()
         page.locator('#btnConfigSave').click()
         page.wait_for_function("window.__savedConfig?.shadow_mode === true")
-        assert page.evaluate("window.__savedConfig.reply_provider") == "existing-model"
+        assert page.evaluate("window.__stored.reply_provider") == "existing-model"
+        assert page.evaluate("!('reply_provider' in window.__savedConfig)")
 
 
 def test_config_view_choice_survives_reload(browser, page_server):

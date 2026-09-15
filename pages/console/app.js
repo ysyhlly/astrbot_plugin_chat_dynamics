@@ -1150,18 +1150,16 @@ async function applyPresenceKnob() {
   if (!els.presenceSelect || !overviewOnline || operationInFlight) return;
   const value = els.presenceSelect.value;
   if (!["ghost", "sensible", "lively"].includes(value)) return;
-  operationInFlight = true;
-  updateManagementControls();
+  const token = beginOperation("presence");
   if (els.presenceNote) els.presenceNote.textContent = "正在应用分寸旋钮…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
     if (els.presenceNote) els.presenceNote.textContent = "分寸旋钮已保存。";
-    await refresh({ quiet: false });
+    await refresh({ quiet: false, operationToken: token });
   } catch (err) {
     if (els.presenceNote) els.presenceNote.textContent = friendlyError(err, "保存失败，请稍后重试。");
   } finally {
-    operationInFlight = false;
-    updateManagementControls();
+    endOperation(token, "presence");
   }
 }
 

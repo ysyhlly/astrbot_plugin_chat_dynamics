@@ -225,7 +225,7 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
             "aiocqhttp:GroupMessage:10002",
         }
         assert all(call["body"]["action"] == "accept" for call in calls)
-        assert all(call["body"]["expected_topic"] == "CORRECT" for call in calls)
+        assert all(call["body"]["expected_topic"] == "KEEP" for call in calls)
         # m2 is expired: it must never be sent as an accept, or the batch turns
         # into a wall of identical 'message no longer available' failures.
         assert sorted(sum((call["body"]["msg_ids"] for call in calls), [])) == ["m1", "m3"]
@@ -233,7 +233,7 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         assert "已采纳 2 条" in status and "1 条已失效" in status
         # m3 already carries a human label, so accepting overwrites it and must
         # have asked first.
-        assert dialogs and "覆盖" in dialogs[-1], dialogs
+        assert dialogs and "更新建议字段" in dialogs[-1], dialogs
 
         page.evaluate("window.__calls = []")
         page.locator("#acceptTopic").select_option("NEW")
@@ -347,3 +347,47 @@ def test_an_empty_backlog_says_so(browser, page_server):
 
         assert page.locator(".draft-card").count() == 0
         assert "生成 AI 草稿" in page.locator("#listEmpty").inner_text()
+
+
+def test_checkbox_selection_preserves_focus(browser, page_server):
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        box = page.locator("[data-select]").first
+        box.focus()
+        box.press("Space")
+        assert box.evaluate("el => el === document.activeElement")
+        assert box.is_checked()
+
+
+def test_single_accept_confirms_existing_annotation(browser, page_server):
+    with browser.new_context() as context:
+        dialogs = []
+        page = open_page(context, page_server, dialogs=dialogs)
+        page.locator('[data-accept][data-mid="m3"]').click()
+        page.wait_for_function("window.__calls.length === 1")
+        assert len(dialogs) == 1 and "已有人工标注" in dialogs[0]
+        assert "→" in dialogs[0]
+
+
+def test_large_batch_chunks_and_preserves_failed_selection(browser, page_server):
+    from copy import deepcopy
+    payload = deepcopy(PAYLOAD)
+    group = payload["sessions"][0]
+    group["items"] = [{**group["items"][0], "msg_id": f"item{i}"} for i in range(401)]
+    payload["sessions"] = [group]
+    payload["total_drafts"] = 401
+    with browser.new_context() as context:
+        page = open_page(context, page_server, payload)
+        page.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
+            window.__calls.push({body});
+            if (window.__calls.length === 2) throw new Error('network failure');
+            return {ok:true, data:{saved:body.msg_ids.length,saved_ids:body.msg_ids,failed:[]}};
+          };
+        }""")
+        page.locator("#btnSelectAll").click()
+        page.locator("#btnAccept").click()
+        page.wait_for_function("window.__calls.length === 3 && !document.querySelector('#btnRefresh').disabled")
+        assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [200, 200, 1]
+        assert page.locator("[data-select]:checked").count() == 200
+        assert "201" in page.locator("#reviewStatus").inner_text()

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from collections import Counter
 from copy import deepcopy
 
 from .routing_trace import build_routing_trace
 
-ERROR_TYPES = {"correct", "topic_merge", "topic_split", "wrong_assignment", "premature_assignment", "reopen_miss", "unknown"}
+ERROR_TYPES = {"correct", "topic_merge", "topic_split", "wrong_assignment", "premature_assignment", "reopen_miss", "unknown", "unreviewed"}
 
 RECIPIENT_ERROR_TYPES = {"correct", "missed_bot", "false_bot", "wrong_recipient", "missing_recipient", "subject_confusion", "unknown"}
 REQUIRED_FIELDS = {"session_key", "msg_id", "expected_topic", "error_type"}
@@ -26,6 +27,10 @@ RECIPIENT_FIELDS = {"recipient_correct", "bot_targeted", "recipient_ids", "subje
 
 
 class TopicAnnotations:
+    @staticmethod
+    def revision(record):
+        return hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
     def __init__(self, plugin):
         self.plugin = plugin
         self.lock = asyncio.Lock()
@@ -111,7 +116,7 @@ class TopicAnnotations:
             await self.plugin.put_kv_data(self.draft_key(session), {"drafts": {}, "dismissed_ids": dismissed})
             await self._index_session(session, remove=True)
 
-    async def remove_drafts(self, session, msg_ids) -> int:
+    async def remove_drafts(self, session, msg_ids, *, revisions=None) -> int:
         """Drop drafts a reviewer dismissed or accepted; returns the count removed."""
         wanted = {str(mid) for mid in msg_ids if str(mid).strip()}
         if not wanted:
@@ -125,6 +130,8 @@ class TopicAnnotations:
                 return 0
             removed = 0
             for mid in wanted:
+                if revisions is not None and self.revision(drafts.get(mid)) != revisions.get(mid):
+                    continue
                 if drafts.pop(mid, None) is not None:
                     removed += 1
             raw["drafts"] = drafts
@@ -151,14 +158,15 @@ class TopicAnnotations:
             and isinstance(row.get("expected_topic"), str)
             and isinstance(row.get("msg_id"), str)
         ]
-        counts = Counter(row["error_type"] for row in rows)
-        matrix = Counter((row["predicted_topic"], row["expected_topic"]) for row in rows)
+        topic_rows = [row for row in rows if row.get("topic_reviewed", True)]
+        counts = Counter(row["error_type"] for row in topic_rows)
+        matrix = Counter((row["predicted_topic"], row["expected_topic"]) for row in topic_rows)
         recipient_rows = [row for row in rows if RECIPIENT_FIELDS.intersection(row)]
         recipient_counts = Counter(row["recipient_error_type"] for row in recipient_rows if "recipient_error_type" in row)
         drafts = await self.read_drafts(session)
         assisted = sum(1 for row in rows if row.get("accepted_from") == "ai")
         # Labels are a selected sample, not an unbiased estimate of accuracy.
-        return {"records": rows, "metrics": {"total": len(rows), "ai_assisted": assisted,
+        return {"records": rows, "metrics": {"total": len(topic_rows), "unreviewed": len(rows) - len(topic_rows), "ai_assisted": assisted,
                 "error_counts": dict(counts),
                 "confusion": [{"predicted": a, "expected": b, "count": n} for (a, b), n in sorted(matrix.items())],
                 "sample_note": ("仅统计人工标注样本，不代表真实准确率；其中 %d 条采纳了模型草稿" % assisted)},
@@ -170,8 +178,8 @@ class TopicAnnotations:
                     "expected_reply": sum(row.get("expected_reply") is True for row in recipient_rows),
                     "sample_note": "仅统计人工标注样本，不代表真实准确率"}}
 
-    async def save(self, body):
-        if not isinstance(body, dict) or not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS:
+    async def save(self, body, *, partial=False, draft_revision=None):
+        if not isinstance(body, dict) or not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision"}:
             raise ValueError("invalid annotation fields")
         if any(not isinstance(v, str) or not v or len(v) > 256 for v in (body[key] for key in REQUIRED_FIELDS)):
             raise ValueError("invalid annotation value")
@@ -203,11 +211,11 @@ class TopicAnnotations:
         known.update(getattr(state, "topics", {}).keys())
         known.update(getattr(state, "archived_topics", {}).keys())
         known.update(getattr(getattr(state, "archive", None), "entries", {}).keys())
-        if expected not in known | {"NEW", "UNKNOWN", "CORRECT"}:
+        if expected not in known | {"NEW", "UNKNOWN", "CORRECT", "KEEP", "UNREVIEWED"}:
             raise ValueError("unknown target topic")
         if expected == "CORRECT":
             expected, error = predicted, "correct"
-        elif error == "correct" and expected != predicted:
+        elif expected not in {"KEEP", "UNREVIEWED"} and error == "correct" and expected != predicted:
             raise ValueError("correct label must match prediction")
         record = {"annotation_schema_version": 2, "msg_id": mid, "predicted_topic": predicted, "expected_topic": expected,
                   "error_type": error, "annotated_at": time.time(),
@@ -233,17 +241,37 @@ class TopicAnnotations:
         if getattr(self.plugin, "console_show_message_content", False):
             record["text"] = node.text[:2000]
         async with self.lock:
+            rows = (await self.read(session))["records"]
+            previous = next((row for row in rows if row["msg_id"] == mid), None)
+            if partial and previous and "expected_revision" not in body:
+                raise ValueError("已有人工标注，请刷新后确认字段变化再采纳")
+            if "expected_revision" in body and body["expected_revision"] != self.revision(previous):
+                raise ValueError("标注已被其他页面修改，请刷新后重新确认")
             # Provenance: a human pressed save, and if the values they saved are
             # the ones the draft proposed, the record says so instead of leaving
             # the learning layer to guess how much of a label is model output.
             record["label_source"] = "human"
             draft = (await self.read_drafts(session)).get("drafts", {}).get(mid)
+            if draft_revision is not None and draft_revision != self.revision(draft):
+                raise ValueError("草稿已更新，请刷新后重新确认")
+            if partial and previous:
+                for key in RECIPIENT_FIELDS:
+                    if key not in body and key in previous:
+                        record[key] = deepcopy(previous[key])
+            if body["expected_topic"] in {"KEEP", "UNREVIEWED"}:
+                # Older learning consumers already treat an empty topic as absent
+                # supervision; a new sentinel would be mistaken for a real topic.
+                record.update(expected_topic="", error_type="unreviewed", topic_reviewed=False)
+                if previous and body["expected_topic"] == "KEEP":
+                    for key in ("expected_topic", "error_type", "topic_reviewed"):
+                        record[key] = previous.get(key, True if key == "topic_reviewed" else record[key])
+            else:
+                record["topic_reviewed"] = True
             if isinstance(draft, dict):
                 shared = [key for key in ("expected_reply", "bot_targeted") if key in draft]
                 if shared and all(body.get(key) == draft.get(key) for key in shared):
                     record["accepted_from"] = "ai"
                     record["draft_confidence"] = draft.get("confidence")
-            rows = (await self.read(session))["records"]
             rows = [row for row in rows if row["msg_id"] != mid]
             rows.append(record)
             await self.plugin.put_kv_data(self.key(session), rows[-2000:])

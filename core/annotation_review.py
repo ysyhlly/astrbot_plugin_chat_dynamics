@@ -8,7 +8,7 @@ from .llm_adapter import LLMUnavailable
 
 _ANNOTATION_DRAFT_WINDOW = 120
 _MAX_TURN_CHARS = 8000
-_DRAFT_ACCEPT_TOPICS = {"CORRECT": "correct", "NEW": "topic_merge", "UNKNOWN": "premature_assignment"}
+_DRAFT_ACCEPT_TOPICS = {"KEEP": "unreviewed", "CORRECT": "correct", "NEW": "topic_merge", "UNKNOWN": "premature_assignment"}
 
 
 class AnnotationReview:
@@ -149,7 +149,7 @@ class AnnotationReview:
                 continue
             dag = self.host.dags.get(key)
             existing = await self.host.topic_annotations.read(key)
-            annotated = {row.get("msg_id") for row in existing.get("records") or []}
+            annotated = {row.get("msg_id"): row for row in existing.get("records") or []}
             items: list[dict[str, Any]] = []
             for mid, draft in drafts.items():
                 if not isinstance(draft, dict):
@@ -164,6 +164,10 @@ class AnnotationReview:
                     "confidence": draft.get("confidence"),
                     "reason": str(draft.get("reason") or ""),
                     "annotated": mid in annotated,
+                    "annotation": {field: annotated[mid].get(field) for field in
+                        ("expected_reply", "bot_targeted", "expected_topic", "error_type")} if mid in annotated else None,
+                    "annotation_revision": self.host.topic_annotations.revision(annotated.get(mid)),
+                    "draft_revision": self.host.topic_annotations.revision(draft),
                     "saveable": node is not None,
                     "stale_reason": "" if node is not None else ("session_gone" if dag is None else "evicted"),
                     "text": str(getattr(node, "text", "") or "")[:240] if show_content and node is not None else "",
@@ -206,7 +210,9 @@ class AnnotationReview:
         if action == "clear_session":
             await self.host.topic_annotations.clear_drafts(session)
             return {"cleared": True}
-        msg_ids = [str(mid)[:128] for mid in (body.get("msg_ids") or []) if str(mid).strip()][:200]
+        if not isinstance(body.get("msg_ids"), list) or len(body["msg_ids"]) > 200:
+            raise ValueError("msg_ids must contain at most 200 entries")
+        msg_ids = list(dict.fromkeys(str(mid)[:128] for mid in body["msg_ids"] if str(mid).strip()))
         if not msg_ids:
             raise ValueError("msg_ids is required")
         if action == "dismiss":
@@ -214,7 +220,7 @@ class AnnotationReview:
             return {"removed": removed}
         if action != "accept":
             raise ValueError("unknown action")
-        topic = str(body.get("expected_topic") or "CORRECT")
+        topic = str(body.get("expected_topic") or "KEEP")
         if topic not in _DRAFT_ACCEPT_TOPICS:
             raise ValueError("invalid expected_topic")
         stored = await self.host.topic_annotations.read_drafts(session)
@@ -248,8 +254,13 @@ class AnnotationReview:
             for field in ("expected_reply", "bot_targeted"):
                 if isinstance(draft.get(field), bool):
                     record[field] = draft[field]
+            revisions = body.get("revisions", {})
+            baseline = revisions.get(mid, {}) if isinstance(revisions, dict) else {}
+            if "annotation_revision" in baseline:
+                record["expected_revision"] = baseline["annotation_revision"]
             try:
-                await self.host.topic_annotations.save(record)
+                await self.host.topic_annotations.save(record, partial=True,
+                    draft_revision=baseline.get("draft_revision"))
             except ValueError as exc:
                 if "no longer available" in str(exc):
                     skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
@@ -258,5 +269,6 @@ class AnnotationReview:
                 continue
             saved.append(mid)
         if saved:
-            await self.host.topic_annotations.remove_drafts(session, saved)
-        return {"saved": len(saved), "skipped": skipped, "failed": failed}
+            await self.host.topic_annotations.remove_drafts(session, saved,
+                revisions={mid: self.host.topic_annotations.revision(drafts[mid]) for mid in saved})
+        return {"saved": len(saved), "saved_ids": saved, "skipped": skipped, "failed": failed}

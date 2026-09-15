@@ -124,7 +124,7 @@ def evaluate(cases):
                            "parent_message_id": routing.get("parent_message_id")}
             if "topic_candidates" in routing:
                 observation["topic_candidates"] = routing["topic_candidates"]
-            for key in ("expected_topic", "expected_parent"):
+            for key in ("expected_topic", "expected_parent", "topic_reviewed"):
                 if key in message:
                     observation[key] = message[key]
             observations.append(observation)

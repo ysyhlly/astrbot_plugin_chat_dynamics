@@ -273,7 +273,7 @@ class _NativeEventContext:
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.9.1",
+    "v1.9.2",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -932,8 +932,10 @@ class ChatDynamicsPlugin(Star):
     def _normalize_config_update_value(self, key: str, value: Any, field_schema: dict[str, Any]) -> Any:
         return ConfigPanel(self)._normalize_config_update_value(key, value, field_schema)
 
-    async def save_config_values(self, updates: dict[str, Any]) -> dict[str, Any]:
-        return await ConfigPanel(self).save_config_values(updates)
+    async def save_config_values(
+        self, updates: dict[str, Any], *, baseline: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return await ConfigPanel(self).save_config_values(updates, baseline=baseline)
 
 
     def _serialize_provider(self, provider: Any) -> dict[str, Any]:

@@ -88,7 +88,7 @@ function cardHtml(session, item) {
   const meta = [
     item.topic_id ? `话题 ${item.topic_id}` : "未形成话题",
     item.ts ? formatTs(item.ts) : "",
-    item.annotated ? "已有人工标注（采纳会覆盖）" : "",
+    item.annotated ? "已有人工标注（采纳会更新建议字段）" : "",
     item.saveable ? "" : (item.stale_reason === "session_gone"
       ? "已失效：会话的消息图已不在内存里（插件重启过），只能忽略"
       : "已失效：消息已超出保留窗口，只能忽略"),
@@ -109,6 +109,12 @@ function cardHtml(session, item) {
       <button type="button" class="button button-quiet" aria-label="忽略${escapeHtml(cardName)}" data-dismiss data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${disabled}>忽略</button>
     </div>
   </article>`;
+}
+
+function updateSelection() {
+  els.listHost.querySelectorAll("[data-select]").forEach(box => { box.checked = selected.has(keyOf(box.dataset.session, box.dataset.mid)); });
+  els.summaryLine.textContent = `待审 ${payload?.total_drafts ?? 0} 条 · 已选 ${selected.size} 条`;
+  setEnabled();
 }
 
 function render() {
@@ -181,7 +187,7 @@ async function load() {
     payload = data;
     els.listEmpty.classList.remove("is-error");
     selected = new Set([...selected].filter(key => {
-      const [session, mid] = key.split("::");
+      const { session, mid } = pairOf(key);
       const group = (data.sessions || []).find(s => s.session_key === session);
       return Boolean(group && (group.items || []).some(item => item.msg_id === mid));
     }));
@@ -199,6 +205,15 @@ async function load() {
 
 async function apply(action, pairs, expiredSkipped = 0) {
   if (!pairs.length || busy) return;
+  if (action === "accept") {
+    const overwritten = pairs.filter(pair => itemBy(pair)?.annotated).length;
+    const changes = pairs.filter(pair => itemBy(pair)?.annotated).slice(0, 12).map(pair => {
+      const item = itemBy(pair);
+      return `${pair.mid}: 该回复 ${yesNo(item.annotation?.expected_reply)} → ${yesNo(item.expected_reply)}；对 Bot 说话 ${yesNo(item.annotation?.bot_targeted)} → ${yesNo(item.bot_targeted)}；话题 ${item.annotation?.expected_topic || "未审核"} → ${els.acceptTopic.value === "KEEP" ? "保留" : els.acceptTopic.selectedOptions[0]?.textContent}`;
+    }).join("\n");
+    if (overwritten && !window.confirm(`这 ${pairs.length} 条里有 ${overwritten} 条已有人工标注，采纳会更新建议字段。\n${changes}${overwritten > 12 ? "\n其余条目同样更新上述字段。" : ""}\n继续吗？`)) return;
+  }
+  const topicChoice = els.acceptTopic.value;
   busy = true;
   setEnabled();
   const bySession = new Map();
@@ -220,13 +235,31 @@ async function apply(action, pairs, expiredSkipped = 0) {
       if (totalSessions > 1) {
         els.reviewStatus.textContent = `正在处理第 ${doneSessions}/${totalSessions} 个会话…`;
       }
-      const body = { action, session_key: session, msg_ids: msgIds };
-      if (action === "accept") body.expected_topic = els.acceptTopic.value;
-      const result = await apiPost("annotation_drafts", body);
+      for (let offset = 0; offset < msgIds.length; offset += 200) {
+      const chunk = msgIds.slice(offset, offset + 200);
+      const body = { action, session_key: session, msg_ids: chunk };
+      if (action === "accept") {
+        body.expected_topic = topicChoice;
+        body.revisions = Object.fromEntries(chunk.map(mid => {
+          const item = itemBy({session, mid});
+          return [mid, { annotation_revision: item?.annotation_revision, draft_revision: item?.draft_revision }];
+        }));
+      }
+      let result;
+      try { result = await apiPost("annotation_drafts", body); }
+      catch (err) {
+        chunk.forEach(mid => { selected.add(keyOf(session, mid)); failed.push({msg_id: mid, error: friendlyError(err, "请求失败")}); });
+        continue;
+      }
+      const unresolved = new Set([...(result.failed || []), ...(result.skipped || [])].map(row => row.msg_id));
+      const succeeded = result.saved_ids || chunk.filter(mid => !unresolved.has(mid));
+      succeeded.forEach(mid => selected.delete(keyOf(session, mid)));
+      unresolved.forEach(mid => selected.add(keyOf(session, mid)));
       saved += Number(result.saved) || 0;
       removed += Number(result.removed) || 0;
       skipped += (result.skipped || []).length;
       for (const row of result.failed || []) failed.push(row);
+      }
     }
     if (action === "accept") {
       const topicLabel = els.acceptTopic.selectedOptions[0]?.textContent || "";
@@ -237,10 +270,10 @@ async function apply(action, pairs, expiredSkipped = 0) {
         ? `已采纳 ${saved} 条，按「${topicLabel}」写入标注（记录会注明采纳自草稿）。` + (notes.length ? `另有 ${notes.join("；")}。` : "")
         : `没有写入任何标注：${notes.join("；") || "这些草稿已经不能采纳了"}。`;
     } else {
-      els.reviewStatus.textContent = `已忽略 ${removed} 条草稿，不会写入标注。`;
+      els.reviewStatus.textContent = `已忽略 ${removed} 条草稿，不会写入标注。` + (failed.length ? `${failed.length} 条失败，保留选择以便重试。` : "");
     }
     els.reviewStatus.classList.remove("error");
-    selected.clear();
+    els.reviewStatus.classList.toggle("error", failed.length > 0);
     await load();
   } catch (err) {
     els.reviewStatus.classList.add("error");
@@ -260,9 +293,9 @@ async function boot() {
   els.sessionFilter.addEventListener("change", () => { sessionFilter = els.sessionFilter.value; render(); });
   els.btnSelectAll.addEventListener("click", () => {
     visibleSessions().forEach(group => (group.items || []).forEach(item => selected.add(keyOf(group.session_key, item.msg_id))));
-    render();
+    updateSelection();
   });
-  els.btnSelectNone.addEventListener("click", () => { selected.clear(); render(); });
+  els.btnSelectNone.addEventListener("click", () => { selected.clear(); updateSelection(); });
   const selectedPairs = () => [...selected].map(pairOf);
   els.btnAccept.addEventListener("click", () => {
     // Expired drafts cannot become labels; filter them here so one restart
@@ -273,11 +306,6 @@ async function boot() {
     if (!live.length) {
       els.reviewStatus.classList.add("error");
       els.reviewStatus.textContent = `选中的 ${chosen.length} 条都已失效（插件重启或消息超出保留窗口），无法采纳；可以直接「忽略选中」把它们清掉。`;
-      return;
-    }
-    // Accepting overwrites an existing human label; ask before that happens.
-    const overwritten = live.filter(pair => itemBy(pair)?.annotated).length;
-    if (overwritten && !window.confirm(`选中的 ${live.length} 条里有 ${overwritten} 条已经有人工标注，采纳会覆盖这些标注。继续吗？`)) {
       return;
     }
     void apply("accept", live, expired);
@@ -293,7 +321,7 @@ async function boot() {
     if (!box) return;
     const key = keyOf(box.dataset.session, box.dataset.mid);
     if (box.checked) selected.add(key); else selected.delete(key);
-    render();
+    updateSelection();
   });
   els.listHost.addEventListener("click", event => {
     const acceptBtn = event.target.closest("[data-accept]");

@@ -118,6 +118,9 @@ def candidate_metrics(sessions, *, truth_of=_row_truth, selected_of=_row_selecte
                 outcomes[UNATTRIBUTABLE] += 1
                 continue
             label = _text(row.get("expected_topic"))
+            if row.get("topic_reviewed") is False or label == "UNREVIEWED":
+                outcomes[UNATTRIBUTABLE] += 1
+                continue
             if label and label.upper() in no_topic:
                 outcomes[NEW_TOPIC_EXPECTED] += 1
                 continue

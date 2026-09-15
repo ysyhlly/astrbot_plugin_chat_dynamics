@@ -5,7 +5,7 @@ from .candidate_metrics import candidate_metrics
 
 
 def known_label(value):
-    return isinstance(value, str) and bool(value.strip()) and value.strip().upper() != "UNKNOWN"
+    return isinstance(value, str) and bool(value.strip()) and value.strip().upper() not in {"UNKNOWN", "UNREVIEWED"}
 
 
 def ratio(numerator, denominator):
@@ -21,10 +21,11 @@ def _accepted_topics(row, index, rows):
     rather than wrong.
     """
     label = row.get("expected_topic")
-    if not known_label(label):
+    if row.get("topic_reviewed") is False or not known_label(label):
         return ()
     return tuple(sorted({str(previous.get("topic_id")) for previous in rows[:index]
                          if previous.get("expected_topic") == label
+                         and previous.get("topic_reviewed") is not False
                          and known_label(previous.get("topic_id"))}))
 
 
@@ -34,7 +35,7 @@ def routing_metrics(sessions):
     tp = merge = fragment = pairs = 0
     parent_total = parent_correct = parent_covered = 0
     for rows in sessions:
-        labeled = [row for row in rows if known_label(row.get("expected_topic"))]
+        labeled = [row for row in rows if row.get("topic_reviewed") is not False and known_label(row.get("expected_topic"))]
         for left, right in combinations(labeled, 2):
             pairs += 1
             same_truth = left["expected_topic"] == right["expected_topic"]

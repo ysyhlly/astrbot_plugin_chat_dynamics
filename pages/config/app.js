@@ -288,6 +288,7 @@ const els = {
   configForm: document.getElementById("configForm"),
   configNote: document.getElementById("configNote"),
   configMismatch: document.getElementById("configMismatch"),
+  configWarnings: document.getElementById("configWarnings"),
   btnConfigReload: document.getElementById("btnConfigReload"),
   btnConfigApply: document.getElementById("btnConfigApply"),
   btnConfigSave: document.getElementById("btnConfigSave"),
@@ -310,6 +311,8 @@ async function wirePageNav(currentPage) {
 let configState = { schema: {}, stored: {}, effective: {}, mismatches: [] };
 let providerOptions = { chat: [], embedding: [] };
 let configDirty = false;
+let configBusy = false;
+let navigationApproved = false;
 let configMode = "basic";
 let openGroups = new Set(CONFIG_GROUPS.filter((group) => group.open).map((group) => group.id));
 const VIEW_STORAGE_KEY = `${PLUGIN}:config-view:v1`;
@@ -454,11 +457,20 @@ function setConfigDirty(dirty) {
     els.actionTitle.textContent = configDirty ? "有未保存修改" : "所有修改已保存";
   }
   if (els.btnConfigSave) {
-    els.btnConfigSave.disabled = !configDirty;
+    els.btnConfigSave.disabled = configBusy || !configDirty;
     els.btnConfigSave.title = configDirty ? "保存并应用到运行时" : "没有未保存的修改";
   }
   document.querySelector(".action-bar").dataset.dirty = String(configDirty);
   updateScopeStatus();
+}
+
+function setConfigBusy(busy) {
+  configBusy = Boolean(busy);
+  els.configForm.setAttribute("aria-busy", String(configBusy));
+  els.configForm.querySelectorAll("[data-config-key]").forEach(input => { input.disabled = configBusy; });
+  els.btnConfigReload.disabled = configBusy;
+  els.btnConfigApply.disabled = configBusy;
+  setConfigDirty(configDirty);
 }
 
 function updateEditedFields() {
@@ -513,7 +525,7 @@ function parseNumericField(key, type, raw, schema = {}) {
   if (!text) {
     throw fieldError(key, `「${label}」不能为空`);
   }
-  const number = type === "int" ? Number.parseInt(text, 10) : Number.parseFloat(text);
+  const number = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text) ? Number(text) : NaN;
   if (!Number.isFinite(number)) {
     throw fieldError(key, `「${label}」必须是数字`);
   }
@@ -540,6 +552,8 @@ function collectConfigUpdates() {
   const inputs = els.configForm.querySelectorAll("[data-config-key]");
   for (const input of inputs) {
     const key = input.dataset.configKey;
+    const current = input.type === "checkbox" ? input.checked : input.value;
+    if (String(current) === String(configFieldValue(key))) continue;
     const schema = configState.schema[key] || {};
     const type = schema.type || "string";
     if (type === "bool") {
@@ -559,7 +573,8 @@ function collectConfigUpdates() {
     }
     updates[key] = String(input.value ?? "");
   }
-  return updates;
+  return Object.fromEntries(Object.entries(updates).filter(([key, value]) =>
+    JSON.stringify(value) !== JSON.stringify(configState.stored[key] ?? configState.schema[key]?.default)));
 }
 
 function renderProviderSelect(key, value) {
@@ -624,7 +639,7 @@ function renderField(key, mismatchSet) {
     <span class="config-title">${escapeHtml(title)}</span>
     <span class="config-key">${escapeHtml(key)}</span>
     ${control}
-    <span class="config-effective">生效：${effectiveText}</span>
+    <span class="config-effective">生效：${effectiveText}${configState.learning_policy_overridden?.includes(key) ? ` · 学习策略覆盖（${escapeHtml(configState.learning_policy?.policy_id || configState.learning_policy?.source_id || "当前策略")}），保存基础值后仍可能被覆盖` : ""}</span>
     ${hint ? `<span class="config-hint config-detail-hint">${escapeHtml(hint)}</span>` : ""}
     ${BASIC_HINTS[key] ? `<span class="config-hint config-basic-hint">${escapeHtml(BASIC_HINTS[key])}</span>` : ""}
   </label>`;
@@ -666,7 +681,16 @@ function renderConfigForm(panel) {
     stored: panel && panel.stored ? panel.stored : {},
     effective: panel && panel.effective ? panel.effective : {},
     mismatches: Array.isArray(panel && panel.mismatches) ? panel.mismatches : [],
+    learning_policy: panel?.learning_policy || {},
+    learning_policy_overridden: Array.isArray(panel?.learning_policy_overridden) ? panel.learning_policy_overridden : [],
+    warnings: Array.isArray(panel?.warnings) ? panel.warnings : [],
   };
+  if (els.configWarnings) {
+    els.configWarnings.classList.toggle("hidden", !configState.warnings.length);
+    els.configWarnings.innerHTML = configState.warnings.length
+      ? `<strong>运行配置提示</strong><ul>${configState.warnings.map(warning => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+      : "";
+  }
   const keys = Object.keys(configState.schema);
   els.configForm.setAttribute("aria-busy", "false");
   if (!keys.length) {
@@ -747,8 +771,8 @@ async function loadProviders() {
 }
 
 async function loadConfigPanel() {
-  if (!els.configForm) return;
-  els.configForm.setAttribute("aria-busy", "true");
+  if (!els.configForm || configBusy) return;
+  setConfigBusy(true);
   try {
     const [providers, panel] = await Promise.allSettled([loadProviders(), apiGet("config")]);
     if (panel.status === "rejected") throw panel.reason;
@@ -760,7 +784,8 @@ async function loadConfigPanel() {
       : `已读取 · ${chatN} 个聊天模型 · ${embN} 个向量模型（均可选）`);
   } catch (err) {
     setConfigNote(friendlyError(err, "读取配置失败，请稍后重试。"), true);
-    els.configForm.setAttribute("aria-busy", "false");
+  } finally {
+    setConfigBusy(false);
   }
 }
 
@@ -768,6 +793,12 @@ function focusConfigField(key) {
   if (!key) return;
   const input = els.configForm.querySelector(`[data-config-key="${key}"]`);
   if (!input) return;
+  els.configSearch.value = "";
+  configMode = "advanced";
+  const group = input.closest("details.config-group");
+  if (group) openGroups.add(group.dataset.groupId);
+  filterConfigFields();
+  persistView();
   input.setAttribute("aria-invalid", "true");
   input.closest(".config-field")?.classList.add("has-error");
   input.focus({ preventScroll: true });
@@ -775,7 +806,7 @@ function focusConfigField(key) {
 }
 
 async function saveConfigPanel() {
-  if (!els.configForm) return;
+  if (!els.configForm || configBusy) return;
   let updates;
   try {
     updates = collectConfigUpdates();
@@ -785,18 +816,24 @@ async function saveConfigPanel() {
     return;
   }
   setConfigNote("正在保存并应用…");
-  if (els.btnConfigSave) els.btnConfigSave.disabled = true;
+  const baseline = Object.fromEntries(Object.keys(updates).map(key => [key, configState.stored[key] ?? null]));
+  setConfigBusy(true);
   try {
-    const panel = await apiPost("config", { config: updates });
+    const panel = await apiPost("config", { config: updates, baseline });
     renderConfigForm(panel || {});
     setConfigNote("已保存并应用到运行时");
   } catch (err) {
     setConfigDirty(true);
     setConfigNote(friendlyError(err, "保存失败，请稍后重试。"), true);
+  } finally {
+    setConfigBusy(false);
   }
 }
 
 async function applyConfigPanel() {
+  if (configBusy) return;
+  if (configDirty && !window.confirm("有未保存的修改，强制应用已存配置会丢弃它们。继续吗？")) return;
+  setConfigBusy(true);
   setConfigNote("正在强制应用已存配置…");
   try {
     const panel = await apiPost("config/apply", {});
@@ -804,6 +841,8 @@ async function applyConfigPanel() {
     setConfigNote("已强制同步到运行时");
   } catch (err) {
     setConfigNote(friendlyError(err, "应用失败，请稍后重试。"), true);
+  } finally {
+    setConfigBusy(false);
   }
 }
 
@@ -863,10 +902,18 @@ async function boot() {
     void loadConfigPanel();
   });
   window.addEventListener("beforeunload", (event) => {
+    if (navigationApproved) { navigationApproved = false; return; }
     if (!configDirty) return;
     event.preventDefault();
     event.returnValue = "";
   });
+  window.ChatDynamicsBeforeNavigate = () => {
+    if (configBusy) return false;
+    if (configDirty && !window.confirm("有未保存的修改，离开会丢弃它们。继续吗？")) return false;
+    navigationApproved = true;
+    window.setTimeout(() => { navigationApproved = false; }, 0);
+    return true;
+  };
   els.btnConfigApply.addEventListener("click", () => {
     void applyConfigPanel();
   });

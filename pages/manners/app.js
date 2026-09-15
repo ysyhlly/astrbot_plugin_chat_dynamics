@@ -60,6 +60,17 @@ const els = {
 let stored = {};
 let busy = false;
 let online = false;
+let loading = false;
+
+function updateControls() {
+  const blocked = busy || loading;
+  els.btnRefresh.disabled = blocked;
+  els.btnSavePresence.disabled = blocked || !online;
+  els.presenceRange.disabled = blocked || !online;
+  document.querySelectorAll("button.chip").forEach((node) => {
+    node.disabled = blocked || !online;
+  });
+}
 // Per-chip feedback: one shared note at the bottom of the page could not say
 // which of the sixteen switches was still saving or had failed.
 let chipBusyKey = "";
@@ -124,6 +135,9 @@ function renderChips(host, defs) {
 }
 
 async function loadConfig() {
+  if (busy || loading) return;
+  loading = true;
+  updateControls();
   showChipsLoading();
   try {
     const panel = await apiGet("config");
@@ -147,11 +161,14 @@ async function loadConfig() {
     showLoadError(`${message} 开关暂时读不到状态，请点右上角「刷新」重试。`);
     els.socialChips.innerHTML = "";
     els.mediaChips.innerHTML = "";
+  } finally {
+    loading = false;
+    updateControls();
   }
 }
 
 async function saveConfig(patch, noteEl, chipKey = "") {
-  if (!online || busy) return;
+  if (!online || busy || loading) return;
   busy = true;
   const focusedKey = chipKey || document.activeElement?.dataset.key || "";
   chipBusyKey = chipKey;
@@ -164,6 +181,7 @@ async function saveConfig(patch, noteEl, chipKey = "") {
     renderChips(els.socialChips, SOCIAL_CHIPS);
     renderChips(els.mediaChips, MEDIA_CHIPS);
   }
+  updateControls();
   try {
     const panel = await apiPost("config", { config: patch });
     stored = { ...(panel.stored || panel.effective || stored), ...patch };
@@ -180,6 +198,7 @@ async function saveConfig(patch, noteEl, chipKey = "") {
     chipBusyKey = "";
     renderChips(els.socialChips, SOCIAL_CHIPS);
     renderChips(els.mediaChips, MEDIA_CHIPS);
+    updateControls();
     if (focusedKey) document.querySelector(`[data-key="${focusedKey}"]`)?.focus();
   }
 }

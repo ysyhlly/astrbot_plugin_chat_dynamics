@@ -10,6 +10,9 @@ export function fillSessionSelect(selectEl, sessions, selected) {
   const rows = Array.isArray(sessions) ? sessions : [];
   const current = String(selected || "");
   const options = [`<option value="">全部会话（总览）</option>`];
+  if (current && !rows.some((row) => String(row.session_key || row.session_id || "") === current)) {
+    options.push(`<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}（当前未活跃）</option>`);
+  }
   for (const row of rows) {
     const key = String(row.session_key || row.session_id || "");
     if (!key) continue;

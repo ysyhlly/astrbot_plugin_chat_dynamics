@@ -47,7 +47,7 @@ def test_config_categories_navigation_and_save(browser, page_server, width, them
         }""")
         page.locator("#btnConfigSave").click()
         page.wait_for_function("window.__savedConfig?.topic_window_seconds === 240")
-        assert set(page.evaluate("Object.keys(window.__savedConfig)")) == set(schema)
+        assert set(page.evaluate("Object.keys(window.__savedConfig)")) == {"topic_window_seconds"}
         assert not errors
 
 

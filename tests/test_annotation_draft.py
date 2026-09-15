@@ -534,7 +534,7 @@ async def test_accepting_a_draft_writes_a_label_and_drops_the_draft():
     result = await plugin.annotation_drafts_apply(
         {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
 
-    assert result == {"saved": 1, "skipped": [], "failed": []}
+    assert result == {"saved": 1, "saved_ids": ["m1"], "skipped": [], "failed": []}
     rows = kv[plugin.topic_annotations.key("a")]
     assert len(rows) == 1
     # Provenance is decided by save(), not by the caller: the label values are
@@ -716,3 +716,30 @@ async def test_the_approval_endpoints_list_and_accept(monkeypatch, offline_web_r
     assert (await api.annotation_drafts_post())["status_code"] == 400
 
 
+
+
+@pytest.mark.asyncio
+async def test_accept_rejects_annotation_changed_after_preview():
+    plugin, _ = draft_runtime(nodes=[node("m1", "在吗")], reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    preview = (await plugin.annotation_drafts_payload("a"))["sessions"][0]["items"][0]
+    await plugin.topic_annotations.save(label(msg_id="m1", expected_reply=False, recipient_ids=["human"]))
+    result = await plugin.annotation_drafts_apply({"action": "accept", "session_key": "a", "msg_ids": ["m1"],
+        "revisions": {"m1": {key: preview[key] for key in ("annotation_revision", "draft_revision")}}})
+    assert result["saved"] == 0 and len(result["failed"]) == 1
+    row = (await plugin.topic_annotations.read("a"))["records"][0]
+    assert row["expected_reply"] is False and row["recipient_ids"] == ["human"]
+    assert "m1" in (await plugin.topic_annotations.read_drafts("a"))["drafts"]
+
+
+@pytest.mark.asyncio
+async def test_accept_rejects_updated_draft_and_oversize_batch():
+    plugin, _ = draft_runtime(nodes=[node("m1", "在吗")], reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    preview = (await plugin.annotation_drafts_payload("a"))["sessions"][0]["items"][0]
+    await plugin.topic_annotations.save_drafts("a", {"drafts": {"m1": {"expected_reply": False}}})
+    result = await plugin.annotation_drafts_apply({"action": "accept", "session_key": "a", "msg_ids": ["m1"],
+        "revisions": {"m1": {key: preview[key] for key in ("annotation_revision", "draft_revision")}}})
+    assert result["saved"] == 0 and len(result["failed"]) == 1
+    with pytest.raises(ValueError, match="200"):
+        await plugin.annotation_drafts_apply({"action": "accept", "session_key": "a", "msg_ids": [str(i) for i in range(201)]})

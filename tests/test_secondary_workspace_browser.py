@@ -37,6 +37,96 @@ def setup_workspace(context):
     """)
 
 
+def route_shared_sources(page):
+    # Exercise canonical assets without mutating generated page-local copies.
+    shared = Path(__file__).resolve().parents[1] / 'pages' / 'shared'
+    for asset in ('shell.js', 'plugin_nav.js'):
+        def handler_for(path):
+            def handler(route):
+                route.fulfill(path=str(path), content_type='text/javascript')
+            return handler
+        page.route(f'**/{asset}', handler_for(shared / asset))
+
+
+@pytest.mark.parametrize('name', ['today', 'memory'])
+def test_missing_session_selection_matches_mutation_target(browser, page_server, name):
+    with browser.new_context() as context:
+        setup_workspace(context)
+        page = context.new_page()
+        route_shared_sources(page)
+        page.add_init_script("localStorage.setItem('cd_wire_umo', 'missing-group');")
+        page.goto(f'{page_server}/{name}/index.html')
+        expect(page.locator('#linkLabel')).to_have_text('已连接')
+        expect(page.locator('#sessionSelect')).to_have_value('missing-group')
+        expect(page.locator('#sessionSelect option:checked')).to_contain_text('当前未活跃')
+        if name == 'today':
+            page.on('dialog', lambda dialog: dialog.accept())
+            page.locator('#btnMuteTonight').click()
+        else:
+            page.locator('[name="title"]').fill('缺失会话记录')
+            page.locator('[name="month"]').fill('9')
+            page.locator('[name="day"]').fill('12')
+            page.locator('#btnAdd').click()
+        page.wait_for_function('window.writes.length > 0')
+        assert page.evaluate('window.writes[0].body.umo') == 'missing-group'
+
+
+def test_navigation_guard_runs_after_signing_and_cancel_can_retry(browser, page_server):
+    with browser.new_context() as context:
+        setup_workspace(context)
+        page = context.new_page()
+        route_shared_sources(page)
+        page.goto(f'{page_server}/today/index.html')
+        expect(page.locator('#linkLabel')).to_have_text('已连接')
+        page.evaluate("""() => {
+          window.guardCalls = 0;
+          window.ChatDynamicsBeforeNavigate = () => {window.guardCalls++; return false;};
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'page_nav'
+            ? new Promise(resolve => window.releaseNav = () => resolve({ok:true,data:{content_path:'/memory/index.html?asset_token=test'}}))
+            : original(endpoint, params);
+        }""")
+        button = page.locator('[data-nav-page="memory"]')
+        button.click()
+        page.wait_for_function("typeof window.releaseNav === 'function'")
+        expect(button).to_be_disabled()
+        assert page.evaluate('window.guardCalls') == 0
+        page.evaluate('window.releaseNav()')
+        expect(button).to_be_enabled()
+        assert page.evaluate('window.guardCalls') == 1
+        expect(page.locator('#pluginNavNote')).to_contain_text('已取消跳转')
+        button.click()
+        page.evaluate('window.releaseNav()')
+        expect(button).to_be_enabled()
+        assert page.evaluate('window.guardCalls') == 2
+        assert '/today/' in page.url
+
+
+def test_browser_beforeunload_cancel_restores_navigation_button(browser, page_server):
+    with browser.new_context() as context:
+        setup_workspace(context)
+        page = context.new_page()
+        route_shared_sources(page)
+        page.goto(f'{page_server}/today/index.html')
+        expect(page.locator('#linkLabel')).to_have_text('已连接')
+        page.evaluate("""() => {
+          const original = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (endpoint, params) => endpoint === 'page_nav'
+            ? {ok:true,data:{content_path:'/memory/index.html?asset_token=test'}} : original(endpoint, params);
+          window.addEventListener('beforeunload', event => {event.preventDefault(); event.returnValue='';});
+        }""")
+        dialogs = []
+        def dismiss(dialog):
+            dialogs.append(dialog.type)
+            dialog.dismiss()
+        page.on('dialog', dismiss)
+        button = page.locator('[data-nav-page="memory"]')
+        button.click()
+        expect(button).to_be_enabled()
+        assert dialogs == ['beforeunload']
+        assert '/today/' in page.url
+
+
 @pytest.mark.parametrize('name', ['today', 'manners', 'memory'])
 @pytest.mark.parametrize('theme', ['day', 'night'])
 @pytest.mark.parametrize('width', [1366, 375])

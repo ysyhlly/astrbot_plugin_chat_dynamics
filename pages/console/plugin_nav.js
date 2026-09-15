@@ -189,6 +189,10 @@ export async function navigateToPluginPage(pageName, button = null) {
       await window.ChatDynamicsTheme?.flush();
       const signed = signedContentHref(extractContentPath(raw), theme);
       if (signed) {
+        if (await window.ChatDynamicsBeforeNavigate?.() === false) {
+          setNavNote("已取消跳转，未保存的修改仍保留。");
+          return;
+        }
         window.location.assign(signed);
         return;
       }
@@ -198,10 +202,12 @@ export async function navigateToPluginPage(pageName, button = null) {
   } catch (err) {
     console.warn("[chat_dynamics] page_nav failed", err);
     setNavNote("打不开这个页面，请刷新后重试（详细信息见后台日志）。", true);
-  }
-  if (button) {
-    button.disabled = false;
-    button.removeAttribute("aria-busy");
+  } finally {
+    // location.assign can return even when the user cancels beforeunload.
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
   }
 }
 
