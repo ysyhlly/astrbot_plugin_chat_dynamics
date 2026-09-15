@@ -130,9 +130,17 @@ def open_page(context, page_server, payload=PAYLOAD, dialogs=None):
     # the copy so a test can assert the warning actually appears.
     seen = dialogs if dialogs is not None else []
     page.on("dialog", lambda dialog: (seen.append(dialog.message), dialog.accept()))
+    page.review_dialogs = seen
     page.goto(f"{page_server}/drafts/index.html?ui=day")
     page.wait_for_selector(".draft-card")
     return page
+
+
+def confirm_review_if_visible(page):
+    dialog = page.get_by_role("dialog", name="确认审核操作")
+    if dialog.is_visible():
+        getattr(page, "review_dialogs", []).append(dialog.inner_text())
+        dialog.get_by_role("button", name="确认继续").click()
 
 
 def test_accept_works_on_non_secure_http_origin(browser, page_server):
@@ -148,6 +156,7 @@ def test_accept_works_on_non_secure_http_origin(browser, page_server):
         assert page.evaluate("window.isSecureContext") is False
         assert page.evaluate("typeof crypto.randomUUID") == "undefined"
         page.locator('[data-accept][data-mid="m1"]').click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length === 1", timeout=3000)
         call = page.evaluate("window.__calls[0]")
         assert call["body"]["action"] == "accept"
@@ -163,6 +172,7 @@ def test_storage_unavailable_does_not_block_review(browser, page_server):
             Storage.prototype.setItem = function() { throw new Error('storage blocked'); };
         }""")
         page.locator('[data-accept][data-mid="m1"]').click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length === 1", timeout=3000)
         assert "已采纳 1 条" in page.locator("#reviewStatus").inner_text()
 
@@ -202,6 +212,24 @@ def test_opaque_host_iframe_accepts_and_reconciles_without_storage(browser, page
         frame.wait_for_function("document.querySelector('#btnCheckPending').hidden")
         assert frame.evaluate("window.__calls.length") == 3
         assert frame.locator('[data-accept][data-mid="m1"]').is_enabled()
+        frame.locator('#btnSelectAll').click()
+        frame.locator('#btnAccept').click()
+        dialog = frame.get_by_role('dialog', name='确认审核操作')
+        dialog.wait_for(state='visible')
+        assert '已有人工标注' in dialog.inner_text()
+        assert frame.evaluate('window.__calls.length') == 3
+        dialog.get_by_role('button', name='取消', exact=True).click()
+        assert frame.evaluate('window.__calls.length') == 3
+        frame.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
+            window.__calls.push({body});
+            return {ok:true,data:{saved:body.msg_ids.length,saved_ids:body.msg_ids,failed:[]}};
+          };
+        }""")
+        frame.locator('#btnAccept').click()
+        dialog.get_by_role('button', name='确认继续', exact=True).click()
+        frame.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('已采纳 2')")
+        assert frame.evaluate('window.__calls.length') == 5
 
 
 def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, page_server):
@@ -287,6 +315,7 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
 
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length >= 2")
 
         calls = page.evaluate("window.__calls")
@@ -309,6 +338,7 @@ def test_batch_accept_sends_one_request_per_session_with_the_topic_choice(browse
         page.locator("#acceptTopic").select_option("NEW")
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length >= 2")
         assert all(call["body"]["expected_topic"] == "NEW"
                    for call in page.evaluate("window.__calls"))
@@ -323,6 +353,7 @@ def test_dismissing_selected_drafts_asks_before_dropping_them(browser, page_serv
 
         page.locator("#btnSelectAll").click()
         page.locator("#btnDismiss").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length >= 1")
         assert dialogs and "无法恢复" in dialogs[-1], dialogs
 
@@ -356,6 +387,7 @@ def test_accepting_only_expired_drafts_explains_instead_of_failing(browser, page
 
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('都已失效')")
 
         assert page.evaluate("window.__calls") == [], "失效草稿不该发请求"
@@ -364,6 +396,7 @@ def test_accepting_only_expired_drafts_explains_instead_of_failing(browser, page
 
         # Dismissing them still works, so a restart cannot leave dead weight.
         page.locator("#btnDismiss").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length >= 1")
         assert page.evaluate("window.__calls[0].body")["action"] == "dismiss"
 
@@ -387,6 +420,7 @@ def test_a_single_card_can_be_dismissed_and_a_session_cleared(browser, page_serv
 
         page.evaluate("window.__calls = []")
         page.locator("[data-clear-session]").first.click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length >= 1")
         cleared = page.evaluate("window.__calls[0]")
         assert cleared["body"].pop("request_id")
@@ -436,6 +470,7 @@ def test_single_accept_confirms_existing_annotation(browser, page_server):
         dialogs = []
         page = open_page(context, page_server, dialogs=dialogs)
         page.locator('[data-accept][data-mid="m3"]').click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length === 1")
         assert len(dialogs) == 1 and "已有人工标注" in dialogs[0]
         assert "→" in dialogs[0]
@@ -459,6 +494,7 @@ def test_large_batch_chunks_and_preserves_failed_selection(browser, page_server)
         }""")
         page.locator("#btnSelectAll").click()
         page.locator("#btnAccept").click()
+        confirm_review_if_visible(page)
         page.wait_for_function("window.__calls.length === 4 && !document.querySelector('#btnRefresh').disabled")
         assert page.evaluate("window.__calls.map(x => x.body.msg_ids.length)") == [200, 200, 200, 1]
         assert page.locator("[data-select]:checked").count() == 200
@@ -480,6 +516,7 @@ def test_slow_success_is_confirmed_by_query_without_second_write(browser, page_s
           };
         }""")
         page.locator('[data-accept][data-mid="m1"]').click()
+        confirm_review_if_visible(page)
         page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('已采纳 1')", timeout=15000)
         assert page.evaluate("window.__calls.length") == 1
         assert page.evaluate("JSON.parse(sessionStorage.getItem('chat-dynamics:draft-review:pending:v1')).length") == 0
@@ -494,6 +531,7 @@ def test_pending_survives_refresh_and_query_restores_result(browser, page_server
           };
         }""")
         page.locator('[data-accept][data-mid="m1"]').click()
+        confirm_review_if_visible(page)
         page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('请求结果待确认')")
         bodies = page.evaluate("window.__calls.map(c=>c.body)")
         assert len(bodies) == 2 and bodies[0] == bodies[1]
@@ -521,6 +559,7 @@ def test_clear_pending_response_is_retained_until_confirmed(browser, page_server
           };
         }""")
         page.locator('[data-clear-session]').first.click()
+        confirm_review_if_visible(page)
         page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('请求结果待确认')")
         stored = page.evaluate("JSON.parse(sessionStorage.getItem('chat-dynamics:draft-review:pending:v1'))")
         assert len(stored) == 1 and stored[0]['action'] == 'clear_session'

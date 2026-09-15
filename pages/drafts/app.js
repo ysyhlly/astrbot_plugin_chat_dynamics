@@ -33,6 +33,37 @@ let selected = new Set();
 let sessionFilter = "";
 let busy = false;
 let loadRevision = 0;
+let confirming = false;
+
+async function confirmReview(message) {
+  // Native confirm is denied by the host sandbox (no allow-modals).
+  if (confirming) return false;
+  confirming = true;
+  const dialog = document.createElement("dialog");
+  dialog.setAttribute("aria-label", "确认审核操作");
+  dialog.style.cssText = "max-width:min(560px,90vw);padding:24px;border:1px solid #888;border-radius:12px;";
+  const text = document.createElement("p");
+  text.textContent = message;
+  text.style.whiteSpace = "pre-wrap";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "button";
+  cancel.textContent = "取消";
+  const accept = document.createElement("button");
+  accept.type = "button";
+  accept.className = "button button-primary";
+  accept.textContent = "确认继续";
+  dialog.append(text, cancel, accept);
+  document.body.append(dialog);
+  return new Promise(resolve => {
+    const finish = value => { dialog.close(); dialog.remove(); confirming = false; resolve(value); };
+    cancel.addEventListener("click", () => finish(false));
+    accept.addEventListener("click", () => finish(true));
+    dialog.addEventListener("cancel", event => { event.preventDefault(); finish(false); });
+    dialog.showModal();
+    cancel.focus();
+  });
+}
 
 const pendingKey = "chat-dynamics:draft-review:pending:v1";
 let pendingRequests = [];
@@ -308,7 +339,7 @@ async function apply(action, pairs, expiredSkipped = 0) {
       const item = itemBy(pair);
       return `${pair.mid}: 该回复 ${yesNo(item.annotation?.expected_reply)} → ${yesNo(item.expected_reply)}；对 Bot 说话 ${yesNo(item.annotation?.bot_targeted)} → ${yesNo(item.bot_targeted)}；话题 ${item.annotation?.expected_topic || "未审核"} → ${els.acceptTopic.value === "KEEP" ? "保留" : els.acceptTopic.selectedOptions[0]?.textContent}`;
     }).join("\n");
-    if (overwritten && !window.confirm(`这 ${pairs.length} 条里有 ${overwritten} 条已有人工标注，采纳会更新建议字段。\n${changes}${overwritten > 12 ? "\n其余条目同样更新上述字段。" : ""}\n继续吗？`)) return;
+    if (overwritten && !await confirmReview(`这 ${pairs.length} 条里有 ${overwritten} 条已有人工标注，采纳会更新建议字段。\n${changes}${overwritten > 12 ? "\n其余条目同样更新上述字段。" : ""}\n继续吗？`)) return;
   }
   const topicChoice = els.acceptTopic.value;
   busy = true;
@@ -413,10 +444,10 @@ async function boot() {
     }
     void apply("accept", live, expired);
   });
-  els.btnDismiss.addEventListener("click", () => {
+  els.btnDismiss.addEventListener("click", async () => {
     const count = selected.size;
     if (!count) return;
-    if (!window.confirm(`忽略后这 ${count} 条草稿会被丢弃（不会写入标注），且无法恢复。继续吗？`)) return;
+    if (!await confirmReview(`忽略后这 ${count} 条草稿会被丢弃（不会写入标注），且无法恢复。继续吗？`)) return;
     void apply("dismiss", selectedPairs());
   });
   els.listHost.addEventListener("change", event => {
@@ -426,7 +457,7 @@ async function boot() {
     if (box.checked) selected.add(key); else selected.delete(key);
     updateSelection();
   });
-  els.listHost.addEventListener("click", event => {
+  els.listHost.addEventListener("click", async event => {
     const acceptBtn = event.target.closest("[data-accept]");
     if (acceptBtn) {
       void apply("accept", [{ session: acceptBtn.dataset.session, mid: acceptBtn.dataset.mid }]);
@@ -440,7 +471,7 @@ async function boot() {
     const clearBtn = event.target.closest("[data-clear-session]");
     if (clearBtn && !busy && !pendingRequests.length) {
       const count = Number(clearBtn.dataset.clearCount || 0);
-      if (!window.confirm(`确定清空这个会话的 ${count} 条待审草稿吗？清空后无法恢复。`)) return;
+      if (!await confirmReview(`确定清空这个会话的 ${count} 条待审草稿吗？清空后无法恢复。`)) return;
       void (async () => {
         busy = true;
         setEnabled();
