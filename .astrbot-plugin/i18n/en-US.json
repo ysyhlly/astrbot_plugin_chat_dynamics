@@ -28,6 +28,10 @@
     "replay": {
       "title": "Scene Replay",
       "desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
+    },
+    "drafts": {
+      "title": "AI Label Review",
+      "desc": "Review model-drafted reply labels one by one or in bulk: accepting writes a label, dismissing drops the draft."
     }
   }
 }

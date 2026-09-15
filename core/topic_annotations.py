@@ -73,6 +73,25 @@ class TopicAnnotations:
 
     async def clear_drafts(self, session) -> None:
         await self.plugin.put_kv_data(self.draft_key(session), {})
+    async def remove_drafts(self, session, msg_ids) -> int:
+        """Drop drafts a reviewer dismissed or accepted; returns the count removed."""
+        wanted = {str(mid) for mid in msg_ids if str(mid).strip()}
+        if not wanted:
+            return 0
+        async with self.lock:
+            raw = await self.plugin.get_kv_data(self.draft_key(session), {})
+            if not isinstance(raw, dict):
+                return 0
+            drafts = raw.get("drafts")
+            if not isinstance(drafts, dict):
+                return 0
+            removed = 0
+            for mid in wanted:
+                if drafts.pop(mid, None) is not None:
+                    removed += 1
+            raw["drafts"] = drafts
+            await self.plugin.put_kv_data(self.draft_key(session), raw)
+            return removed
 
     async def read(self, session):
         rows = await self.plugin.get_kv_data(self.key(session), [])

@@ -11,7 +11,7 @@ import pytest
 from .test_console_redesign_verification import _launch_browser, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ("console", "config", "today", "manners", "memory", "replay")
+PAGES = ("console", "config", "today", "manners", "memory", "replay", "drafts")
 
 
 @pytest.fixture(scope="module")

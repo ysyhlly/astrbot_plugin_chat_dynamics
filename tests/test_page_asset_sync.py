@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from scripts.check_release import validate_release
-from scripts.sync_page_assets import asset_pairs, check_page_assets, main
+from scripts.sync_page_assets import PAGES, asset_pairs, check_page_assets, main
 
 
 def _pages(root: Path) -> Path:
@@ -35,7 +35,8 @@ def test_check_reports_missing_source_or_copy(tmp_path):
     (pages / "shared" / "theme.js").unlink()
     (pages / "today" / "api.js").unlink()
     errors = check_page_assets(pages)
-    assert len(errors) == 7
+    # theme.js is published to every page, api.js to every page but console.
+    assert len(errors) == len(PAGES) + 1
     assert all("FileNotFoundError" in error for error in errors)
 
 

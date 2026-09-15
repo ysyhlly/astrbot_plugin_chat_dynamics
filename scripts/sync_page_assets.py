@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "pages"
-PAGES = ("console", "config", "today", "manners", "memory", "replay")
+PAGES = ("console", "config", "today", "manners", "memory", "replay", "drafts")
 
 
 def asset_pairs(root: Path):

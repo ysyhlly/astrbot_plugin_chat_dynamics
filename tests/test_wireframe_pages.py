@@ -13,7 +13,7 @@ PAGES = ROOT / "pages"
 I18N = ROOT / "i18n"
 PLUGIN_I18N = ROOT / ".astrbot-plugin" / "i18n"
 
-WIRE_PAGES = ("today", "manners", "memory", "replay")
+WIRE_PAGES = ("today", "manners", "memory", "replay", "drafts")
 REQUIRED_FILES = ("_page.json", "index.html", "app.js", "style.css", "plugin_nav.js")
 
 

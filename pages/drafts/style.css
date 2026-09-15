@@ -1,0 +1,115 @@
+/* AI 标注审批页：卡片列表，令牌来自 theme.css。 */
+.drafts-workspace .review-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.drafts-workspace .review-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.drafts-workspace .review-toolbar-row label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.drafts-workspace .review-toolbar-row select {
+  min-width: 180px;
+}
+
+.draft-list {
+  display: grid;
+  gap: 10px;
+}
+
+.draft-session-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 2px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.draft-session-head:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.draft-session-head .ops-note {
+  margin: 0;
+  flex: 1;
+}
+
+.draft-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.draft-card.is-stale {
+  opacity: 0.62;
+}
+
+.draft-check {
+  padding-top: 3px;
+}
+
+.draft-text {
+  margin: 0 0 4px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.draft-body .ops-note {
+  margin: 2px 0;
+}
+
+.draft-suggest {
+  margin: 6px 0 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.draft-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.draft-actions {
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .draft-card {
+    grid-template-columns: auto 1fr;
+  }
+
+  .draft-actions {
+    grid-column: 1 / -1;
+    grid-auto-flow: column;
+    justify-content: start;
+  }
+}

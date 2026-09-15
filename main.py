@@ -104,6 +104,10 @@ _MAX_TURN_FRAGMENTS = 32
 # batch itself; this only decides how far back the reader looks for unlabelled
 # messages.
 _ANNOTATION_DRAFT_WINDOW = 120
+# Approving a draft still needs a topic call, because the label schema requires
+# one. The approval page offers exactly these three; the draft itself deliberately
+# says nothing about topics.
+_DRAFT_ACCEPT_TOPICS = {"CORRECT": "correct", "NEW": "topic_merge", "UNKNOWN": "premature_assignment"}
 _KV_COOLING = "cooling_until"
 _KV_RUNTIME = "panel_runtime_v1"
 _METRIC_NAMES = (
@@ -1076,6 +1080,113 @@ class ChatDynamicsPlugin(Star):
                        invented=parsed.get("invented") or [],
                        undecided=parsed.get("undecided") or [])
         return payload
+    async def annotation_drafts_payload(self, session_key: str = "") -> dict[str, Any]:
+        """Pending AI drafts across sessions (or one), for the approval page.
+
+        The list is built from the in-memory session registry: drafts are only
+        ever written for sessions with a live DAG, so scanning those keys misses
+        nothing the approval page could act on. Message text follows the same
+        console_show_message_content switch as the replay page.
+        """
+        show_content = bool(getattr(self, "console_show_message_content", False))
+        keys = [session_key] if session_key else sorted(self.dags.keys())
+        sessions: list[dict[str, Any]] = []
+        total = 0
+        for key in keys:
+            stored = await self.topic_annotations.read_drafts(key)
+            drafts = stored.get("drafts") or {}
+            if not drafts:
+                continue
+            dag = self.dags.get(key)
+            existing = await self.topic_annotations.read(key)
+            annotated = {row.get("msg_id") for row in existing.get("records") or []}
+            items: list[dict[str, Any]] = []
+            for mid, draft in drafts.items():
+                if not isinstance(draft, dict):
+                    continue
+                node = dag.nodes.get(mid) if dag is not None else None
+                metadata = getattr(node, "metadata", None) if node is not None else None
+                routing = metadata.get("routing", {}) if isinstance(metadata, dict) else {}
+                items.append({
+                    "msg_id": mid,
+                    "expected_reply": draft.get("expected_reply"),
+                    "bot_targeted": draft.get("bot_targeted"),
+                    "confidence": draft.get("confidence"),
+                    "reason": str(draft.get("reason") or ""),
+                    "annotated": mid in annotated,
+                    "saveable": node is not None,
+                    "text": str(getattr(node, "text", "") or "")[:240] if show_content and node is not None else "",
+                    "topic_id": str(routing.get("topic_id") or ""),
+                    "ts": float(getattr(node, "timestamp", 0.0) or 0.0) if node is not None else 0.0,
+                })
+            if not items:
+                continue
+            # Reviewable messages first (chronological), evicted ones last.
+            items.sort(key=lambda item: (not item["saveable"], item["ts"]))
+            total += len(items)
+            sessions.append({
+                "session_key": key,
+                "generated_at": stored.get("generated_at"),
+                "provider_id": str(stored.get("provider_id") or ""),
+                "items": items,
+            })
+        return {"sessions": sessions, "total_drafts": total, "content_hidden": not show_content}
+
+    async def annotation_drafts_apply(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Batch review actions over stored drafts: accept, dismiss, or clear.
+
+        Accepting writes a real annotation through the same save path the replay
+        page uses, so provenance (`accepted_from: ai`) is decided there by
+        comparing values with the stored draft. Accepted and dismissed drafts are
+        then removed so the pending list only holds what still needs a human.
+        """
+        if not isinstance(body, dict):
+            raise ValueError("invalid body")
+        action = str(body.get("action") or "")
+        session = str(body.get("session_key") or "").strip()
+        if not session or len(session) > 256:
+            raise ValueError("session_key is required")
+        if action == "clear_session":
+            await self.topic_annotations.clear_drafts(session)
+            return {"cleared": True}
+        msg_ids = [str(mid)[:128] for mid in (body.get("msg_ids") or []) if str(mid).strip()][:200]
+        if not msg_ids:
+            raise ValueError("msg_ids is required")
+        if action == "dismiss":
+            removed = await self.topic_annotations.remove_drafts(session, msg_ids)
+            return {"removed": removed}
+        if action != "accept":
+            raise ValueError("unknown action")
+        topic = str(body.get("expected_topic") or "CORRECT")
+        if topic not in _DRAFT_ACCEPT_TOPICS:
+            raise ValueError("invalid expected_topic")
+        stored = await self.topic_annotations.read_drafts(session)
+        drafts = stored.get("drafts") or {}
+        saved: list[str] = []
+        failed: list[dict[str, str]] = []
+        for mid in msg_ids:
+            draft = drafts.get(mid)
+            if not isinstance(draft, dict):
+                failed.append({"msg_id": mid, "error": "草稿不存在或已处理"})
+                continue
+            record: dict[str, Any] = {
+                "session_key": session,
+                "msg_id": mid,
+                "expected_topic": topic,
+                "error_type": _DRAFT_ACCEPT_TOPICS[topic],
+            }
+            for field in ("expected_reply", "bot_targeted"):
+                if isinstance(draft.get(field), bool):
+                    record[field] = draft[field]
+            try:
+                await self.topic_annotations.save(record)
+            except ValueError as exc:
+                failed.append({"msg_id": mid, "error": str(exc)})
+                continue
+            saved.append(mid)
+        if saved:
+            await self.topic_annotations.remove_drafts(session, saved)
+        return {"saved": len(saved), "failed": failed}
     def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
         if refresh:
             self._sync_runtime_from_config()

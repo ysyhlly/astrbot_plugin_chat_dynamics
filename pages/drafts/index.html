@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Paint the document canvas before any external resource can delay navigation. -->
+    <style>
+      html { background: #f5f6f4; color-scheme: light; }
+      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
+    </style>
+    <script>
+      (() => {
+        const valid = value => value === "day" || value === "night";
+        const query = new URLSearchParams(location.search).get("ui");
+        let saved;
+        try { saved = localStorage.getItem("chat_dynamics_ui"); } catch {}
+        document.documentElement.dataset.uiTheme = valid(query) ? query : valid(saved) ? saved : "day";
+      })();
+    </script>
+    <!-- chat_dynamics_ui: shared controls and account preference -->
+    <script src="./theme.js">
+</script>
+    <title>AI 标注审批</title>
+    <link rel="stylesheet" href="./base.css" />
+    <link rel="stylesheet" href="./shell.css" />
+    <link rel="stylesheet" href="./plugin_nav.css" />
+    <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+<div class="app wire-app plugin-shell">
+<div class="plugin-layout">
+<aside class="plugin-side" aria-label="插件页面">
+<p class="plugin-side-label">群聊动态</p>
+<nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航">
+</nav>
+</aside>
+<main class="plugin-main drafts-workspace">
+<header class="topbar">
+<div class="brand-copy">
+<p class="eyebrow">CHAT DYNAMICS / REVIEW</p>
+<h1 id="pageTitle">AI 标注审批</h1>
+<p class="lede" id="pageDesc">模型只起草「该不该回 / 是否对机器人说话」和理由。采纳才写入标注，忽略即丢弃草稿。</p>
+</div>
+<div class="topbar-tools">
+<div class="connection-state" role="status" aria-live="polite">
+<span class="status-dot" id="linkLamp" aria-hidden="true">
+</span>
+<span id="linkLabel">正在连接</span>
+</div>
+<button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+</div>
+</header>
+<section class="wire-card review-toolbar">
+<div class="review-toolbar-row">
+<label for="sessionFilter">会话
+<select id="sessionFilter">
+</select>
+</label>
+<label for="acceptTopic">采纳时话题记为
+<select id="acceptTopic">
+<option value="CORRECT">判断正确（系统话题不变）</option>
+<option value="NEW">应另立新话题</option>
+<option value="UNKNOWN">无法判断</option>
+</select>
+</label>
+</div>
+<div class="review-toolbar-row">
+<button type="button" class="button" id="btnSelectAll">全选本页</button>
+<button type="button" class="button" id="btnSelectNone">全不选</button>
+<button type="button" class="button button-primary" id="btnAccept">采纳选中</button>
+<button type="button" class="button button-quiet" id="btnDismiss">忽略选中</button>
+<span class="card-note" id="summaryLine"></span>
+</div>
+<p class="ops-note" id="reviewStatus" role="status" aria-live="polite">
+</p>
+</section>
+<section class="wire-card">
+<div class="card-heading">
+<h2>待审草稿</h2>
+<span class="card-note" id="draftCount">0 条</span>
+</div>
+<div id="listHost" class="draft-list" aria-live="polite">
+</div>
+<div class="empty-state hidden" id="listEmpty">没有待审的草稿。到「场景回放」里选一个会话，点「生成 AI 草稿」后再来。</div>
+<p class="ops-note" id="hiddenNote">
+</p>
+</section>
+</main>
+</div>
+</div>
+<script type="module" src="./app.js">
+</script>
+</body>
+</html>

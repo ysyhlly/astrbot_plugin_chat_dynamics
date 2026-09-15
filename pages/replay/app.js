@@ -11,6 +11,7 @@ import {
   storageSet,
 } from "./api.js";
 import { fillSessionSelect, renderNav } from "./shell.js";
+import { navigateToPluginPage } from "./plugin_nav.js";
 
 const UMO_KEY = "cd_wire_umo";
 const LANE_ZH = {
@@ -397,6 +398,10 @@ async function boot() {
       : stored
         ? `本会话存有 ${stored} 条草稿，但都对应其他消息：草稿覆盖该会话最近窗口里未标注的消息，包含尚未形成话题、不在任何回放块里的那些。`
         : "本页没有可用的草稿，先点「生成 AI 草稿」。";
+  });
+  document.getElementById("btnOpenDrafts").addEventListener("click", () => {
+    // Reviewing drafts belongs on its own page now: one list, one decision per card.
+    void navigateToPluginPage("drafts");
   });
   document.getElementById("btnExportAnnotations").addEventListener("click", () => {
     if (!annotationData) { annotationStatus.textContent = "请先等待标注加载完成。"; return; }

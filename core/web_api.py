@@ -161,6 +161,8 @@ class ConsoleWebAPI:
             ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
         ("annotation_draft", self.annotation_draft, ["POST"],
          "为当前窗口生成 AI 预标注草稿（默认关闭；会把正文发给模型）"),
+        ("annotation_drafts", self.annotation_drafts_get, ["GET"], "待审 AI 草稿列表（跨会话）"),
+        ("annotation_drafts", self.annotation_drafts_post, ["POST"], "批量采纳或忽略 AI 草稿"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -438,7 +440,7 @@ class ConsoleWebAPI:
             return _json_err("plugin is shutting down", 503)
 
         page_name = (query_value("page") or query_value("page_name") or "").strip()
-        allowed = {"console", "config", "today", "manners", "memory", "replay"}
+        allowed = {"console", "config", "today", "manners", "memory", "replay", "drafts"}
         if page_name not in allowed:
             return _json_err("unsupported page", 400)
 
@@ -687,6 +689,40 @@ class ConsoleWebAPI:
             logger.error("[ChatDynamics] annotation draft failed code=CD_ANNOTATION_DRAFT type=%s",
                          type(exc).__name__)
             return _json_err("annotation draft failed", 503)
+    async def annotation_drafts_get(self):
+        """Pending drafts across sessions; text hidden under the same switch as replay."""
+        if (limited := self._rate_limit("GET", 60)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        session = (_query_param("session_key") or "").strip()
+        if len(session) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key too long", 400)
+        try:
+            return _json_ok(await self.plugin.annotation_drafts_payload(session))
+        except Exception as exc:
+            logger.error("[ChatDynamics] annotation drafts read failed code=CD_ANNOTATION_DRAFTS type=%s",
+                         type(exc).__name__)
+            return _json_err("annotation drafts unavailable", 503)
+
+    async def annotation_drafts_post(self):
+        """One request per review decision, however many drafts it covers."""
+        if (limited := self._rate_limit("POST", 10)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        try:
+            body = await _json_body()
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        try:
+            return _json_ok(await self.plugin.annotation_drafts_apply(body))
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] annotation drafts apply failed code=CD_ANNOTATION_DRAFTS type=%s",
+                         type(exc).__name__)
+            return _json_err("annotation drafts apply failed", 503)
     async def annotations_post(self):
         if (limited := self._rate_limit("POST", 20)) is not None:
             return limited

@@ -7,6 +7,7 @@ export const PLUGIN_PAGES = [
   { id: "manners", label: "分寸台" },
   { id: "memory", label: "记忆小本" },
   { id: "replay", label: "场景回放" },
+  { id: "drafts", label: "AI 标注审批" },
 ];
 
 const NAV_ICONS = {
@@ -16,6 +17,7 @@ const NAV_ICONS = {
   manners: '<path d="M12 3v17M5 7h14M5 7l-3 7h6L5 7Zm14 0-3 7h6l-3-7ZM7 21h10"/>',
   memory: '<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M3 7h4M3 12h4M3 17h4m9-10h-3m3 5h-3"/>',
   replay: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 8 6 4-6 4V8Z"/>',
+  drafts: '<path d="M9 11.5 11 14l4.5-5"/><circle cx="12" cy="12" r="9"/>',
 };
 
 function escapeHtml(value) {

@@ -241,7 +241,10 @@ def draft_runtime(*, nodes=(), enabled=True, reply="", error=None, records=(), l
     async def put(key, value):
         kv[key] = value
 
-    dag = SimpleNamespace(get_recent_nodes=lambda count: list(nodes))
+    # `nodes` is what the approval page and TopicAnnotations.save() look a
+    # message up by; get_recent_nodes is what draft generation walks.
+    dag = SimpleNamespace(get_recent_nodes=lambda count: list(nodes),
+                          nodes={item.msg_id: item for item in nodes})
     store_plugin = SimpleNamespace(get_kv_data=get, put_kv_data=put, dags={"a": dag},
                                   console_show_message_content=False, _shutting_down=False)
     store = TopicAnnotations(store_plugin)
@@ -419,5 +422,163 @@ def test_the_real_plugin_wires_the_store_the_draft_path_reads():
 
     assert isinstance(plugin.topic_annotations, TopicAnnotations)
     assert plugin._web.topic_annotations is plugin.topic_annotations
+
+# ---- 审批页：列表与批量处理 ---------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_approval_list_gathers_pending_drafts_without_plaintext():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    payload = await plugin.annotation_drafts_payload("")
+
+    assert payload["total_drafts"] == 1 and payload["content_hidden"] is True
+    session = payload["sessions"][0]
+    assert session["session_key"] == "a" and session["provider_id"] == "provider-draft"
+    item = session["items"][0]
+    assert item["msg_id"] == "m1" and item["saveable"] is True
+    assert item["annotated"] is False and item["text"] == ""
+    assert item["expected_reply"] is True and item["confidence"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_the_approval_list_shows_text_only_under_the_content_switch():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.console_show_message_content = True
+
+    payload = await plugin.annotation_drafts_payload("a")
+
+    assert payload["content_hidden"] is False
+    assert payload["sessions"][0]["items"][0]["text"] == "在吗"
+
+
+@pytest.mark.asyncio
+async def test_a_draft_whose_message_left_the_window_is_listed_but_not_saveable():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    payload = await plugin.annotation_drafts_payload("a")
+
+    item = payload["sessions"][0]["items"][0]
+    assert item["saveable"] is False
+
+
+@pytest.mark.asyncio
+async def test_accepting_a_draft_writes_a_label_and_drops_the_draft():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    assert result == {"saved": 1, "failed": []}
+    rows = kv[plugin.topic_annotations.key("a")]
+    assert len(rows) == 1
+    # Provenance is decided by save(), not by the caller: the label values are
+    # the draft's, so the record has to say the model proposed them.
+    assert rows[0]["label_source"] == "human" and rows[0]["accepted_from"] == "ai"
+    assert rows[0]["expected_reply"] is True and rows[0]["bot_targeted"] is False
+    assert kv[plugin.topic_annotations.draft_key("a")]["drafts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_accepting_with_the_new_topic_choice_keeps_that_call():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"],
+         "expected_topic": "NEW"})
+
+    assert result["saved"] == 1
+    row = kv[plugin.topic_annotations.key("a")][0]
+    assert row["expected_topic"] == "NEW" and row["error_type"] == "topic_merge"
+
+
+@pytest.mark.asyncio
+async def test_accepting_a_gone_message_reports_it_and_keeps_the_draft():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    assert result["saved"] == 0 and result["failed"][0]["msg_id"] == "m1"
+    assert kv[plugin.topic_annotations.key("a")] == [], "失败的采纳不能留下标注"
+    assert list(kv[plugin.topic_annotations.draft_key("a")]["drafts"]) == ["m1"]
+
+
+@pytest.mark.asyncio
+async def test_dismissing_and_clearing_never_write_labels():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗"), node("m2", "在的")],
+                               reply=reply(reply_for("m1"), reply_for("m2")))
+    await plugin.annotation_draft_payload("a")
+
+    dismissed = await plugin.annotation_drafts_apply(
+        {"action": "dismiss", "session_key": "a", "msg_ids": ["m1"]})
+    assert dismissed == {"removed": 1}
+    assert list(kv[plugin.topic_annotations.draft_key("a")]["drafts"]) == ["m2"]
+    assert kv[plugin.topic_annotations.key("a")] == []
+
+    cleared = await plugin.annotation_drafts_apply(
+        {"action": "clear_session", "session_key": "a"})
+    assert cleared == {"cleared": True}
+    assert kv[plugin.topic_annotations.draft_key("a")] == {}
+
+
+@pytest.mark.asyncio
+async def test_review_actions_reject_input_they_cannot_honour():
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")])
+
+    for body in (
+        {"action": "accept", "session_key": "", "msg_ids": ["m1"]},
+        {"action": "accept", "session_key": "a"},
+        {"action": "nope", "session_key": "a", "msg_ids": ["m1"]},
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"],
+         "expected_topic": "WRONG"},
+    ):
+        with pytest.raises(ValueError):
+            await plugin.annotation_drafts_apply(body)
+
+
+@pytest.mark.asyncio
+async def test_the_approval_endpoints_list_and_accept(monkeypatch, offline_web_responses):
+    from astrbot_plugin_chat_dynamics.core import web_api
+    from astrbot_plugin_chat_dynamics.core.web_api import ConsoleWebAPI
+
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    plugin._shutting_down = False
+    await plugin.annotation_draft_payload("a")
+    api = ConsoleWebAPI(plugin)
+    monkeypatch.setattr(web_api, "_query_param", lambda name: "")
+
+    listed = await api.annotation_drafts_get()
+
+    assert listed["ok"] is True and listed["data"]["total_drafts"] == 1
+
+    async def accept_body():
+        return {"action": "accept", "session_key": "a", "msg_ids": ["m1"]}
+
+    monkeypatch.setattr(web_api, "_json_body", accept_body)
+    applied = await api.annotation_drafts_post()
+
+    assert applied["ok"] is True and applied["data"]["saved"] == 1
+    assert kv[plugin.topic_annotations.key("a")][0]["accepted_from"] == "ai"
+
+    async def empty_ids():
+        return {"action": "dismiss", "session_key": "a", "msg_ids": []}
+
+    monkeypatch.setattr(web_api, "_json_body", empty_ids)
+    assert (await api.annotation_drafts_post())["status_code"] == 400
 
 

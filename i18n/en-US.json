@@ -11,5 +11,7 @@
   "pages.memory.title": "Notebook",
   "pages.memory.desc": "Anniversaries, reminders, and slang trials; forget or mute tonight.",
   "pages.replay.title": "Scene Replay",
-  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
+  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default.",
+  "pages.drafts.title": "AI Label Review",
+  "pages.drafts.desc": "Review model-drafted reply labels one by one or in bulk: accepting writes a label, dismissing drops the draft."
 }

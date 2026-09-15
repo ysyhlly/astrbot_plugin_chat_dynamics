@@ -1,0 +1,127 @@
+/* Unified left rail — byte-copied into each pages/<name>/ (page-local copy only). */
+
+.app:has(.plugin-layout),
+.app.plugin-shell {
+  width: min(100%, 1180px);
+}
+
+.plugin-layout {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+}
+
+.plugin-side {
+  position: sticky;
+  top: 12px;
+  padding: 14px 12px;
+  border: 1px solid var(--line, rgba(140, 176, 188, 0.18));
+  border-radius: 14px;
+  background: var(--side-bg, var(--surface, #fffdf8));
+  box-shadow: var(--shadow, 0 18px 40px rgba(62, 52, 36, 0.08));
+}
+
+.plugin-side-label {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted, #8aa0ab);
+}
+
+.plugin-side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-side-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  border: 1px solid var(--line, rgba(140, 176, 188, 0.18));
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted, #8aa0ab);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.plugin-side-item:hover {
+  color: var(--text, #1b2428);
+  border-color: var(--cyan, #1b7d77);
+}
+
+.plugin-side-item.is-current {
+  color: var(--cyan, #1b7d77);
+  border-color: var(--cyan, #1b7d77);
+  background: var(--cyan-soft, rgba(27, 125, 119, 0.1));
+  cursor: default;
+}
+
+.plugin-main {
+  min-width: 0;
+}
+
+.plugin-theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 11px;
+  border: 1px solid var(--line, rgba(48, 62, 68, 0.12));
+  border-radius: 10px;
+  background: var(--surface-soft, transparent);
+  color: var(--text, #1b2428);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.plugin-theme-toggle:hover {
+  border-color: var(--cyan, #1b7d77);
+  color: var(--cyan, #1b7d77);
+}
+
+.plugin-theme-toggle .ui-theme-kicker {
+  color: var(--muted, #5a686e);
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.page-nav:empty,
+#pageNav:empty {
+  display: none;
+}
+
+.wire-nav {
+  display: none !important;
+}
+
+@media (max-width: 860px) {
+  .plugin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .plugin-side {
+    position: static;
+  }
+
+  .plugin-side-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .plugin-side-item {
+    width: auto;
+  }
+}

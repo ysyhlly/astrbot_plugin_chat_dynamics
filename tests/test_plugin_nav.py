@@ -13,7 +13,7 @@ from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import _plugin
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ROOT / "pages"
-PAGE_DIRS = ("console", "config", "today", "manners", "memory", "replay")
+PAGE_DIRS = ("console", "config", "today", "manners", "memory", "replay", "drafts")
 
 
 def test_daytime_rules_do_not_hardcode_night_fills():

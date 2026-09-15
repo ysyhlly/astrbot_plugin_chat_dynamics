@@ -16,5 +16,7 @@
   "pages.memory.title": "记忆小本",
   "pages.memory.desc": "纪念日、约定与试用梗；忘掉或今晚别提。",
   "pages.replay.title": "场景回放",
-  "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。"
+  "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。",
+  "pages.drafts.title": "AI 标注审批",
+  "pages.drafts.desc": "逐条或批量审阅模型预标注：采纳才写入标注，忽略即丢弃草稿。"
 }

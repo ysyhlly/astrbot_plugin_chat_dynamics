@@ -18,7 +18,8 @@ def api(monkeypatch, offline_web_responses):
 
 ENDPOINTS = ["overview", "sessions", "session", "cool", "reset", "config_get",
              "config_save", "providers", "config_apply", "presets", "apply_preset",
-             "read_air", "replay", "notebook_get", "notebook_post", "page_nav"]
+             "read_air", "replay", "notebook_get", "notebook_post", "page_nav",
+             "annotation_drafts_get", "annotation_drafts_post"]
 
 
 @pytest.mark.asyncio
