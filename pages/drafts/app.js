@@ -46,9 +46,24 @@ checkPending.className = "button button-primary";
 checkPending.id = "btnCheckPending";
 checkPending.textContent = "核对待确认请求";
 els.reviewStatus.insertAdjacentElement("afterend", checkPending);
-function persistPending() {
+function persistPending(next = pendingRequests) {
   // Persist before dispatch. If storage fails, do not risk an unrecoverable write.
-  sessionStorage.setItem(pendingKey, JSON.stringify(pendingRequests));
+  try {
+    sessionStorage.setItem(pendingKey, JSON.stringify(next));
+  } catch {
+    throw new Error("无法保存待确认请求，请允许此页面使用会话存储后重试。");
+  }
+  pendingRequests = next;
+}
+function requestId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  // LAN HTTP pages lack randomUUID, but getRandomValues is available there.
+  // This is an idempotency key, not an authentication credential.
+  if (typeof globalThis.crypto?.getRandomValues !== "function") {
+    throw new Error("浏览器无法生成请求标识，请使用支持 Web Crypto 的浏览器。");
+  }
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
 }
 function pendingNotice() {
   if (pendingRequests.length) {
@@ -78,14 +93,12 @@ async function confirmRequest(body, initial = false) {
     error.pending = true;
     throw error;
   }
-  pendingRequests = pendingRequests.filter(item => item.request_id !== body.request_id);
-  persistPending();
+  persistPending(pendingRequests.filter(item => item.request_id !== body.request_id));
   return result;
 }
 async function reviewPost(body) {
-  body.request_id = crypto.randomUUID();
-  pendingRequests.push(body);
-  persistPending();
+  body.request_id = requestId();
+  persistPending([...pendingRequests, body]);
   return confirmRequest(body, true);
 }
 async function reconcilePending() {
@@ -326,6 +339,9 @@ async function apply(action, pairs, expiredSkipped = 0) {
       try { result = await reviewPost(body); }
       catch (err) {
         chunk.forEach(mid => selected.add(keyOf(session, mid)));
+        if (!err.pending) {
+          chunk.forEach(mid => failed.push({msg_id: mid, error: err.message || String(err)}));
+        }
         continue;
       }
       const unresolved = new Set([...(result.failed || []), ...(result.skipped || [])].map(row => row.msg_id));

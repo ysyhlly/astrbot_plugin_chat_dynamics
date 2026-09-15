@@ -2,6 +2,7 @@
 
 import json
 import threading
+from urllib.parse import urlsplit
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -132,6 +133,43 @@ def open_page(context, page_server, payload=PAYLOAD, dialogs=None):
     page.goto(f"{page_server}/drafts/index.html?ui=day")
     page.wait_for_selector(".draft-card")
     return page
+
+
+def test_accept_works_on_non_secure_http_origin(browser, page_server):
+    with browser.new_context() as context:
+        setup(context)
+        # Serve real shipped assets on a non-loopback HTTP origin. localhost
+        # is a secure context and would hide missing randomUUID support.
+        context.route("http://drafts.test/**", lambda route: route.fulfill(
+            response=context.request.get(page_server + urlsplit(route.request.url).path)))
+        page = context.new_page()
+        page.goto("http://drafts.test/drafts/index.html?ui=day")
+        page.wait_for_selector(".draft-card")
+        assert page.evaluate("window.isSecureContext") is False
+        assert page.evaluate("typeof crypto.randomUUID") == "undefined"
+        page.locator('[data-accept][data-mid="m1"]').click()
+        page.wait_for_function("window.__calls.length === 1", timeout=3000)
+        call = page.evaluate("window.__calls[0]")
+        assert call["body"]["action"] == "accept"
+        assert 16 <= len(call["body"]["request_id"]) <= 128
+        assert "已采纳 1 条" in page.locator("#reviewStatus").inner_text()
+
+
+def test_storage_failure_before_dispatch_is_reported_and_retryable(browser, page_server):
+    with browser.new_context() as context:
+        page = open_page(context, page_server)
+        page.evaluate("""() => {
+            window.originalSetItem = Storage.prototype.setItem;
+            Storage.prototype.setItem = function() { throw new Error('storage blocked'); };
+        }""")
+        page.locator('[data-accept][data-mid="m1"]').click()
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('保存')", timeout=3000)
+        assert page.evaluate("window.__calls.length") == 0
+        assert page.locator('[data-accept][data-mid="m1"]').is_enabled()
+        page.evaluate("() => { Storage.prototype.setItem = window.originalSetItem; }")
+        page.locator('[data-accept][data-mid="m1"]').click()
+        page.wait_for_function("window.__calls.length === 1", timeout=3000)
+        assert "已采纳 1 条" in page.locator("#reviewStatus").inner_text()
 
 
 def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, page_server):
