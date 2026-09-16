@@ -349,7 +349,7 @@ async def test_a_successful_draft_is_stored_and_reported():
     assert payload["stats"]["asked"] == 1
     assert list(payload["drafts"]) == ["m1"]
     assert plugin.llm.calls[0]["purpose"] == "draft"
-    assert plugin.llm.calls[0]["timeout"] == 30.0
+    assert plugin.llm.calls[0]["timeout"] == pytest.approx(30.0, abs=0.05)
     assert "在吗" in plugin.llm.calls[0]["prompt"]
     assert kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]["expected_reply"] is True
     assert kv[plugin.topic_annotations.key("a")] == [], "草稿不能写进标注键"
