@@ -2,7 +2,7 @@
 
 All notable changes to this plugin are recorded here.
 
-## Unreleased — 审计路线 PR2–PR7
+## v1.9.3 — 审核加固、回合管道与新封面（2026-09-16）
 
 - 批量审核按每批 20 条提交并显示逐批进度，写请求等待提高到 30 秒，减少大量标注逐条持久化时的超时重试。
 - 待审草稿的覆盖、批量忽略与清空确认改为页面内对话框，兼容宿主禁用原生弹窗的沙箱；覆盖已有标注仍须确认。
@@ -16,6 +16,7 @@ All notable changes to this plugin are recorded here.
 - 增强阶段共享截止时间，Provider 调用按用途共享容量并预留回复位置，提供阶段调用量与 P50/P95；取消与队列释放具有回归保护。
 - 回合准备、增强与完成移入 `core/turn_pipeline.py`，原生投递完成逻辑并入 `core/native_delivery.py`，保留宿主钩子与配置默认值。
 - 同步 PR1：快照保留边类型和必要语义字段，完整 UTF-8 JSON 大小受预算约束，裁剪有诊断。
+- 更新插件封面与 AstrBot 市场 `logo.png`。
 
 ## v1.9.2 — 前端操作一致性与审批保护（2026-09-15）
 
