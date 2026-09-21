@@ -32,6 +32,17 @@ async def test_prepared_native_request_never_queries_hub(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_blank_native_request_uses_the_caller_reply_instruction(monkeypatch):
+    request = NS(prompt='{"current_turn":"hello"}', system_prompt="", contexts=[], func_tool=None, image_urls=[])
+    client, loop = adapter(monkeypatch, integrations=None, prepared=request)
+    assert await client.run_native_agent(
+        MockEvent("hello"), "raw query", system_prompt="可见回复就是要发到群里的那句话。",
+    ) == "reply"
+    assert loop.call_args.kwargs["system_prompt"] == "可见回复就是要发到群里的那句话。"
+    assert loop.call_args.kwargs["prompt"] == '{"current_turn":"hello"}'
+
+
+@pytest.mark.asyncio
 async def test_bypassed_native_pipeline_queries_hub_once_with_original_event_query(monkeypatch):
     integrations = NS(context_for_request=AsyncMock(return_value={"social": "context"}))
     client, loop = adapter(monkeypatch, integrations)

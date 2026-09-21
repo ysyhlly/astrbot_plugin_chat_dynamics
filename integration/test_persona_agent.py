@@ -143,6 +143,26 @@ async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(h
 
 
 @pytest.mark.asyncio
+async def test_failed_model_chain_is_a_failure_not_a_persona_reply(host_fixture):
+    """A 4.22+ runner reports "all chat models failed" as a response, not an exception."""
+    from astrbot_plugin_chat_dynamics.core.llm_adapter import LLMErrorResponse
+
+    ctx, event, calls = host_fixture
+    host_error = ("All chat models failed: EmptyModelOutputError: Responses API returned no usable "
+                  "output. response_id=resp_xU6xavnTGvusz7IPt8u0sQ4, status=completed")
+
+    async def failed(**kwargs):
+        calls.append(kwargs)
+        return LLMResponse(role="err", completion_text=host_error)
+
+    ctx.provider.text_chat = failed
+    bridge = AstrBotAgentBridge(ctx)
+    with pytest.raises(LLMErrorResponse):
+        await bridge.generate(event, (event,), "完整聚合请求", await bridge.snapshot(event), "provider")
+    assert not event.sent and not ctx.saved
+
+
+@pytest.mark.asyncio
 async def test_owned_agent_passes_request_guard_but_original_event_is_blocked(host_fixture, monkeypatch):
     from astrbot.core.pipeline import context_utils
     from astrbot.core.provider.entities import ProviderRequest

@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from .llm_adapter import LLMErrorResponse, is_error_response
 from .platform_bridge import iter_message_components
 from .turn_decision import PersonaSnapshot, REPLY_INSTRUCTIONS
 
@@ -16,6 +17,52 @@ _SKIP_MEDIA_COPY = frozenset({"plain", "text", "at", "atall", "markdown", "menti
 # Tool receipts are a de-duplication aid, not context: bound what may be appended
 # to a system prompt for one turn.
 _MAX_RECEIPTS_CHARS = 4000
+
+
+def _reasoning_parts(content: Any) -> list[dict]:
+    """Think parts a Responses replay must keep. Unsent prose is not one of them."""
+    if not isinstance(content, list):
+        return []
+    kept = []
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "think":
+            continue
+        if part.get("encrypted") or str(part.get("think") or "").strip():
+            kept.append(part)
+    return kept
+
+
+def history_with_delivered_reply(history: list[dict], delivered: str) -> list[dict]:
+    """Drop unsent assistant prose and keep the reasoning items the next call replays.
+
+    A tool-call turn stores reasoning on that assistant message, beside the calls.
+    The final visible reply keeps only the reasoning from the last non-tool draft.
+    """
+    history = copy.deepcopy(history)
+    new_start = next(
+        (i + 1 for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"),
+        len(history),
+    )
+    final_reasoning: list[dict] = []
+    for msg in history[new_start:]:
+        if msg.get("role") != "assistant":
+            continue
+        reasoning = _reasoning_parts(msg.get("content"))
+        if msg.get("tool_calls"):
+            msg["content"] = reasoning if reasoning else ""
+        else:
+            if reasoning:
+                final_reasoning = reasoning
+            msg["content"] = None
+    history = [item for item in history if item.get("content") is not None or item.get("tool_calls")]
+    if final_reasoning:
+        history.append({
+            "role": "assistant",
+            "content": [*final_reasoning, {"type": "text", "text": delivered}],
+        })
+    else:
+        history.append({"role": "assistant", "content": delivered})
+    return history
 
 
 class AgentBridgeUnavailable(RuntimeError):
@@ -216,6 +263,10 @@ class AstrBotAgentBridge:
             if not await self.current(event, effective):
                 raise PersonaChanged()
             response = runner.get_final_llm_resp()
+            if is_error_response(response):
+                # The host reports "all chat models failed" as an ordinary final
+                # response. That text is a diagnostic, not a reply to speak in a group.
+                raise LLMErrorResponse("main agent returned a host error response")
             if getattr(response, "result_chain", None) and not getattr(response, "completion_text", ""):
                 captured_chains.append(response.result_chain)
             history = []
@@ -255,13 +306,6 @@ class AstrBotAgentBridge:
         conv = await mgr.get_conversation(event.unified_msg_origin, output.conversation_id)
         if not conv or str(conv.history) != output.base_history:
             return False
-        history = copy.deepcopy(output.history)
-        # Intermediate textual drafts are not visible replies. Retain tool protocol, not unsent prose.
-        new_start = next((i + 1 for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), len(history))
-        for msg in history[new_start:]:
-            if msg.get("role") == "assistant":
-                msg["content"] = "" if msg.get("tool_calls") else None
-        history = [m for m in history if m.get("content") is not None or m.get("tool_calls")]
-        history.append({"role": "assistant", "content": delivered})
+        history = history_with_delivered_reply(output.history, delivered)
         await mgr.update_conversation(event.unified_msg_origin, output.conversation_id, history=history)
         return True

@@ -45,7 +45,8 @@ from .core.annotation_review import AnnotationReview
 from .core.annotation_scheduler import AnnotationDraftScheduler
 from .core.turn_latency import start_turn, record_stage
 from .core.config_panel import ConfigPanel, _PRESETS  # noqa: F401 (compatibility re-export)
-from .core.llm_adapter import LLMAdapter, LLMUnavailable, poke_hint_for, system_prompt_for, vibe_hint_for
+from .core.llm_adapter import (LLMAdapter, LLMUnavailable, is_error_response, poke_hint_for, reply_system_prompt,
+                                system_prompt_for, vibe_hint_for)
 from .core.mood_memory import MoodMemoryStore
 from .core.learning_policy import MODE_OFF
 from .core.learning_policy_runtime import APPLY_OVERLAP, LearningPolicyRuntime
@@ -2468,6 +2469,7 @@ class ChatDynamicsPlugin(Star):
                 text,
                 umo=str(umo),
                 vibe_hint=hint,
+                system_prompt=reply_system_prompt(vibe_mode),
             )
             self._metric("llm_reply_succeeded")
             return self._bounded_text(text_out, _MAX_TURN_CHARS) if text_out.strip() else ""
@@ -3292,7 +3294,9 @@ class ChatDynamicsPlugin(Star):
         if not self._event_epoch_is_current(event, session_key):
             return
         text = getattr(response, "completion_text", None)
-        if not text:
+        # A host error response carries a diagnostic, not a reply: restyling it
+        # would dress an operator message up as the bot's own words.
+        if not text or is_error_response(response):
             return
         mode = self.vibe_analyzer.peek_mode(session_key, current_time=self.time_service.time())
         shaped = self._bounded_text(self.style_shaper.adapt_style(str(text), mode), _MAX_TURN_CHARS)

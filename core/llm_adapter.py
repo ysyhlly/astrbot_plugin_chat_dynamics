@@ -22,6 +22,17 @@ class LLMUnavailable(RuntimeError):
     """Raised when the host Context cannot satisfy a chat completion request."""
 
 
+class LLMErrorResponse(LLMUnavailable):
+    """Raised when the host answers with a failure where model output was expected.
+
+    AstrBot's tool-loop runner does not raise when every candidate chat model
+    fails: it returns ``LLMResponse(role="err", completion_text="All chat models
+    failed: ...")`` and keeps that as the final response. The text is an operator
+    diagnostic, so reading it as a completion puts "All chat models failed:
+    EmptyModelOutputError: Responses API returned no usable output..." into the group.
+    """
+
+
 SYSTEM_PROMPTS = {
     GroupChatMode.FAST_BANTER: (
         "你正在一个群聊里用口语短句说话。不要使用 Markdown、列表或客服式收尾，"
@@ -46,6 +57,18 @@ VIBE_HINTS = {
 
 def system_prompt_for(mode: GroupChatMode) -> str:
     return SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS[GroupChatMode.CHILL_FADE])
+
+
+# Responses reasoning models treat a bare JSON user turn as private analysis and
+# finish with status=completed but no output_text. The visible channel is the reply.
+VISIBLE_REPLY_REQUIREMENT = (
+    "可见回复就是要发到群里的那句话。只思考、只留在推理通道、或返回空白都不是回复。"
+    "不要用发消息工具再发一次；调用方负责送达。"
+)
+
+
+def reply_system_prompt(mode: GroupChatMode) -> str:
+    return system_prompt_for(mode) + "\n" + VISIBLE_REPLY_REQUIREMENT
 
 
 def vibe_hint_for(mode: GroupChatMode) -> str:
@@ -80,8 +103,18 @@ def _supported_kwargs(fn: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in candidate.items() if key in signature.parameters}
 
 
+def is_error_response(resp: Any) -> bool:
+    """Whether the host marked this response as a failure rather than model output.
+
+    ``LLMResponse.role`` is "assistant", "tool" or "err"; every runner in the
+    host uses "err" for a failure it reports instead of raising.
+    """
+    return str(getattr(resp, "role", "") or "").strip().lower() == "err"
+
+
 def completion_text(resp: Any) -> str:
-    if resp is None:
+    """Model output, or "" - never the host's failure diagnostic."""
+    if resp is None or is_error_response(resp):
         return ""
     if isinstance(resp, str):
         return resp
@@ -89,6 +122,13 @@ def completion_text(resp: Any) -> str:
     if text:
         return str(text)
     return ""
+
+
+def require_completion_text(resp: Any, purpose: str) -> str:
+    """The text of a finished call, or a failure the caller can log and count."""
+    if is_error_response(resp):
+        raise LLMErrorResponse(f"host error response for {purpose}")
+    return completion_text(resp)
 
 
 class LLMAdapter:
@@ -252,7 +292,7 @@ class LLMAdapter:
             ))
             if inspect.isawaitable(resp):
                 resp = await resp
-            return completion_text(resp)
+            return require_completion_text(resp, purpose)
 
         return await self._generate_via_legacy_provider(
             prompt,
@@ -268,11 +308,12 @@ class LLMAdapter:
         *,
         umo: str = "",
         vibe_hint: str = "",
+        system_prompt: str = "",
     ) -> str:
         """Bound media, hooks, provider lookup, and tool execution together."""
         try:
             return await asyncio.wait_for(
-                self._run_native_agent(event, prompt, umo=umo, vibe_hint=vibe_hint),
+                self._run_native_agent(event, prompt, umo=umo, vibe_hint=vibe_hint, system_prompt=system_prompt),
                 timeout=self.tool_agent_timeout,
             )
         except asyncio.TimeoutError as exc:
@@ -285,6 +326,7 @@ class LLMAdapter:
         *,
         umo: str = "",
         vibe_hint: str = "",
+        system_prompt: str = "",
     ) -> str:
         """Run AstrBot's native agent so persona, history, and tools stay attached.
 
@@ -307,7 +349,10 @@ class LLMAdapter:
         media_kwargs = _media_kwargs(image_urls, audio_urls)
         from .native_request import prepare_request
         request = await prepare_request(event, user_prompt, image_urls, audio_urls)
-        request_kwargs = {}
+        # A hook-built request owns its system prompt. A blank one does not: the
+        # caller still has to require a visible reply, or a reasoning model ends
+        # the turn with nothing the Responses parser can use.
+        request_kwargs: dict[str, Any] = {}
         if request is None and self.integrations is not None:
             try:
                 context_data = await self.integrations.context_for_request(
@@ -327,8 +372,11 @@ class LLMAdapter:
         if request is not None:
             user_prompt = request.prompt
             media_kwargs = _media_kwargs(request.image_urls, getattr(request, "audio_urls", audio_urls))
-            request_kwargs = dict(system_prompt=request.system_prompt,
-                                  contexts=request.contexts, tools=request.func_tool)
+            request_kwargs = dict(contexts=request.contexts, tools=request.func_tool)
+            if str(request.system_prompt or "").strip():
+                request_kwargs["system_prompt"] = request.system_prompt
+        if "system_prompt" not in request_kwargs and str(system_prompt or "").strip():
+            request_kwargs["system_prompt"] = system_prompt
         tool_loop = getattr(ctx, "tool_loop_agent", None)
         if callable(tool_loop):
             prov_id = await self.resolve_provider_id(target_umo, purpose="reply")
@@ -341,13 +389,13 @@ class LLMAdapter:
             ))
             if inspect.isawaitable(resp):
                 resp = await resp
-            return completion_text(resp)
+            return require_completion_text(resp, "native reply")
         if request is not None and (request.contexts or request.func_tool):
             raise LLMUnavailable("Native request tools/history require tool_loop_agent")
         return await self.generate(
             prompt=user_prompt,
             umo=target_umo,
-            system_prompt=request.system_prompt if request is not None else "",
+            system_prompt=str(request_kwargs.get("system_prompt") or ""),
             image_urls=request.image_urls if request is not None else image_urls,
             audio_urls=getattr(request, "audio_urls", audio_urls) if request is not None else audio_urls,
         )
@@ -407,4 +455,4 @@ class LLMAdapter:
                                               lambda: text_chat(prompt=prompt, system_prompt=system_prompt))
         if inspect.isawaitable(resp):
             resp = await resp
-        return completion_text(resp)
+        return require_completion_text(resp, purpose)
