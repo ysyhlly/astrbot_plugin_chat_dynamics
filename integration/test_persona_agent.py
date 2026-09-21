@@ -406,7 +406,9 @@ async def test_real_sdk_dispatches_both_companions_once(host_fixture, monkeypatc
     assert await adapter.run_native_agent(event, "legacy request") == "legacy response"
     assert event.is_stopped()
     assert invoked == [("selflearning", event.unified_msg_origin), ("livingmemory", event.unified_msg_origin)]
-    forwarded_text = forwarded[0]["prompt"] + forwarded[0]["system_prompt"]
+    # Newer SDKs fold temporary hook text into the prompt; older ones append it
+    # to the system prompt. Either place is the forwarded request.
+    forwarded_text = forwarded[0]["prompt"] + str(forwarded[0].get("system_prompt") or "")
     assert forwarded_text.count("approved-learning-hint") == 1
     assert forwarded_text.count("retrieved-memory-hint") == 1
     companion.hub.context.assert_not_awaited()
