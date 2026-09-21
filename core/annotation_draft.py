@@ -23,7 +23,10 @@ from __future__ import annotations
 import json
 import math
 import re
+from copy import deepcopy
 from typing import Any, Mapping, Sequence
+
+from .graph import ConversationNode
 
 DRAFT_SCHEMA_VERSION = 1
 DRAFT_PROMPT_VERSION = 2
@@ -304,7 +307,110 @@ def parse_drafts(text: str, batch: Sequence[Mapping[str, Any]], *, diagnostics: 
     }
 
 
+# ---- what the draft keeps of the message it was written about ------------
+#
+# A draft used to be only a proposal. The message it was about lived in the
+# session graph, and once that graph no longer held it -- a restart, or the
+# retention window moving past it -- the row stayed in the list as something
+# nobody could ever accept: the draft survived, the label it was for did not.
+#
+# So a draft now carries the message it is about. Everything a label is written
+# from is copied here while the message is still in memory: the routing block
+# the record quotes, the frozen decision trace, the wall-clock stamp the page
+# renders, and the text under the same switch that lets the page show it. The
+# trace is the part that cannot be reconstructed afterwards -- nothing rebuilds
+# a decision from live routing, which is exactly why a reroute must not rewrite
+# history.
+
+CONTEXT_KEY = "context"
+CONTEXT_SCHEMA_VERSION = 1
+MAX_CONTEXT_TEXT = 2000
+CONTEXT_ROUTING_FIELDS = ("topic_id", "topic_confidence", "ambiguous", "topic_ambiguous",
+                          "topic_status", "candidates", "topic_candidates",
+                          "topic_candidate_evidence", "boundary_score", "evidence")
+# Node metadata keys that stay outside the trace and can be written after the
+# draft was generated (a delivery outcome lands when the reply is sent), kept
+# under the same names the annotation record reads on a live node.
+CONTEXT_META_FIELDS = ("outcome", "shadow_decision")
+
+
+def build_context(node: Any, *, show_content: bool, wall_ts: float) -> dict[str, Any]:
+    """What the message was, taken while it is still here.
+
+    The stamp is a calendar stamp rather than the node's own clock because the
+    graph stamps nodes with a monotonic clock: that number means nothing after
+    the process that produced it is gone, and this one outlives it.
+    """
+    metadata = getattr(node, "metadata", None)
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    routing = metadata.get("routing")
+    routing = routing if isinstance(routing, Mapping) else {}
+    trace = metadata.get("decision_trace") or metadata.get("trace_inputs") or {}
+    text = str(getattr(node, "text", "") or "")[:MAX_CONTEXT_TEXT]
+    context: dict[str, Any] = {
+        "context_schema_version": CONTEXT_SCHEMA_VERSION,
+        "wall_ts": float(wall_ts or 0.0),
+        # Text follows the same switch that lets the approval page show it: with
+        # the switch off the snapshot holds no body for anything to leak.
+        "text": text if show_content else "",
+        "routing": {key: deepcopy(routing[key]) for key in CONTEXT_ROUTING_FIELDS if key in routing},
+    }
+    if isinstance(trace, Mapping) and trace:
+        context["trace"] = deepcopy(dict(trace))
+    for key in CONTEXT_META_FIELDS:
+        if metadata.get(key) is not None:
+            context[key] = deepcopy(metadata[key])
+    return context
+
+
+def context_node(msg_id: str, context: Any) -> ConversationNode | None:
+    """Rebuild the message a recovered label is written from, or None.
+
+    The result is not a live node and nothing may treat it as one: it is the
+    snapshot above re-shaped into what TopicAnnotations.save() reads. The trace
+    goes back under trace_inputs for the same reason the runtime snapshot keeps
+    it there -- that is the half an annotation rebuilds from after a restart, and
+    a label written from a snapshot should be the record a restart would have
+    produced.
+
+    A snapshot that is only a body and a stamp still counts. A message the
+    routing pipeline never saw has no routing and no trace on the node either,
+    so the record built from the snapshot says exactly what the record built from
+    the live node would have said. `None` is reserved for the draft that kept
+    nothing at all.
+    """
+    if not isinstance(context, Mapping):
+        return None
+    metadata: dict[str, Any] = {}
+    routing = context.get("routing")
+    if isinstance(routing, Mapping) and routing:
+        metadata["routing"] = deepcopy(dict(routing))
+    trace = context.get("trace")
+    if isinstance(trace, Mapping) and trace:
+        metadata["trace_inputs"] = deepcopy(dict(trace))
+    for key in CONTEXT_META_FIELDS:
+        if context.get(key) is not None:
+            metadata[key] = deepcopy(context[key])
+    return ConversationNode(
+        str(msg_id), "", str(context.get("text") or "")[:MAX_CONTEXT_TEXT],
+        float(context.get("wall_ts") or 0.0), metadata=metadata)
+
+
+def public_draft(draft: Any) -> dict[str, Any]:
+    """A draft as the pages read it: the proposal, without the snapshot.
+
+    The context is what keeps a draft acceptable long after its message left the
+    graph. It is not something a page renders, and a frozen decision trace per
+    row would grow every list response by orders of magnitude.
+    """
+    if not isinstance(draft, Mapping):
+        return {}
+    return {key: value for key, value in draft.items() if key != CONTEXT_KEY}
+
+
 __all__ = [
-    "DEFAULT_DRAFTS", "DRAFT_PROMPT_VERSION", "DRAFT_SCHEMA_VERSION", "MAX_MESSAGES",
-    "SYSTEM_PROMPT", "build_batch", "build_batches", "build_prompt", "parse_drafts",
+    "CONTEXT_KEY", "CONTEXT_META_FIELDS", "CONTEXT_ROUTING_FIELDS", "CONTEXT_SCHEMA_VERSION",
+    "DEFAULT_DRAFTS", "DRAFT_PROMPT_VERSION", "DRAFT_SCHEMA_VERSION", "MAX_CONTEXT_TEXT",
+    "MAX_MESSAGES", "SYSTEM_PROMPT", "build_batch", "build_batches", "build_context",
+    "build_prompt", "context_node", "parse_drafts", "public_draft",
 ]

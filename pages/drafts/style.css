@@ -72,6 +72,19 @@
   opacity: 0.62;
 }
 
+/* 消息已不在内存，但草稿把它保存了下来：仍可采纳，只是要说明标注的依据。 */
+.draft-card.is-recovered {
+  border-left: 3px solid var(--line-strong);
+}
+
+.draft-recovered-note {
+  margin: 8px 0 2px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--line-strong);
+  background: var(--surface-soft);
+  border-radius: 6px;
+}
+
 .draft-expired-note {
   margin: 10px 0 2px;
   padding: 6px 10px;

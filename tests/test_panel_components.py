@@ -82,7 +82,8 @@ async def test_review_only_saves_explicitly_accepted_live_messages():
     store.save.assert_awaited_once_with({
         "session_key": "umo-a", "msg_id": "live", "expected_topic": "NEW",
         "error_type": "topic_merge", "expected_reply": True, "bot_targeted": False,
-    }, partial=True, draft_revision="revision", request_id=None)
+        # No snapshot on this draft, but the message is live, so nothing is recovered.
+    }, partial=True, draft_revision="revision", request_id=None, recovered_node=None)
     store.remove_drafts.assert_awaited_once_with("umo-a", ["live"], revisions={"live": "revision"})
 
 

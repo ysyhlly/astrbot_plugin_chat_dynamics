@@ -21,9 +21,12 @@ async def runtime():
                            get_kv_data=get, put_kv_data=put)
     store = host.topic_annotations = TopicAnnotations(host)
     await store.save_drafts("s", {"drafts": {"m": {"expected_reply": True}}})
+    # The revision is the stored draft, snapshot included: it is the revision the
+    # approval page previews and sends back, not the proposal alone.
+    stored = (await store.read_drafts("s"))["drafts"]["m"]
     body = {"action": "accept", "session_key": "s", "msg_ids": ["m"], "request_id": "r",
             "revisions": {"m": {"annotation_revision": store.revision(None),
-                                   "draft_revision": store.revision({"expected_reply": True})}}}
+                                   "draft_revision": store.revision(stored)}}}
     return host, AnnotationReview(host), body
 
 

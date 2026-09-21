@@ -219,6 +219,9 @@ function cardHtml(session, item) {
     item.topic_id ? `话题 ${item.topic_id}` : "未形成话题",
     item.ts ? formatTs(item.ts) : "",
     item.annotated ? "已有人工标注（采纳会更新建议字段）" : "",
+    // The message is gone but the draft kept it; the label is still written from
+    // what the draft saved, so the card says so instead of offering a dead button.
+    item.recovered ? "消息已不在内存（插件重启或超出保留窗口），采纳按草稿保存时的消息快照写入" : "",
     item.saveable ? "" : (item.stale_reason === "session_gone"
       ? "已失效：会话的消息图已不在内存里（插件重启过），只能忽略"
       : "已失效：消息已超出保留窗口，只能忽略"),
@@ -226,7 +229,7 @@ function cardHtml(session, item) {
   const acceptDisabled = busy || !item.saveable;
   const acceptTitle = item.saveable ? "" : " title=\"失效草稿无法采纳，只能忽略\"";
   const text = item.text || "（正文已隐藏；打开 console_show_message_content 后可显示）";
-  return `<article class="draft-card${item.saveable ? "" : " is-stale"}">
+  return `<article class="draft-card${item.saveable ? "" : " is-stale"}${item.recovered ? " is-recovered" : ""}">
     <label class="draft-check" title="选择这条"><input type="checkbox" aria-label="选择${escapeHtml(cardName)}" data-select data-session="${escapeHtml(session)}" data-mid="${escapeHtml(item.msg_id)}"${checked}${disabled}></label>
     <div class="draft-body">
       <p class="draft-text">${escapeHtml(text)}</p>
@@ -284,7 +287,12 @@ function render() {
     const expiredNote = expired.length
       ? `<p class="ops-note draft-expired-note">以下 ${expired.length} 条已失效（${sessionGone ? "插件重启后这条会话的消息图还没重建" : "消息超出保留窗口"}），无法采纳，只能忽略或清空：</p>`
       : "";
+    const recoveredCount = items.filter(item => item.recovered).length;
+    const recoveredNote = recoveredCount
+      ? `<p class="ops-note draft-recovered-note">其中 ${recoveredCount} 条的消息已不在内存，采纳会把草稿保存时的消息快照写进标注。</p>`
+      : "";
     return head
+      + recoveredNote
       + live.map(item => cardHtml(group.session_key, item)).join("")
       + expiredNote
       + expired.map(item => cardHtml(group.session_key, item)).join("");
@@ -354,6 +362,7 @@ async function apply(action, pairs, expiredSkipped = 0) {
   let saved = 0;
   let removed = 0;
   let skipped = expiredSkipped;
+  let recovered = 0;
   const failed = [];
   const totalSessions = bySession.size;
   let doneSessions = 0;
@@ -392,6 +401,7 @@ async function apply(action, pairs, expiredSkipped = 0) {
       saved += Number(result.saved) || 0;
       removed += Number(result.removed) || 0;
       skipped += (result.skipped || []).length;
+      recovered += Number(result.recovered) || 0;
       for (const row of result.failed || []) failed.push(row);
       }
     }
@@ -400,6 +410,7 @@ async function apply(action, pairs, expiredSkipped = 0) {
     } else if (action === "accept") {
       const topicLabel = els.acceptTopic.selectedOptions[0]?.textContent || "";
       const notes = [];
+      if (recovered) notes.push(`${recovered} 条的消息已不在内存，按草稿保存时的快照写入`);
       if (skipped) notes.push(`${skipped} 条已失效的草稿被跳过（插件重启或消息超出保留窗口，只能忽略）`);
       if (failed.length) notes.push(`${failed.length} 条失败：${friendlyError(failed[0].error, "原因未知")}`);
       els.reviewStatus.textContent = saved

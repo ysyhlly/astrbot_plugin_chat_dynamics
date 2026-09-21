@@ -3,9 +3,13 @@
 草稿永远不能变成标注 —— 学习层的真值之所以是人工，是因为回复决策本身就是模型判断，
 同一种判断再当一遍真值就是自己给自己判卷。所以这里钉住三件事：模型看不到本体的判定、
 没被问到的 msg_id 不会被存下来、以及只有人按下保存才会有记录（并写明采纳了草稿）。
+
+第四件事是草稿的寿命：消息图只留 500 条 / 60 分钟，重启还会把它清空，所以草稿必须随身
+带着它写的那条消息（`context`），否则「待审」会慢慢变成一堆只能忽略的死行。
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 from types import SimpleNamespace
@@ -274,12 +278,16 @@ def draft_runtime(*, nodes=(), enabled=True, reply="", error=None, records=(), l
     # message up by; get_recent_nodes is what draft generation walks.
     dag = SimpleNamespace(get_recent_nodes=lambda count: list(nodes),
                           nodes={item.msg_id: item for item in nodes})
-    store_plugin = SimpleNamespace(get_kv_data=get, put_kv_data=put, dags={"a": dag},
-                                  console_show_message_content=False, _shutting_down=False)
-    store = TopicAnnotations(store_plugin)
-    kv[store.key("a")] = list(records)
     plugin.dags = {"a": dag}
-    plugin.topic_annotations = store
+    plugin.get_kv_data = get
+    plugin.put_kv_data = put
+    plugin.console_show_message_content = False
+    plugin._shutting_down = False
+    # main.py wires the store to the plugin itself, and the store reads it back
+    # for the message graph and the content switch. A second double here would
+    # hide exactly the snapshots this file is about.
+    plugin.topic_annotations = TopicAnnotations(plugin)
+    kv[plugin.topic_annotations.key("a")] = list(records)
     plugin.llm = _Llm(reply, error)
     plugin.annotation_draft_enabled = enabled
     plugin.annotation_draft_limit = limit
@@ -467,6 +475,177 @@ def test_the_real_plugin_wires_the_store_the_draft_path_reads():
     assert isinstance(plugin.topic_annotations, TopicAnnotations)
     assert plugin._web.topic_annotations is plugin.topic_annotations
 
+# ---- 草稿随身带着它写的那条消息 -----------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_draft_keeps_the_message_it_was_written_about():
+    """草稿落盘时一并存下那条消息：话题、冻结轨迹、日历时间。"""
+    source = node("m1", "在吗")
+    source.metadata["routing"] = {"topic_id": "t7", "topic_confidence": 0.4}
+    source.metadata["trace_inputs"] = {"trace_schema_version": 3,
+                                       "topic": {"topic_id": "t7", "confidence": 0.4}}
+    plugin, kv = draft_runtime(nodes=[source], reply=reply(reply_for("m1")))
+
+    await plugin.annotation_draft_payload("a")
+
+    context = kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]["context"]
+    assert context["context_schema_version"] == 1
+    assert context["wall_ts"] > 1e9, "存单调时钟的快照换个进程就没法渲染了"
+    assert context["routing"]["topic_id"] == "t7"
+    assert context["trace"]["trace_schema_version"] == 3
+    assert context["text"] == "", "正文默认不落盘：和页面显示同一把开关"
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_carries_the_text_only_under_the_content_switch():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    plugin.console_show_message_content = True
+    await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    assert kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]["context"]["text"] == "在吗"
+    item = (await plugin.annotation_drafts_payload("a"))["sessions"][0]["items"][0]
+    assert item["recovered"] is True and item["text"] == "在吗"
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_is_what_the_recovered_record_is_written_from():
+    """按快照写出来的记录，话题与轨迹来自本体当时存下的那一份。"""
+    source = node("m1", "在吗")
+    source.metadata["routing"] = {"topic_id": "t7", "topic_confidence": 0.4}
+    source.metadata["trace_inputs"] = {"trace_schema_version": 3,
+                                       "topic": {"topic_id": "t7", "confidence": 0.4}}
+    source.metadata["outcome"] = {"final_outcome": "delivered", "delivered": True}
+    plugin, kv = draft_runtime(nodes=[source], reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"],
+         "expected_topic": "CORRECT"})
+
+    assert result["saved"] == 1 and result["recovered"] == 1
+    row = kv[plugin.topic_annotations.key("a")][0]
+    assert row["predicted_topic"] == "t7"
+    assert row["expected_topic"] == "t7" and row["error_type"] == "correct"
+    assert row["decision_trace"]["topic"]["topic_id"] == "t7"
+    assert row["decision_trace"]["outcome"]["final_outcome"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_too_large_for_the_budget_is_left_out():
+    """装不下的快照不写：草稿退回旧行为，而不是把存储文档撑爆。"""
+    from astrbot_plugin_chat_dynamics.core.topic_annotations import MAX_DRAFT_CONTEXT_BYTES
+
+    source = node("m1", "在吗")
+    source.metadata["trace_inputs"] = {"trace_schema_version": 3,
+                                       "blob": "x" * (MAX_DRAFT_CONTEXT_BYTES + 1024)}
+    plugin, kv = draft_runtime(nodes=[source], reply=reply(reply_for("m1")))
+
+    await plugin.annotation_draft_payload("a")
+
+    stored = kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]
+    assert "context" not in stored and stored["expected_reply"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_later_run_does_not_rewrite_a_snapshot_the_page_already_previewed():
+    """快照只补不改：后台又生成一轮，不该让正在审批的页面白刷一次。"""
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗"), node("m2", "在的")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+
+    def stored():
+        return kv[plugin.topic_annotations.draft_key("a")]["drafts"]
+
+    first = copy.deepcopy(stored()["m1"])
+    plugin.llm.reply = reply(reply_for("m2"))
+    await plugin.annotation_draft_payload("a")
+
+    assert "m2" in stored(), "第二轮本来就有新消息要起草"
+    assert stored()["m1"] == first
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_that_cannot_be_encoded_costs_the_snapshot_not_the_draft():
+    """序列化不了的快照不写：丢的是快照，不是整条草稿。"""
+    source = node("m1", "在吗")
+    source.metadata["routing"] = {"topic_id": "t7", "candidates": {1, 2}}
+    plugin, kv = draft_runtime(nodes=[source], reply=reply(reply_for("m1")))
+
+    payload = await plugin.annotation_draft_payload("a")
+
+    assert list(payload["drafts"]) == ["m1"]
+    stored = kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"]
+    assert "context" not in stored and stored["expected_reply"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_session_snapshot_budget_is_bounded(monkeypatch):
+    """会话里的快照有上限：超出的草稿退回旧行为，而不是让存储文档无限增长。"""
+    from astrbot_plugin_chat_dynamics.core import topic_annotations
+
+    monkeypatch.setattr(topic_annotations, "MAX_DRAFT_CONTEXTS", 2)
+    plugin, kv = draft_runtime(nodes=[node("m" + str(index), "消息 " + str(index))
+                                      for index in range(4)], limit=4,
+                               reply=reply(*[reply_for("m" + str(index)) for index in range(4)]))
+
+    await plugin.annotation_draft_payload("a")
+
+    drafts = kv[plugin.topic_annotations.draft_key("a")]["drafts"]
+    captured = [mid for mid, draft in drafts.items() if isinstance(draft.get("context"), dict)]
+    assert captured == ["m0", "m1"], "预算按插入顺序先给最接近保留窗口的那批"
+    assert set(drafts) == {"m0", "m1", "m2", "m3"}, "没有快照的草稿照旧保留"
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_label_matches_the_one_a_live_message_writes():
+    """重启不是数据上的差别：两条路径写出的记录除时间外逐字段相同。"""
+    def source_node():
+        item = node("m1", "在吗")
+        item.metadata["routing"] = {"topic_id": "t7", "topic_confidence": 0.4}
+        item.metadata["trace_inputs"] = {"trace_schema_version": 3,
+                                         "topic": {"topic_id": "t7", "confidence": 0.4}}
+        item.metadata["outcome"] = {"final_outcome": "delivered", "delivered": True}
+        return item
+
+    live_plugin, live_kv = draft_runtime(nodes=[source_node()], reply=reply(reply_for("m1")))
+    await live_plugin.annotation_draft_payload("a")
+    await live_plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    gone_plugin, gone_kv = draft_runtime(nodes=[source_node()], reply=reply(reply_for("m1")))
+    await gone_plugin.annotation_draft_payload("a")
+    gone_plugin.dags["a"].nodes = {}
+    await gone_plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    live_row = live_kv[live_plugin.topic_annotations.key("a")][0]
+    gone_row = gone_kv[gone_plugin.topic_annotations.key("a")][0]
+
+    difference = {key for key in live_row | gone_row
+                  if live_row.get(key) != gone_row.get(key)}
+    assert difference <= {"annotated_at"}, difference
+    assert gone_row["decision_trace"] == live_row["decision_trace"]
+    assert gone_row["predicted_topic"] == live_row["predicted_topic"] == "t7"
+
+
+@pytest.mark.asyncio
+async def test_the_pages_never_receive_the_snapshot():
+    """快照是存储，不是展示：列表、生成结果与标注读取都只给建议本身。"""
+    plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
+                                reply=reply(reply_for("m1")))
+
+    generated = await plugin.annotation_draft_payload("a")
+    listed = await plugin.annotation_drafts_payload("a")
+    read = await plugin.topic_annotations.read("a")
+
+    assert "context" not in generated["drafts"]["m1"]
+    assert "context" not in listed["sessions"][0]["items"][0]
+    assert "context" not in read["drafts"]["m1"]
+
+
 # ---- 审批页：列表与批量处理 ---------------------------------------------
 
 @pytest.mark.asyncio
@@ -513,7 +692,8 @@ async def test_the_approval_list_shows_text_only_under_the_content_switch():
 
 
 @pytest.mark.asyncio
-async def test_a_draft_whose_message_left_the_window_is_listed_but_not_saveable():
+async def test_a_draft_whose_message_left_the_window_is_still_saveable():
+    """消息不在内存里是事实，但草稿带着它 —— 列表要给的是可采纳，不是可忽略。"""
     plugin, _kv = draft_runtime(nodes=[node("m1", "在吗")],
                                 reply=reply(reply_for("m1")))
     await plugin.annotation_draft_payload("a")
@@ -522,7 +702,9 @@ async def test_a_draft_whose_message_left_the_window_is_listed_but_not_saveable(
     payload = await plugin.annotation_drafts_payload("a")
 
     item = payload["sessions"][0]["items"][0]
-    assert item["saveable"] is False
+    assert item["saveable"] is True and item["recovered"] is True
+    assert item["stale_reason"] == "evicted", "消息确实不在了，这仍然是事实"
+    assert item["ts"] > 1e9, "快照里的时间也要是能当日期渲染的日历时间"
 
 
 @pytest.mark.asyncio
@@ -534,7 +716,7 @@ async def test_accepting_a_draft_writes_a_label_and_drops_the_draft():
     result = await plugin.annotation_drafts_apply(
         {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
 
-    assert result == {"saved": 1, "saved_ids": ["m1"], "skipped": [], "failed": []}
+    assert result == {"saved": 1, "saved_ids": ["m1"], "recovered": 0, "skipped": [], "failed": []}
     rows = kv[plugin.topic_annotations.key("a")]
     assert len(rows) == 1
     # Provenance is decided by save(), not by the caller: the label values are
@@ -560,11 +742,30 @@ async def test_accepting_with_the_new_topic_choice_keeps_that_call():
 
 
 @pytest.mark.asyncio
-async def test_a_draft_whose_message_left_the_window_is_skipped_not_saved():
-    """重启或超出保留窗口后，草稿还在但消息没了 —— 只能跳过并说明。"""
+async def test_a_draft_whose_message_left_the_window_is_written_from_its_snapshot():
+    """重启或超出保留窗口后，草稿还在、消息没了 —— 标注按快照写下来。"""
     plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
                                reply=reply(reply_for("m1")))
     await plugin.annotation_draft_payload("a")
+    plugin.dags["a"].nodes = {}
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    assert result["saved"] == 1 and result["recovered"] == 1 and result["skipped"] == []
+    row = kv[plugin.topic_annotations.key("a")][0]
+    assert row["msg_id"] == "m1" and row["accepted_from"] == "ai"
+    assert row["expected_reply"] is True and row["expected_topic"] == ""
+    assert kv[plugin.topic_annotations.draft_key("a")]["drafts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_draft_with_no_snapshot_is_skipped_with_the_reason():
+    """快照之前生成的旧草稿没有可写的东西：跳过，并说清是哪种失效。"""
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"].pop("context")
     plugin.dags["a"].nodes = {}
 
     result = await plugin.annotation_drafts_apply(
@@ -578,12 +779,26 @@ async def test_a_draft_whose_message_left_the_window_is_skipped_not_saved():
 
 
 @pytest.mark.asyncio
-async def test_a_restart_that_dropped_the_graph_is_reported_as_such():
+async def test_a_restart_still_accepts_what_the_draft_kept():
     plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
                                reply=reply(reply_for("m1")))
     await plugin.annotation_draft_payload("a")
     plugin.dags.clear()
-    plugin.topic_annotations.plugin.dags.clear()
+
+    result = await plugin.annotation_drafts_apply(
+        {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
+
+    assert result["saved"] == 1 and result["recovered"] == 1
+    assert kv[plugin.topic_annotations.key("a")][0]["msg_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_a_restart_without_a_snapshot_is_reported_as_such():
+    plugin, kv = draft_runtime(nodes=[node("m1", "在吗")],
+                               reply=reply(reply_for("m1")))
+    await plugin.annotation_draft_payload("a")
+    kv[plugin.topic_annotations.draft_key("a")]["drafts"]["m1"].pop("context")
+    plugin.dags.clear()
 
     result = await plugin.annotation_drafts_apply(
         {"action": "accept", "session_key": "a", "msg_ids": ["m1"]})
@@ -600,13 +815,13 @@ async def test_the_draft_index_keeps_drafts_visible_when_the_graph_is_gone():
     await plugin.annotation_draft_payload("a")
     assert await plugin.topic_annotations.known_sessions() == ["a"]
     plugin.dags.clear()
-    plugin.topic_annotations.plugin.dags.clear()
 
     payload = await plugin.annotation_drafts_payload("")
 
     assert [session["session_key"] for session in payload["sessions"]] == ["a"]
     item = payload["sessions"][0]["items"][0]
-    assert item["saveable"] is False and item["stale_reason"] == "session_gone"
+    assert item["stale_reason"] == "session_gone"
+    assert item["saveable"] is True and item["recovered"] is True
 
 
 @pytest.mark.asyncio

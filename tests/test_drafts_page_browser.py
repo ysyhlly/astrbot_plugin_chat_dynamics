@@ -254,6 +254,55 @@ def test_the_review_page_lists_every_pending_draft_with_its_verdict(browser, pag
         assert page.locator("#listEmpty").is_hidden()
 
 
+def test_a_draft_whose_message_is_gone_is_offered_for_acceptance(browser, page_server):
+    """消息不在内存里、草稿存下了它：卡片要能点，也要说清标注的依据。"""
+    recovered = {
+        "content_hidden": True,
+        "total_drafts": 1,
+        "sessions": [{
+            "session_key": "aiocqhttp:GroupMessage:10001",
+            "generated_at": 1730000300.0,
+            "provider_id": "provider-draft",
+            "items": [{
+                "msg_id": "m9",
+                "expected_reply": True,
+                "bot_targeted": False,
+                "confidence": 0.7,
+                "reason": "直接提问",
+                "annotated": False,
+                "saveable": True,
+                "recovered": True,
+                "stale_reason": "evicted",
+                "text": "",
+                "topic_id": "t1",
+                "ts": 1730000300.0,
+            }],
+        }],
+    }
+    with browser.new_context() as context:
+        page = open_page(context, page_server, recovered)
+
+        assert page.locator(".draft-card.is-stale").count() == 0
+        assert page.locator(".draft-card.is-recovered").count() == 1
+        assert "已不在内存" in page.locator(".draft-card").inner_text()
+        assert "快照" in page.locator("#listHost").inner_text()
+        assert "可采纳 1 条" in page.locator("#draftCount").inner_text()
+        assert page.locator('[data-accept][data-mid="m9"]').is_enabled()
+        # The write itself is the same request a live draft sends; only the
+        # record it produces needs to say where the message came from.
+        page.evaluate("""() => {
+          window.AstrBotPluginPage.apiPost = async (endpoint, body) => {
+            window.__calls.push({endpoint: endpoint, body: body});
+            return {ok:true, data:{saved:1, saved_ids:["m9"], recovered:1, failed:[]}};
+          };
+        }""")
+        page.locator('[data-accept][data-mid="m9"]').click()
+        confirm_review_if_visible(page)
+        page.wait_for_function("window.__calls.length === 1")
+        assert page.evaluate("window.__calls[0].body")["action"] == "accept"
+        page.wait_for_function("document.querySelector('#reviewStatus').textContent.includes('按草稿保存时的快照写入')")
+
+
 def test_a_filter_that_vanishes_falls_back_to_every_session(browser, page_server):
     """筛选的会话消失后，下拉显示“全部会话”，列表也必须真的回到全部。"""
     with browser.new_context() as context:

@@ -8,6 +8,7 @@ import time
 from collections import Counter
 from copy import deepcopy
 
+from .annotation_draft import CONTEXT_KEY, build_context, public_draft
 from .routing_trace import build_routing_trace, trace_with_updates
 
 ERROR_TYPES = {"correct", "topic_merge", "topic_split", "wrong_assignment", "premature_assignment", "reopen_miss", "unknown", "unreviewed"}
@@ -23,6 +24,15 @@ REQUIRED_FIELDS = {"session_key", "msg_id", "expected_topic", "error_type"}
 DRAFT_KEY_PREFIX = "annotation_drafts_v1_"
 DRAFT_INDEX_KEY = "annotation_drafts_index_v1"
 MAX_INDEXED_SESSIONS = 200
+# A draft outlives its message: each one carries a snapshot of what it is about
+# (see annotation_draft.build_context), and those snapshots -- not the drafts --
+# are what would make the stored document grow without limit. A snapshot that
+# does not fit either bound is left out and the draft keeps the old behaviour:
+# listed, but only dismissible once the message is gone.
+MAX_DRAFT_CONTEXTS = 512
+MAX_DRAFT_CONTEXT_BYTES = 32 * 1024
+MAX_DRAFT_CONTEXT_TOTAL_BYTES = 2 * 1024 * 1024
+MAX_PENDING_DRAFTS = 2000
 RECIPIENT_FIELDS = {"recipient_correct", "bot_targeted", "recipient_ids", "subject_ids", "expected_reply", "recipient_error_type"}
 
 
@@ -179,6 +189,78 @@ class TopicAnnotations:
                 result.extend(row for row in rows if isinstance(row, str))
         return list(dict.fromkeys(result))
 
+    @staticmethod
+    def _encoded_size(value) -> int:
+        """Encoded size of a snapshot, or a size no bound can admit.
+
+        A value that cannot be encoded is not storable as a snapshot: the host
+        serializes the whole document, so one unserializable field would take
+        the draft write down with it. Refusing it here costs the snapshot, not
+        the draft.
+        """
+        try:
+            return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        except (TypeError, ValueError):
+            return MAX_DRAFT_CONTEXT_BYTES + 1
+
+    def _wall_offset(self) -> float:
+        """Calendar minus monotonic clock, so a snapshot keeps a readable stamp.
+
+        Nodes are stamped by the session clock, which restarts with the process.
+        A stamp that is meant to outlive the process has to be converted while
+        both clocks are still readable.
+        """
+        clock = getattr(self.plugin, "time_service", None)
+        if clock is None:
+            return 0.0
+        try:
+            return float(clock.wall_time()) - float(clock.time())
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+
+    def _with_contexts(self, session, drafts):
+        """Attach the message snapshot to every draft that is still missing one.
+
+        Capture only ever adds. A draft that already carries a snapshot keeps the
+        one it has, because the snapshot is part of the draft revision: rewriting
+        it would invalidate the revision an open approval page previewed, and turn
+        a human pressing accept into "草稿已更新，请刷新后重新确认".
+        """
+        dag = (getattr(self.plugin, "dags", None) or {}).get(session)
+        nodes = getattr(dag, "nodes", None)
+        if not isinstance(nodes, dict) or not nodes:
+            return drafts
+        pending = [(mid, draft) for mid, draft in drafts.items()
+                   if isinstance(draft, dict) and not isinstance(draft.get(CONTEXT_KEY), dict)]
+        if not pending:
+            return drafts
+        held = [self._encoded_size(draft.get(CONTEXT_KEY)) for draft in drafts.values()
+                if isinstance(draft, dict) and isinstance(draft.get(CONTEXT_KEY), dict)]
+        budget = MAX_DRAFT_CONTEXT_TOTAL_BYTES - sum(held)
+        room = min(MAX_DRAFT_CONTEXTS - len(held), len(pending))
+        if budget <= 0 or room <= 0:
+            return drafts
+        show_content = bool(getattr(self.plugin, "console_show_message_content", False))
+        offset = self._wall_offset()
+        result = dict(drafts)
+        # Oldest draft first: those are the messages nearest the retention window
+        # and the ones whose loss a human notices first.
+        for mid, draft in pending:
+            node = nodes.get(mid)
+            if node is None:
+                continue
+            context = build_context(node, show_content=show_content,
+                                    wall_ts=float(getattr(node, "timestamp", 0.0) or 0.0) + offset)
+            size = self._encoded_size(context)
+            if size > MAX_DRAFT_CONTEXT_BYTES or size > budget:
+                continue
+            budget -= size
+            room -= 1
+            result[mid] = {**draft, CONTEXT_KEY: context}
+            if room <= 0:
+                break
+        return result
+
     async def save_drafts(self, session, payload, *, merge=False, is_current=None,
                           expected_epoch=None, regenerate_dismissed=False) -> dict | None:
         raw = payload.get("drafts")
@@ -204,8 +286,12 @@ class TopicAnnotations:
             record["draft_epoch"] = epoch
             record["requests"] = previous.get("requests", {})
             combined = {**(previous.get("drafts", {}) if merge else {}), **record["drafts"]}
-            record["drafts"] = dict(list((mid, draft) for mid, draft in combined.items()
-                                       if mid not in labelled and mid not in dismissed)[-2000:])
+            combined = {mid: draft for mid, draft in combined.items()
+                        if mid not in labelled and mid not in dismissed}
+            # Contexts are captured after the trim: measuring a snapshot for a draft
+            # that is about to be dropped would spend the budget on nothing.
+            record["drafts"] = self._with_contexts(
+                session, dict(list(combined.items())[-MAX_PENDING_DRAFTS:]))
             if is_current is not None and not is_current():
                 return None
             await self._index_session(session)
@@ -300,7 +386,10 @@ class TopicAnnotations:
                 "error_counts": dict(counts),
                 "confusion": [{"predicted": a, "expected": b, "count": n} for (a, b), n in sorted(matrix.items())],
                 "sample_note": ("仅统计人工标注样本，不代表真实准确率；其中 %d 条采纳了模型草稿" % assisted)},
-                "drafts": drafts.get("drafts") or {},
+                # The pages read the proposal. The message snapshot each draft keeps
+                # is storage, not display: shipping a frozen trace per row would grow
+                # every annotation response by orders of magnitude.
+                "drafts": {mid: public_draft(draft) for mid, draft in (drafts.get("drafts") or {}).items()},
                 "drafts_generated_at": drafts.get("generated_at"),
                 "recipient_metrics": {"total": len(recipient_rows), "error_counts": dict(recipient_counts),
                     "correct": sum(row.get("recipient_correct") is True for row in recipient_rows),
@@ -308,7 +397,16 @@ class TopicAnnotations:
                     "expected_reply": sum(row.get("expected_reply") is True for row in recipient_rows),
                     "sample_note": "仅统计人工标注样本，不代表真实准确率"}}
 
-    async def save(self, body, *, partial=False, draft_revision=None, request_id=None):
+    async def save(self, body, *, partial=False, draft_revision=None, request_id=None,
+                   recovered_node=None):
+        """Write one human label.
+
+        `recovered_node` is a message rebuilt from the snapshot a draft keeps, and
+        it is used only when the session graph no longer holds the message: the
+        approval page can still read such a draft, so the honest answer is a label
+        written from what was saved, not a refusal. The caller decides this -- a
+        live node always wins, and a missing message with no snapshot still fails.
+        """
         fingerprint = self.revision({"body": body, "partial": partial, "draft_revision": draft_revision})
         if request_id is not None:
             if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
@@ -339,6 +437,8 @@ class TopicAnnotations:
         dag = getattr(self.plugin, "dags", {}).get(session)
         node = dag.nodes.get(mid) if dag else None
         if node is None:
+            node = recovered_node
+        if node is None:
             raise ValueError("message no longer available; refresh replay")
         routing = node.metadata.get("routing", {})
         predicted = str(routing.get("topic_id") or "UNKNOWN")
@@ -347,7 +447,11 @@ class TopicAnnotations:
             predicted = str(frozen_trace.get("routing", {}).get("selected_topic")
                             or frozen_trace.get("topic", {}).get("topic_id") or predicted)
         expected = body["expected_topic"]
-        known = {str(n.metadata.get("routing", {}).get("topic_id")) for n in dag.nodes.values()}
+        # Without a graph there is nothing to check a topic name against, and that is
+        # the honest answer: a recovered draft can still choose NEW/UNKNOWN/CORRECT/
+        # KEEP, which are the choices the approval page offers anyway.
+        known = ({str(n.metadata.get("routing", {}).get("topic_id")) for n in dag.nodes.values()}
+                 if dag is not None else set())
         runtime = getattr(self.plugin, "_sessions", {}).get(session)
         state = getattr(runtime, "routing_state", None)
         known.update(getattr(state, "topics", {}).keys())

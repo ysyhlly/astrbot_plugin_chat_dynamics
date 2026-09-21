@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Callable
 import asyncio
 import hashlib
-from .annotation_draft import build_batches, build_prompt as build_draft_prompt, parse_drafts
+from .annotation_draft import (CONTEXT_KEY, build_batches, context_node,
+                               build_prompt as build_draft_prompt, parse_drafts, public_draft)
 from .llm_adapter import LLMUnavailable
 
 _ANNOTATION_DRAFT_WINDOW = 120
@@ -140,7 +141,10 @@ class AnnotationReview:
         self.host._metric("annotation_draft_succeeded", amount=int(parsed.get("drafted") or 0))
         payload.update(state="fresh", generated_at=saved.get("generated_at"),
                        drafted=len(set(parsed.get("drafts", {})) & set(saved.get("drafts", {}))),
-                       drafts=saved.get("drafts") or {},
+                       # The stored draft also carries the message snapshot; this
+                       # response is a proposal, and the snapshot is storage.
+                       drafts={mid: public_draft(draft)
+                               for mid, draft in (saved.get("drafts") or {}).items()},
                        invented=parsed.get("invented") or [],
                        undecided=parsed.get("undecided") or [])
         return payload
@@ -152,9 +156,12 @@ class AnnotationReview:
         Sessions come from the live registry *and* from the store's own draft
         index: a restart empties the in-memory graph, and a session with no new
         traffic would otherwise hide its drafts where nobody could even dismiss
-        them. Those items carry `stale_reason: session_gone` and cannot be
-        accepted - a label needs the message the graph no longer has. Message
-        text follows the same console_show_message_content switch as replay.
+        them. A draft whose message is gone is still acceptable when the draft
+        kept a snapshot of it (`recovered: true`); one that kept none is listed
+        as before, with `stale_reason: session_gone` or `evicted` and no way to
+        accept it. Message text follows the same console_show_message_content
+        switch as replay, and the snapshot only ever holds text the switch was
+        on for when it was taken.
         """
         show_content = bool(getattr(self.host, "console_show_message_content", False))
         # DAG nodes are stamped with the monotonic clock; the page renders these as
@@ -180,8 +187,24 @@ class AnnotationReview:
                 if not isinstance(draft, dict):
                     continue
                 node = dag.nodes.get(mid) if dag is not None else None
+                # The message the draft was written about travels with the draft, so a
+                # row survives the graph that produced it: the snapshot supplies what
+                # the node would have supplied, and the draft stays acceptable.
+                context = draft.get(CONTEXT_KEY)
+                snapshot = context if node is None and isinstance(context, dict) else None
                 metadata = getattr(node, "metadata", None) if node is not None else None
                 routing = metadata.get("routing", {}) if isinstance(metadata, dict) else {}
+                if snapshot is not None:
+                    snapshot_routing = snapshot.get("routing")
+                    routing = snapshot_routing if isinstance(snapshot_routing, dict) else {}
+                if node is not None:
+                    text = str(getattr(node, "text", "") or "")[:240] if show_content else ""
+                    ts = float(getattr(node, "timestamp", 0.0) or 0.0) + wall_offset
+                elif snapshot is not None:
+                    text = str(snapshot.get("text") or "")[:240] if show_content else ""
+                    ts = float(snapshot.get("wall_ts") or 0.0)
+                else:
+                    text, ts = "", 0.0
                 items.append({
                     "msg_id": mid,
                     "expected_reply": draft.get("expected_reply"),
@@ -193,17 +216,18 @@ class AnnotationReview:
                         ("expected_reply", "bot_targeted", "expected_topic", "error_type")} if mid in annotated else None,
                     "annotation_revision": self.host.topic_annotations.revision(annotated.get(mid)),
                     "draft_revision": self.host.topic_annotations.revision(draft),
-                    "saveable": node is not None,
+                    "saveable": node is not None or snapshot is not None,
+                    "recovered": node is None and snapshot is not None,
                     "stale_reason": "" if node is not None else ("session_gone" if dag is None else "evicted"),
-                    "text": str(getattr(node, "text", "") or "")[:240] if show_content and node is not None else "",
+                    "text": text,
                     "topic_id": str(routing.get("topic_id") or ""),
-                    "ts": (float(getattr(node, "timestamp", 0.0) or 0.0) + wall_offset)
-                    if node is not None else 0.0,
+                    "ts": ts,
                 })
             if not items:
                 continue
-            # Reviewable messages first (chronological), evicted ones last.
-            items.sort(key=lambda item: (not item["saveable"], item["ts"]))
+            # Live messages first, then the ones written from a snapshot, then the
+            # ones nothing can be written from; each group chronological.
+            items.sort(key=lambda item: (not item["saveable"], item["recovered"], item["ts"]))
             total += len(items)
             sessions.append({
                 "session_key": key,
@@ -223,9 +247,9 @@ class AnnotationReview:
         comparing values with the stored draft. Accepted and dismissed drafts are
         then removed so the pending list only holds what still needs a human.
 
-        A draft whose message left the graph is *skipped*, not failed: it is a
-        normal consequence of restarting the plugin, and the honest answer is
-        "this one can only be dismissed" rather than a bare error string.
+        A draft whose message left the graph is written from the snapshot the
+        draft keeps of it; only a draft that kept none is *skipped* rather than
+        failed, and the reason says which of the two happened.
         """
         if not isinstance(body, dict):
             raise ValueError("invalid body")
@@ -269,6 +293,11 @@ class AnnotationReview:
         drafts = stored.get("drafts") or {}
         dag = self.host.dags.get(session)
         saved: list[str] = []
+        # Written from the draft snapshot rather than from a live message. The
+        # record is the same either way -- the snapshot exists so a restart is not
+        # a difference in the data -- but the page that asked for the write should
+        # be able to say where the message came from.
+        recovered: list[str] = []
         cleanup_revisions: dict[str, str] = {}
         skipped: list[dict[str, str]] = []
         failed: list[dict[str, str]] = []
@@ -285,16 +314,18 @@ class AnnotationReview:
             if not isinstance(draft, dict):
                 failed.append({"msg_id": mid, "error": "草稿不存在或已处理"})
                 continue
-            # Drafts are persisted while the message graph is in memory, so a
-            # restart (or the retention window) leaves drafts that nobody can
-            # ever accept. Report those as skipped with the reason, instead of
-            # letting save() fail them one obscure message at a time.
-            if dag is None:
-                skipped.append({"msg_id": mid,
-                                "error": "会话的消息图已不在内存里（插件重启过），这条草稿只能忽略"})
-                continue
-            if mid not in dag.nodes:
-                skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
+            # The message may be gone -- a restart, or the retention window moving
+            # past it -- while the draft still carries what it was about. That
+            # snapshot is the difference between a label and dead weight, so it is
+            # offered to save() as the message. A draft with no snapshot has nothing
+            # to write from and is reported as skipped, with the reason, instead of
+            # failing one obscure message at a time.
+            live = dag is not None and mid in dag.nodes
+            recovered_node = None if live else context_node(mid, draft.get(CONTEXT_KEY))
+            if not live and recovered_node is None:
+                reason = ("会话的消息图已不在内存里（插件重启过），这条草稿只能忽略" if dag is None
+                          else "消息已超出保留窗口，这条草稿只能忽略")
+                skipped.append({"msg_id": mid, "error": reason})
                 continue
             record: dict[str, Any] = {
                 "session_key": session,
@@ -311,7 +342,8 @@ class AnnotationReview:
                 record["expected_revision"] = baseline["annotation_revision"]
             try:
                 result = await self.host.topic_annotations.save(record, partial=True,
-                    draft_revision=baseline.get("draft_revision", store.revision(draft)), request_id=item_request)
+                    draft_revision=baseline.get("draft_revision", store.revision(draft)),
+                    request_id=item_request, recovered_node=recovered_node)
             except ValueError as exc:
                 if "no longer available" in str(exc):
                     skipped.append({"msg_id": mid, "error": "消息已超出保留窗口，这条草稿只能忽略"})
@@ -319,8 +351,11 @@ class AnnotationReview:
                     failed.append({"msg_id": mid, "error": str(exc)})
                 continue
             saved.append(mid)
+            if recovered_node is not None:
+                recovered.append(mid)
             cleanup_revisions[mid] = result.get('accepted_draft_revision', store.revision(draft))
         if saved:
             await self.host.topic_annotations.remove_drafts(session, saved,
                 revisions=cleanup_revisions)
-        return await complete({"saved": len(saved), "saved_ids": saved, "skipped": skipped, "failed": failed})
+        return await complete({"saved": len(saved), "saved_ids": saved, "recovered": len(recovered),
+                               "skipped": skipped, "failed": failed})

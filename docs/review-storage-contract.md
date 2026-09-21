@@ -13,6 +13,29 @@ including an empty clear, advances the epoch. At commit the store rereads human
 labels and dismissed IDs. A normal refresh cannot recreate either; only explicit
 `regenerate_dismissed=True` permits dismissed IDs, never human labels.
 
+## Durability
+
+A draft carries the message it was written about. `save_drafts` copies the
+routing block, the frozen decision trace, the wall-clock stamp, and the text --
+the text only while `console_show_message_content` is on -- into
+`drafts.<msg_id>.context`, bounded per draft (`MAX_DRAFT_CONTEXT_BYTES`) and per
+session (`MAX_DRAFT_CONTEXTS`, `MAX_DRAFT_CONTEXT_TOTAL_BYTES`). A snapshot that
+does not fit either bound is left out, and that draft keeps the old behaviour:
+listed, but only dismissible once its message is gone. Capture only ever adds.
+Rewriting a snapshot would change the draft revision an open approval page
+previewed, and turn a human pressing accept into "草稿已更新，请刷新后重新确认".
+
+`save(..., recovered_node=...)` is the only path that writes a label without the
+live node: `annotation_drafts_apply` rebuilds a node from the snapshot
+(`annotation_draft.context_node`) and hands it to the same save path, so the
+record -- `predicted_topic`, `routing`, `decision_trace` -- is the one a restart
+would have produced rather than a second schema. A draft with no snapshot has
+nothing to write from and is skipped with its reason.
+
+The pages never receive a snapshot. `public_draft` strips it from `read()` and
+from the generation response, and the approval list builds its rows from the
+snapshot fields it needs instead of shipping the trace back out.
+
 ## Request retries and recovery
 
 `save(body, request_id=...)` records the label and exact successful result in one
