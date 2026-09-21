@@ -1,5 +1,5 @@
 import { friendlyError } from "./errors.js";
-import { renderIntegrations } from "./integrations.js";
+import { renderDecisionLayer, renderIntegrations } from "./integrations.js";
 import { mountWorkspace } from "./workspace.js";
 
 const PLUGIN = "astrbot_plugin_chat_dynamics";
@@ -361,7 +361,14 @@ function renderOverview(data) {
     : "控制台正文：未知";
   const provider = safeData.provider_resolution || {};
   if (safeData.decision_mode === "persona_model") {
-    els.providerState.textContent = `回复 Provider：${provider.reply || "当前 UMO"} · 决策：${provider.decision || provider.reply || "当前 UMO"}`;
+    // A Jev backend decides with its own model and endpoint, so naming the chat
+    // provider here would credit a model that is not making this decision.
+    const layer = safeData.jev || {};
+    const backend = layer.backend || "model";
+    const decidedBy = backend === "jev"
+      ? `Jev ${layer.model || "jev-latest"}${layer.enabled === false ? "（未启用）" : layer.status === "available" ? "" : `（${layer.error_code || layer.status || "未就绪"}）`}`
+      : (provider.decision || provider.reply || "当前 UMO");
+    els.providerState.textContent = `回复 Provider：${provider.reply || "当前 UMO"} · 决策：${decidedBy}`;
   } else {
     els.providerState.textContent = `回复 Provider：${provider.reply || "当前 UMO"} · 氛围：${provider.vibe || "当前 UMO"}`;
   }
@@ -384,6 +391,7 @@ function renderOverview(data) {
   }
   const partner = safeData.selflearning || {};
   renderIntegrations(safeData.selflearning);
+  renderDecisionLayer(safeData.jev);
   if (els.statPartner) els.statPartner.textContent = partner.lamp || partner.status || "—";
   if (els.statPartnerHint) {
     const details = {
@@ -453,6 +461,7 @@ function renderOverview(data) {
 
 function renderOverviewUnavailable(message = "后端未响应") {
   renderIntegrations(null);
+  renderDecisionLayer(null);
   overview = null;
   overviewOnline = false;
   detailRequestToken += 1;
@@ -772,7 +781,19 @@ function renderRoom(
   els.traceMeta.textContent = `${Number(detail.mpm || 0).toFixed(1)} MPM · ${detail.sample_size || 0} 条${labels.length ? ` · ${labels.join(" / ")}` : ""}`;
   if (detail.decision_mode === "persona_model") {
     const decision = detail.model_decision || {};
-    els.traceMeta.textContent = `人设状态 ${decision.state || detail.interaction_state} · ${decision.action || "等待决策"} · ${decision.reason_code || ""} · ${decision.latency_ms || 0}ms · 排队 ${detail.model_queue_depth || 0}${decision.shadow ? " · 仅观察" : ""}`;
+    // The decision layer reports its own typed answers, so the trace names the
+    // backend and shows how sure it was instead of implying every decision is a
+    // chat completion.
+    const evidence = decision.jev || {};
+    const weakest = Number(evidence.confidence);
+    // The acceptance floor is compared against the weakest required answer, so
+    // that is what the trace shows; the action's own confidence is the fallback
+    // for evidence recorded before the weakest was part of it.
+    const confidence = Number.isFinite(weakest) ? weakest : Number(evidence.action?.confidence);
+    const layer = decision.backend === "jev"
+      ? ` · Jev 决策${Number.isFinite(confidence) ? ` 置信 ${confidence.toFixed(2)}` : ""}`
+      : "";
+    els.traceMeta.textContent = `人设状态 ${decision.state || detail.interaction_state} · ${decision.action || "等待决策"} · ${decision.reason_code || ""} · ${decision.latency_ms || 0}ms · 排队 ${detail.model_queue_depth || 0}${decision.shadow ? " · 仅观察" : ""}${layer}`;
     els.traceMeta.title = `回应消息：${(decision.target_message_ids || []).join("、")}`;
   }
   els.dagCount.textContent = `${detail.dag_nodes || 0} 节点`;

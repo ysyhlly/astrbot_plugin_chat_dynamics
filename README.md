@@ -87,6 +87,17 @@ AI 草稿会为当前会话还没标注的消息起草两个标签：**该不该
 
 `pipeline_mode=filter` 是默认过滤链路；`exclusive` 会独占拦截事件，影响后续插件。原生直通和人设模式主 Agent 桥接支持宿主人格、历史与工具，legacy 延迟回复路径不保证完整宿主管线能力。
 
+### 决策层后端
+
+人设模式下「是否开口、怎么回、什么状态、多长、为什么」由 `decision_backend` 决定谁来回答：
+
+| 后端 | 如何决定 | 适合场景 |
+| --- | --- | --- |
+| `model`（默认） | 当前会话的聊天模型按 JSON 决策 | 希望决策与回复风格最统一 |
+| `jev` | TypeSafe System One（Jev）决策模型一次答题 | 希望决策更快更省，回复正文不变 |
+
+Jev 后端的选项全部由插件给定，无法精确映射或低于 `jev_min_confidence` 门槛即回落本地保守计划（明确请求才回应，闲聊保持安静）；密钥只从进程环境读取，不写配置、不进面板与日志。详见 [Jev 决策层](docs/decision-backend-jev.md)。
+
 ## 常用配置
 
 参数页默认只显示 7 项常用设置：启用、生效范围、排除群、昵称、决策模式和参与分寸。初次使用只需填写生效群号，再点「保存并应用」；昵称可不填，直接 @ 机器人即可。模型字段留空时沿用既有回退规则，无需为插件单独选择模型。
@@ -107,6 +118,12 @@ AI 草稿会为当前会话还没标注的消息起草两个标签：**该不该
 | `debounce_base_cooldown` | `3.5` | 连续消息的基础等待秒数 |
 | `console_show_message_content` | `false` | 是否在控制台显示截断的消息正文 |
 | `annotation_draft_enabled` | `false` | AI 预标注草稿；会把该会话正文发给模型 |
+| `decision_backend` | `model` | 人设模式决策层后端：`model` 聊天模型 / `jev` Jev 决策模型 |
+| `jev_base_url` | `https://api.typesafe.ai` | Jev 接口地址；也可填 OpenRouter、Vercel AI Gateway 或自建兼容服务 |
+| `jev_model` | `jev-latest` | Jev 模型 ID；调好门槛后建议钉住具体版本 |
+| `jev_api_key_env` | `TYPESAFE_API_KEY` | 密钥所在环境变量名（不是密钥本身），只从进程环境读取 |
+| `jev_timeout` | `6.0` | Jev 单次决策调用超时秒数（1~30），超时回落本地保守计划 |
+| `jev_min_confidence` | `0.6` | 决策置信度门槛（0.3~0.95），低于它不用这次判断 |
 
 更多参数及范围见插件配置页面或仓库中的 `_conf_schema.json`。氛围 LLM 和神经 Embedding 默认关闭，可按需开启。
 
@@ -163,7 +180,7 @@ python scripts/check_release.py
 - [离线阈值建议](docs/threshold-suggestions.md)：读取人工标注导出，只打印有证据支持的建议，不写配置。
 - [话题优化评审](docs/topic_optimization.md) · [Embedding 行为与上限](docs/embedding_changes.md)
 - [记忆联动说明](docs/companion-integration-fix-2026-09-07.md)
-- [集成边界与路由证据](docs/integrations-routing.md)
+- [集成边界与路由证据](docs/integrations-routing.md) · [Jev 决策层](docs/decision-backend-jev.md)
 - [行为学习层（v1.7.0 已移除）](docs/dynamics-learning.md) · [对话连续性](docs/dialogue-continuity.md)
 - [学习契约与策略消费](docs/learning-contract.md) · [真实 Shadow A/B 约定](docs/shadow-experiment.md) · [Shadow 遥测](docs/shadow_telemetry.md)
 - [兼容直连接口覆盖](docs/selflearning-api-coverage.md)

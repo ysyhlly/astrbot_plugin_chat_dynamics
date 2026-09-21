@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -80,6 +81,7 @@ from .core.platform_bridge import (
     send_plain,
 )
 from .core.integrations.registry import IntegrationRegistry
+from .core.integrations.typesafe import SystemOneClient
 from .core.session_runtime import PendingTurn, SessionRegistry, SessionRuntime
 from .core.session_runtime import FollowupBatch  # noqa: F401 (compatibility re-export)
 from .core.style_shaper import StyleShaper
@@ -159,6 +161,10 @@ _METRIC_NAMES = (
     "annotation_draft_unavailable",
     "learning_policy_not_applied",
     "learning_policy_rejected_overlap",
+    # The Jev decision layer: one entry per consulted decision, one per turn that
+    # had to fall back to the local plan because no answer was usable.
+    "jev_decision",
+    "jev_unavailable",
     # Recorded outside this tuple before, which meant they were persisted and then
     # dropped on restore: the restore loop only updates keys that already exist.
     "config_saved",
@@ -236,7 +242,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.9.4",
+    "v1.9.5",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -333,6 +339,15 @@ class ChatDynamicsPlugin(Star):
             enabled=runtime_config.group_memory_enabled,
             slang_enabled=runtime_config.slang_trial_enabled,
             bridge=self.selflearning,
+        )
+        # The decision layer's transport. Constructed before the first message so a
+        # configured endpoint is live immediately; it holds no session state.
+        self.jev = SystemOneClient(
+            enabled=runtime_config.decision_backend == "jev",
+            base_url=runtime_config.jev_base_url,
+            api_key=os.environ.get(runtime_config.jev_api_key_env, ""),
+            model=runtime_config.jev_model,
+            timeout=runtime_config.jev_timeout,
         )
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -467,6 +482,14 @@ class ChatDynamicsPlugin(Star):
             self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context,
                 hub_url=cfg.selflearning_hub_url, hub_key_env=cfg.selflearning_hub_key_env,
                 embedding_id=cfg.embedding_provider)
+        if hasattr(self, "jev"):
+            self.jev.configure(
+                enabled=cfg.decision_backend == "jev",
+                base_url=cfg.jev_base_url,
+                api_key=os.environ.get(cfg.jev_api_key_env, ""),
+                model=cfg.jev_model,
+                timeout=cfg.jev_timeout,
+            )
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
         if hasattr(self, "group_memory"):
@@ -1541,6 +1564,9 @@ class ChatDynamicsPlugin(Star):
         companion_close = getattr(getattr(self, "selflearning", None), "close", None)
         if callable(companion_close):
             await companion_close()
+        jev_close = getattr(getattr(self, "jev", None), "close", None)
+        if callable(jev_close):
+            await jev_close()
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
             runtime.clear_active_followup_batches()

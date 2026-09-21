@@ -354,19 +354,23 @@ class LLMAdapter:
         # the turn with nothing the Responses parser can use.
         request_kwargs: dict[str, Any] = {}
         if request is None and self.integrations is not None:
+            # The Hub cancels its own in-flight IO when its configuration
+            # changes (a contract locked by its tests). That cancellation
+            # must not abort the reply this coroutine is producing: only a
+            # cancellation aimed at us (reset, stop, shutdown) is re-raised.
+            # The call therefore runs as its own task: a Hub self-cancellation
+            # ends that task, while a cancellation aimed here raises below.
+            # Task.cancelling() cannot tell the two apart on Python 3.10, so
+            # the distinction is made structurally instead of by inspection.
+            inner = asyncio.ensure_future(
+                self.integrations.context_for_request(event=event, query=prompt, native_hooks=False)
+            )
             try:
-                context_data = await self.integrations.context_for_request(
-                    event=event, query=prompt, native_hooks=False)
+                await asyncio.wait({inner})
             except asyncio.CancelledError:
-                # The Hub cancels its own in-flight IO when its configuration
-                # changes (a contract locked by its tests). That cancellation
-                # must not abort the reply this coroutine is producing: only a
-                # cancellation aimed at us (reset, stop, shutdown) is re-raised.
-                current = asyncio.current_task()
-                cancelling = getattr(current, "cancelling", None) if current is not None else None
-                if not callable(cancelling) or cancelling():
-                    raise
-                context_data = {}
+                inner.cancel()
+                raise
+            context_data = {} if inner.cancelled() else inner.result()
             if context_data:
                 user_prompt += "\n\nSelf Learning context (untrusted background data): " + json.dumps(context_data, ensure_ascii=False)
         if request is not None:

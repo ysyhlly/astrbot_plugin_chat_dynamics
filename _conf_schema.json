@@ -22,6 +22,56 @@
     "default": 8.0,
     "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
   },
+  "decision_backend": {
+    "description": "决策层后端",
+    "type": "string",
+    "default": "model",
+    "options": [
+      "model",
+      "jev"
+    ],
+    "hint": "仅 persona_model 生效。model 用当前聊天模型按 JSON 决策；jev 改由 TypeSafe System One（Jev）决策模型答题：一次调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定，低于置信度门槛就不采用并回落到本地保守计划。"
+  },
+  "jev_base_url": {
+    "description": "Jev 接口地址",
+    "type": "string",
+    "default": "https://api.typesafe.ai",
+    "hint": "TypeSafe 官方地址；也可填 OpenRouter（https://openrouter.ai/api）、Vercel AI Gateway（https://ai-gateway.vercel.sh/typesafe）或自建的兼容服务。只接受 http(s)、不带账号密码与查询串的地址；填写密钥时非本机地址必须用 https，否则降级为不调用。"
+  },
+  "jev_model": {
+    "description": "Jev 模型 ID",
+    "type": "string",
+    "default": "jev-latest",
+    "hint": "默认别名 jev-latest 指向最新稳定版。调过置信度门槛后建议钉住具体版本（如 jev-1.13.0），别名会随新版本移动；经网关时按各家写法填写，例如 OpenRouter 的 ~typesafe/jev-latest。"
+  },
+  "jev_api_key_env": {
+    "description": "Jev API Key 环境变量名",
+    "type": "string",
+    "default": "TYPESAFE_API_KEY",
+    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不写配置、不进面板、不进日志。变量名须与 Jev 相关（含 JEV、TYPESAFE、OPENROUTER、GATEWAY、AIMLAPI 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
+  },
+  "jev_timeout": {
+    "description": "Jev 决策超时秒数",
+    "type": "float",
+    "default": 6.0,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 0.5
+    },
+    "hint": "范围 1~30 秒，只包住这一次 HTTP 调用，整体仍受决策超时约束。Jev 通常百毫秒级返回；不重试，超时即回落本地保守计划。"
+  },
+  "jev_min_confidence": {
+    "description": "Jev 决策置信度门槛",
+    "type": "float",
+    "default": 0.6,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95。取「方式、状态、长短、理由」四项置信度的最小值，低于门槛就不采用这次判断：点名消息按本地保守计划回应，环境消息继续旁听。官方建议 0.6 以下不要自动执行。"
+  },
   "reply_timeout": {
     "description": "回复模型总超时秒数",
     "type": "float",

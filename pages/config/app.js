@@ -24,6 +24,7 @@ const BASIC_HINTS = {
 };
 const OPTION_LABELS = {
   decision_mode: { legacy: "规则模式（默认）", persona_model: "人设模式（模型判断）" },
+  decision_backend: { model: "聊天模型（默认）", jev: "Jev 决策模型" },
   // Keep the wording identical to the schema hint and to 今日读空气/分寸台/控制台.
   presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
   pipeline_mode: { filter: "过滤（默认，不影响其它插件）", exclusive: "独占（会吞掉后续插件）" },
@@ -52,12 +53,18 @@ const CONFIG_GROUPS = [
   {
     "id": "providers",
     "title": "回复与决策模型",
-    "blurb": "选择回复、决策和氛围模型，设置决策等待时间",
+    "blurb": "选择回复、决策和氛围模型，设置决策等待时间与决策层后端",
     "open": true,
     "keys": [
       "reply_provider",
       "decision_provider",
+      "decision_backend",
       "decision_timeout",
+      "jev_base_url",
+      "jev_model",
+      "jev_api_key_env",
+      "jev_timeout",
+      "jev_min_confidence",
       "reply_timeout",
       "tool_agent_timeout",
       "vibe_provider",

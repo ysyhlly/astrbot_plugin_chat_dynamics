@@ -520,3 +520,52 @@ export function renderIntegrations(partner) {
     }
   }
 }
+
+// ---- decision layer (Jev / System One) -----------------------------------
+
+const DECISION_STATES = {
+  available: "已就绪",
+  configured: "已配置 · 尚未调用",
+  disabled: "未启用",
+  missing: "未配置",
+};
+
+/** The decision layer's own status: which backend decides, and how it has answered. */
+export function renderDecisionLayer(layer) {
+  const panel = $("integrationPanel");
+  if (!panel) return;
+  let section = $("decisionLayer");
+  if (!section) {
+    section = el("section", "integration-registry");
+    section.id = "decisionLayer";
+    panel.append(section);
+  }
+  const data = layer != null && typeof layer === "object" ? layer : {};
+  const usingJev = String(data.backend || "model") === "jev";
+  const status = String(data.status || "");
+  const note = layer == null
+    ? "尚未取得决策层诊断；连接恢复后自动更新。"
+    : usingJev
+      ? "本轮「是否开口、怎么回、什么状态、多长、为什么」由 Jev（TypeSafe System One）一次回答；回复正文仍由主 Agent 生成。"
+      : "决策由当前会话的聊天模型给出；把决策层后端切到 jev 可改由 Jev 决策模型回答。";
+  const stateText = status === "degraded"
+    ? `降级中（${String(data.error_code || data.detail || "未知原因")}）`
+    : DECISION_STATES[status] || "状态未知";
+  const model = String(data.model || "");
+  const served = String(data.served_model || "");
+  const rows = [
+    ["后端", usingJev ? "Jev 决策模型" : "聊天模型（默认）"],
+    ["状态", layer == null ? "—" : stateText],
+    ["端点", String(data.endpoint_host || "") || "—"],
+    ["模型", [model, served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],
+    ["调用", layer == null ? "—" : `${Number(data.calls) || 0} 次 · 失败 ${Number(data.failures) || 0} 次`],
+    ["请求 ID", String(data.request_id || "") || "—"],
+    ["置信度门槛", layer != null && Number.isFinite(Number(data.min_confidence)) ? String(data.min_confidence) : "—"],
+  ];
+  section.replaceChildren(el("h3", "", "决策层"), el("p", "ops-note", note));
+  rows.forEach(([name, value]) => {
+    const row = el("p", "ops-note");
+    row.append(el("strong", "", name), document.createTextNode(` · ${value}`));
+    section.append(row);
+  });
+}

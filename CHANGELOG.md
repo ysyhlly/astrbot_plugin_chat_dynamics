@@ -2,6 +2,15 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.9.5 — Jev 决策层（2026-09-22）
+
+- 人设模式新增决策层后端 `decision_backend=jev`：一次 TypeSafe System One（Jev）调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定；回复目标只接受本轮消息。无法精确映射或低于 `jev_min_confidence` 门槛即回落本地保守计划（明确请求才回应，闲聊保持安静）。
+- 新增 `core/jev_decision.py`（问答与映射）与 `core/integrations/typesafe.py`（传输与契约校验）：违反契约的响应整体拒绝，不重试，重配置作废在途决策；凭据只从进程环境按名读取，不写配置、不进面板、不进日志，非本机地址填密钥必须 https。`core/integrations/net_policy.py` 收拢凭据携带型客户端共用的主机规则。
+- 决策证据随诊断可见：会话轨迹标注决策后端与最弱置信度，互联诊断新增「决策层」卡片（端点、模型与实答模型、调用/失败次数、请求 ID、置信度门槛）；新增指标 `jev_decision` 与 `jev_unavailable`。
+- 参数与配置面补齐 `decision_backend`、`jev_base_url`、`jev_model`、`jev_api_key_env`、`jev_timeout`、`jev_min_confidence` 六项及参数页展示。
+- 修复：Hub 自取消不再误伤回复（不再依赖 Python 3.11 才有的 `Task.cancelling()`，3.10 同样成立）。
+- 验证：新增 `tests/test_jev_client.py`、`tests/test_jev_decision.py`、`tests/test_jev_decision_layer.py`、`tests/test_net_policy.py` 及控制台决策层卡片浏览器断言，全量 pytest（含浏览器测试）通过。
+
 ## v1.9.4 — 草稿持久化（2026-09-22）
 
 - 草稿随身携带它写的那条消息：生成时把路由、冻结的决策轨迹、日历时间与正文（仅在开启控制台消息内容显示时）存进草稿自己的 `context`，重启插件或消息超出保留窗口后仍可采纳，不再只能忽略。

@@ -175,3 +175,24 @@ def test_runtime_defaults_match_schema_defaults():
     assert cfg.decision_mode == schema["decision_mode"]["default"] == "legacy"
     assert cfg.decision_provider_id == schema["decision_provider"]["default"]
     assert cfg.decision_timeout == schema["decision_timeout"]["default"]
+    assert cfg.decision_backend == schema["decision_backend"]["default"] == "model"
+    assert cfg.jev_base_url == schema["jev_base_url"]["default"]
+    assert cfg.jev_model == schema["jev_model"]["default"]
+    assert cfg.jev_api_key_env == schema["jev_api_key_env"]["default"]
+    assert cfg.jev_timeout == schema["jev_timeout"]["default"]
+    assert cfg.jev_min_confidence == schema["jev_min_confidence"]["default"]
+
+
+def test_jev_numeric_ranges_are_validated_before_use():
+    from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
+
+    cfg, warnings = parse_runtime_config(
+        {"jev_timeout": 99, "jev_min_confidence": 0.01, "jev_model": "m" * 200})
+    assert cfg.jev_timeout == 6.0 and cfg.jev_min_confidence == 0.6
+    assert len(cfg.jev_model) == 64
+    assert any("jev_timeout" in warning for warning in warnings)
+    assert any("jev_min_confidence" in warning for warning in warnings)
+
+    cfg, warnings = parse_runtime_config({"jev_timeout": 10, "jev_min_confidence": 0.8})
+    assert (cfg.jev_timeout, cfg.jev_min_confidence) == (10.0, 0.8)
+    assert not [warning for warning in warnings if "jev" in warning]

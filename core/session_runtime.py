@@ -234,6 +234,10 @@ class SessionRuntime:
     user_revisions: Dict[str, int] = field(default_factory=dict)
     interaction_state: str = "observing"
     model_diagnostic: Dict[str, Any] = field(default_factory=dict)
+    # Typed answers of the System One (Jev) decision layer for the last turn: the
+    # options it chose and their confidences. Empty when the decision came from the
+    # model path, so a backend switch leaves no stale evidence behind.
+    jev_decision: Dict[str, Any] = field(default_factory=dict)
     ambient_openings: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_AMBIENT_OPENINGS))
     tool_executions: Deque[dict] = field(default_factory=lambda: deque(maxlen=32))
     last_interlocutor: str = ""

@@ -85,7 +85,7 @@ async def test_persona_gate_failure_is_not_persona_silence(model_plugin):
 async def test_persona_silence_and_empty_generation_are_different(model_plugin, mode, expected, stage):
     p, bridge = model_plugin
     if mode == "silence":
-        async def ignore(item, persona, state):
+        async def ignore(item, persona, state, *, runtime=None):
             return TurnDecision("ignore", "observing", (), "", "brief", "persona_boundary")
         p.persona_engine.decide = ignore
     else:

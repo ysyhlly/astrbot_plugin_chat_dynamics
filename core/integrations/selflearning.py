@@ -8,35 +8,17 @@ No long-term memory, ingest, learning or native-hook orchestration lives here.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
+# The one host rule every credential-carrying integration client applies.
+from .net_policy import is_loopback_host as _is_loopback_host
+
 
 class _HubError(Exception):
     pass
-
-
-def _is_loopback_host(hostname: str) -> bool:
-    """True only for a literal loopback address or a `.localhost` name.
-
-    A prefix test on "127." would also accept an attacker-chosen name such as
-    "127.example.com", which resolves wherever its owner points it, so the
-    address is parsed instead of pattern-matched. RFC 6761 reserves the
-    `.localhost` suffix for loopback, so that suffix stays accepted.
-    """
-    host = str(hostname or "").strip().lower().strip("[]")
-    if not host:
-        return False
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_unspecified
 
 
 class SelfLearningHubClient:

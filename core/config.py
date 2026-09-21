@@ -89,6 +89,14 @@ class RuntimeConfig:
     decision_mode: str = "legacy"
     decision_provider_id: str = ""
     decision_timeout: float = 8.0
+    # Which decision layer answers "participate or not" inside persona_model mode:
+    # the host's own chat model, or TypeSafe's System One (Jev) decision model.
+    decision_backend: str = "model"
+    jev_base_url: str = "https://api.typesafe.ai"
+    jev_model: str = "jev-latest"
+    jev_api_key_env: str = "TYPESAFE_API_KEY"
+    jev_timeout: float = 6.0
+    jev_min_confidence: float = 0.6
     reply_timeout: float = 60.0
     tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
@@ -198,6 +206,8 @@ def _integer(
 
 _PRESENCE_KNOBS = {"ghost", "sensible", "lively"}
 
+_DECISION_BACKENDS = {"model", "jev"}
+
 # The Hub reads one credential out of the process environment. The variable name
 # is part of the published config, so it is restricted to names that are
 # plausibly this integration's own: an arbitrary name would let a config write
@@ -214,6 +224,24 @@ def _hub_key_env(value: Any, warnings: List[str]) -> str:
             f"selflearning_hub_key_env must be a Hub-related environment variable name ({_HUB_KEY_ENV_DEFAULT} is used)"
         )
         return _HUB_KEY_ENV_DEFAULT
+    return name
+
+
+# The Jev decision layer reads its credential out of the process environment. The
+# variable name is part of the published config, so it is restricted the same way
+# the Hub's is: an arbitrary name would let a config write turn any unrelated
+# secret into an Authorization header sent to the decision endpoint.
+_JEV_KEY_ENV_HINT = re.compile(r"JEV|TYPESAFE|OPENROUTER|GATEWAY|AIMLAPI|CHAT_DYNAMICS", re.IGNORECASE)
+_JEV_KEY_ENV_DEFAULT = "TYPESAFE_API_KEY"
+
+
+def _jev_key_env(value: Any, warnings: List[str]) -> str:
+    name = str(value or "").strip() or _JEV_KEY_ENV_DEFAULT
+    if not _HUB_KEY_ENV_NAME.match(name) or not _JEV_KEY_ENV_HINT.search(name):
+        warnings.append(
+            f"jev_api_key_env must be a Jev-related environment variable name ({_JEV_KEY_ENV_DEFAULT} is used)"
+        )
+        return _JEV_KEY_ENV_DEFAULT
     return name
 
 
@@ -266,6 +294,18 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             warnings.append("rhythm_timezone is invalid or unavailable; using system local timezone")
             rhythm_timezone = ""
 
+    decision_backend = str(_get(raw, "decision_backend", "model") or "model").strip().lower()
+    if decision_backend not in _DECISION_BACKENDS:
+        warnings.append(f"decision_backend is invalid; using model (got {decision_backend!r})")
+        decision_backend = "model"
+    decision_mode = str(_get(raw, "decision_mode", "legacy") or "legacy").strip().lower()
+    if decision_mode not in ("legacy", "persona_model"):
+        decision_mode = "legacy"
+    if decision_backend == "jev" and decision_mode != "persona_model":
+        # The decision layer lives inside the persona turn, so a Jev backend without
+        # that mode would be configured, billed for nothing, and never consulted.
+        warnings.append("decision_backend=jev is only used by decision_mode=persona_model")
+
     config = RuntimeConfig(
         learning_policy_mode=policy_mode,
         learning_policy_source_id=(str(_get(raw, "learning_policy_source_id", "") or "").strip()
@@ -277,9 +317,17 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         learning_policy_refresh_seconds=_integer(
             raw, "learning_policy_refresh_seconds", 60, 10, 3600, warnings),
         rhythm_timezone=rhythm_timezone,
-        decision_mode=str(_get(raw, "decision_mode", "legacy")) if _get(raw, "decision_mode", "legacy") in ("legacy", "persona_model") else "legacy",
+        decision_mode=decision_mode,
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),
+        decision_backend=decision_backend,
+        jev_base_url=str(_get(raw, "jev_base_url", "https://api.typesafe.ai") or "").strip(),
+        jev_model=(str(_get(raw, "jev_model", "") or "").strip() or "jev-latest")[:64],
+        jev_api_key_env=_jev_key_env(_get(raw, "jev_api_key_env", _JEV_KEY_ENV_DEFAULT), warnings),
+        jev_timeout=_number(raw, "jev_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
+        jev_min_confidence=_number(
+            raw, "jev_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
+        ),
         reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
         tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),
         enabled=_bool(_get(raw, "enable", True), True),

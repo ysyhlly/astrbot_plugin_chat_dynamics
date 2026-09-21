@@ -19,6 +19,7 @@ from . import outcome_recorder as outcomes
 from .turn_decision import (
     DECISION_INSTRUCTIONS, MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
+from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -433,23 +434,30 @@ class PersonaEngine:
         runtime.model_diagnostic = {"reason_code": code, **extra}
         self.plugin._mark_panel_runtime_dirty()
 
-    async def decide(self, item: ModelTurn, persona, state: str) -> TurnDecision:
+    async def decide(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
         p, turn = self.plugin, item.context
         if item.fallback:
             return TurnDecision.fallback(turn, "queue_overload")
-        async def request():
-            async with self.slots:
-                provider_id = p._runtime_config.decision_provider_id or await p.llm.resolve_provider_id(turn.session_key)
-                from .provider_budget import context_budget
-                budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
-                async def invoke():
-                    return await p.context.llm_generate(
-                        chat_provider_id=provider_id,
-                        system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
-                        prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
-                    )
-                response = await budget.run(provider_id, "routing", invoke)
-                return TurnDecision.parse(completion_text(response), turn)
+        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
+        if backend == "jev":
+            async def request():
+                return await self._decide_jev(item, persona, state, runtime=runtime)
+        else:
+            async def request():
+                async with self.slots:
+                    provider_id = p._runtime_config.decision_provider_id or await p.llm.resolve_provider_id(turn.session_key)
+                    from .provider_budget import context_budget
+                    budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
+                    async def invoke():
+                        return await p.context.llm_generate(
+                            chat_provider_id=provider_id,
+                            system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
+                            prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
+                        )
+                    response = await budget.run(provider_id, "routing", invoke)
+                    return TurnDecision.parse(completion_text(response), turn)
+        if runtime is not None:
+            runtime.jev_decision = {}
         try:
             # Timeout covers global admission and the single request, with no automatic retry.
             return await asyncio.wait_for(request(), timeout=p._runtime_config.decision_timeout)
@@ -459,6 +467,42 @@ class PersonaEngine:
             return TurnDecision.fallback(turn, "decision_timeout")
         except Exception:
             return TurnDecision.fallback(turn, "decision_invalid_or_failed")
+
+    async def _decide_jev(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
+        """Ask the System One decision model, or fall back to the local plan.
+
+        One bounded call under the same admission slot a model decision uses, and no
+        retry: an unavailable decision layer must not become a second, slower failure
+        path. A response that cannot be mapped exactly is treated as no decision at
+        all, never as an approximate one.
+        """
+        p, turn = self.plugin, item.context
+        client = getattr(p, "jev", None)
+        if client is None:
+            return TurnDecision.fallback(turn, "jev_unavailable")
+        async with self.slots:
+            answers = await client.evaluate(
+                state=build_state(
+                    turn,
+                    previous_state=state,
+                    observations=item.observations,
+                    presence=p._runtime_config.presence_knob,
+                    persona_prompt=getattr(persona, "prompt", ""),
+                ),
+                questions=build_questions(turn),
+                timeout=p._runtime_config.jev_timeout,
+            )
+        if not answers:
+            p._metric("jev_unavailable")
+            return TurnDecision.fallback(turn, "jev_unavailable")
+        if runtime is not None:
+            runtime.jev_decision = describe_answers(answers)
+        p._metric("jev_decision")
+        return decision_from_answers(
+            turn,
+            answers,
+            min_confidence=p._runtime_config.jev_min_confidence,
+        )
 
     async def run(self, runtime) -> None:
         p = self.plugin
@@ -522,7 +566,7 @@ class PersonaEngine:
         started = p.time_service.time()
         persona = await self.bridge.snapshot(event)
         interaction_state = runtime.interaction_state
-        decision = await self.decide(item, persona, interaction_state)
+        decision = await self.decide(item, persona, interaction_state, runtime=runtime)
         proposed = decision
         if not self.valid(runtime, item):
             return
@@ -638,9 +682,15 @@ class PersonaEngine:
                         trace, should_reply=decision.action != "ignore", branch=decision.reason_code)
                     node.metadata["trace_inputs"] = compact_trace_inputs(node.metadata["decision_trace"])
 
+            # The typed answers of a System One decision travel with the diagnostic so
+            # the console can show why the decision layer chose what it chose; the
+            # model path leaves that field empty rather than showing a stale one.
+            evidence = dict(getattr(runtime, "jev_decision", {}) or {})
             self.diagnostic(runtime, decision.reason_code, action=decision.action, state=decision.state,
                             target_message_ids=list(decision.target_message_ids), length=decision.length,
-                            latency_ms=round((now - started) * 1000), shadow=item.shadow)
+                            latency_ms=round((now - started) * 1000), shadow=item.shadow,
+                            backend=str(getattr(p._runtime_config, "decision_backend", "model") or "model"),
+                            **({"jev": evidence} if evidence else {}))
             if item.shadow:
                 p._record_shadow_decision(
                     turn.session_key,

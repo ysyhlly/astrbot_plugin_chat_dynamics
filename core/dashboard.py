@@ -166,6 +166,20 @@ def snapshot_sessions(plugin: Any) -> List[Dict[str, Any]]:
     return rows
 
 
+def jev_snapshot(plugin: Any) -> Dict[str, Any]:
+    """The decision layer's own status: endpoint, model, and how it has answered."""
+    client = getattr(plugin, "jev", None)
+    if not callable(getattr(client, "snapshot", None)):
+        return {"status": "missing", "configured": False, "detail": "n/a"}
+    data = dict(client.snapshot())
+    data["backend"] = str(getattr(getattr(plugin, "_runtime_config", None), "decision_backend", "model") or "model")
+    data["min_confidence"] = float(
+        getattr(getattr(plugin, "_runtime_config", None), "jev_min_confidence", 0.6) or 0.0
+    )
+    data["enabled"] = data["backend"] == "jev"
+    return data
+
+
 def companion_snapshot(plugin: Any) -> Dict[str, Any]:
     bridge = getattr(plugin, "selflearning", None)
     if not callable(getattr(bridge, "snapshot", None)):
@@ -317,6 +331,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
             "multimodal": _multimodal_lamp(plugin),
         },
         "selflearning": companion_snapshot(plugin),
+        "jev": jev_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
             "mood_memory": bool(getattr(plugin, "mood_memory_enabled", False)),

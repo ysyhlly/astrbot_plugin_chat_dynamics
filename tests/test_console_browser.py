@@ -122,8 +122,8 @@ def console_server():
         thread.join(timeout=2)
 
 
-@pytest.mark.parametrize("persona_mode", [False, True])
-def test_console_loads_redacted_state_and_applies_preset(console_server, persona_mode):
+@pytest.mark.parametrize("persona_mode,backend", [(False, "model"), (True, "model"), (True, "jev")])
+def test_console_loads_redacted_state_and_applies_preset(console_server, persona_mode, backend):
     calls = []
     logs = []
     with sync_playwright() as pw:
@@ -155,13 +155,17 @@ def test_console_loads_redacted_state_and_applies_preset(console_server, persona
                     window.AstrBotPluginPage.apiGet = async (endpoint) => {
                         const result = await original(endpoint);
                         Object.assign(result.data, {decision_mode:'persona_model', agent_bridge:'ready',
+                            decision_backend:'__BACKEND__',
+                            jev:{backend:'__BACKEND__', model:'jev-latest', status:'available', error_code:''},
                             interaction_state:'focused', model_queue_depth:2,
                             model_decision:{action:'reply',state:'focused',reason_code:'relevant_request',
+                                backend:'__BACKEND__',
+                                jev:{action:{type:'choice',choice:'reply',confidence:0.93}},
                                 target_message_ids:['m1'],latency_ms:125,shadow:true}});
                         return result;
                     };
                 });
-            """)
+            """.replace("__BACKEND__", backend))
         page.goto(console_server)
         page.locator("#tab-policy").click()
         page.get_by_text("观察模式 · 不产生副作用").wait_for()
@@ -171,11 +175,17 @@ def test_console_loads_redacted_state_and_applies_preset(console_server, persona
             page.locator("#tab-sessions").click()
             page.locator("#traceMeta").filter(has_text="relevant_request").wait_for()
             page.locator("#tab-policy").click()
-            assert "125ms" in page.locator("#traceMeta").inner_text().lower()
+            trace = page.locator("#traceMeta").inner_text().lower()
+            assert "125ms" in trace
+            # A Jev backend names its own model in the trace; the chat-provider
+            # wording would credit a model that did not decide.
+            assert ("置信 0.93" in trace) is (backend == "jev")
+            page.locator("#providerState").filter(has_text="Jev" if backend == "jev" else "当前 UMO").wait_for()
         screenshot_dir = os.environ.get("BROWSER_SCREENSHOT_DIR")
         if screenshot_dir:
             Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(Path(screenshot_dir) / ("persona.png" if persona_mode else "legacy.png")), full_page=True)
+            name = f"persona-{backend}.png" if persona_mode else "legacy.png"
+            page.screenshot(path=str(Path(screenshot_dir) / name), full_page=True)
         page.locator("#presetSelect option[value='active']").wait_for(state="attached")
         select = page.locator("#presetSelect")
         select.select_option("active")
