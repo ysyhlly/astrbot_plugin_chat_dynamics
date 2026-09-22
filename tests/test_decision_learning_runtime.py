@@ -586,6 +586,9 @@ async def test_parallel_annotations_share_budget_and_close_cancels_calls(tmp_pat
 @pytest.mark.parametrize("bad_prepared", [None, '{"text":"hello"}\nclipped'])
 async def test_full_source_survives_unavailable_or_corrupt_preparation(tmp_path, bad_prepared):
     runtime, host, _ = make_runtime(tmp_path, mode="shadow", collect=True)
+    # This checks persisted evidence, not the one-second latency gate. SQLite
+    # startup on busy Windows filesystems must not turn it into a timing test.
+    host._runtime_config.decision_timeout = 10.0
     runtime.start_worker = lambda: None
     async def request(path, payload, **kwargs):
         assert path == "/prepare"
