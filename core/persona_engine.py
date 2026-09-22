@@ -17,7 +17,7 @@ from .presence_policy import participation_policy
 from .persona_trace import record_outcome, stage_trace
 from . import outcome_recorder as outcomes
 from .turn_decision import (
-    DECISION_INSTRUCTIONS, MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
+    MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
 from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
 

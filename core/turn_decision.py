@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
+from typing import Any
 from .message_semantics import MessageSemantics
 from .vision_context import MAIN_VISION_HINT
 from .presence_policy import participation_policy

@@ -41,7 +41,7 @@ import hmac
 import re
 import secrets
 from dataclasses import asdict
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping
 
 # Long digit runs are ids of every kind: QQ numbers, group numbers, message ids,
 # timestamps, phone numbers. Fewer than five digits is ordinariness -- years,

@@ -35,8 +35,6 @@ import aiohttp
 from .typesafe import (
     MAX_BODY,
     MAX_STATE_CHARS,
-    MIN_TIMEOUT,
-    MAX_TIMEOUT,
     _payload_size_ok,
     _question_specs,
     _SystemOneError,

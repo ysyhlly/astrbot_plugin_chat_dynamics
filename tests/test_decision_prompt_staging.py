@@ -15,7 +15,6 @@ was sent. That decoupling is what makes turning the switch later a one-line chan
 instead of a migration.
 """
 import json
-from types import SimpleNamespace
 
 from astrbot_plugin_chat_dynamics.core.turn_decision import (
     DECISION_INSTRUCTIONS, DECISION_INSTRUCTIONS_RECORDED, RECORD_SECTION,

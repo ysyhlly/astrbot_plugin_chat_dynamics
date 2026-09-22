@@ -79,8 +79,11 @@ def test_projection_is_cached_per_fingerprint():
         return json.dumps({name: 1 for name in persona_axes.AXIS_NAMES})
 
     backend = Backend()
-    run = lambda: asyncio.run(persona_axes.load(
-        backend, "fp1", persona_id="quiet", persona_prompt=CARD, ask=ask, now=1.0))
+
+    def run():
+        return asyncio.run(persona_axes.load(
+            backend, "fp1", persona_id="quiet", persona_prompt=CARD, ask=ask, now=1.0))
+
     first, second = run(), run()
     assert first == second == {name: 1 for name in persona_axes.AXIS_NAMES}
     assert len(calls) == 1, "a persona is read once, not once per turn"
