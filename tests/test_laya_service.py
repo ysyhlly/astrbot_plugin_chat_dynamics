@@ -374,6 +374,7 @@ def test_jobs_survive_reopen_and_cancel(tmp_path):
 
 def test_real_http_benchmark_contract():
     pytest.importorskip("uvicorn")
+    pytest.importorskip("fastapi")
     from services.laya_service.jobs import http_predictor
 
     with http_predictor(FakeBackend()) as predict:
