@@ -83,12 +83,17 @@ def _decision_of(answer: Any, kind: str, levels: int = len(SCORE_LEVELS)) -> Opt
     """
     if not isinstance(answer, Mapping) or answer.get("type") != kind:
         return None
-    confidence = answer.get("confidence")
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-        return None
-    score = float(confidence)
-    if score != score or not 0.0 <= score <= 1.0:
-        return None
+    # A `noul` carries no confidence of its own — see its branch below — so the
+    # requirement only applies to the two kinds that do. Checking it unconditionally
+    # made every noul slot permanently unusable.
+    score = 1.0
+    if kind != "noul":
+        confidence = answer.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            return None
+        score = float(confidence)
+        if score != score or not 0.0 <= score <= 1.0:
+            return None
     if kind == "choice":
         pick = answer.get("choice")
         if not isinstance(pick, str) or not pick:
@@ -110,7 +115,14 @@ def _decision_of(answer: Any, kind: str, levels: int = len(SCORE_LEVELS)) -> Opt
     value = float(probability)
     if value != value or not 0.0 <= value <= 1.0:
         return None
-    return SmallDecision("noul", score, p_true=value)
+    # A noul carries no confidence of its own: the shared validator drops the one
+    # Laya adds, because `jev_decision` gates on the probability itself and an extra
+    # differently-calibrated number would make that floor mean two things. How sure
+    # the model is has to come from the answer instead — a probability at 0.5 is a
+    # coin flip, one at the extremes is a decision, so distance from indifference is
+    # the confidence. Without this a noul could never be used at all, because a slot
+    # whose answer has no confidence is not an answer this layer can act on.
+    return SmallDecision("noul", abs(value - 0.5) * 2.0, p_true=value)
 
 
 def wts_questions() -> dict[str, dict]:

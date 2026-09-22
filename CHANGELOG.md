@@ -2,6 +2,13 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.10.1 · 修复 noul 决策永不被采纳（2026-09-22）
+
+- 修复 `noul` 类型的小决策（`join`、`completeness`）**永远撑不起决策**：`typesafe` 的共享校验器为 `jev_decision` 有意丢弃 `noul` 自带的 `confidence`，而 `turn_decisions._decision_of` 又要求有 confidence ——同一个校验器的两个消费者约定冲突，导致该槽位一律记 `unusable_answer`。
+- `noul` 的置信度改为**从答案本身派生**（概率距 0.5 越远越确定）：一个 `noul` 本就没有自己的 confidence，它不像 `choice`/`score` 那样表达校准置信，硬套那个字段会把「没把握」和「没说话」混为一谈。
+- 修正 `_decision_of` 的前置 confidence 检查不分 kind 的问题：它对 `noul` 一视同仁地拦截，只改分支体修不好这个 bug。
+- 验证：新增端到端契约检查（插件自己的问题构建器 + 契约校验器打真实服务），确认插件发出的每批问题服务都答得出、插件都收得下。全量 pytest 通过。
+
 ## v1.10.0 · Laya 决策层（2026-09-22）
 
 - 人设模式的决策层再加一个后端 `decision_backend=laya`：改由**自建的 Laya typed-decision 服务**答题。它回答的题目（是否开口、怎么回、什么状态、多长、为什么）、封闭词表、映射规则和置信度门槛与 Jev **完全一致**，一次 `POST /predict` 全部答完；选项全部由本插件给定，低于 `laya_min_confidence` 就不采用并回落到本地保守计划。
