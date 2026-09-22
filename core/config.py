@@ -97,6 +97,17 @@ class RuntimeConfig:
     jev_api_key_env: str = "TYPESAFE_API_KEY"
     jev_timeout: float = 6.0
     jev_min_confidence: float = 0.6
+    # The same turn decision can be answered by a self-hosted Laya service. It
+    # speaks the identical typed-decision contract as System One (see
+    # `core/integrations/laya.py`) but runs locally, so there is no credential and
+    # the per-call budget is a fraction of the remote one.
+    laya_base_url: str = "http://127.0.0.1:8900"
+    laya_timeout: float = 1.5
+    laya_min_confidence: float = 0.6
+    # The mood calibration has its own backend and its own floor: it is a reading,
+    # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
+    vibe_backend: str = "llm"
+    vibe_min_confidence: float = 0.55
     reply_timeout: float = 60.0
     tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
@@ -206,7 +217,12 @@ def _integer(
 
 _PRESENCE_KNOBS = {"ghost", "sensible", "lively"}
 
-_DECISION_BACKENDS = {"model", "jev"}
+_DECISION_BACKENDS = {"model", "jev", "laya"}
+# Which classifier reads the room's mood. Deliberately separate from
+# `decision_backend`: the turn decision runs every turn while this one is a
+# low-frequency calibration, so an operator can want a decision model for one and
+# not the other.
+_VIBE_BACKENDS = {"llm", "laya"}
 
 # The Hub reads one credential out of the process environment. The variable name
 # is part of the published config, so it is restricted to names that are
@@ -233,6 +249,15 @@ def _hub_key_env(value: Any, warnings: List[str]) -> str:
 # secret into an Authorization header sent to the decision endpoint.
 _JEV_KEY_ENV_HINT = re.compile(r"JEV|TYPESAFE|OPENROUTER|GATEWAY|AIMLAPI|CHAT_DYNAMICS", re.IGNORECASE)
 _JEV_KEY_ENV_DEFAULT = "TYPESAFE_API_KEY"
+
+
+def _vibe_backend(value: Any, warnings: List[str]) -> str:
+    """The mood classifier's backend, or `llm` when the value names no known one."""
+    name = str(value or "").strip().lower() or "llm"
+    if name not in _VIBE_BACKENDS:
+        warnings.append(f"vibe_backend is invalid; using llm (got {value!r})")
+        return "llm"
+    return name
 
 
 def _jev_key_env(value: Any, warnings: List[str]) -> str:
@@ -305,6 +330,10 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         # The decision layer lives inside the persona turn, so a Jev backend without
         # that mode would be configured, billed for nothing, and never consulted.
         warnings.append("decision_backend=jev is only used by decision_mode=persona_model")
+    # `decision_backend=laya` is deliberately not gated the same way: it also feeds
+    # the willingness-to-speak sub-scores, which only the legacy path computes. A
+    # Jev backend answers the turn decision alone; a Laya backend answers whichever
+    # small decisions the active path asks for.
 
     config = RuntimeConfig(
         learning_policy_mode=policy_mode,
@@ -327,6 +356,17 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         jev_timeout=_number(raw, "jev_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
         jev_min_confidence=_number(
             raw, "jev_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
+        ),
+        laya_base_url=str(_get(raw, "laya_base_url", "http://127.0.0.1:8900") or "").strip(),
+        # A local decision call is tens of milliseconds; the budget only has to
+        # absorb a cold first request, not a remote round trip.
+        laya_timeout=_number(raw, "laya_timeout", 1.5, lambda value: 0.05 <= value <= 30, warnings),
+        laya_min_confidence=_number(
+            raw, "laya_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
+        ),
+        vibe_backend=_vibe_backend(_get(raw, "vibe_backend", "llm"), warnings),
+        vibe_min_confidence=_number(
+            raw, "vibe_min_confidence", 0.55, lambda value: 0.3 <= value <= 0.95, warnings
         ),
         reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
         tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),

@@ -439,9 +439,9 @@ class PersonaEngine:
         if item.fallback:
             return TurnDecision.fallback(turn, "queue_overload")
         backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
-        if backend == "jev":
+        if backend in ("jev", "laya"):
             async def request():
-                return await self._decide_jev(item, persona, state, runtime=runtime)
+                return await self._decide_layer(item, persona, state, runtime=runtime, backend=backend)
         else:
             async def request():
                 async with self.slots:
@@ -468,18 +468,35 @@ class PersonaEngine:
         except Exception:
             return TurnDecision.fallback(turn, "decision_invalid_or_failed")
 
-    async def _decide_jev(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
-        """Ask the System One decision model, or fall back to the local plan.
+    async def _decide_layer(
+        self,
+        item: ModelTurn,
+        persona,
+        state: str,
+        *,
+        runtime: Any = None,
+        backend: str = "jev",
+    ) -> TurnDecision:
+        """Ask the typed-decision model, or fall back to the local plan.
 
         One bounded call under the same admission slot a model decision uses, and no
         retry: an unavailable decision layer must not become a second, slower failure
         path. A response that cannot be mapped exactly is treated as no decision at
         all, never as an approximate one.
+
+        `backend` names which transport to speak — `jev` (TypeSafe System One) or
+        `laya` (a self-hosted Laya service). Both answer the identical contract, so
+        the questions asked and the mapping to `TurnDecision` are shared outright;
+        only the client, the diagnostic prefix and the metric names differ.
         """
         p, turn = self.plugin, item.context
-        client = getattr(p, "jev", None)
+        laya = backend == "laya"
+        prefix, layer = ("laya_", "laya") if laya else ("jev_", "jev")
+        client = getattr(p, layer, None)
         if client is None:
-            return TurnDecision.fallback(turn, "jev_unavailable")
+            return TurnDecision.fallback(turn, prefix + "unavailable")
+        timeout = getattr(p._runtime_config, f"{layer}_timeout", 6.0)
+        floor = getattr(p._runtime_config, f"{layer}_min_confidence", 0.6)
         async with self.slots:
             answers = await client.evaluate(
                 state=build_state(
@@ -490,18 +507,19 @@ class PersonaEngine:
                     persona_prompt=getattr(persona, "prompt", ""),
                 ),
                 questions=build_questions(turn),
-                timeout=p._runtime_config.jev_timeout,
+                timeout=timeout,
             )
         if not answers:
-            p._metric("jev_unavailable")
-            return TurnDecision.fallback(turn, "jev_unavailable")
+            p._metric(prefix + "unavailable")
+            return TurnDecision.fallback(turn, prefix + "unavailable")
         if runtime is not None:
             runtime.jev_decision = describe_answers(answers)
-        p._metric("jev_decision")
+        p._metric(prefix + "decision")
         return decision_from_answers(
             turn,
             answers,
-            min_confidence=p._runtime_config.jev_min_confidence,
+            min_confidence=floor,
+            prefix=prefix,
         )
 
     async def run(self, runtime) -> None:

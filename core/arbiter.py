@@ -398,6 +398,8 @@ class InterventionArbiter:
         topic_id: Optional[str] = None,
         parent_id: Optional[str] = None,
         runtime: Any = None,
+        decisions: Any = None,
+        decision_floor: float = 0.6,
     ) -> ArbitrationResult:
         """Evaluates whether the bot should intervene and speak.
 
@@ -534,6 +536,24 @@ class InterventionArbiter:
                 participation=participation,
                 private_topic=private_topic,
             ))
+
+        # The three sub-scores that are about the message defer to the decision
+        # model when it has a confident reading; participation and fatigue are
+        # runtime state the model cannot see and stay rule-derived. The floor is
+        # applied here rather than where the opinions are gathered, because this is
+        # where the weighting is: refusing upstream would flatten "the model was
+        # unsure" into "the model said nothing", which are different facts.
+        def model_score(slot: str, heuristic: float) -> float:
+            if decisions is None:
+                return heuristic
+            opinion = decisions.peek(slot)
+            if opinion is None or opinion.confidence < float(decision_floor):
+                return heuristic
+            return opinion.normalized()
+
+        topic_relevance = model_score("topic_relevance", topic_relevance)
+        professionalism = model_score("professionalism", professionalism)
+        question_value = model_score("question_value", question_value)
 
         # Filter mode: weak / ambient turns never open a native LLM call.
         if not allow_ambient:

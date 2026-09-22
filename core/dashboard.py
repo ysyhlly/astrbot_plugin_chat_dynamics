@@ -166,18 +166,32 @@ def snapshot_sessions(plugin: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-def jev_snapshot(plugin: Any) -> Dict[str, Any]:
-    """The decision layer's own status: endpoint, model, and how it has answered."""
-    client = getattr(plugin, "jev", None)
+def _layer_snapshot(plugin: Any, layer: str) -> Dict[str, Any]:
+    """One decision backend's own status: endpoint and how it has answered.
+
+    Both backends answer the same contract through the same four client methods,
+    so the panel-safe projection is the same shape for either. Only the client
+    attribute name and the confidence-floor config key follow `layer`.
+    """
+    client = getattr(plugin, layer, None)
     if not callable(getattr(client, "snapshot", None)):
         return {"status": "missing", "configured": False, "detail": "n/a"}
     data = dict(client.snapshot())
-    data["backend"] = str(getattr(getattr(plugin, "_runtime_config", None), "decision_backend", "model") or "model")
-    data["min_confidence"] = float(
-        getattr(getattr(plugin, "_runtime_config", None), "jev_min_confidence", 0.6) or 0.0
-    )
-    data["enabled"] = data["backend"] == "jev"
+    config = getattr(plugin, "_runtime_config", None)
+    data["backend"] = str(getattr(config, "decision_backend", "model") or "model")
+    data["min_confidence"] = float(getattr(config, f"{layer}_min_confidence", 0.6) or 0.0)
+    data["enabled"] = data["backend"] == layer
     return data
+
+
+def jev_snapshot(plugin: Any) -> Dict[str, Any]:
+    """The Jev decision layer's own status: endpoint, model, and how it has answered."""
+    return _layer_snapshot(plugin, "jev")
+
+
+def laya_snapshot(plugin: Any) -> Dict[str, Any]:
+    """The self-hosted Laya decision layer's own status."""
+    return _layer_snapshot(plugin, "laya")
 
 
 def companion_snapshot(plugin: Any) -> Dict[str, Any]:
@@ -332,6 +346,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         },
         "selflearning": companion_snapshot(plugin),
         "jev": jev_snapshot(plugin),
+        "laya": laya_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
             "mood_memory": bool(getattr(plugin, "mood_memory_enabled", False)),

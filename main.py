@@ -80,8 +80,10 @@ from .core.platform_bridge import (
     result_has_rich_media,
     send_plain,
 )
+from .core.integrations.laya import LayaClient
 from .core.integrations.registry import IntegrationRegistry
 from .core.integrations.typesafe import SystemOneClient
+from .core.turn_decisions import MessageOpinions, TurnDecisions, completeness_question
 from .core.session_runtime import PendingTurn, SessionRegistry, SessionRuntime
 from .core.session_runtime import FollowupBatch  # noqa: F401 (compatibility re-export)
 from .core.style_shaper import StyleShaper
@@ -106,6 +108,22 @@ else:
 
 _HOOK_PRIORITY = 100
 _VIBE_LLM_MIN_INTERVAL = 120.0
+
+# The mood calibration asked of the local decision model. The three criteria are
+# `GroupChatMode`'s closed vocabulary spelled out, so the answer arrives as a label
+# rather than as prose to parse — the same reason the turn decision uses a closed
+# vocabulary instead of generated JSON.
+VIBE_QUESTION = {
+    "vibe": {
+        "type": "choice",
+        "instructions": "Which mode best describes the dominant energy of this group chat right now?",
+        "criteria": {
+            "fast_banter": "rapid short bursts, memes and riffing, high message rate, playful",
+            "serious_inquiry": "long-form questions, technical help, careful and formal",
+            "chill_fade": "sparse messages, low energy, a thread that is decaying",
+        },
+    }
+}
 _VIBE_LLM_MIN_MESSAGES = 12
 _VIBE_LLM_FAILURE_BACKOFF = 15.0
 _SESSION_IDLE_SECONDS = 3600.0
@@ -165,6 +183,11 @@ _METRIC_NAMES = (
     # had to fall back to the local plan because no answer was usable.
     "jev_decision",
     "jev_unavailable",
+    "laya_decision",
+    "laya_unavailable",
+    "laya_vibe_snapshot",
+    "laya_vibe_failed",
+    "laya_vibe_invalid",
     # Recorded outside this tuple before, which meant they were persisted and then
     # dropped on restore: the restore loop only updates keys that already exist.
     "config_saved",
@@ -242,7 +265,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.9.5",
+    "v1.10.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -281,6 +304,13 @@ class ChatDynamicsPlugin(Star):
             max_fragments=_MAX_TURN_FRAGMENTS,
             max_turn_chars=_MAX_TURN_CHARS,
         )
+        # The debounce buffer has to judge "is this message finished?" while it holds
+        # its own state, so it cannot await. The answers are warmed from the async
+        # message path and read here as a plain lookup.
+        self.message_opinions = MessageOpinions()
+        detector = getattr(self.debounce, "detector", None)
+        if detector is not None and hasattr(detector, "opinion_source"):
+            detector.opinion_source = self._completeness_opinion
 
         self.thread_router = ThreadRouter(
             topic_window_seconds=runtime_config.topic_window_seconds,
@@ -307,7 +337,7 @@ class ChatDynamicsPlugin(Star):
             fast_banter_enter_mpm=runtime_config.fast_banter_enter_mpm,
             chill_fade_enter_mpm=runtime_config.chill_fade_enter_mpm,
         )
-        self.vibe_analyzer.llm_intent_analyzer = self._classify_vibe_with_llm
+        self.vibe_analyzer.llm_intent_analyzer = self._classify_vibe
 
         self.arbiter = InterventionArbiter(
             base_threshold=0.60,
@@ -348,6 +378,12 @@ class ChatDynamicsPlugin(Star):
             api_key=os.environ.get(runtime_config.jev_api_key_env, ""),
             model=runtime_config.jev_model,
             timeout=runtime_config.jev_timeout,
+        )
+        self.laya = LayaClient(
+            enabled=runtime_config.decision_backend == "laya"
+            or runtime_config.vibe_backend == "laya",
+            base_url=runtime_config.laya_base_url,
+            timeout=runtime_config.laya_timeout,
         )
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -489,6 +525,15 @@ class ChatDynamicsPlugin(Star):
                 api_key=os.environ.get(cfg.jev_api_key_env, ""),
                 model=cfg.jev_model,
                 timeout=cfg.jev_timeout,
+            )
+        if hasattr(self, "laya"):
+            # Enabled for either consumer: the turn decision and the mood
+            # calibration are configured independently but share one client, so a
+            # service used by only one of them still has to be reachable.
+            self.laya.configure(
+                enabled=cfg.decision_backend == "laya" or cfg.vibe_backend == "laya",
+                base_url=cfg.laya_base_url,
+                timeout=cfg.laya_timeout,
             )
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
@@ -1567,6 +1612,9 @@ class ChatDynamicsPlugin(Star):
         jev_close = getattr(getattr(self, "jev", None), "close", None)
         if callable(jev_close):
             await jev_close()
+        laya_close = getattr(getattr(self, "laya", None), "close", None)
+        if callable(laya_close):
+            await laya_close()
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
             runtime.clear_active_followup_batches()
@@ -1776,6 +1824,7 @@ class ChatDynamicsPlugin(Star):
             )
             self._metric("message_received")
 
+            self._warm_completeness_opinion(parsed.text)
             is_fast_path = not input_truncated and not bare_bot_mention and self._is_fast_path_turn(parsed, runtime)
             fast_path_epoch = runtime.epoch
             if is_fast_path:
@@ -2797,7 +2846,13 @@ class ChatDynamicsPlugin(Star):
                 )
             self._native_context_by_event[key] = context
 
-    async def _classify_vibe_with_llm(self, session_id: str, text: str) -> Optional[GroupChatMode]:
+    async def _vibe_evidence(self, session_id: str, text: str) -> dict:
+        """The room reading both classifiers judge: telemetrics plus recent lines.
+
+        Shared so the two backends see identical evidence. A mood call that
+        disagrees with the other one is then a difference of judgement rather than
+        a difference of input.
+        """
         telemetrics = self.vibe_analyzer.get_telemetrics(session_id, current_time=self.time_service.time())
         recent_messages = self.telemetrics.get_recent_messages(
             session_id,
@@ -2805,10 +2860,132 @@ class ChatDynamicsPlugin(Star):
             limit=12,
             max_chars=1200,
         )
-        recent_block = self._bounded_text(
-            "\n".join(f"- {message}" for message in recent_messages) or f"- {text[:400]}",
-            _MAX_INPUT_CHARS,
+        return {
+            "telemetrics": telemetrics,
+            "recent_messages": recent_messages,
+            "recent_block": self._bounded_text(
+                "\n".join(f"- {message}" for message in recent_messages) or f"- {text[:400]}",
+                _MAX_INPUT_CHARS,
+            ),
+        }
+
+    def _opinion_usable(self, opinion: Any) -> bool:
+        """Whether a model opinion is worth acting on. The floor lives here.
+
+        This is where the weighting that consumes an opinion is chosen, so this is
+        where "was the model sure enough" gets asked. Refusing upstream would flatten
+        "unsure" into "nothing was said".
+        """
+        return (
+            opinion is not None
+            and float(getattr(opinion, "confidence", 0.0))
+            >= float(getattr(self._runtime_config, "laya_min_confidence", 0.6))
         )
+
+    def _completeness_opinion(self, text: str) -> Any:
+        """The debounce buffer's injected reader: an opinion worth using, or None."""
+        opinion = self.message_opinions.peek(text)
+        return opinion if self._opinion_usable(opinion) else None
+
+    def _warm_completeness_opinion(self, text: str) -> None:
+        """Ask whether this message finished its thought. Fired, never awaited.
+
+        The read comes later and cannot block, so the only thing that matters is
+        that the answer has landed by then; awaiting here would put a network call
+        on the message hook for a question nobody needs answered yet.
+        """
+        if self._shutting_down or not str(text or "").strip():
+            return
+        if self.message_opinions.peek(text) is not None:
+            return
+        client = getattr(self, "laya", None)
+        if client is None:
+            return
+        self._create_background_task(self._warm_completeness_async(text, client))
+
+    async def _warm_completeness_async(self, text: str, client: Any) -> None:
+        questions = completeness_question()
+        try:
+            answers = await client.evaluate(
+                state={"text": text[:_MAX_INPUT_CHARS]},
+                questions=questions,
+                timeout=self._runtime_config.laya_timeout,
+            )
+        except Exception:
+            return
+        if self._shutting_down:
+            return
+        decision = TurnDecisions(questions=questions)
+        decision.ingest(answers)
+        self.message_opinions.warm(text, decision.peek("completeness"))
+
+    def _vibe_source(self) -> str:
+        """Which backend reads the room's mood, named as its counters are.
+
+        Derived from configuration rather than carried back with the answer: a
+        backend that fails to answer still has to be the one counted, and the
+        failure path is exactly where nothing comes back.
+        """
+        value = str(getattr(self._runtime_config, "vibe_backend", "llm") or "llm")
+        return value if value in ("llm", "laya") else "llm"
+
+    async def _classify_vibe(self, session_id: str, text: str) -> Optional[GroupChatMode]:
+        """Read the mood with the configured backend.
+
+        Both backends return a mode or None, where None means "could not read the
+        room" — never a negative answer. The hysteresis state machine treats None as
+        "keep the reading you already had".
+        """
+        if self._vibe_source() == "laya":
+            return await self._classify_vibe_with_laya(session_id, text)
+        return await self._classify_vibe_with_llm(session_id, text)
+
+    async def _classify_vibe_with_laya(self, session_id: str, text: str) -> Optional[GroupChatMode]:
+        """Read the mood with the local decision model instead of a chat model.
+
+        Laya answers one `choice` over the three modes, so there is no free text to
+        parse and no way to emit a label outside the vocabulary. Below the
+        confidence floor this returns None and the hysteresis state machine keeps
+        the reading it already had — a mood calibration is a reading, not an action,
+        so refusing to update is the safe failure.
+        """
+        client = getattr(self, "laya", None)
+        if client is None:
+            return None
+        evidence = await self._vibe_evidence(session_id, text)
+        telemetrics = evidence["telemetrics"]
+        answers = await client.evaluate(
+            state={
+                "telemetrics": {
+                    "mpm": telemetrics.mpm,
+                    "average_chars": telemetrics.average_chars,
+                    "emoji_ratio": telemetrics.unicode_emoji_ratio,
+                    "media_ratio": telemetrics.media_ratio,
+                    "punctuation_formality": telemetrics.punctuation_formality,
+                    "unique_speakers": telemetrics.unique_speakers,
+                },
+                "scene_tags": list(telemetrics.scene_tags),
+                "emotion_tags": list(telemetrics.emotion_tags),
+                "recent_messages": evidence["recent_messages"],
+            },
+            questions=VIBE_QUESTION,
+            timeout=self._runtime_config.laya_timeout,
+        )
+        if not answers:
+            return None
+        answer = answers.get("vibe")
+        if not isinstance(answer, dict) or answer.get("type") != "choice":
+            return None
+        confidence = answer.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            return None
+        if float(confidence) < float(self._runtime_config.vibe_min_confidence):
+            return None
+        return parse_mode_label(str(answer.get("choice") or ""))
+
+    async def _classify_vibe_with_llm(self, session_id: str, text: str) -> Optional[GroupChatMode]:
+        evidence = await self._vibe_evidence(session_id, text)
+        telemetrics = evidence["telemetrics"]
         prompt = (
             "Classify the group chat mood. Reply with exactly one token: "
             "fast_banter OR serious_inquiry OR chill_fade.\n"
@@ -2818,7 +2995,7 @@ class ChatDynamicsPlugin(Star):
             f"unique_speakers={telemetrics.unique_speakers}.\n"
             f"Local scene tags: {', '.join(telemetrics.scene_tags) or 'none'}.\n"
             f"Local emotion tags: {', '.join(telemetrics.emotion_tags) or 'none'}.\n"
-            f"Recent messages:\n{recent_block}"
+            f"Recent messages:\n{evidence['recent_block']}"
         )
         raw = await self._generate_llm(
             context_prompt=prompt,
@@ -2834,10 +3011,11 @@ class ChatDynamicsPlugin(Star):
     async def _refresh_vibe_from_llm(self, session_id: str, text: str, now: float) -> None:
         runtime = self._sessions.get(session_id)
         expected_epoch = runtime.epoch if runtime is not None else None
+        source = self._vibe_source()
         try:
             if self._shutting_down or (runtime is None and expected_epoch is not None):
                 return
-            mode = await self._classify_vibe_with_llm(session_id, text)
+            mode = await self._classify_vibe(session_id, text)
             runtime = self._sessions.get(session_id)
             if self._shutting_down or (runtime is None and expected_epoch is not None) or (
                 expected_epoch is not None and runtime.epoch != expected_epoch
@@ -2845,7 +3023,7 @@ class ChatDynamicsPlugin(Star):
                 return
             async def apply_snapshot() -> None:
                 if mode is None:
-                    self._metric("llm_vibe_invalid")
+                    self._metric(f"{source}_vibe_invalid")
                     self._vibe_llm_backoff_until[session_id] = (
                         self.time_service.time() + _VIBE_LLM_FAILURE_BACKOFF
                     )
@@ -2857,9 +3035,9 @@ class ChatDynamicsPlugin(Star):
                 # slow provider must not consume the full 120-second window
                 # before the snapshot is even available.
                 self.vibe_analyzer.mark_llm_snapshot(session_id, self.time_service.time())
-                self.vibe_analyzer.set_mode(session_id, mode, source="llm")
+                self.vibe_analyzer.set_mode(session_id, mode, source=source)
                 self._vibe_llm_backoff_until.pop(session_id, None)
-                self._metric("llm_vibe_snapshot")
+                self._metric(f"{source}_vibe_snapshot")
 
             if runtime is None:
                 await apply_snapshot()
@@ -2869,7 +3047,7 @@ class ChatDynamicsPlugin(Star):
                         return
                     await apply_snapshot()
         except Exception as exc:
-            self._metric("llm_vibe_failed")
+            self._metric(f"{source}_vibe_failed")
             self._vibe_llm_backoff_until[session_id] = (
                 self.time_service.time() + _VIBE_LLM_FAILURE_BACKOFF
             )

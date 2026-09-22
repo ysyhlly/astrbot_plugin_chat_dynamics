@@ -28,7 +28,14 @@ class IncompletenessDetector:
     """High-performance, stateless conversational incompleteness detector
 
     supporting bilingual (Chinese & English) chat dynamics.
+
+    `opinion_source` is optional injected dependency, not detector state: given a
+    message it returns a decision-model opinion worth acting on, or None. Leave it
+    unset and the regex tally is the whole detector. Detection itself stays
+    stateless across calls either way.
     """
+
+    opinion_source = None
 
     # ---------------------------------------------------------
     # 1. Trailing Conjunctions
@@ -267,6 +274,19 @@ class IncompletenessDetector:
                 total_score += 0.60
 
         final_score = min(1.0, total_score)
+
+        # A decision model may have already read this message. Its probability that
+        # the thought is unfinished replaces the regex tally outright rather than
+        # being averaged with it: two answers about the same fact averaged together
+        # are neither reading. The contract on `opinion_source` is "an opinion worth
+        # acting on, or None" — the acceptance floor is applied where the source is
+        # built, not here, so that "the model was unsure" never turns into "the model
+        # disagreed with every rule".
+        opinion = self.opinion_source(cleaned) if self.opinion_source is not None else None
+        if opinion is not None:
+            final_score = max(0.0, min(1.0, float(opinion.p_true)))
+            matched_rules.append("model_opinion")
+
         is_inc = final_score >= self.threshold
 
         return IncompletenessResult(

@@ -291,32 +291,37 @@ def decision_from_answers(
     *,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     join_floor: float = JOIN_FLOOR,
+    prefix: str = REASON_PREFIX,
 ) -> TurnDecision:
     """Map validated System One answers onto the plugin's own decision contract.
 
     Anything that cannot be mapped exactly — a missing answer, an option outside the
     vocabulary, a confidence below the floor — returns the local conservative plan
-    with a `jev_*` reason instead of an approximation of what Jev might have meant.
+    with a `<prefix>` reason instead of an approximation of the model's intent.
+
+    `prefix` names which decision layer produced the reason. The two backends speak
+    the same contract and share this mapping verbatim, so the only way to tell a
+    Laya turn from a Jev turn in a trace is the reason prefix.
     """
     action = _choice(answers, "action", ACTIONS)
     state = _choice(answers, "state", STATES)
     length = _choice(answers, "length", LENGTHS)
     reason = _choice(answers, "reason", REASONS)
     if action is None or state is None or length is None or reason is None:
-        return TurnDecision.fallback(turn, "jev_invalid_answer")
+        return TurnDecision.fallback(turn, prefix + "invalid_answer")
     floor = float(min_confidence)
     if min(action[1], state[1], length[1], reason[1]) < floor:
-        return TurnDecision.fallback(turn, "jev_low_confidence")
-    chosen, reason_code = action[0], REASON_PREFIX + reason[0]
+        return TurnDecision.fallback(turn, prefix + "low_confidence")
+    chosen, reason_code = action[0], prefix + reason[0]
     join = answers.get("join")
     if isinstance(join, Mapping) and join.get("type") == "noul":
         probability = join.get("noul")
         if isinstance(probability, (int, float)) and not isinstance(probability, bool):
             value = float(probability)
             if value != value or not 0.0 <= value <= 1.0:
-                return TurnDecision.fallback(turn, "jev_invalid_answer")
+                return TurnDecision.fallback(turn, prefix + "invalid_answer")
             if chosen != "ignore" and value < float(join_floor):
-                chosen, reason_code = "ignore", REASON_PREFIX + "join_declined"
+                chosen, reason_code = "ignore", prefix + "join_declined"
     return TurnDecision(
         chosen,
         state[0],

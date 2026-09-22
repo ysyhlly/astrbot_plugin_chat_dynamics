@@ -23,8 +23,9 @@ const BASIC_HINTS = {
   presence_knob: "保持默认即可。需要时调整参与分寸；是否主动发言仍由当前决策模式决定。",
 };
 const OPTION_LABELS = {
+  vibe_backend: { llm: "氛围模型校准（默认）", laya: "Laya 决策模型" },
   decision_mode: { legacy: "规则模式（默认）", persona_model: "人设模式（模型判断）" },
-  decision_backend: { model: "聊天模型（默认）", jev: "Jev 决策模型" },
+  decision_backend: { model: "聊天模型（默认）", jev: "Jev 决策模型", laya: "Laya 决策模型（自建）" },
   // Keep the wording identical to the schema hint and to 今日读空气/分寸台/控制台.
   presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
   pipeline_mode: { filter: "过滤（默认，不影响其它插件）", exclusive: "独占（会吞掉后续插件）" },
@@ -65,6 +66,9 @@ const CONFIG_GROUPS = [
       "jev_api_key_env",
       "jev_timeout",
       "jev_min_confidence",
+      "laya_base_url",
+      "laya_timeout",
+      "laya_min_confidence",
       "reply_timeout",
       "tool_agent_timeout",
       "vibe_provider",
@@ -163,6 +167,8 @@ const CONFIG_GROUPS = [
     "open": false,
     "keys": [
       "vibe_llm_enabled",
+      "vibe_backend",
+      "vibe_min_confidence",
       "telemetrics_window_seconds",
       "fast_banter_enter_mpm",
       "chill_fade_enter_mpm"

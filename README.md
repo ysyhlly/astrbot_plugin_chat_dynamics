@@ -12,7 +12,7 @@ AstrBot 群聊互动插件：合并碎发、追踪话题、判断回应时机，
 
 ## 能做什么
 
-当前版本 **v1.9.4**：AI 草稿随消息持久化，插件重启或消息超出保留窗口后仍可在审批页采纳；快照有界且只在开启正文显示开关时保存正文。
+当前版本 **v1.10.0**：小决策可以交给自建的 Laya typed-decision 服务，氛围分类也可由它接管，发言意愿中关于文本的子分改读模型意见。沿用 v1.9.5 的 Jev 决策层与 v1.9.4 的 AI 草稿持久化（快照有界且只在开启正文显示开关时保存正文）。
 
 - **等你说完**：合并同一用户的连续消息，减少抢答和重复回复。
 - **接对话题**：结合引用、@ 和短期上下文，区分多人交错的讨论。
@@ -95,8 +95,11 @@ AI 草稿会为当前会话还没标注的消息起草两个标签：**该不该
 | --- | --- | --- |
 | `model`（默认） | 当前会话的聊天模型按 JSON 决策 | 希望决策与回复风格最统一 |
 | `jev` | TypeSafe System One（Jev）决策模型一次答题 | 希望决策更快更省，回复正文不变 |
+| `laya` | 自建的 Laya typed-decision 服务一次答题 | 希望决策留在本地、延迟更低、不产生调用费用 |
 
 Jev 后端的选项全部由插件给定，无法精确映射或低于 `jev_min_confidence` 门槛即回落本地保守计划（明确请求才回应，闲聊保持安静）；密钥只从进程环境读取，不写配置、不进面板与日志。详见 [Jev 决策层](docs/decision-backend-jev.md)。
+
+Laya 后端回答的题目、封闭词表与映射规则和 Jev 完全一致，只是服务跑在自己机器上：`POST /predict` 一次答完，无凭据，稳态约 20–60 毫秒。因为它上传的是群聊内容本身（不只是密钥），明文 `http` 只放行本机与内网网段，公网地址必须用 `https`，否则降级为不调用。它还兼任其余小决策：氛围分类（见 `vibe_backend`）、发言意愿中关于文本的三个子分、参与程度的两个拨盘（`silence_bias` / `force_scale`）与未完成语句判定（`topic_relevance` / `question_value` / `professionalism`；`participation` 与 `fatigue_penalty` 是模型看不到的运行时状态，仍由规则推导）。场合标签与深度冷却、能量不对称、私密话题等硬规则**不交给模型**：前者与手调档位绑在一起，后者是守卫而非判断。
 
 ## 常用配置
 
@@ -118,14 +121,19 @@ Jev 后端的选项全部由插件给定，无法精确映射或低于 `jev_min_
 | `debounce_base_cooldown` | `3.5` | 连续消息的基础等待秒数 |
 | `console_show_message_content` | `false` | 是否在控制台显示截断的消息正文 |
 | `annotation_draft_enabled` | `false` | AI 预标注草稿；会把该会话正文发给模型 |
-| `decision_backend` | `model` | 人设模式决策层后端：`model` 聊天模型 / `jev` Jev 决策模型 |
+| `decision_backend` | `model` | 小决策后端：`model` 聊天模型 / `jev` Jev 决策模型 / `laya` Laya 决策模型 |
 | `jev_base_url` | `https://api.typesafe.ai` | Jev 接口地址；也可填 OpenRouter、Vercel AI Gateway 或自建兼容服务 |
 | `jev_model` | `jev-latest` | Jev 模型 ID；调好门槛后建议钉住具体版本 |
 | `jev_api_key_env` | `TYPESAFE_API_KEY` | 密钥所在环境变量名（不是密钥本身），只从进程环境读取 |
 | `jev_timeout` | `6.0` | Jev 单次决策调用超时秒数（1~30），超时回落本地保守计划 |
 | `jev_min_confidence` | `0.6` | 决策置信度门槛（0.3~0.95），低于它不用这次判断 |
+| `laya_base_url` | `http://127.0.0.1:8900` | 自建 Laya 服务地址；公网走明文 http 会被拒绝 |
+| `laya_timeout` | `1.5` | Laya 单次调用超时秒数（0.05~30），超时回落本地保守计划 |
+| `laya_min_confidence` | `0.6` | Laya 决策置信度门槛，语义与 Jev 一致 |
+| `vibe_backend` | `llm` | 氛围分类后端：`llm` 氛围模型 / `laya` Laya 决策模型 |
+| `vibe_min_confidence` | `0.55` | 氛围置信度门槛，低于它沿用当前氛围判定 |
 
-更多参数及范围见插件配置页面或仓库中的 `_conf_schema.json`。氛围 LLM 和神经 Embedding 默认关闭，可按需开启。
+更多参数及范围见插件配置页面或仓库中的 `_conf_schema.json`。氛围 LLM 和神经 Embedding 默认关闭，可按需开启。决策层与氛围分类的后端是两套独立开关：回合决策每回合跑一次，氛围是 120 秒一次的低频校准，两者常常想要不同的选择。
 
 ## 控制台与指令
 

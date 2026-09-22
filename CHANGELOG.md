@@ -2,6 +2,32 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.10.0 · Laya 决策层（2026-09-22）
+
+- 人设模式的决策层再加一个后端 `decision_backend=laya`：改由**自建的 Laya typed-decision 服务**答题。它回答的题目（是否开口、怎么回、什么状态、多长、为什么）、封闭词表、映射规则和置信度门槛与 Jev **完全一致**，一次 `POST /predict` 全部答完；选项全部由本插件给定，低于 `laya_min_confidence` 就不采用并回落到本地保守计划。
+- 新增 `core/integrations/laya.py`（本地传输与契约校验）。请求/应答校验**直接复用** `core/integrations/typesafe.py` 的校验器，两套后端共用同一份契约实现，避免两份校验各自漂移；差异只有三处：endpoint 为 `/predict`、请求不带 `model`、Laya 在 `noul` 上多给一个 `confidence`（有意丢弃，见该模块文档）。
+- `core/jev_decision.py` 的 `decision_from_answers` 增加 `prefix` 参数：两个后端共用同一份答案映射，`jev_*` / `laya_*` 的 reason 前缀是会话轨迹里分辨「这一回合由谁决策」的唯一标记。默认值仍是 `jev_`，既有 Jev 轨迹与断言不变。
+- **安全**：Laya 上传的是群聊内容本身（不只是密钥），因此明文 `http` 只放行本机与内网网段（RFC 1918、链路本地、唯一本地、CGNAT），公网地址必须用 `https`，否则降级为不调用并记 `insecure_cleartext`。该网段白名单**显式列出**，不使用 `ipaddress.is_private`——后者的语义是「非全局可路由」，会连文档保留段一起放行。
+- 控制台新增 Laya 决策层状态卡（`payload["laya"]`），参数页新增 `laya_base_url`、`laya_timeout`、`laya_min_confidence` 三项；新增计数器 `laya_decision` / `laya_unavailable`。
+- 验证：新增 `tests/test_laya_client.py`（真实回环服务器的传输契约、失败码矩阵、明文网段策略、在途请求失效）与 `tests/test_laya_decision_layer.py`（后端路由、reason 前缀、置信度门槛、降级到本地计划）。
+
+- 氛围分类（快嘴玩梗 / 认真探讨 / 冷场衰退）增加独立后端开关 `vibe_backend`（`llm` / `laya`），与决策层后端**分开配置**：回合决策每回合跑一次，氛围是 120 秒一次的低频校准，生命周期不同，绑在一起会做不到「要 Laya 决策但不动氛围」这类组合。`laya` 在封闭三选项里直接选一，没有自由文本要解析。
+- 两种后端的判定输入抽到 `_vibe_evidence()` 只组装一次：遥测指标与最近消息同时喂给 prompt 和 `state`。否则「两个后端读数不一致」分不清是判断差异还是输入差异。
+- 新增 `vibe_min_confidence`（默认 0.55，低于决策层的 0.6）：氛围是「读」不是「做」，且后面还有 Schmitt 迟滞状态机吸收误判。低于门槛返回「读不出来」，沿用当前氛围判定，而不是判成某个具体档。
+- 计数器按实际被问到的后端记账（`llm_vibe_*` / `laya_vibe_*`）；来源从配置推导而不是随答案带回——失败路径恰恰什么都没返回，而那正是需要计数的时刻。
+- 验证：新增 `tests/test_vibe_backend.py`，含五种「读不出来」形态（低置信 / 词表外 / 类型不符 / 无置信度 / 服务不可达）的参数化，全部断言不产出氛围。
+
+- 新增 `core/turn_decisions.py`（小决策批量层）：一次 `POST /predict` 批量答完一个回合的全部小决策问题。Laya 在单次前向里批量处理问题行，按决策点各问一次只会平白增加往返。`SmallDecision` 把 `choice`/`score`/`noul` 三种答案归一化，`normalized()` 把标尺分压回 0..1，让发言意愿的加权式能混用三种问题。
+- 发言意愿 WTS 接入模型意见，但**只替换关于文本**的三个子分（`topic_relevance` / `question_value` / `professionalism`）。`participation` 与 `fatigue_penalty` 是模型看不到的运行时状态（它无从知道 bot 这一小时说了几次话），仍由规则推导——假装它看得到就是把猜测洗成测量。深度冷却、能量不对称、私密话题等硬规则原地不动，模型意见只作为加权式的**输入**。
+- 挂点是回合管道原有的「锁外 await 模型」缝隙：`_enrich_turn` 发这一次请求（吃同一份 enrichment 预算，超预算即放弃），`_finish_turn_locked` 里 `arbiter.evaluate` 用普通查找读结果。**同步决策点全程无网络调用**，不阻塞会话。
+- 接受门槛 `laya_min_confidence` 在**加权处**判定，不在取意见处：上游拦掉会把「模型没把握」压平成「模型没说话」，对事后追问「为什么这么判」的机制来说是两个不同的事实。`no_answer`（没被问到）与 `unusable_answer`（答了但撑不起一个决策）两个原因码分开记。
+- 修正一处由本次改动引出的配置语义：`decision_backend=laya` **不再**警告「仅 persona_model 使用」——它现在也供 legacy 路径的 WTS 子分。`decision_backend=jev` 仍只答回合决策，警告保留。
+- 验证：`tests/test_turn_decisions.py` 共 24 项，含「模型意见绝不覆盖硬规则」「`decisions=None` 时行为逐项不变」（回归护栏）「门槛归调用方所有」「单槽位独立判定」。
+
+- decision_gate 的两个拨盘（`silence_bias` / `force_scale`）也读模型意见。**刻意不覆盖场合标签**：`OccasionClassifier` 把标签与档位绑在一起赋值（NEUTRAL 就有两套数字），只换标签会让一次读数自相矛盾；真正改变行为的是拨盘，标签留给手调档。模型读数落在 [0, 1]，所以它能让 bot 完全闭嘴，但**永远压不过手调档的最响设置**——把音量调小是有用的，盖过人工设定的上限不是。`private_topic` 等硬规则不碰：隐私守卫不该是模型形状的东西。
+- 未完成语句检测（`completeness`，noul）由模型复核。问题按消息在**异步路径**发出，防抖缓冲持锁时用普通查找读取（`core/turn_decisions.py` 的 `MessageOpinions`）。模型概率直接替换正则总分而不是与之平均——两个关于同一事实的答案取平均，既不是这个读数也不是那个。**边界**：`debounce.py` 里对聚合文本的那一次读数在多片段回合下命中不到预热，仍走纯正则；单片段回合（最常见）完全覆盖。
+- 验证：`tests/test_turn_decisions.py` 扩至 24 项，含「模型意见绝不覆盖硬规则」「`decisions=None` 时行为逐项不变」（回归护栏）。全量 pytest 通过。
+
 ## v1.9.5 — Jev 决策层（2026-09-22）
 
 - 人设模式新增决策层后端 `decision_backend=jev`：一次 TypeSafe System One（Jev）调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定；回复目标只接受本轮消息。无法精确映射或低于 `jev_min_confidence` 门槛即回落本地保守计划（明确请求才回应，闲聊保持安静）。

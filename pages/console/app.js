@@ -363,7 +363,7 @@ function renderOverview(data) {
   if (safeData.decision_mode === "persona_model") {
     // A Jev backend decides with its own model and endpoint, so naming the chat
     // provider here would credit a model that is not making this decision.
-    const layer = safeData.jev || {};
+    const layer = safeData.laya && safeData.laya.enabled ? safeData.laya : safeData.jev || {};
     const backend = layer.backend || "model";
     const decidedBy = backend === "jev"
       ? `Jev ${layer.model || "jev-latest"}${layer.enabled === false ? "（未启用）" : layer.status === "available" ? "" : `（${layer.error_code || layer.status || "未就绪"}）`}`
@@ -391,7 +391,7 @@ function renderOverview(data) {
   }
   const partner = safeData.selflearning || {};
   renderIntegrations(safeData.selflearning);
-  renderDecisionLayer(safeData.jev);
+  renderDecisionLayer(safeData.laya && safeData.laya.enabled ? safeData.laya : safeData.jev);
   if (els.statPartner) els.statPartner.textContent = partner.lamp || partner.status || "—";
   if (els.statPartnerHint) {
     const details = {

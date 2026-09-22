@@ -40,6 +40,33 @@ class DynamicsDecisionGate:
         self.useful = UsefulProactiveGate()
         self.rhythm = DailyRhythmGate()
 
+    @staticmethod
+    def _with_model_dials(skin: Any, decisions: Any, decision_floor: float) -> Any:
+        """Let a confident model reading nudge how loudly the bot leans in.
+
+        Only the two numeric dials are taken. The situation label and the profile
+        tuned against it stay rule-derived: `OccasionClassifier` assigns the label
+        and its `silence_bias` / `force_scale` / `reason_zh` together, so replacing
+        the label alone would leave one reading contradicting itself. The dials are
+        what actually gate behaviour and can each be judged on their own.
+
+        A model reading lands in [0, 1], so it can silence the bot entirely but can
+        never push `force_scale` past the rule table's loudest setting. The model
+        being able to quiet things down is useful; it being able to out-shout the
+        hand-tuned ceiling is not.
+        """
+        if decisions is None:
+            return skin
+        from dataclasses import replace
+
+        overrides = {}
+        for slot in ("silence_bias", "force_scale"):
+            opinion = decisions.peek(slot)
+            if opinion is None or opinion.confidence < float(decision_floor):
+                continue
+            overrides[slot] = round(float(opinion.normalized()), 3)
+        return replace(skin, **overrides) if overrides else skin
+
     def evaluate(
         self,
         *,
@@ -64,6 +91,8 @@ class DynamicsDecisionGate:
         public_memory_snippet: str = "",
         committed_reply: bool = False,
         node_now: Optional[float] = None,
+        decisions: Any = None,
+        decision_floor: float = 0.6,
     ) -> GateResult:
         # Evaluation may replay historical wall time; DAG ages use node_now.
         now = self._wall_now() if now is None else float(now)
@@ -82,6 +111,7 @@ class DynamicsDecisionGate:
             now=now,
             deciding_detect_enabled=deciding_on,
         )
+        skin = self._with_model_dials(skin, decisions, decision_floor)
         manners = self.manners.evaluate(
             session_id=session_id,
             user_id=user_id,

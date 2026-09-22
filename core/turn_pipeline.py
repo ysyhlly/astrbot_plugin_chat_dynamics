@@ -57,6 +57,10 @@ class _PreparedTurn:
     owner_revision: int
     config_id: str = ''
     policy_id: str = ''
+    # Small decisions asked while the lock is free and read inside it. None means
+    # nothing was asked — an explicit turn skips enrichment entirely — and is the
+    # same thing to a decision point as a model with no opinion.
+    decisions: Any = None
 
 
 def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
@@ -318,6 +322,45 @@ def _prepared_turn_current(host, turn: _PreparedTurn) -> bool:
     )
 
 
+async def _fill_turn_decisions(host, turn: _PreparedTurn, deadline: float) -> None:
+    """Ask the turn's small decisions while the session lock is free.
+
+    One bounded request covers every question `_finish_turn_locked` will want, and
+    the decision points there read the result with a plain lookup. Laya answers the
+    whole batch in a single forward pass, so gathering them here is what keeps the
+    synchronous step free of network calls instead of trading one blocking call for
+    three.
+
+    Every way this can fail leaves the slots empty rather than wrong: no client, no
+    budget left in the enrichment allowance, a transport that could not answer, an
+    answer that cannot carry a decision. The decision points then keep the
+    heuristics they already had.
+    """
+    client = getattr(host, "laya", None)
+    if client is None:
+        return
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        degrade(turn.node, 'enrichment_budget_exhausted')
+        return
+    from .turn_decisions import TurnDecisions
+
+    decisions = TurnDecisions.for_turn()
+    turn.decisions = decisions
+    started = time.perf_counter()
+    try:
+        answers = await client.evaluate(
+            # The opinions are about the message itself, which is exactly what the
+            # regex heuristics they replace read. Room physics stays out of it.
+            state={"text": turn.analysis_text},
+            questions=decisions.questions,
+            timeout=min(float(host._runtime_config.laya_timeout), remaining),
+        )
+    finally:
+        record_stage(turn.node, 'small_decisions', started)
+    decisions.ingest(answers)
+
+
 async def _enrich_turn(host, turn: _PreparedTurn) -> None:
     if turn.explicit_platform:
         return
@@ -328,6 +371,7 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
                     float(cfg.topic_reranker_timeout) if cfg.topic_reranker_enabled else 0.0)
     deadline = time.perf_counter() + max(0.0, allowance)
     started = time.perf_counter()
+    await _fill_turn_decisions(host, turn, deadline)
     if turn.neural_ready is not None:
         wait_started = time.perf_counter()
         try:
@@ -548,6 +592,8 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         runtime=runtime,
         current_time=now,
         allow_ambient=host._allow_ambient(),
+        decisions=getattr(turn, "decisions", None),
+        decision_floor=float(host._runtime_config.laya_min_confidence),
     )
 
     explicit_addr = addressivity.level == AddressivityLevel.STRONG
@@ -583,6 +629,8 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         explicit=explicit_addr,
         willingness=float(getattr(arb_res, "willingness_score", 0.0) or 0.0),
         cfg=host._runtime_config,
+        decisions=getattr(turn, "decisions", None),
+        decision_floor=float(host._runtime_config.laya_min_confidence),
         now=host.time_service.wall_time(),
         node_now=now,
         has_media=has_media_turn,

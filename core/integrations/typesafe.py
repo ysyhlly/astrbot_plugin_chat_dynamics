@@ -56,6 +56,19 @@ MAX_MODEL_CHARS = 64
 MIN_TIMEOUT, MAX_TIMEOUT = 0.05, 30.0
 
 
+def _payload_size_ok(body: Any) -> bool:
+    """Whether a request body fits the documented bound once encoded.
+
+    Shared with `core/integrations/laya.py`, which enforces the same bound on the
+    same kind of payload.
+    """
+    try:
+        encoded = json.dumps(body, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    return len(encoded) <= MAX_STATE_CHARS
+
+
 class _SystemOneError(Exception):
     """A contract or transport failure carrying its diagnostic code."""
 
@@ -144,11 +157,7 @@ def _payload(model: str, state: Any, specs: dict[str, dict]) -> dict | None:
         body = state
     else:
         return None
-    try:
-        encoded = json.dumps(body, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return None
-    if len(encoded) > MAX_STATE_CHARS:
+    if not _payload_size_ok(body):
         return None
     return {"model": model, "state": body, "questions": specs}
 

@@ -521,13 +521,30 @@ export function renderIntegrations(partner) {
   }
 }
 
-// ---- decision layer (Jev / System One) -----------------------------------
+// ---- decision layer (model / Jev / Laya) --------------------------------
 
 const DECISION_STATES = {
   available: "已就绪",
   configured: "已配置 · 尚未调用",
   disabled: "未启用",
   missing: "未配置",
+};
+
+// The two named layers answer the same typed questions through interchangeable
+// transports, so one card describes either and only the naming differs. Each
+// `payload[<layer>]` carries that layer's own endpoint and counters, while its
+// `backend` names whichever layer is currently selected.
+const DECISION_BACKENDS = {
+  jev: {
+    label: "Jev 决策模型",
+    who: "Jev（TypeSafe System One）",
+    other: "把决策层后端切到 jev 可改由 Jev 决策模型回答。",
+  },
+  laya: {
+    label: "Laya 决策模型",
+    who: "Laya（自建）",
+    other: "把决策层后端切到 laya 可改由自建的 Laya 决策模型回答。",
+  },
 };
 
 /** The decision layer's own status: which backend decides, and how it has answered. */
@@ -541,20 +558,20 @@ export function renderDecisionLayer(layer) {
     panel.append(section);
   }
   const data = layer != null && typeof layer === "object" ? layer : {};
-  const usingJev = String(data.backend || "model") === "jev";
+  const backend = DECISION_BACKENDS[String(data.backend || "model")] || null;
   const status = String(data.status || "");
   const note = layer == null
     ? "尚未取得决策层诊断；连接恢复后自动更新。"
-    : usingJev
-      ? "本轮「是否开口、怎么回、什么状态、多长、为什么」由 Jev（TypeSafe System One）一次回答；回复正文仍由主 Agent 生成。"
-      : "决策由当前会话的聊天模型给出；把决策层后端切到 jev 可改由 Jev 决策模型回答。";
+    : backend
+      ? `本轮「是否开口、怎么回、什么状态、多长、为什么」由 ${backend.who} 一次回答；回复正文仍由主 Agent 生成。`
+      : "决策由当前会话的聊天模型给出；" + DECISION_BACKENDS.jev.other + DECISION_BACKENDS.laya.other;
   const stateText = status === "degraded"
     ? `降级中（${String(data.error_code || data.detail || "未知原因")}）`
     : DECISION_STATES[status] || "状态未知";
   const model = String(data.model || "");
   const served = String(data.served_model || "");
   const rows = [
-    ["后端", usingJev ? "Jev 决策模型" : "聊天模型（默认）"],
+    ["后端", backend ? backend.label : "聊天模型（默认）"],
     ["状态", layer == null ? "—" : stateText],
     ["端点", String(data.endpoint_host || "") || "—"],
     ["模型", [model, served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],

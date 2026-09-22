@@ -28,9 +28,10 @@
     "default": "model",
     "options": [
       "model",
-      "jev"
+      "jev",
+      "laya"
     ],
-    "hint": "仅 persona_model 生效。model 用当前聊天模型按 JSON 决策；jev 改由 TypeSafe System One（Jev）决策模型答题：一次调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定，低于置信度门槛就不采用并回落到本地保守计划。"
+    "hint": "仅 persona_model 生效。model 用当前聊天模型按 JSON 决策；jev 改由 TypeSafe System One（Jev）决策模型答题；laya 用自建的 Laya typed-decision 服务答题。jev 与 laya 回答的题目与映射规则完全相同，一次调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定，低于置信度门槛就不采用并回落到本地保守计划。"
   },
   "jev_base_url": {
     "description": "Jev 接口地址",
@@ -71,6 +72,55 @@
       "step": 0.05
     },
     "hint": "范围 0.3~0.95。取「方式、状态、长短、理由」四项置信度的最小值，低于门槛就不采用这次判断：点名消息按本地保守计划回应，环境消息继续旁听。官方建议 0.6 以下不要自动执行。"
+  },
+  "laya_base_url": {
+    "description": "Laya 接口地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8900",
+    "hint": "自建 Laya typed-decision 服务的地址，POST /predict 一次回答与 Jev 完全相同的一组问题。只接受 http(s)、不带账号密码与查询串的地址。走明文 http 时只放行本机与内网网段（10/8、172.16/12、192.168/16、链路本地等），公网地址必须用 https——这里发出去的是群聊内容本身，不只是密钥。"
+  },
+  "laya_timeout": {
+    "description": "Laya 决策超时秒数",
+    "type": "float",
+    "default": 1.5,
+    "slider": {
+      "min": 0.1,
+      "max": 10,
+      "step": 0.1
+    },
+    "hint": "范围 0.05~30 秒，只包住这一次本地 HTTP 调用，整体仍受决策超时约束。Laya 稳态约 20~60 毫秒，1.5 秒已能容纳一次冷启动；不重试，超时即回落本地保守计划。"
+  },
+  "laya_min_confidence": {
+    "description": "Laya 决策置信度门槛",
+    "type": "float",
+    "default": 0.6,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取四项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。"
+  },
+  "vibe_backend": {
+    "description": "氛围分类后端",
+    "type": "string",
+    "default": "llm",
+    "options": [
+      "llm",
+      "laya"
+    ],
+    "hint": "决定谁来读群氛围（快嘴玩梗 / 认真探讨 / 冷场衰退）。llm 用氛围模型按单标签分类；laya 改用自建的 Laya 决策服务，在封闭三选项里直接选一，没有自由文本要解析。与决策层后端分开配置：氛围是低频校准，回合决策是每回合都要跑，两者常常想要不同的选择。"
+  },
+  "vibe_min_confidence": {
+    "description": "氛围分类置信度门槛",
+    "type": "float",
+    "default": 0.55,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95，仅 vibe_backend=laya 生效。低于门槛就不采用这次校准，沿用当前氛围判定。门槛比决策层低一些：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。"
   },
   "reply_timeout": {
     "description": "回复模型总超时秒数",
