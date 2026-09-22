@@ -186,7 +186,8 @@ class DecisionDataset:
     ):
         if teacher_label is not None and not teacher_model:
             raise ValueError("Teacher label requires teacher model provenance")
-        validate_snapshot(state, {metadata.get("question_id", task_id): candidates})
+        metadata["question_id"] = metadata.get("question_id", task_id)
+        validate_snapshot(state, {metadata["question_id"]: candidates})
         sample_id = uuid.uuid4().hex
         payload = dict(
             id=sample_id,
