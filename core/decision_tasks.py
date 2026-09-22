@@ -10,10 +10,25 @@ from .persona_axes import AXES
 
 TASK_VERSION = "2"
 TEACHER_PROMPT_VERSION = "zh-rubric-v2"
-TASKS = ("join", "action", "state", "length", "reason", "target", "vibe",
+TASKS = ("join", "action", "state", "length", "reply_length", "recipient_choice", "reason", "target", "vibe",
          "topic_relevance", "question_value", "professionalism", "silence_bias",
          "force_scale", "completeness", "recipient", "topic",
          *(f"persona.{axis}" for axis in AXES))
+
+REPLY_LENGTH_CRITERIA = {
+    "tiny": "一句极短回应，例如确认、调侃或接话；不展开。",
+    "short": "一至三句话，适合普通群聊问答。",
+    "medium": "用一小段完整说明一个问题。",
+    "long": "用户确实需要较详细的分析或分步骤说明。",
+    "very_long": "用户明确需要教程、复杂排障或代码分析。",
+}
+REPLY_LENGTH_GUIDANCE = {
+    "tiny": ("brief", "尽量只回一句话。"),
+    "short": ("brief", "控制在一至三句话。"),
+    "medium": ("normal", "用一小段说清重点。"),
+    "long": ("detailed", "按需要分点解释，避免重复。"),
+    "very_long": ("detailed", "按需要完整展开步骤与依据。"),
+}
 
 
 def task_id(question_id: str) -> str:
@@ -22,9 +37,46 @@ def task_id(question_id: str) -> str:
     return "recipient" if question_id.startswith("recipient.") else question_id
 
 
+def primary_recipient_options(turn, *, limit=4):
+    """Human authors with source evidence; keys are anonymized with the state."""
+    options = {}
+    for message in (*reversed(turn.messages), *reversed(turn.background)):
+        author = str(message.author or "")
+        if not author or author == "none" or author in options:
+            continue
+        if message.semantics is not None and message.semantics.sender_is_bot:
+            continue
+        text = str(message.source_text if message.source_text is not None else message.text).strip()
+        if not text and author == turn.author:
+            text = str(turn.source_text if turn.source_text is not None else turn.text).strip() or "当前消息无文字正文"
+        if not text:
+            continue
+        options[author] = f"群友 {author}，最近发言：{text[:24]}"
+        if len(options) >= limit:
+            break
+    options["none"] = "本轮没有单一的主要回复对象。"
+    return options
+
+
 def turn_questions(turn):
     questions = build_questions(turn)
     questions.pop("target", None)
+    questions["reply_length"] = {
+        "type": "choice",
+        "instructions": (
+            "若本轮要回应，正常群友应该回多长？根据明确的详略要求、问题复杂度、聊天节奏及上一轮回复长度选择。"
+            "即使不参与，也只判断假设回应时的长度；该选项不授权发送。"
+        ),
+        "criteria": REPLY_LENGTH_CRITERIA,
+    }
+    questions["recipient_choice"] = {
+        "type": "choice",
+        "instructions": (
+            "如果本轮参与，主要应对哪位群友说话？结合当前消息、回复和提及关系选择；"
+            "面向整个群或不参与时选 none。"
+        ),
+        "criteria": primary_recipient_options(turn),
+    }
     # Candidate indices, not message identifiers, are stable model labels.
     current = list(dict.fromkeys(m.message_id for m in turn.messages))[-8:]
     background = [m.message_id for m in reversed(turn.background) if m.message_id not in current]
@@ -47,6 +99,13 @@ def turn_from_answers(turn, answers, candidates):
         # An affirmative action without a valid target cannot authorize delivery.
         from .turn_decision import TurnDecision
         return TurnDecision.fallback(turn, "learned_missing_target")
+    if decision.action != "ignore":
+        reply_length = answers.get("reply_length")
+        choice = reply_length.get("choice") if isinstance(reply_length, dict) else None
+        if choice in REPLY_LENGTH_GUIDANCE:
+            length, guidance = REPLY_LENGTH_GUIDANCE[choice]
+            decision = replace(decision, length=length,
+                               response_goal=(decision.response_goal + guidance)[:600])
     return replace(decision, target_message_ids=selected)
 
 

@@ -1,5 +1,6 @@
 import json
 import pytest
+from types import SimpleNamespace
 
 from astrbot_plugin_chat_dynamics.core.decision_tasks import (
     answer_uncertainty, teacher_answers, turn_questions, turn_from_answers,
@@ -14,13 +15,26 @@ def test_multi_target_labels_are_preserved_and_unselected_targets_not_injected()
         (MessageSnapshot('old', 'u', '背景'),), 1, 1, 0, True)
     questions, candidates = turn_questions(turn)
     labels = {'join': True, 'action': 'reply', 'state': 'focused', 'length': 'normal',
-              'reason': 'addressed_request', 'target.0': True, 'target.1': True, 'target.2': False}
+              'reply_length': 'short', 'recipient_choice': 'u', 'reason': 'addressed_request',
+              'target.0': True, 'target.1': True, 'target.2': False}
     import json
     answers = teacher_answers(json.dumps(labels), questions)
-    assert turn_from_answers(turn, answers, candidates).target_message_ids == ('m1', 'm2')
+    decision = turn_from_answers(turn, answers, candidates)
+    assert decision.target_message_ids == ('m1', 'm2')
+    assert decision.length == 'brief' and '一至三句话' in decision.response_goal
     labels.update({'target.0': False, 'target.1': False})
     answer = turn_from_answers(turn, teacher_answers(json.dumps(labels), questions), candidates)
     assert answer.reason_code == 'learned_missing_target'
+
+
+def test_primary_recipient_choice_uses_human_source_and_none():
+    turn = TurnContext('room', 'user', '帮我看一下',
+        (MessageSnapshot('m1', 'user', '', source_text='帮我看一下'),),
+        (MessageSnapshot('b1', 'bot', '上一轮回复', semantics=SimpleNamespace(sender_is_bot=True)),),
+        1, 1, 0, True)
+    questions, _ = turn_questions(turn)
+    assert set(questions['recipient_choice']['criteria']) == {'user', 'none'}
+    assert '帮我看一下' in questions['recipient_choice']['criteria']['user']
 
 
 def test_teacher_labels_are_not_fabricated_probabilities():

@@ -6,12 +6,14 @@ dataset summaries add the actual offered topic keys from recorded questions.
 
 BINARY_LABELS = ("false", "true")
 SCORE_LABELS = ("0", "1", "2", "3", "4")
-DYNAMIC_TASKS = frozenset({"topic"})
+DYNAMIC_TASKS = frozenset({"topic", "recipient_choice"})
 TASK_LABELS = {
     "join": BINARY_LABELS,
     "action": ("ignore", "acknowledge", "clarify", "reply", "close"),
     "state": ("observing", "casual", "focused", "supportive", "playful", "disengaging"),
     "length": ("brief", "normal", "detailed"),
+    "reply_length": ("tiny", "short", "medium", "long", "very_long"),
+    "recipient_choice": ("none",),
     "reason": (
         "addressed_request",
         "addressed_question",

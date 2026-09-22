@@ -54,9 +54,10 @@ def test_plugin_turn_questions_accept_structured_instructions(tmp_path):
     )
     questions, candidates = turn_questions(turn)
     assert isinstance(questions["join"]["instructions"], dict)
-    snapshot = prepare_state(CharacterTokenizer(), build_learning_state(turn, candidates=candidates), questions, 4096, 256)
+    learning_state = build_learning_state(turn, candidates=candidates)
+    snapshot = prepare_state(CharacterTokenizer(), learning_state, questions, 4096, 256)
     assert "請問如何學習 Python" in snapshot
-    assert {"join", "action", "state", "length", "reason", "target.0"} == set(questions)
+    assert {"join", "action", "state", "length", "reply_length", "recipient_choice", "reason", "target.0"} == set(questions)
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     from services.laya_service.app import create_app
@@ -69,10 +70,12 @@ def test_plugin_turn_questions_accept_structured_instructions(tmp_path):
         backend=TurnBackend(), state_root=tmp_path / "state", models_root=tmp_path / "models", admin_token="secret"
     )
     with TestClient(app) as client:
-        response = client.post("/prepare", json={"state": build_learning_state(turn, candidates=candidates), "questions": questions})
+        response = client.post("/prepare", json={"state": learning_state, "questions": questions})
         assert response.status_code == 200
         assert response.json()["questions"] == questions
-        invalid = client.post("/prepare", json={"state": {"text": "x" * 5000}, "questions": QUESTION})
+        oversized_state = {**learning_state,
+                           "conversation": {**learning_state["conversation"], "text": "x" * 5000}}
+        invalid = client.post("/prepare", json={"state": oversized_state, "questions": questions})
         assert invalid.status_code == 400
         diagnostics = client.get("/admin/status", headers={"Authorization": "Bearer secret"}).json()
         assert diagnostics["prepare_rejections"] == {"critical_context_over_budget": 1}

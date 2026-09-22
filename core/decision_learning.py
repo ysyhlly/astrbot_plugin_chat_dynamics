@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import random
 import time
@@ -16,6 +17,8 @@ from .integrations.typesafe import _validated_answers
 from .decision_sampling import AnnotationPriority
 from .decision_rubrics import rubric_questions
 from .decision_snapshot import SNAPSHOT_VERSION, validate_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 class TeacherAnswers(dict):
@@ -394,6 +397,7 @@ class DecisionLearning:
 
     async def _labels(self):
         consecutive_failures = 0
+        annotation_timeout = max(30.0, self.cfg.decision_timeout)
         while self.enabled():
             job = None
             # Claim and reserve budget together: concurrent workers must not
@@ -404,7 +408,7 @@ class DecisionLearning:
                     self._label_times.popleft()
                 if self.enabled() and len(self._label_times) < self.cfg.decision_learning_labels_per_hour:
                     job = await self._io("claim_label", session_ids=self.collection_sessions(),
-                                         lease_seconds=max(60, self.cfg.decision_timeout * 2 + 5))
+                                         lease_seconds=max(90, annotation_timeout * 2 + 5))
                     if job:
                         self._label_times.append(time.monotonic())
             if not job:
@@ -423,7 +427,7 @@ class DecisionLearning:
                     continue
                 try:
                     answers = await asyncio.wait_for(self._teacher(provider_id, sample["state"],
-                        {key: sample["candidates"]}, background=True), timeout=self.cfg.decision_timeout)
+                        {key: sample["candidates"]}, background=True), timeout=annotation_timeout)
                 except Exception as exc:
                     if type(exc).__name__ != "ProviderNotFoundError":
                         raise
@@ -437,7 +441,7 @@ class DecisionLearning:
                     provider_id = replacement
                     self.stats["label_provider_reresolved"] += 1
                     answers = await asyncio.wait_for(self._teacher(provider_id, sample["state"],
-                        {key: sample["candidates"]}, background=True), timeout=self.cfg.decision_timeout)
+                        {key: sample["candidates"]}, background=True), timeout=annotation_timeout)
                 if key in getattr(answers, "abstentions", ()):
                     await self._io("mark_review", job["sample_id"], "insufficient_evidence")
                     self.stats["teacher_insufficient_evidence"] += 1
@@ -453,10 +457,14 @@ class DecisionLearning:
                 self.stats["label_failed"] += 1
                 category = "timeout" if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) else type(exc).__name__
                 self.stats["label_failed_" + category] += 1
+                if self.stats["label_failed_" + category] in (1, 10) or self.stats["label_failed_" + category] % 100 == 0:
+                    logger.warning("Decision annotation failed: category=%s count=%d", category,
+                                   self.stats["label_failed_" + category])
                 consecutive_failures += 1
                 # Providers may not be ready during host startup. Do not burn
                 # the full hourly budget in a burst of immediate failures.
-                await asyncio.sleep(min(15, 2 ** min(consecutive_failures - 1, 4)))
+                await asyncio.sleep(30 if category == "ProviderNotFoundError" else
+                                    min(15, 2 ** min(consecutive_failures - 1, 4)))
 
     async def snapshot(self):
         local = await self._io("summary") if self.store is not None or self.path.exists() else {}

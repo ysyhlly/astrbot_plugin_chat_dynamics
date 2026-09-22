@@ -541,7 +541,8 @@ class PersonaEngine:
                 questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
             if runtime is not None:
                 runtime.jev_decision = describe_answers(answers or {})
-            return (turn_from_answers(turn, answers, candidates) if answers and set(questions) <= set(answers)
+            required = set(questions) - {"reply_length", "recipient_choice"}
+            return (turn_from_answers(turn, answers, candidates) if answers and required <= set(answers)
                     else TurnDecision.fallback(turn, "decision_learning_unavailable"))
         backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
         if backend in ("jev", "laya"):
