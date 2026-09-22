@@ -139,7 +139,7 @@ class SelfLearningHubClient:
                 return result
             except asyncio.CancelledError:
                 raise
-            except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, _HubError, ValueError) as exc:
+            except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, OSError, _HubError, ValueError) as exc:
                 if generation == self._generation and not self._closed:
                     self._status = "degraded"
                     self._detail = (str(exc) if isinstance(exc, _HubError) else

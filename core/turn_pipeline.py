@@ -61,6 +61,7 @@ class _PreparedTurn:
     # nothing was asked — an explicit turn skips enrichment entirely — and is the
     # same thing to a decision point as a model with no opinion.
     decisions: Any = None
+    semantic_routing: Any = None
 
 
 def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
@@ -349,13 +350,26 @@ async def _fill_turn_decisions(host, turn: _PreparedTurn, deadline: float) -> No
     turn.decisions = decisions
     started = time.perf_counter()
     try:
-        answers = await client.evaluate(
+        learning = getattr(host, "decision_learning", None)
+        if learning is not None and learning.enabled(turn.result.session_id):
+            from .decision_routing import build_routing_tasks
+            routing_state, routing_questions, mapping = build_routing_tasks(turn)
+            context = [{"message_id": n.msg_id, "author": n.user_id, "text": n.text}
+                       for n in list(turn.dag.nodes.values())[-12:] if n is not turn.node]
+            answers = await learning.evaluate(session_id=turn.result.session_id,
+                state={"text": turn.analysis_text, "recent_messages": context,
+                       "routing": turn.node.metadata.get("routing", {}), "routing_semantics": routing_state},
+                questions={**decisions.questions, **routing_questions}, timeout=remaining, outcome_node=turn.node)
+            decisions.source = "decision_learning"
+            turn.semantic_routing = (answers or {}, mapping)
+        else:
+            answers = await client.evaluate(
             # The opinions are about the message itself, which is exactly what the
             # regex heuristics they replace read. Room physics stays out of it.
-            state={"text": turn.analysis_text},
-            questions=decisions.questions,
-            timeout=min(float(host._runtime_config.laya_timeout), remaining),
-        )
+                state={"text": turn.analysis_text},
+                questions=decisions.questions,
+                timeout=min(float(host._runtime_config.laya_timeout), remaining),
+            )
     finally:
         record_stage(turn.node, 'small_decisions', started)
     decisions.ingest(answers)
@@ -367,11 +381,16 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
     # Reuse the largest configured stage allowance as the entire enrichment
     # allowance: serial stages do not each receive a new full deadline.
     cfg = host._runtime_config
+    learning = getattr(host, "decision_learning", None)
+    learning_enabled = learning is not None and learning.enabled(turn.result.session_id)
     allowance = max(float(cfg.routing_neural_timeout),
                     float(cfg.topic_reranker_timeout) if cfg.topic_reranker_enabled else 0.0)
+    if learning_enabled:
+        allowance = max(allowance, float(cfg.decision_timeout))
     deadline = time.perf_counter() + max(0.0, allowance)
     started = time.perf_counter()
-    await _fill_turn_decisions(host, turn, deadline)
+    if not learning_enabled:
+        await _fill_turn_decisions(host, turn, deadline)
     if turn.neural_ready is not None:
         wait_started = time.perf_counter()
         try:
@@ -421,6 +440,10 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
                 task.cancel()
             record_stage(turn.node, 'rerank_wait', wait_started)
         host._mark_panel_runtime_dirty()
+    if learning_enabled and host._prepared_turn_current(turn):
+        # Judge the final candidate shortlist; an earlier opinion would be
+        # immediately invalidated by the embedding/reranker commits above.
+        await _fill_turn_decisions(host, turn, deadline)
     record_stage(turn.node, 'enrichment', started)
 
 
@@ -454,6 +477,9 @@ async def _enrich_topic_background(host, turn: _PreparedTurn) -> None:
 
 
 def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
+    if turn.semantic_routing and host._prepared_turn_current(turn):
+        from .decision_routing import apply_routing_answers
+        apply_routing_answers(turn, *turn.semantic_routing)
     result, runtime, dag, node = turn.result, turn.runtime, turn.dag, turn.node
     session_id, user_id = result.session_id, result.user_id
     turn_nodes, parsed_events = turn.turn_nodes, turn.parsed_events

@@ -71,10 +71,7 @@ class MoodMemoryStore:
         if key in self._cache:
             return self._cache[key]
         data: Dict[str, Any] = {"peers": {}, "forgotten": {}, "mute_until": 0.0}
-        try:
-            data.update(read_umo_json(self.data_dir, "mood", umo))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("mood load failed type=%s", type(exc).__name__)
+        data.update(read_umo_json(self.data_dir, "mood", umo))
         self._cache_put(key, data)
         return data
 
@@ -135,6 +132,7 @@ class MoodMemoryStore:
         data["peers"] = {}
         data["forgotten"] = {"*": time.time()}
         self._save(umo, data)
+        self._invalidate_recall(umo)
         return True
 
     # Local tag writing. Nothing in this plugin calls this today: the runtime
@@ -202,7 +200,10 @@ class MoodMemoryStore:
 
         remote: List[Dict[str, Any]] = remote_rows or []
         bridge = self.bridge
-        if remote_rows is None and bridge is not None:
+        remote_allowed = self.remote_context_allowed(umo, peer_id)
+        if not remote_allowed:
+            remote = []
+        if remote_allowed and remote_rows is None and bridge is not None:
             try:
                 remote = bridge.fetch_approved_memories(umo=umo, peer_id=peer_id, limit=limit) or []
             except Exception:
@@ -257,6 +258,7 @@ class MoodMemoryStore:
         if float(data.get("mute_until") or 0) > stamp or forgotten.get(f"{peer_id}::*") or forgotten.get("*"):
             return []
         remote = []
+        policy_before = (dict(forgotten), float(data.get("mute_until") or 0))
         # A member who asked to forget one tag gets no companion memories at all: an
         # arbitrary prose tag cannot be matched against the forgotten word, so the
         # conservative answer is to omit remote rows while that request stands. Local
@@ -264,6 +266,10 @@ class MoodMemoryStore:
         if self.bridge is not None and self.remote_context_allowed(umo, peer_id):
             remote = await self.bridge.fetch_approved_memories_async(umo=umo, peer_id=peer_id, limit=limit)
         # Re-read local policy after the await; a concurrent forget must win.
+        current = self._load(umo)
+        policy_after = (dict(current.get("forgotten") or {}), float(current.get("mute_until") or 0))
+        if policy_after != policy_before or not self.remote_context_allowed(umo, peer_id):
+            remote = []
         return self.recall(umo, peer_id, now=now, limit=limit, remote_rows=remote)
 
     async def refresh_async(self, umo: str, peer_id: str, *, limit: int = 3) -> List[Dict[str, Any]]:
@@ -280,16 +286,33 @@ class MoodMemoryStore:
 
     def cached_recall(self, umo: str, peer_id: str, *, limit: int = 3) -> List[Dict[str, Any]]:
         """Tags warmed by `refresh_async`, or [] when there is nothing fresh."""
+        if not self.enabled:
+            return []
         entry = self._recall_cache.get((str(umo), str(peer_id)))
         if not entry:
+            return []
+        # Request hooks must never reload disk. An evicted policy makes the
+        # warmed answer unusable until the message path refreshes both caches.
+        data = self._cache.get(_safe_umo(umo))
+        if data is None:
+            return []
+        forgotten = data.get("forgotten") or {}
+        if (float(data.get("mute_until") or 0) > time.time()
+                or forgotten.get("*") or forgotten.get(f"{peer_id}::*")):
             return []
         stamp, rows = entry
         if time.time() - float(stamp) > self.recall_ttl:
             return []
-        return [dict(row) for row in list(rows)[: max(0, int(limit))]]
+        remote_allowed = not any(value and key.startswith(f"{peer_id}::") for key, value in forgotten.items())
+        allowed = [row for row in rows
+                   if not forgotten.get(f"{peer_id}::{row.get('tag', '')}")
+                   and (row.get("source") != "selflearning" or remote_allowed)]
+        return [dict(row) for row in allowed[: max(0, int(limit))]]
 
     def recall_is_fresh(self, umo: str, peer_id: str) -> bool:
         """Whether a warmed answer exists; an empty answer counts as an answer."""
+        if not self.enabled or _safe_umo(umo) not in self._cache:
+            return False
         entry = self._recall_cache.get((str(umo), str(peer_id)))
         return bool(entry) and (time.time() - float(entry[0])) <= self.recall_ttl
 

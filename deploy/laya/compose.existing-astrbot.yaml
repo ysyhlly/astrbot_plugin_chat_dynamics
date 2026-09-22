@@ -1,0 +1,56 @@
+name: chat-dynamics-laya
+services:
+  laya-server:
+    image: chat-dynamics-laya:20260922
+    build:
+      context: .
+      dockerfile: deploy/laya/Dockerfile
+    restart: unless-stopped
+    env_file: [admin.env]
+    environment:
+      LAYA_DEVICE: cuda
+      HF_HOME: /models/huggingface
+    volumes:
+      - models:/models
+      - state:/state
+      - /opt/astrbot/data/plugin_data/astrbot_plugin_chat_dynamics/decision-datasets:/datasets:ro
+    networks:
+      astrbot:
+        aliases: [laya-server]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/healthz')"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+  laya-trainer:
+    image: chat-dynamics-laya:20260922
+    command: [python, -m, services.laya_service.training, worker]
+    restart: unless-stopped
+    environment:
+      HF_HOME: /models/huggingface
+    volumes:
+      - models:/models
+      - state:/state
+      - /opt/astrbot/data/plugin_data/astrbot_plugin_chat_dynamics/decision-datasets:/datasets:ro
+    networks: [astrbot]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+networks:
+  astrbot:
+    external: true
+    name: astrbot_astrbot_network
+volumes:
+  models:
+  state:

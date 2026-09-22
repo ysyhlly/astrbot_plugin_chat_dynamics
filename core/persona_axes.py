@@ -21,9 +21,9 @@ Why the LLM does the projection
 -------------------------------
 Axes like "how readily does this persona join an unaddressed conversation" are not
 recoverable from keywords -- they are a reading of the card, which is exactly the
-judgement the teacher model is for. It runs **once per persona per change**, keyed
-on the fingerprint AstrBot already computes, not once per turn. The cost is a
-single call amortised over every subsequent decision.
+judgement the teacher model is for. Successful results are cached by the persona
+fingerprint and concurrent calls are coalesced. Eviction or a failed attempt may
+require a later call; ordinary turns reuse the completed projection.
 
 Failure is not an obstacle
 --------------------------
@@ -33,12 +33,15 @@ asymmetry that governs the reasoning store and the trace itself.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
 CACHE_KEY = "chat_dynamics_persona_axes_v1"
+MAX_CACHE_ENTRIES = 128
+MAX_IN_FLIGHT = 4
 
 # Each axis is 0-4. The anchor text is not decoration: it is the rubric the
 # projection is scored against, and it doubles as the `criteria` text handed to the
@@ -76,6 +79,9 @@ AXES: dict[str, dict[int, str]] = {
         4: "stays out of anything not plainly addressed to it",
     },
 }
+for _levels in AXES.values():
+    _levels[1] = f"between {_levels[0]} and {_levels[2]}"
+    _levels[3] = f"between {_levels[2]} and {_levels[4]}"
 AXIS_NAMES = tuple(AXES)
 
 _INSTRUCTIONS = """You are converting a character card into fixed numeric axes.
@@ -123,7 +129,7 @@ def parse_projection(text: str) -> dict[str, int] | None:
         value = data.get(name)
         if isinstance(value, bool):
             continue
-        if isinstance(value, (int, float)) and 0 <= float(value) <= 4:
+        if isinstance(value, (int, float)) and 0 <= value <= 4:
             out[name] = int(round(float(value)))
     return out or None
 
@@ -178,7 +184,12 @@ async def load_cached(backend: Any, fingerprint: str) -> dict[str, int] | None:
     if not isinstance(cache, dict):
         return None
     hit = cache.get(fingerprint)
-    return (hit.get("axes") or None) if isinstance(hit, dict) else None
+    if not isinstance(hit, dict) or not isinstance(hit.get("axes"), dict):
+        return None
+    try:
+        return parse_projection(json.dumps(hit["axes"]))
+    except (TypeError, ValueError):
+        return None
 
 
 async def load(backend: Any, fingerprint: str, *, persona_id: str, persona_prompt: str,
@@ -194,20 +205,40 @@ async def load(backend: Any, fingerprint: str, *, persona_id: str, persona_promp
     """
     if not fingerprint:
         return None
-    cache = await backend.get_kv_data(CACHE_KEY, {})
-    if not isinstance(cache, dict):
-        cache = {}
-    hit = cache.get(fingerprint)
-    if isinstance(hit, dict) and "axes" in hit:
-        return hit.get("axes") or None
-    try:
-        text = await ask(*projection_prompt(persona_id, persona_prompt))
-    except Exception:  # noqa: BLE001 - projection failure must never propagate
+    state = getattr(backend, "_chat_dynamics_axes_state", None)
+    if state is None:
+        state = {"lock": asyncio.Lock(), "pending": {}}
+        setattr(backend, "_chat_dynamics_axes_state", state)
+    pending = state["pending"]
+    if fingerprint in pending:
+        return await asyncio.shield(pending[fingerprint])
+    if len(pending) >= MAX_IN_FLIGHT:
         return None
-    axes = parse_projection(text if isinstance(text, str) else str(text or ""))
-    cache[fingerprint] = {"axes": axes, "ts": float(now), "schema": SCHEMA_VERSION}
+    future = asyncio.get_running_loop().create_future()
+    pending[fingerprint] = future
+    axes = None
     try:
-        await backend.put_kv_data(CACHE_KEY, cache)
-    except Exception:  # noqa: BLE001
-        pass
-    return axes
+        axes = await load_cached(backend, fingerprint)
+        if axes:
+            return axes
+        text = await ask(*projection_prompt(persona_id, persona_prompt))
+        axes = parse_projection(text if isinstance(text, str) else str(text or ""))
+        if not axes:
+            return None
+        # Re-read under the writer lock, after generation: different fingerprints
+        # may finish together, and KV providers may return detached copies.
+        async with state["lock"]:
+            cache = await backend.get_kv_data(CACHE_KEY, {})
+            cache = dict(cache) if isinstance(cache, dict) else {}
+            cache.pop(fingerprint, None)
+            cache[fingerprint] = {"axes": axes, "ts": float(now), "schema": SCHEMA_VERSION}
+            while len(cache) > MAX_CACHE_ENTRIES:
+                cache.pop(next(iter(cache)))
+            await backend.put_kv_data(CACHE_KEY, cache)
+        return axes
+    except Exception:  # projection failure must never propagate
+        return axes
+    finally:
+        pending.pop(fingerprint, None)
+        if not future.done():
+            future.set_result(axes)

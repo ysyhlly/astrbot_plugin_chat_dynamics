@@ -23,7 +23,7 @@ async def test_invalid_persona_change_never_reaches_storage_or_live_config(plugi
         stored.update(plugin.config)
         return True
     plugin.save_config = Mock(side_effect=save)
-    with pytest.raises(RuntimeError, match="CD_AGENT_BRIDGE_UNAVAILABLE"):
+    with pytest.raises(ValueError, match="CD_AGENT_BRIDGE_UNAVAILABLE"):
         await plugin.save_config_values({"decision_mode": "persona_model", "enable": False})
     plugin.save_config.assert_not_called()
     assert plugin.config == stored == {"decision_mode": "legacy", "enable": True}
@@ -67,7 +67,7 @@ async def test_preset_also_checks_host_before_saving(plugin, monkeypatch):
     monkeypatch.setitem(main._PRESETS, "test_persona", {"decision_mode": "persona_model"})
     before = dict(plugin.config)
     plugin.save_config = Mock(return_value=True)
-    with pytest.raises(RuntimeError, match="CD_AGENT_BRIDGE_UNAVAILABLE"):
+    with pytest.raises(ValueError, match="CD_AGENT_BRIDGE_UNAVAILABLE"):
         await plugin.apply_preset("test_persona")
     plugin.save_config.assert_not_called()
     assert plugin.config == before

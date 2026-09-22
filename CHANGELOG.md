@@ -2,11 +2,31 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.12.0 · 决策学习、并行补标与稳定性修复（2026-09-23）
+
+- 新增可选决策学习、持久化教师补标队列、数据集导出与评估、模型注册及学习管理页面；补充 Laya 服务与部署工具。
+- 自动补标改为最多 3 路并行，共享小时预算，保留前台回复容量；空队列轮询从 5 秒降至 1 秒，失败退避从 2～60 秒降至 1～15 秒，关闭时取消并等待所有 worker。
+
+### 审计修复
+
+- 复核后修复读取失败覆盖数据：记忆文件不可读或损坏时拒绝缓存默认值及后续写入，支持 UTF-8 BOM，损坏提醒行不阻塞有效提醒。旧目录迁移失败时明确报错并保留源文件，不静默切换到缺数据的新目录。
+- 区分内部请求失效与调用者取消：Embedding 重配回退不取消正常回合，Jev/Laya 在重配或关闭同时发生时仍传播成员停止/卸载取消；可选 Hub 增强失败降级为空上下文。
+- debounce 清理保护活跃缓冲与仍被引用的已提取回合，避免丢消息或让旧回合重新有效；重复发送 ID 幂等，避免 deque/set 失配。
+- 已降级到 legacy 的宿主可以保存无关配置而保留期望 persona 模式，显式启用不可用模式返回校验错误；修复晚安配额、数值溢出/布尔解析、配置伪漂移、过期 hype 诊断和 Provider getter 的错误签名回退。
+- 已公布的草稿冻结快照（包括无快照状态），后台合并不再改变其版本；保留证据参与版本校验和完整恢复索引。话题回放保留遇到未归属消息时不强行关联事件的既有策略。
+- Web 请求在宿主提供原始正文接口时先校验 64 KiB 字节上限再解析 JSON，统一草稿/审批错误提示并严格校验生成开关布尔值；宿主仍负责流式接收上限。
+- 人设投影改为有界后台任务，当前回合只读取缓存，不持有会话锁等待模型；同人设合并在途请求，不同人设的 KV 写入串行合并，缓存最多保留 128 项。投影使用 ProviderBudget 后台配额，卸载时取消并等待任务结束。
+- 会话容量驱逐与闲置清理保留未到期的冷却；过期后清理，显式 reset 仍可解除。冷却保存失败保留待保存状态，按 30 秒周期重试，卸载时再尝试一次。
+- legacy 回复在首段成功时立即提交发言额度，后续失败、取消或被新回合替代不会漏记；后续成功分段只更新最近发言身份，不重复计入回合额度。
+- 全群遗忘立即失效缓存；远端召回返回后重新校验遗忘/静音策略，请求钩子仅从内存读取仍获允许的标签。
+- 记忆小本落盘失败向界面报告失败，保留原缓存和用户输入；纪念日校验真实月日组合，允许 2 月 29 日。
+- 修复人设 rubric 的 1/3 档位异常、按会话读取空气诊断时丢失延迟与预算字段，以及 README 版本摘要。
+
 ## v1.11.0 · 人设投影进训练数据、trace 文本边界、不确定度闸门（2026-09-22）
 
-- **判断依据随人设变化,此前的训练数据看不到人设**。决策提示词本来就把人设正文拼在后面（`DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt`）,所以同样的证据下两个不同人设的正确判断本就不同。而导出的 state 只留 `persona_fingerprint`——一个哈希,等于把决定判断的自变量删了,把人设之间的分歧当噪声喂给模型。新增 `core/persona_axes.py`:把 AstrBot 的人设卡（`persona_manager.personas_v3` 的 `prompt`）由 LLM 判读一次,投影到六条 0–4 序数轴（chattiness / warmth / formality / humour / initiative / boundary）,按现成的 `persona.fingerprint` 缓存,**每人设只调一次模型**,摊到后续回合为零。
+- **判断依据随人设变化,此前的训练数据看不到人设**。决策提示词本来就把人设正文拼在后面（`DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt`）,所以同样的证据下两个不同人设的正确判断本就不同。而导出的 state 只留 `persona_fingerprint`——一个哈希,等于把决定判断的自变量删了,把人设之间的分歧当噪声喂给模型。新增 `core/persona_axes.py`:把 AstrBot 的人设卡（`persona_manager.personas_v3` 的 `prompt`）由 LLM 判读一次,投影到六条 0–4 序数轴（chattiness / warmth / formality / humour / initiative / boundary）,按现成的 `persona.fingerprint` 缓存；缓存有效时复用投影，同人设的并发计算合并，缓存淘汰或失败重试可能再次调用。
 - 投影是**教师侧**的:`decision_backend` 为 `jev`/`laya` 时只读缓存,从不触发判读。学生在线时不该叫教师——「Laya 替代 LLM」只有在教师下线、学生照跑时才算成立。缓存为空就**没有投影**,照常判:一个没被判读过的人设不是「各轴为 0」的人设,是「未知」,补零就是教模型把两者当一回事。
-- 投影不进决策预算与准入槽：它另起一次 `llm_generate`,不占 `budget.run(..., "routing")` 那个预算槽、不占 `self.slots`。抢前者的预算会把真正的决策挤成 `decision_timeout`,占后者会拉长队列——那都是用遥测改行为。**当前只进数据,不改行为**：`wts_questions` / `gate_questions` / `completeness_question` 的判据文字一个字未动,`rubric()` 已写好但未接线。
+- 投影不占用决策的 `self.slots`，也不使用 `routing` 优先级；它在后台通过 `ProviderBudget` 的 `persona_projection` 用途排队，服从后台容量限制，当前回合只读取已完成缓存。**投影只进入数据记录，不调整参与规则**：`wts_questions` / `gate_questions` / `completeness_question` 的判据文字一个字未动,`rubric()` 已写好但未接线。
 - **`decision_trace` 是有界事实记录,任何自由文本一概不进**（对话正文、`response_goal`、人设文本、模型推理）。`tests/test_trace_free_text_boundary.py` 把 "zzsecretxx" 种进每一处散文并断言序列化后不出现,学习层也以「无正文」读它。`TurnDecision` 新增的 `rationale` / `why_rejected` 因此**留在内存供回复阶段用,不落盘**——理由链本该有,但它属于另一份契约（见 `docs/reasoning-store-contract.md`）。
 - 写入点放行的只有闭集词表与数字：`reason_category`（13 选 1）、`confidence`（action/state/length 各 0–1）、`evidence`（消息 ID + 闭集 cue 标签 + 权重）、`alternatives`（只留被否的 `action`,剥掉理由文字）、`assessment`（addressee/topic/completeness/ambiguity 四个读数）,外加 `target_message_ids` 与候选集。**消息 ID 按 `turn.allowed_ids` 过滤**:`TurnDecision.parse` 校验过,但 dataclass 构造器直传没这道关,*a field that is safe only on one code path is not a safe field*。
 - 「对谁说」此前**一个字都没进 trace**——它是判定的核心产物之一,却因为白名单只放行 action/state/length/reason_code 而被整个丢掉。现已补上,连同候选集（否则只有「选中谁」,负例事后补不回来,而负例正是这个任务最难也最值钱的一半）。

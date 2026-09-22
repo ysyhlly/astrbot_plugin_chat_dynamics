@@ -6,6 +6,7 @@ import logging
 import hashlib
 import json
 import math
+import inspect
 import time
 from typing import Any, Dict, Optional
 
@@ -57,7 +58,27 @@ async def _json_body() -> Dict[str, Any]:
         declared = _declared_body_bytes()
         if declared is not None and declared > _MAX_BODY_BYTES:
             return {"__invalid_body__": "body too large"}
-        payload = await request_json({})
+        # Supported hosts expose raw body()/get_data(). Bound bytes before JSON
+        # parsing even for chunked requests or misleading Content-Length. The
+        # host still owns the streaming/transport memory limit.
+        loader = getattr(request, "body", None)
+        if not callable(loader):
+            loader = getattr(request, "get_data", None)
+        if callable(loader):
+            raw = loader()
+            if inspect.isawaitable(raw):
+                raw = await raw
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8")
+            if not isinstance(raw, (bytes, bytearray)):
+                return {"__invalid_body__": "invalid JSON body"}
+            if len(raw) > _MAX_BODY_BYTES:
+                return {"__invalid_body__": "body too large"}
+            payload = json.loads(raw)
+        else:
+            # Legacy host shims lacking raw access still get a bounded payload
+            # check; they cannot offer a pre-parse byte limit at this layer.
+            payload = await request_json({})
         if isinstance(payload, dict):
             try:
                 if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > _MAX_BODY_BYTES:
@@ -426,6 +447,8 @@ class ConsoleWebAPI:
         if limited is not None:
             return limited
         body = await _json_body()
+        if "__invalid_body__" in body:
+            return _json_err(str(body["__invalid_body__"]), 400)
         if set(body) != {"ui"} or body.get("ui") not in ("day", "night"):
             return _json_err("ui must be day or night", 400)
         if getattr(self.plugin, "_shutting_down", False):
@@ -451,7 +474,7 @@ class ConsoleWebAPI:
             return _json_err("plugin is shutting down", 503)
 
         page_name = (query_value("page") or query_value("page_name") or "").strip()
-        allowed = {"console", "config", "today", "manners", "memory", "replay", "drafts"}
+        allowed = {"console", "config", "today", "manners", "memory", "replay", "drafts", "learning"}
         if page_name not in allowed:
             return _json_err("unsupported page", 400)
 
@@ -602,8 +625,6 @@ class ConsoleWebAPI:
             data['latency'] = summarize_turn_latencies(getattr(self.plugin, 'dags', {}))
             data['provider_budget'] = provider_budget.diagnostics() if provider_budget is not None else {}
             air = dict(data.get("read_air") or {})
-            air['latency'] = data['latency']
-            air['provider_budget'] = data['provider_budget']
             umo = (_query_param("umo") or _query_param("session_key") or "").strip()
             if len(umo) > _MAX_SESSION_ID_LENGTH:
                 # Same bound as the sibling endpoints: an arbitrary id reaches the
@@ -614,6 +635,8 @@ class ConsoleWebAPI:
 
                 air = _read_air_summary(self.plugin, data.get("sessions") or [], session_key=umo)
                 air["presence_knob"] = air.get("presence_knob") or data.get("presence_knob")
+            air['latency'] = data['latency']
+            air['provider_budget'] = data['provider_budget']
             # Attach partner lamps for dashboard pages without a second round-trip.
             air["selflearning"] = data.get("selflearning") or {}
             air["media_gate"] = data.get("media_gate") or {}
@@ -694,17 +717,19 @@ class ConsoleWebAPI:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
-        try:
-            body = await _json_body()
-        except ValueError as exc:
-            return _json_err(str(exc), 400)
+        body = await _json_body()
+        if "__invalid_body__" in body:
+            return _json_err(str(body["__invalid_body__"]), 400)
+        for flag in ("refresh", "regenerate_dismissed"):
+            if flag in body and not isinstance(body[flag], bool):
+                return _json_err(f"{flag} must be a boolean", 400)
         session = str(body.get("session_key") or "").strip()
         if not session or len(session) > 256:
             return _json_err("session_key is required", 400)
         try:
             return _json_ok(await self.plugin.annotation_draft_payload(
-                session, refresh=bool(body.get("refresh")),
-                regenerate_dismissed=bool(body.get("regenerate_dismissed"))))
+                session, refresh=body.get("refresh", False),
+                regenerate_dismissed=body.get("regenerate_dismissed", False)))
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:
@@ -740,10 +765,9 @@ class ConsoleWebAPI:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
-        try:
-            body = await _json_body()
-        except ValueError as exc:
-            return _json_err(str(exc), 400)
+        body = await _json_body()
+        if "__invalid_body__" in body:
+            return _json_err(str(body["__invalid_body__"]), 400)
         try:
             return _json_ok(await self.plugin.annotation_drafts_apply(body))
         except ValueError as exc:
@@ -757,8 +781,11 @@ class ConsoleWebAPI:
             return limited
         if self.plugin._shutting_down:
             return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if "__invalid_body__" in body:
+            return _json_err(str(body["__invalid_body__"]), 400)
         try:
-            return _json_ok(await self.topic_annotations.save(await _json_body()))
+            return _json_ok(await self.topic_annotations.save(body))
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:

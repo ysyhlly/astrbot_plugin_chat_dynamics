@@ -118,6 +118,13 @@ def _write(node: object, value: str, *, delivered: bool, reason: str = "",
         updated = deepcopy(trace)
         updated[OUTCOME_KEY] = dict(block)
         metadata["decision_trace"] = updated
+    observer = getattr(node, "_decision_learning_outcome", None)
+    if callable(observer):
+        try:
+            observer(dict(block))
+        except Exception:
+            # Optional training telemetry never changes delivery semantics.
+            pass
     return block
 
 

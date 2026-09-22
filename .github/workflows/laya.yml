@@ -1,0 +1,27 @@
+name: Laya service contracts
+on:
+  pull_request:
+    paths: ['services/laya_service/**', 'deploy/laya/**', 'core/decision_*.py', 'tests/test_laya_service*.py', '.github/workflows/laya.yml']
+  push:
+    paths: ['services/laya_service/**', 'deploy/laya/**', 'core/decision_*.py', 'tests/test_laya_service*.py', '.github/workflows/laya.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-dev.txt -r services/laya_service/requirements.txt httpx==0.28.1
+      - run: python -m ruff check services/laya_service tests/test_laya_service.py
+      - run: python -m pytest tests/test_laya_service.py -q
+      - name: Validate Compose configuration (no deployment or GPU claim)
+        env:
+          ASTRBOT_IMAGE: soulter/astrbot:latest
+          LAYA_ADMIN_TOKEN: ci-configuration-validation-only
+        run: docker compose -f deploy/laya/compose.yaml config --quiet

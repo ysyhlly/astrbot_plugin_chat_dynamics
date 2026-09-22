@@ -1,0 +1,7 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+numpy==2.2.5
+safetensors==0.5.3
+transformers==5.0.0
+huggingface-hub==1.3.5
+git+https://github.com/NandhaKishorM/laya.git@573e5b62696ba441230cd6be71d593331b5d23af

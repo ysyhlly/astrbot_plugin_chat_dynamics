@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <style>html{background:#f5f6f4;color-scheme:light}html[data-ui-theme="night"]{background:#0b1419;color-scheme:dark}</style>
+  <script>(()=>{let s;try{s=localStorage.getItem('chat_dynamics_ui')}catch{}const q=new URLSearchParams(location.search).get('ui');document.documentElement.dataset.uiTheme=['day','night'].includes(q)?q:s==='night'?'night':'day'})();</script>
+  <script src="./theme.js"></script>
+  <title>决策学习 · 群聊动态</title>
+  <link rel="stylesheet" href="./base.css"><link rel="stylesheet" href="./shell.css">
+  <link rel="stylesheet" href="./plugin_nav.css"><link rel="stylesheet" href="./theme.css"><link rel="stylesheet" href="./style.css">
+</head>
+<body><div class="app plugin-shell"><div class="plugin-layout">
+  <aside class="plugin-side" aria-label="插件页面"><p class="plugin-side-label">群聊动态</p><nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav></aside>
+  <main class="plugin-main">
+    <header class="topbar"><div><p class="eyebrow">CHAT DYNAMICS / LEARNING</p><h1>决策学习</h1><p class="lede">让教师提供示范，让证据决定接管。</p></div><button type="button" id="refresh">刷新</button></header>
+    <p id="status" role="status" aria-live="polite">正在连接…</p>
+    <section class="metrics" aria-label="运行摘要">
+      <div><span>运行模式</span><strong id="mode">—</strong></div><div><span>当前模型</span><strong id="model">—</strong></div>
+      <div><span>学生任务占比</span><strong id="takeover">—</strong></div><div><span>教师回退率</span><strong id="fallback">—</strong></div><div><span>最近请求 p95</span><strong id="latency">—</strong></div>
+    </section>
+    <section class="wire-card"><div class="card-heading"><h2>任务证据</h2><span class="card-note">任务分别验收 · 未达标继续由教师执行</span></div>
+      <p id="sampleMeaning" class="section-copy">原始采集量不等于独立测试量。师生配对是同一输入同时具有教师标签与学生预测；独立测试样本数及质量以模型评估报告为准。</p>
+      <p id="teacherLabelMeaning" class="section-copy">教师答案是硬标签：0/1 是标签编码，不是 100% 置信度。学生输出的概率需要校准后使用。</p>
+      <p id="collectionGaps" class="section-copy" role="status"></p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="任务采集明细，可横向滚动"><table aria-describedby="sampleMeaning"><thead><tr><th scope="col">任务</th><th scope="col">原始采集</th><th scope="col">教师标签</th><th scope="col">师生配对</th><th scope="col">已采类别数</th><th scope="col">类别分布与缺口</th><th scope="col">接管状态</th><th scope="col">独立测试质量</th></tr></thead><tbody id="tasks"></tbody></table></div>
+    </section>
+    <section class="wire-card" aria-labelledby="qualityTitle"><h2 id="qualityTitle">样本质量复核</h2>
+      <p id="qualityMeaning" class="section-copy">需复核不等于教师错误。这些标记用于安排人工检查，不自动修改教师标签，也不代表模型质量结论。计数按已标记样本统计，同一请求的多道题可分别计入，不能当作问题请求数。</p>
+      <dl id="qualityFlags" class="diagnostic-counters" aria-describedby="qualityMeaning"></dl>
+      <h3>教师提示词版本</h3><dl id="teacherPromptVersions" class="diagnostic-counters"></dl>
+      <p id="teacherComparisonMeaning" class="section-copy">用少量样本比较新旧教师提示词，展示脱敏汇总。标签改变不等于质量改善，差异仍需人工复核。</p>
+      <button type="button" id="compareTeacher" aria-describedby="teacherComparisonMeaning">对比新旧教师提示词（6 条）</button>
+      <div id="queuePrioritySection" hidden><h3>补标队列优先级</h3><dl id="queuePriority" class="diagnostic-counters"></dl></div>
+    </section>
+    <section class="wire-card" aria-labelledby="studentTitle"><h2 id="studentTitle">学生诊断</h2>
+      <p class="section-copy">以下为本次运行的累计诊断次数；成功返回不代表通过验收或已经接管。旁路模式中教师先完成时，会取消剩余学生任务，避免延迟回复。</p>
+      <dl id="studentCounters" class="diagnostic-counters"></dl>
+      <h3>最近请求</h3><ul id="studentRecent" class="records"></ul>
+    </section>
+    <div class="learning-grid">
+      <section class="wire-card"><h2>训练作业</h2><p class="section-copy">提交后台作业，训练进度会自动刷新。</p>
+        <form id="trainForm"><label for="trainModel">新模型标识</label><input id="trainModel" required maxlength="128" placeholder="candidate-001"><label for="epochs">训练轮数</label><input id="epochs" type="number" min="1" max="20" value="3" required><label for="seed">随机种子</label><input id="seed" type="number" min="1" max="2147483648" step="1" value="42" required aria-describedby="seedHelp"><p id="seedHelp" class="section-copy">不同种子用于重复实验，不能用测试集结果挑选最好的模型。</p><p class="section-copy">自动导出当前教师样本到训练数据卷。</p><button type="submit">创建训练作业</button></form>
+        <ul id="jobs" class="records" aria-label="训练作业列表"></ul>
+      </section>
+      <section class="wire-card"><h2>模型验收与发布</h2><p class="section-copy">先评估候选模型，通过质量门槛后再晋升。</p>
+        <form id="modelForm"><label for="candidate">候选模型标识</label><input id="candidate" required maxlength="256"><div class="actions"><button type="submit">查看评估</button><button type="button" id="promote">晋升模型</button><button type="button" id="rollout">下一阶段</button><button type="button" id="rollback">回滚上一版本</button><button type="button" id="compareJev">Jev 对照最近样本</button></div></form>
+        <pre id="result" aria-label="操作结果" tabindex="0"></pre>
+      </section>
+    </div>
+    <section class="wire-card"><h2>分歧案例</h2><ul id="disagreements" class="records"></ul></section>
+    <section class="wire-card"><h2>样本管理</h2><p class="section-copy">仅采集已启用会话。删除会话样本时，同时清理关联数据集。</p>
+      <form id="sampleForm"><label for="session">会话标识（删除时必填）</label><input id="session" maxlength="256"><div class="actions"><button type="submit">导出样本 JSON</button><button type="button" id="deleteSamples">删除会话样本</button></div></form>
+    </section>
+  </main>
+</div></div><script type="module" src="./app.js"></script></body></html>

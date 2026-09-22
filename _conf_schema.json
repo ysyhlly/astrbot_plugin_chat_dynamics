@@ -110,7 +110,36 @@
       "max": 0.5,
       "step": 0.01
     },
-    "hint": "范围 0~0.5，超过就把决策退回原 LLM。语义统一：0 表示完全确定，越大越不确定。noul 用 min(p, 1-p)，choice/score 用 1 - max(probabilities)，两类问题落在同一尺度上，所以一个阈值通用。多个信号并存时取**最保守**的那个（本插件是安全闸，任何一路说不确定就退）。若模型带训练过的动作头（rl_agent_config.json 里有 act_costs，即本项目 laya_train.py 产出的 checkpoint），则可改用 1 - act_probability——那是被定价过的「出手还是退给 LLM」决策。0.25 约等于「p 落在 (0.25, 0.75) 之外才出手」。"
+    "hint": "范围 0~0.5。noul 使用 min(p, 1-p)，choice/score 使用 1 - max(probabilities)。旧模式遵循各原有决策路径的回退行为；决策学习 active 模式使用独立校准阈值并回退 LLM。初版不依赖 act_head；act_costs 配置不代表动作头已经训练或验证。"
+  },
+  "decision_learning_mode": {
+    "description": "决策学习运行模式",
+    "type": "string", "default": "off", "options": ["off", "collect", "shadow", "active"],
+    "hint": "off 保持原行为；collect 采集教师标签；shadow 教师执行、学生旁路比较；active 仅已验收任务由学生接管，不确定时回退教师。回复正文仍由主 Agent 生成。"
+  },
+  "decision_learning_sessions": {
+    "description": "允许采集的完整会话 UMO", "type": "list", "default": [],
+    "hint": "只为这些完整 UMO 保存训练样本，默认不采集。请从会话控制台复制会话标识；明确需要所有生效群时填 *，仍遵守插件的生效和排除规则。"
+  },
+  "decision_learning_retention_days": {
+    "description": "决策样本保留天数", "type": "int", "default": 30,
+    "slider": {"min": 1, "max": 365, "step": 1}, "hint": "到期清理样本，范围 1~365 天。"
+  },
+  "decision_learning_sample_rate": {
+    "description": "接管后教师抽样比例", "type": "float", "default": 0.05,
+    "slider": {"min": 0, "max": 1, "step": 0.01}, "hint": "保留随机教师比较，避免只采集学生不确定的样本。"
+  },
+  "decision_learning_labels_per_hour": {
+    "description": "后台教师补标每小时预算", "type": "int", "default": 120,
+    "slider": {"min": 0, "max": 10000, "step": 1}, "hint": "限制后台补标调用量；0 暂停补标，不影响在线教师回退。"
+  },
+  "decision_learning_jev_fallback": {
+    "description": "在 Laya 与教师之间尝试 Jev", "type": "bool", "default": false,
+    "hint": "默认关闭。开启后按 Laya → Jev → LLM → 本地规则回退，整条链共享截止时间。"
+  },
+  "laya_internal_hosts": {
+    "description": "允许明文访问的 Laya 内部主机名", "type": "list", "default": [],
+    "hint": "Docker Compose 填 laya-server。只接受精确主机名，不支持通配符；用于可信容器私有网络。"
   },
   "vibe_backend": {
     "description": "氛围分类后端",

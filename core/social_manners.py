@@ -75,6 +75,8 @@ class SocialMannersGate:
 
         if explicit:
             # @ may reply; hyped quota still avoids meme stacking after a hyped join.
+            if hyped_quota_enabled and occasion_kind == "banter":
+                self._touch_banter(session_id, stamp)
             if (
                 hyped_quota_enabled
                 and occasion_kind == "banter"

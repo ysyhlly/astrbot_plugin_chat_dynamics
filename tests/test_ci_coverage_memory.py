@@ -21,13 +21,17 @@ def test_notebook_persistence_and_removal(tmp_path):
     assert gm.GroupMemoryNotebook(tmp_path).list_all("room")["reminders"] == []
 
 
-def test_notebook_invalid_storage_and_write_failure_keep_local_state(tmp_path, monkeypatch):
+def test_notebook_invalid_storage_and_write_failure_preserve_committed_state(tmp_path, monkeypatch):
     book = gm.GroupMemoryNotebook(tmp_path)
     book._path("room").write_text("broken", encoding="utf-8")
+    with pytest.raises(ValueError):
+        book.list_all("room")
+    book._path("room").unlink()
     assert book.list_all("room")["reminders"] == []
     monkeypatch.setattr(gm, "atomic_write_json", Mock(side_effect=OSError))
-    book.add_reminder("room", text="meeting", due_at=10)
-    assert len(book.list_all("room")["reminders"]) == 1
+    with pytest.raises(OSError):
+        book.add_reminder("room", text="meeting", due_at=10)
+    assert book.list_all("room")["reminders"] == []
 
 
 def test_notebook_disabled_validation_and_mute(tmp_path):
@@ -85,7 +89,8 @@ def test_mood_reload_retention_and_corrupt_file(tmp_path, monkeypatch):
     loaded.configure(enabled=True)
     assert loaded.recall("room", "peer", now=100)[0]["tag"] == "coding"
     loaded._path("corrupt").write_text("broken", encoding="utf-8")
-    assert loaded.recall("corrupt", "peer") == []
+    with pytest.raises(ValueError):
+        loaded.recall("corrupt", "peer")
     data = {"peers": {str(i): {"last_seen": i} for i in range(201)}}
     loaded._save("many", data)
     assert len(data["peers"]) == 200 and "0" not in data["peers"]

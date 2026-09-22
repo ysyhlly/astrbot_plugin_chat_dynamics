@@ -12,7 +12,11 @@ PLUGIN_NAME = "astrbot_plugin_chat_dynamics"
 
 
 def _copy_missing(source: Path, target: Path) -> None:
-    """Publish a complete copy atomically, never replace an existing target."""
+    """Publish a complete copy atomically, never replace an existing target.
+
+    Filesystems without hard links fail explicitly. A replace fallback could
+    destroy a concurrent writer; direct exclusive copying exposes partial data.
+    """
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
@@ -58,5 +62,6 @@ def resolve_data_root(legacy_dir: Path) -> Path:
         try:
             _copy_missing(source, destination)
         except OSError as exc:
-            logger.warning("Legacy memory copy deferred type=%s", type(exc).__name__)
+            logger.error("Legacy memory migration failed; refusing to switch data directory type=%s", type(exc).__name__)
+            raise
     return target

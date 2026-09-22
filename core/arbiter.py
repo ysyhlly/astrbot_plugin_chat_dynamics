@@ -126,6 +126,15 @@ class InterventionArbiter:
             if expiry > now
         }
 
+    def prune_cooling(self, current_time: Optional[float] = None) -> None:
+        """Expire retained cooldowns even after their session runtime was evicted."""
+        now = self._now(current_time)
+        expired = [key for key, expiry in self._cooling_until.items() if expiry <= now]
+        for key in expired:
+            self._cooling_until.pop(key, None)
+        if expired:
+            self._emit_cooling_changed()
+
     def trigger_cooling(self, session_id: str, duration_seconds: Optional[float] = None, current_time: Optional[float] = None) -> None:
         """Activates a deep cooling period for the session."""
         now = self._now(current_time)
@@ -202,12 +211,15 @@ class InterventionArbiter:
         user_id: Optional[str] = None,
         topic_id: Optional[str] = None,
         msg_id: Optional[str] = None,
+        *,
+        count_turn: bool = True,
     ) -> None:
         """Records that the bot spoke and clears low-effort streaks for the session."""
         now = self._now(timestamp)
         self._last_bot_speak_time[session_id] = now
-        history = self._bot_speak_history.setdefault(session_id, deque(maxlen=32))
-        history.append(now)
+        if count_turn:
+            history = self._bot_speak_history.setdefault(session_id, deque(maxlen=32))
+            history.append(now)
         if user_id:
             self._last_interlocutor[session_id] = str(user_id)
         if topic_id:
@@ -266,9 +278,10 @@ class InterventionArbiter:
         """Resets the low effort streak for a user."""
         self._low_effort_streaks.pop((session_id, user_id), None)
 
-    def reset_session(self, session_id: str) -> None:
-        """Clears cooling, streaks, and last-speak state for a session."""
-        self._cooling_until.pop(session_id, None)
+    def reset_session(self, session_id: str, *, keep_cooling: bool = False) -> None:
+        """Clear conversational state, optionally retaining an operator cooldown."""
+        if not keep_cooling:
+            self._cooling_until.pop(session_id, None)
         self._last_bot_speak_time.pop(session_id, None)
         self._last_interlocutor.pop(session_id, None)
         self._last_bot_topic.pop(session_id, None)
@@ -278,7 +291,8 @@ class InterventionArbiter:
         stale_keys = [key for key in self._low_effort_streaks if key[0] == session_id]
         for key in stale_keys:
             self._low_effort_streaks.pop(key, None)
-        self._emit_cooling_changed()
+        if not keep_cooling:
+            self._emit_cooling_changed()
 
     def _is_same_user_continuation(
         self,

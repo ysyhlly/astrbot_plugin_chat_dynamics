@@ -485,10 +485,12 @@ def test_the_side_nav_links_every_page_and_marks_review_current(browser, page_se
     with browser.new_context() as context:
         page = open_page(context, page_server)
 
-        assert page.locator(".plugin-side-nav .plugin-side-item").count() == 7
+        assert page.locator(".plugin-side-nav .plugin-side-item").count() == 8
         current = page.locator(".plugin-side-item.is-current")
         assert current.count() == 1 and "AI 标注审批" in current.inner_text()
         assert page.locator('[data-nav-page="replay"]').count() == 1
+        learning = page.locator('[data-nav-page="learning"]')
+        assert learning.count() == 1 and "决策学习" in learning.inner_text()
 
 
 def test_an_empty_backlog_says_so(browser, page_server):

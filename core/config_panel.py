@@ -7,7 +7,7 @@ import json
 import math
 import re
 from astrbot.api import logger
-from .config import PIPELINE_FILTER, parse_runtime_config
+from .config import PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 
 _PRESETS = {
     "observe": {
@@ -104,8 +104,8 @@ class ConfigPanel:
         return values
 
 
-    def get_effective_config(self) -> dict[str, Any]:
-        cfg = getattr(self.host, "_runtime_config", None)
+    def get_effective_config(self, *, runtime_config: RuntimeConfig | None = None) -> dict[str, Any]:
+        cfg = runtime_config if runtime_config is not None else getattr(self.host, "_runtime_config", None)
         if cfg is None:
             cfg, _ = parse_runtime_config(self.host._coerce_config(getattr(self.host, "config", {}) or {}))
         return {
@@ -128,6 +128,13 @@ class ConfigPanel:
             "laya_timeout": getattr(cfg, "laya_timeout", 1.5),
             "laya_min_confidence": getattr(cfg, "laya_min_confidence", 0.6),
             "laya_max_uncertainty": getattr(cfg, "laya_max_uncertainty", 0.25),
+            "decision_learning_mode": getattr(cfg, "decision_learning_mode", "off"),
+            "decision_learning_sessions": list(getattr(cfg, "decision_learning_sessions", ())),
+            "decision_learning_retention_days": getattr(cfg, "decision_learning_retention_days", 30),
+            "decision_learning_sample_rate": getattr(cfg, "decision_learning_sample_rate", 0.05),
+            "decision_learning_labels_per_hour": getattr(cfg, "decision_learning_labels_per_hour", 120),
+            "decision_learning_jev_fallback": getattr(cfg, "decision_learning_jev_fallback", False),
+            "laya_internal_hosts": list(getattr(cfg, "laya_internal_hosts", ())),
             "vibe_backend": getattr(cfg, "vibe_backend", "llm"),
             "vibe_min_confidence": getattr(cfg, "vibe_min_confidence", 0.55),
             "vibe_max_uncertainty": getattr(cfg, "vibe_max_uncertainty", 0.35),
@@ -238,11 +245,20 @@ class ConfigPanel:
             self.host._sync_runtime_from_config()
         stored = self._config_stored_values()
         effective = self.get_effective_config()
+        raw = self.host._coerce_config(getattr(self.host, "config", {}) or {})
+        defaults = self.get_effective_config(runtime_config=parse_runtime_config({})[0])
+        missing = object()
         mismatches = []
         for key, eff in effective.items():
             if key not in stored:
                 continue
-            if stored.get(key) != eff:
+            value = raw.get(key, missing)
+            if value is missing:
+                value = defaults.get(key)
+            elif key in {"takeover_groups", "exclude_groups"} and isinstance(value, (str, list, tuple, set, frozenset)):
+                source = value.split(",") if isinstance(value, str) else value
+                value = sorted({str(item).strip() for item in source if str(item).strip()})
+            if value != eff:
                 mismatches.append(key)
         # A parameter the learning policy has overridden legitimately differs
         # from the stored value, so it is listed separately instead of being
@@ -279,7 +295,7 @@ class ConfigPanel:
                 raise ValueError(f"{key} must be an integer")
             try:
                 number = float(value) if not isinstance(value, int) else float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise ValueError(f"{key} must be an integer") from None
             if not math.isfinite(number) or abs(number - round(number)) > 1e-9:
                 raise ValueError(f"{key} must be an integer")
@@ -291,7 +307,7 @@ class ConfigPanel:
                 raise ValueError(f"{key} must be a number")
             try:
                 number = float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise ValueError(f"{key} must be a number") from None
             if not math.isfinite(number):
                 raise ValueError(f"{key} must be a finite number")
@@ -308,6 +324,15 @@ class ConfigPanel:
             return ""
         return value if isinstance(value, str) else str(value)
 
+
+    def _prepare_config_candidate(
+        self, candidate: tuple[RuntimeConfig, tuple[str, ...]], updates: dict[str, Any],
+    ) -> tuple[RuntimeConfig, tuple[str, ...]]:
+        prepare = getattr(self.host, "_prepare_config_candidate", None)
+        if callable(prepare):
+            return prepare(candidate[0], explicit_persona=updates.get("decision_mode") == "persona_model"), candidate[1]
+        self.host._validate_runtime_config(candidate[0])
+        return candidate
 
     async def save_config_values(self, updates: dict[str, Any], *, baseline: dict[str, Any] | None = None) -> dict[str, Any]:
         if not isinstance(updates, dict):
@@ -338,7 +363,7 @@ class ConfigPanel:
                     except Exception as exc:
                         raise RuntimeError(f"failed to set {key}: {type(exc).__name__}") from exc
                 candidate = parse_runtime_config(self.host.config)
-                self.host._validate_runtime_config(candidate[0])
+                candidate = self._prepare_config_candidate(candidate, normalized)
                 saver = getattr(self.host.config, "save_config", None)
                 if not callable(saver):
                     saver = getattr(self.host, "save_config", None)
@@ -473,7 +498,7 @@ class ConfigPanel:
                     self.host.config[key] = value
                     changed[key] = value
             candidate = parse_runtime_config(self.host.config)
-            self.host._validate_runtime_config(candidate[0])
+            candidate = self._prepare_config_candidate(candidate, values)
             if callable(saver):
                 result = saver()
                 if inspect.isawaitable(result):

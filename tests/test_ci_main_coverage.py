@@ -56,7 +56,8 @@ async def test_config_save_and_apply_refresh_live_runtime(plugin):
     assert panel["effective"]["chars_per_second"] == 50
     assert plugin._metrics["config_saved"] == 1
     assert plugin._metrics["config_applied"] == 1
-    assert "enable" in panel["mismatches"]
+    assert panel["effective"]["enable"] is True
+    assert "enable" not in panel["mismatches"]
 
 
 @pytest.mark.asyncio
@@ -175,14 +176,14 @@ async def test_preset_failed_persistence_restores_previous_and_absent_keys(plugi
 
 
 @pytest.mark.asyncio
-async def test_cooling_persistence_failure_clears_dirty_state(plugin):
+async def test_cooling_persistence_failure_retains_dirty_state(plugin):
     plugin.put_kv_data = AsyncMock(side_effect=OSError("disk unavailable"))
     plugin._cooling_persist_dirty = True
     plugin._cooling_persist_event.set()
     await plugin._persist_cooling()
     assert plugin._metrics["cooling_persist_failed"] == 1
-    assert not plugin._cooling_persist_dirty
-    assert not plugin._cooling_persist_event.is_set()
+    assert plugin._cooling_persist_dirty
+    assert plugin._cooling_persist_event.is_set()
     plugin.put_kv_data = None
     plugin._cooling_persist_dirty = True
     plugin._cooling_persist_event.set()

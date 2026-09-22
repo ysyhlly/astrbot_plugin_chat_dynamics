@@ -108,6 +108,13 @@ class RuntimeConfig:
     # laya_min_confidence 只对 choice/score 有效（它们的 confidence 能低到 0），
     # 而 noul 的 confidence = max(p, 1-p) 恒 >= 0.5，必须走不确定度那条路。
     laya_max_uncertainty: float = 0.25
+    decision_learning_mode: str = "off"
+    decision_learning_sessions: tuple[str, ...] = ()
+    decision_learning_retention_days: int = 30
+    decision_learning_sample_rate: float = 0.05
+    decision_learning_labels_per_hour: int = 120
+    decision_learning_jev_fallback: bool = False
+    laya_internal_hosts: tuple[str, ...] = ()
     # The mood calibration has its own backend and its own floor: it is a reading,
     # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
     vibe_backend: str = "llm"
@@ -191,6 +198,9 @@ def _number(
     valid: Callable[[float], bool],
     warnings: List[str],
 ) -> float:
+    if isinstance(_get(raw, key, default), bool):
+        warnings.append(f"{key} is invalid; using {default}")
+        return default
     try:
         value = float(_get(raw, key, default))
     except (TypeError, ValueError, OverflowError):
@@ -209,6 +219,9 @@ def _integer(
     maximum: int,
     warnings: List[str],
 ) -> int:
+    if isinstance(_get(raw, key, default), bool):
+        warnings.append(f"{key} is invalid; using {default}")
+        return default
     try:
         value = float(_get(raw, key, default))
     except (TypeError, ValueError, OverflowError):
@@ -341,6 +354,16 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     # small decisions the active path asks for.
 
     config = RuntimeConfig(
+        decision_learning_mode=(str(_get(raw, "decision_learning_mode", "off"))
+                                if _get(raw, "decision_learning_mode", "off") in
+                                ("off", "collect", "shadow", "active") else "off"),
+        decision_learning_sessions=_strings(_get(raw, "decision_learning_sessions", ())),
+        decision_learning_retention_days=_integer(raw, "decision_learning_retention_days", 30, 1, 365, warnings),
+        decision_learning_sample_rate=_number(raw, "decision_learning_sample_rate", .05, lambda x: 0 <= x <= 1, warnings),
+        decision_learning_labels_per_hour=_integer(raw, "decision_learning_labels_per_hour", 120, 0, 10000, warnings),
+        decision_learning_jev_fallback=_bool(_get(raw, "decision_learning_jev_fallback", False), False),
+        laya_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "laya_internal_hosts", ()))
+                                  if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
         learning_policy_mode=policy_mode,
         learning_policy_source_id=(str(_get(raw, "learning_policy_source_id", "") or "").strip()
                                    or "ysyhlly/astrbot_plugin_dynamics_learning"),

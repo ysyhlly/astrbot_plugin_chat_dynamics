@@ -394,7 +394,7 @@ class SessionRuntime:
         return True
 
     def remember_sent(self, message_id: str) -> None:
-        if not message_id:
+        if not message_id or message_id in self.sent_id_set:
             return
         if len(self.sent_message_ids) == self.sent_message_ids.maxlen:
             self.sent_id_set.discard(self.sent_message_ids[0])

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -398,6 +400,8 @@ class PersonaEngine:
         self.plugin = plugin
         self.bridge = AstrBotAgentBridge(plugin.context)
         self.slots = asyncio.Semaphore(4)
+        self._projection_cache = OrderedDict()
+        self._projection_tasks = {}
 
     def valid(self, runtime, item: ModelTurn) -> bool:
         p, turn = self.plugin, item.context
@@ -435,54 +439,104 @@ class PersonaEngine:
         self.plugin._mark_panel_runtime_dirty()
 
     async def _project_persona(self, persona, turn):
-        """Project the persona onto bounded axes. Data collection only.
-
-        Deliberately outside the decision's admission slot and outside the
-        "routing" budget the decision call charges against. Reusing either would
-        be a behaviour change dressed as telemetry: a projection spending the
-        routing budget could push a real decision into `decision_timeout`, and
-        holding a slot would lengthen the queue. This runs on its own, is cached
-        per persona fingerprint, and every failure mode -- no KV, no provider, a
-        timeout, an unparseable reply -- yields None and leaves the record simply
-        without the field.
-
-        Cost is one call per persona per edit, amortised over every later turn.
-        """
+        """Return only a completed projection; warm the cache without awaiting I/O."""
         from . import persona_axes
 
         p = self.plugin
-        if getattr(p, "get_kv_data", None) is None or getattr(p, "put_kv_data", None) is None:
+        fingerprint = persona.fingerprint
+        learning = getattr(p, "decision_learning", None)
+        if learning is not None and learning.enabled(turn.session_key):
+            fingerprint += f":learning:{id(p._runtime_config)}:{learning.model_version}"
+        if not fingerprint or getattr(p, "_shutting_down", False):
             return None
-
-        # A typed-decision backend must work with the teacher offline -- that is
-        # the whole point of routing to it. So it only ever reads the cache and
-        # never triggers a read of the card; when nothing was cached it judges with
-        # no projection at all. The model path is the one that pays for a model call
-        # anyway, so it is the one that fills the cache.
+        hit = self._projection_cache.get(fingerprint)
+        if hit is not None:
+            axes, expires = hit
+            if time.monotonic() < expires:
+                self._projection_cache.move_to_end(fingerprint)
+                return axes
+            self._projection_cache.pop(fingerprint, None)
+        if (fingerprint in self._projection_tasks or len(self._projection_tasks) >= 4
+                or not callable(getattr(p, "_create_background_task", None))
+                or not callable(getattr(p, "get_kv_data", None))):
+            return None
         backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
-        if backend in ("jev", "laya"):
-            return await persona_axes.load_cached(p, persona.fingerprint)
 
         async def ask(system: str, user: str) -> str:
+            from .provider_budget import context_budget
             provider_id = (p._runtime_config.decision_provider_id
                            or await p.llm.resolve_provider_id(turn.session_key))
-            response = await p.context.llm_generate(
-                chat_provider_id=provider_id, system_prompt=system, prompt=user)
-            return completion_text(response)
+            budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
 
-        try:
-            return await asyncio.wait_for(
-                persona_axes.load(p, persona.fingerprint,
-                                  persona_id=persona.persona_id,
-                                  persona_prompt=persona.prompt, ask=ask),
-                timeout=p._runtime_config.decision_timeout)
-        except Exception:
-            return None
+            async def invoke():
+                # Admission may outlive a configuration switch or shutdown.
+                current_backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
+                if getattr(p, "_shutting_down", False) or current_backend != "model":
+                    return None
+                return await p.context.llm_generate(
+                    chat_provider_id=provider_id, system_prompt=system, prompt=user)
+
+            return completion_text(await budget.run(provider_id, "persona_projection", invoke))
+
+        async def warm():
+            axes = None
+            try:
+                async def fetch():
+                    learning = getattr(p, "decision_learning", None)
+                    if learning is not None and learning.enabled(turn.session_key):
+                        from .decision_tasks import persona_questions
+                        answers = await learning.evaluate(session_id=turn.session_key,
+                            state={"character_card": persona.prompt, "persona_fingerprint": fingerprint},
+                            questions=persona_questions())
+                        return {name: int(round(answers[f"persona.{name}"]["score"]))
+                                for name in persona_axes.AXIS_NAMES if f"persona.{name}" in (answers or {})} or None
+                    if backend != "model" or not callable(getattr(p, "put_kv_data", None)):
+                        return await persona_axes.load_cached(p, fingerprint)
+                    return await persona_axes.load(
+                        p, fingerprint, persona_id=persona.persona_id,
+                        persona_prompt=persona.prompt, ask=ask, now=time.time())
+
+                axes = await asyncio.wait_for(fetch(), timeout=p._runtime_config.decision_timeout)
+            except Exception:
+                pass
+            else:
+                if getattr(p, "_shutting_down", False):
+                    return
+            # Failed or missing projections retry after a short cooldown.
+            self._projection_cache[fingerprint] = (axes, time.monotonic() + (3600 if axes else 60))
+            while len(self._projection_cache) > persona_axes.MAX_CACHE_ENTRIES:
+                self._projection_cache.popitem(last=False)
+
+        task = p._create_background_task(warm())
+        self._projection_tasks[fingerprint] = task
+
+        def finished(done):
+            if self._projection_tasks.get(fingerprint) is done:
+                self._projection_tasks.pop(fingerprint, None)
+
+        task.add_done_callback(finished)
+        return None
 
     async def decide(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
         p, turn = self.plugin, item.context
         if item.fallback:
             return TurnDecision.fallback(turn, "queue_overload")
+        learning = getattr(p, "decision_learning", None)
+        if learning is not None and learning.enabled(turn.session_key):
+            from .decision_tasks import turn_questions, turn_from_answers
+            questions, candidates = turn_questions(turn)
+            learning_state = build_state(turn, previous_state=state, observations=item.observations,
+                                        presence=p._runtime_config.presence_knob, persona_prompt=persona.prompt)
+            learning_state["conversation"]["messages"] = [
+                {"message_id": m.message_id, "author": m.author, "text": m.text[:800], "reply_to": m.reply_to}
+                for m in turn.messages if m.message_id in candidates]
+            answers = await learning.evaluate(session_id=turn.session_key,
+                state=learning_state,
+                questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
+            if runtime is not None:
+                runtime.jev_decision = describe_answers(answers or {})
+            return (turn_from_answers(turn, answers, candidates) if answers and set(questions) <= set(answers)
+                    else TurnDecision.fallback(turn, "decision_learning_unavailable"))
         backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
         if backend in ("jev", "laya"):
             async def request():
@@ -634,6 +688,7 @@ class PersonaEngine:
         interaction_state = runtime.interaction_state
         decision = await self.decide(item, persona, interaction_state, runtime=runtime)
         proposed = decision
+        projection = await self._project_persona(persona, turn)
         if not self.valid(runtime, item):
             return
         if not await self.bridge.current(event, persona):
@@ -738,7 +793,6 @@ class PersonaEngine:
             # Complete the trace only after the model decision and participation gates.
             # The projection is read once per turn -- it is a property of the persona,
             # not of any message -- and cached per fingerprint from there on.
-            projection = await self._project_persona(persona, turn)
             for message in (() if item.shadow else item.context.messages):
                 node = _dag_node(runtime, message.message_id)
                 trace = getattr(node, "metadata", {}).get("decision_trace")

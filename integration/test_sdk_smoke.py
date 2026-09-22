@@ -162,7 +162,7 @@ async def test_real_sdk_plugin_contract_smoke():
     )
 
     await plugin.initialize()
-    assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes} == {
+    assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes if "/learning/" not in route} == {
         "overview",
         "sessions",
         "session",
@@ -180,6 +180,10 @@ async def test_real_sdk_plugin_contract_smoke():
         "topic_annotations",
         "annotation_draft",
         "annotation_drafts",
+    }
+    assert {route.split("/learning/", 1)[1] for route, *_ in context.routes if "/learning/" in route} == {
+        "stats", "jobs/create", "jobs/status", "jobs/cancel", "models/evaluate",
+        "models/promote", "models/rollback", "models/rollout", "models/compare_jev", "models/compare_teacher", "samples/export", "samples/delete",
     }
     overview = await _overview_payload(plugin)
     assert overview["ok"] is True

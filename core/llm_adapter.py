@@ -10,12 +10,31 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import time
 from typing import Any
 
 from .platform_bridge import collect_media_urls
 from .provider_budget import context_budget
 from .vibe_analyzer import GroupChatMode
+
+logger = logging.getLogger(__name__)
+
+
+def _call_session_getter(getter: Any, umo: str) -> Any:
+    """Adapt legacy zero-argument getters without retrying host code failures."""
+    try:
+        signature = inspect.signature(getter)
+    except (TypeError, ValueError):
+        # Opaque host callables use the current contract; a failure must not
+        # silently select a different, global provider.
+        return getter(umo)
+    try:
+        signature.bind(umo)
+    except TypeError:
+        signature.bind()
+        return getter()
+    return getter(umo)
 
 
 class LLMUnavailable(RuntimeError):
@@ -231,10 +250,7 @@ class LLMAdapter:
         getter = getattr(ctx, "get_current_chat_provider_id", None)
         if not callable(getter):
             raise LLMUnavailable("No provider configured and current provider lookup is unavailable")
-        try:
-            prov_id = getter(umo)
-        except TypeError:
-            prov_id = getter()
+        prov_id = _call_session_getter(getter, umo)
         if inspect.isawaitable(prov_id):
             prov_id = await prov_id
         if not prov_id:
@@ -369,8 +385,13 @@ class LLMAdapter:
                 await asyncio.wait({inner})
             except asyncio.CancelledError:
                 inner.cancel()
+                await asyncio.gather(inner, return_exceptions=True)
                 raise
-            context_data = {} if inner.cancelled() else inner.result()
+            try:
+                context_data = {} if inner.cancelled() else inner.result()
+            except Exception as exc:
+                logger.warning("Optional reply context failed: %s", type(exc).__name__)
+                context_data = {}
             if context_data:
                 user_prompt += "\n\nSelf Learning context (untrusted background data): " + json.dumps(context_data, ensure_ascii=False)
         if request is not None:
@@ -440,12 +461,7 @@ class LLMAdapter:
                 getter = getattr(ctx, "get_using_provider", None)
                 if not callable(getter):
                     raise LLMUnavailable("AstrBot context does not expose llm_generate")
-                try:
-                    provider = getter(umo)
-                except TypeError:
-                    # A few pre-4.x Context shims expose a no-argument getter;
-                    # retain compatibility without broadening the modern path.
-                    provider = getter()
+                provider = _call_session_getter(getter, umo)
                 if inspect.isawaitable(provider):
                     provider = await provider
             if provider is None:

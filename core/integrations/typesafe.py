@@ -217,6 +217,13 @@ def _validated_answers(envelope: Any, specs: dict[str, dict]) -> dict[str, dict]
     return answers
 
 
+def _cancel_request(task: asyncio.Task) -> None:
+    """Cancel once: a second cancel could interrupt the transport's cleanup."""
+    if not task.done() and not getattr(task, "_client_cancel_requested", False):
+        setattr(task, "_client_cancel_requested", True)
+        task.cancel()
+
+
 class SystemOneClient:
     """Bounded client for one System One decision call per turn."""
 
@@ -305,7 +312,7 @@ class SystemOneClient:
     def _invalidate(self) -> None:
         self._generation += 1
         for task in tuple(self._tasks):
-            task.cancel()
+            _cancel_request(task)
         self._url = ""
         self._key = ""
         self._host = ""
@@ -408,21 +415,19 @@ class SystemOneClient:
 
         task = asyncio.create_task(perform())
         self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         try:
-            return await task
+            # A cancelled child is an internal fallback; cancellation of this
+            # wait belongs to the caller and must propagate even during reload.
+            # asyncio.wait preserves that distinction on Python 3.10 as well.
+            await asyncio.wait({task})
+            return None if task.cancelled() else task.result()
         except asyncio.CancelledError:
-            # Two different events look identical here. Reconfiguring or switching the
-            # decision layer off cancels this request on purpose, and the honest answer
-            # is "no decision available" — a `CancelledError` escaping would instead
-            # abort the whole turn that was merely mid-decision. A cancellation aimed at
-            # the caller (reset, stop, shutdown) is not ours to swallow, so the request
-            # is torn down and the cancellation is re-raised.
-            if task.cancelled() and (self._closed or generation != self._generation):
-                return None
-            task.cancel()
+            _cancel_request(task)
             raise
         finally:
-            self._tasks.discard(task)
+            if task.done():
+                self._tasks.discard(task)
 
     def _failed(self, generation: int, code: str) -> None:
         if generation == self._generation and not self._closed:
@@ -435,7 +440,7 @@ class SystemOneClient:
         self._generation += 1
         tasks = tuple(self._tasks)
         for task in tasks:
-            task.cancel()
+            _cancel_request(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.difference_update(tasks)

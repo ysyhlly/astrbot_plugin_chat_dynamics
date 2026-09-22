@@ -103,6 +103,8 @@ def _decision_of(answer: Any, kind: str, levels: int = len(SCORE_LEVELS)) -> Opt
             for key, value in (answer.get("probabilities") or {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
+        if pick not in probabilities:
+            return None
         return SmallDecision("choice", score, pick=pick, probabilities=probabilities)
     if kind == "score":
         expected = answer.get("score")

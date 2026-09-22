@@ -6,6 +6,8 @@ import logging
 import math
 import time
 import uuid
+from copy import deepcopy
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -74,29 +76,28 @@ class GroupMemoryNotebook:
     def _load(self, umo: str) -> Dict[str, Any]:
         key = _safe_umo(umo)
         if key in self._cache:
-            return self._cache[key]
+            return deepcopy(self._cache[key])
         data: Dict[str, Any] = {
             "anniversaries": [],
             "reminders": [],
             "slang_trials": [],
             "mute_until": 0.0,
         }
-        try:
-            data.update(read_umo_json(self.data_dir, "notebook", umo))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("notebook load failed type=%s", type(exc).__name__)
+        data.update(read_umo_json(self.data_dir, "notebook", umo))
         self._cache_put(key, data)
-        return data
+        return deepcopy(data)
 
     def _save(self, umo: str, data: Dict[str, Any]) -> None:
         data["umo"] = str(umo or "")
-        self._cache_put(_safe_umo(umo), data)
         try:
             atomic_write_json(self._path(umo), data)
         except Exception as exc:  # noqa: BLE001
             # A lost write is user-visible state (anniversaries, reminders,
             # mute), so it must not be silent; DEBUG is below the default level.
             logger.warning("notebook save failed for one session type=%s", type(exc).__name__)
+            raise
+        # Publish only after persistence succeeds; never retain caller-owned rows.
+        self._cache_put(_safe_umo(umo), deepcopy(data))
 
     def list_all(self, umo: str) -> Dict[str, Any]:
         data = self._load(umo)
@@ -135,8 +136,11 @@ class GroupMemoryNotebook:
         title = (title or "").strip()[:40]
         if not title:
             raise ValueError("title required")
-        if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
-            raise ValueError("invalid date")
+        try:
+            # A leap year allows recurring February 29 anniversaries.
+            date(2000, int(month), int(day))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("invalid date") from exc
         item = {
             "id": uuid.uuid4().hex[:12],
             "title": title,
@@ -224,13 +228,24 @@ class GroupMemoryNotebook:
         changed = False
         rows = list(data.get("reminders") or [])
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             if row.get("expired") or row.get("nudged"):
                 # Expire old nudged items after they were shown once.
                 if row.get("nudged") and not row.get("expired"):
                     row["expired"] = True
                     changed = True
                 continue
-            if float(row.get("due_at") or 0) <= stamp:
+            raw_due = row.get("due_at")
+            if raw_due is None or isinstance(raw_due, bool):
+                continue
+            try:
+                due_at = float(raw_due)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(due_at):
+                continue
+            if due_at <= stamp:
                 row["nudged"] = True
                 row["expired"] = True  # one nudge then expire
                 due.append(dict(row))

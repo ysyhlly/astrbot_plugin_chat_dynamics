@@ -147,6 +147,8 @@ async def test_read_air_scoped_summary_includes_partner_status(api, monkeypatch)
     scoped = Mock(return_value={})
     monkeypatch.setattr(dashboard, "_read_air_summary", scoped)
     result = (await api.read_air())["data"]
+    assert "latency" in result
+    assert "provider_budget" in result
     assert result["presence_knob"] == 2
     assert result["selflearning"] == {"enabled": True}
     assert result["sessions"][0]["session_key"] == "room"

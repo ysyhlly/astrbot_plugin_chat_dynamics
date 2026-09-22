@@ -51,7 +51,7 @@ jobs:
       # Every playwright suite belongs here. The unit job skips them (no browser), so a
       # suite missing from this list ran nowhere: test_console_redesign_verification.py
       # and test_drafts_page_browser.py (which imports its launcher) were in that gap.
-      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py tests/test_console_redesign_verification.py tests/test_drafts_page_browser.py tests/test_integration_registry_browser.py tests/test_topic_annotations_browser.py tests/test_replay_draft_generation_browser.py tests/test_replay_gantt_browser.py tests/test_config_categories_browser.py tests/test_config_simple_browser.py tests/test_config_state_browser.py tests/test_replay_annotation_consistency_browser.py tests/test_secondary_workspace_browser.py tests/test_ui_theme_browser.py -q --junitxml=artifacts/junit-browser.xml
+      - run: BROWSER_LOG_PATH=artifacts/browser-console.json python -m pytest tests/test_console_browser.py tests/test_console_redesign_verification.py tests/test_drafts_page_browser.py tests/test_decision_learning_browser.py tests/test_integration_registry_browser.py tests/test_topic_annotations_browser.py tests/test_replay_draft_generation_browser.py tests/test_replay_gantt_browser.py tests/test_config_categories_browser.py tests/test_config_simple_browser.py tests/test_config_state_browser.py tests/test_replay_annotation_consistency_browser.py tests/test_secondary_workspace_browser.py tests/test_ui_theme_browser.py -q --junitxml=artifacts/junit-browser.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

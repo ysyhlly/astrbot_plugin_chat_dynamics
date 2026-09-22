@@ -270,7 +270,7 @@ class EmbeddingAdapter:
                 and getattr(inflight, "_embedding_generation", None) == self._generation):
             self._stats["singleflight_joins"] += 1
             try:
-                return await asyncio.shield(inflight)
+                return await self._wait_embedding(inflight)
             except Exception:
                 return None
         # Same-text waiters join above even at capacity. Distinct bursts fall
@@ -289,10 +289,18 @@ class EmbeddingAdapter:
 
         task.add_done_callback(release)
         try:
-            return await asyncio.shield(task)
+            return await self._wait_embedding(task)
         finally:
             if self._inflight.get(key) is task and task.done():
                 self._inflight.pop(key, None)
+
+    async def _wait_embedding(self, task: asyncio.Task) -> Optional[Tuple[float, ...]]:
+        # Waiting on the set separates shared-task cancellation from cancellation
+        # aimed at this waiter, including when both happen in the same loop turn.
+        # Unlike awaiting the task directly, cancelling one waiter leaves other
+        # callers' shared embedding request alive (also on Python 3.10).
+        await asyncio.wait({task})
+        return None if task.cancelled() else task.result()
 
     async def _embed_uncached(self, text: str, generation: int) -> Optional[Tuple[float, ...]]:
         if generation != self._generation:

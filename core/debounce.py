@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -184,6 +185,9 @@ class DebounceBuffer:
         # could still be in flight, so their last touch time bounds how long they
         # have to be kept (see prune_idle_slots).
         self._generation_touched: Dict[Any, float] = {}
+        # Keep generation tombstones while extracted results are still reachable,
+        # without retaining completed callbacks or their message bodies ourselves.
+        self._live_results: weakref.WeakValueDictionary[int, DebounceResult] = weakref.WeakValueDictionary()
 
     def _create_task(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -245,6 +249,9 @@ class DebounceBuffer:
             slot = self._slots[key]
             slot.session_generation = self._session_generations.get(session_id, 0)
             slot.user_generation = self._user_generations.get(key, 0)
+            for generation_key in (session_id, key):
+                if generation_key in self._generation_touched:
+                    self._generation_touched[generation_key] = now
 
         # 2. Acquire per-slot lock for serialization
         async with slot.lock:
@@ -388,7 +395,7 @@ class DebounceBuffer:
             "dropped_fragments": slot.dropped_fragments,
         }
 
-        return DebounceResult(
+        result = DebounceResult(
             session_id=slot.session_id,
             user_id=slot.user_id,
             consolidated_text=consolidated_text,
@@ -396,6 +403,8 @@ class DebounceBuffer:
             raw_events=raw_events,
             metadata=metadata,
         )
+        self._live_results[id(result)] = result
+        return result
 
     async def flush(
         self, session_id: Optional[str] = None, user_id: Optional[str] = None
@@ -457,6 +466,9 @@ class DebounceBuffer:
 
     def current_generations(self, session_id: str, user_id: str) -> tuple[int, int]:
         """Return (session_generation, user_generation) for a synthetic flush."""
+        for key in (session_id, (session_id, user_id)):
+            if key in self._generation_touched:
+                self._generation_touched[key] = self.time_service.time()
         return (
             int(self._session_generations.get(session_id, 0)),
             int(self._user_generations.get((session_id, user_id), 0)),
@@ -616,12 +628,16 @@ class DebounceBuffer:
             self._slots.pop(key, None)
             pruned += 1
 
-        # Generation keys otherwise grow for every (session, member) pair that ever
-        # used /dynamics_stop or a fast path. A result can only be in flight for a
-        # few seconds, so anything untouched for a full hour is unreachable.
+        # A fresh buffer can inherit an old generation, and callbacks can outlive
+        # their empty slot. Protect both, including invalidated results: deleting
+        # their tombstone would make an old generation-zero result current again.
+        live_keys = {key for key, slot in self._slots.items()
+                     if not slot.is_empty or slot.has_active_timer or slot.lock.locked()}
+        live_keys.update((res.session_id, res.user_id) for res in list(self._live_results.values()))
+        live_sessions = {key[0] for key in live_keys}
         expiry = now - max(max_idle_seconds, 3600.0)
         for key, touched in list(self._generation_touched.items()):
-            if touched >= expiry:
+            if touched >= expiry or key in live_keys or key in live_sessions:
                 continue
             self._generation_touched.pop(key, None)
             self._session_generations.pop(key, None)

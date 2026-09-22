@@ -37,6 +37,7 @@ from .typesafe import (
     MAX_STATE_CHARS,
     _payload_size_ok,
     _question_specs,
+    _cancel_request,
     _SystemOneError,
     _timeout_seconds,
     _validated_answers,
@@ -140,8 +141,9 @@ def decision_uncertainty(opinion: Any, *, act_trained: bool = False) -> float | 
     upstream trainer leaves `act_head` at `+ 0.0 * act.sum()` (zero gradient,
     never trained), so on a stock checkpoint that number is noise: blindly
     preferring it would make every answer look half-unsure and defer everything.
-    On a checkpoint trained by this project's `laya_train.py` it *is* the priced
-    act/defer decision and is worth taking at its word.
+    The supervised trainer in services/laya_service deliberately freezes this
+    head. Only an independently trained and validated act/defer model may enable
+    this optional signal; a checkpoint filename or act_costs alone is not proof.
 
     Returns `None` when there is nothing to judge -- the caller must treat that
     as "no decision available", never as "the model said no".
@@ -218,6 +220,7 @@ class LayaClient:
         enabled: bool = True,
         base_url: str = "",
         timeout: float = 0.5,
+        internal_hosts: tuple[str, ...] = (),
     ) -> None:
         self.timeout = _timeout_seconds(timeout, 0.5)
         self.calls = 0
@@ -231,7 +234,7 @@ class LayaClient:
         self._status = "missing"
         self._detail = "not_configured"
         self._configured_input: tuple | None = None
-        self.configure(enabled=enabled, base_url=base_url, timeout=timeout)
+        self.configure(enabled=enabled, base_url=base_url, timeout=timeout, internal_hosts=internal_hosts)
 
     # ---- configuration -------------------------------------------------
 
@@ -241,6 +244,7 @@ class LayaClient:
         enabled: bool = True,
         base_url: str | None = None,
         timeout: float | None = None,
+        internal_hosts: tuple[str, ...] = (),
         **_ignored: Any,
     ) -> None:
         """Apply configuration; unchanged input keeps the current connection state.
@@ -256,7 +260,8 @@ class LayaClient:
         if timeout is not None:
             self.timeout = _timeout_seconds(timeout, self.timeout)
         url = str(base_url or "").strip()
-        desired = (bool(enabled), url)
+        allowed_hosts = frozenset(str(host).lower() for host in internal_hosts)
+        desired = (bool(enabled), url, allowed_hosts)
         if self._configured_input == desired and (self._url or not enabled):
             return
         self._configured_input = desired
@@ -281,7 +286,8 @@ class LayaClient:
             ):
                 raise ValueError
             _ = parts.port
-            if parts.scheme == "http" and not _cleartext_allowed(parts.hostname):
+            if (parts.scheme == "http" and not _cleartext_allowed(parts.hostname)
+                    and parts.hostname.lower() not in allowed_hosts):
                 self._status, self._detail = "degraded", "insecure_cleartext"
                 return
             self._url = urlunsplit((parts.scheme, parts.netloc, _endpoint_path(path), "", ""))
@@ -294,7 +300,7 @@ class LayaClient:
     def _invalidate(self) -> None:
         self._generation += 1
         for task in tuple(self._tasks):
-            task.cancel()
+            _cancel_request(task)
         self._url = ""
         self._host = ""
         self._status = "missing"
@@ -315,6 +321,70 @@ class LayaClient:
         }
 
     # ---- requests ------------------------------------------------------
+
+    async def request_json(self, path: str, payload: dict | None = None, *,
+                           timeout: float = 1.5, method: str = "POST", token: str = "",
+                           diagnostics: dict | None = None) -> dict | None:
+        """Versioned service operations; metadata belongs to this response, never global state."""
+        def status(code):
+            if diagnostics is not None:
+                diagnostics["status"] = code
+        status("not_configured")
+        if not self._url or self._closed or not path.startswith("/") or ".." in path or "?" in path:
+            return None
+        generation = self._generation
+        base = self._url[:-len(ENDPOINT_SUFFIX)]
+        prediction = path == "/predict"
+        if prediction:
+            self.calls += 1
+        async def exchange():
+            async with aiohttp.ClientSession(trust_env=False) as session:
+                headers = {"Authorization": "Bearer " + token} if token else {}
+                async with session.request(method, base + path, json=payload, headers=headers,
+                                           allow_redirects=False) as response:
+                    if response.status != 200:
+                        status(f"http_{response.status}")
+                        if prediction:
+                            self._failed(generation, f"http_{response.status}")
+                        return None
+                    body = bytearray()
+                    async for chunk in response.content.iter_chunked(16384):
+                        body.extend(chunk)
+                        if len(body) > 4 * 1024 * 1024:
+                            status("response_too_large")
+                            return None
+                    value = json.loads(body)
+                    status("answered" if isinstance(value, dict) else "invalid_json")
+                    return value if isinstance(value, dict) else None
+        task = asyncio.create_task(exchange())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        try:
+            done, _ = await asyncio.wait({task}, timeout=max(.001, timeout))
+            if not done:
+                status("timeout")
+                _cancel_request(task)
+                await asyncio.gather(task, return_exceptions=True)
+                if prediction:
+                    self._failed(generation, "timeout")
+                return None
+            result = None if task.cancelled() else task.result()
+            if task.cancelled() or generation != self._generation or self._closed:
+                status("stale_or_closed")
+            if prediction and result is not None and generation == self._generation and not self._closed:
+                self._status, self._detail = "available", "ready"
+            return result if generation == self._generation and not self._closed else None
+        except asyncio.CancelledError:
+            _cancel_request(task)
+            raise
+        except (OSError, ValueError, aiohttp.ClientError, asyncio.TimeoutError):
+            status("transport_or_json_error")
+            if prediction:
+                self._failed(generation, "request_failed")
+            return None
+        finally:
+            if task.done():
+                self._tasks.discard(task)
 
     async def evaluate(
         self,
@@ -390,20 +460,19 @@ class LayaClient:
 
         task = asyncio.create_task(perform())
         self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         try:
-            return await task
+            # A cancelled child is an internal fallback; cancellation of this
+            # wait belongs to the caller and must propagate even during reload.
+            # asyncio.wait preserves that distinction on Python 3.10 as well.
+            await asyncio.wait({task})
+            return None if task.cancelled() else task.result()
         except asyncio.CancelledError:
-            # Reconfiguring or switching the decision layer off cancels this request
-            # on purpose, and the honest answer is "no decision available" — a
-            # `CancelledError` escaping would abort a turn that was merely
-            # mid-decision. A cancellation aimed at the caller (reset, stop,
-            # shutdown) is not ours to swallow, so it is re-raised.
-            if task.cancelled() and (self._closed or generation != self._generation):
-                return None
-            task.cancel()
+            _cancel_request(task)
             raise
         finally:
-            self._tasks.discard(task)
+            if task.done():
+                self._tasks.discard(task)
 
     def _failed(self, generation: int, code: str) -> None:
         if generation == self._generation and not self._closed:
@@ -416,7 +485,7 @@ class LayaClient:
         self._generation += 1
         tasks = tuple(self._tasks)
         for task in tasks:
-            task.cancel()
+            _cancel_request(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.difference_update(tasks)

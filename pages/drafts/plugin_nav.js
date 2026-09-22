@@ -8,6 +8,7 @@ export const PLUGIN_PAGES = [
   { id: "memory", label: "记忆小本" },
   { id: "replay", label: "场景回放" },
   { id: "drafts", label: "AI 标注审批" },
+  { id: "learning", label: "决策学习" },
 ];
 
 const NAV_ICONS = {
@@ -18,6 +19,7 @@ const NAV_ICONS = {
   memory: '<rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M3 7h4M3 12h4M3 17h4m9-10h-3m3 5h-3"/>',
   replay: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 8 6 4-6 4V8Z"/>',
   drafts: '<path d="M9 11.5 11 14l4.5-5"/><circle cx="12" cy="12" r="9"/>',
+  learning: '<path d="M4 20V10m8 10V4m8 16v-7M3 5l5-2m8 4 5-3"/>',
 };
 
 function escapeHtml(value) {

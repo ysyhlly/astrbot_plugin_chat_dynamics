@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -37,18 +38,30 @@ def read_umo_json(data_dir: Path, prefix: str, umo: str) -> dict[str, Any]:
     for explicit recovery instead of copying another session's memories.
     """
     path = data_dir / f"{prefix}_{safe_umo(umo)}.json"
+    legacy = False
     try:
-        if not path.exists():
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            legacy = True
             path = data_dir / f"{prefix}_{legacy_safe_umo(umo)}.json"
-        if not path.is_file() or path.is_symlink():
-            return {}
-        raw = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                return {}
+        if not stat.S_ISREG(mode):
+            raise OSError("session state is not a regular file")
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        logger.warning("Unable to load session state from %s (%s); using empty state", path, type(exc).__name__)
-        return {}
-    if isinstance(raw, dict) and raw.get("umo") == str(umo or ""):
+        logger.warning("Unable to load session state from %s (%s); refusing mutation", path, type(exc).__name__)
+        raise
+    if not isinstance(raw, dict):
+        raise ValueError("session state must be a JSON object")
+    if raw.get("umo") == str(umo or ""):
         return raw
-    return {}
+    if legacy:
+        return {}
+    raise ValueError("session state owner does not match")
 
 
 def atomic_write_json(path: Path, data: Any) -> None:

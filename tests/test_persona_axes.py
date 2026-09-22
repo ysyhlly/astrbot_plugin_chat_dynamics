@@ -107,3 +107,70 @@ def test_failure_costs_nothing():
     # And an empty fingerprint short-circuits without touching a model at all.
     assert asyncio.run(persona_axes.load(Backend(), "", persona_id="a", persona_prompt="b",
                                          ask=nonsense)) is None
+
+
+def test_all_rubric_levels_are_defined():
+    for chat in range(5):
+        for initiative in range(5):
+            for boundary in range(5):
+                result = persona_axes.rubric(dict(chattiness=chat, initiative=initiative, boundary=boundary))
+                assert result["speak"] and result["hold"]
+
+
+def test_concurrent_projection_coalesces_and_merges_detached_cache():
+    import copy
+
+    class DetachedBackend(Backend):
+        async def get_kv_data(self, key, default=None):
+            await asyncio.sleep(0)
+            return copy.deepcopy(await super().get_kv_data(key, default))
+
+        async def put_kv_data(self, key, value):
+            await asyncio.sleep(0)
+            await super().put_kv_data(key, value)
+
+    async def run():
+        backend = DetachedBackend()
+        calls = []
+
+        async def ask(system, user):
+            calls.append(user)
+            await asyncio.sleep(0.01)
+            return '{"humour": 3}'
+
+        async def load(fp):
+            return await persona_axes.load(backend, fp, persona_id=fp, persona_prompt=fp, ask=ask)
+
+        results = await asyncio.gather(load("a"), load("a"), load("b"))
+        assert results == [{"humour": 3}] * 3
+        assert len(calls) == 2
+        assert set(backend.data[persona_axes.CACHE_KEY]) == {"a", "b"}
+
+    asyncio.run(run())
+
+
+def test_projection_cache_is_bounded():
+    async def run():
+        backend = Backend()
+        backend.data[persona_axes.CACHE_KEY] = {str(i): {"axes": {"humour": 2}} for i in range(200)}
+
+        async def ask(*args):
+            return '{"humour": 1}'
+
+        await persona_axes.load(backend, "new", persona_id="a", persona_prompt="b", ask=ask)
+        assert len(backend.data[persona_axes.CACHE_KEY]) == persona_axes.MAX_CACHE_ENTRIES
+        assert "new" in backend.data[persona_axes.CACHE_KEY]
+
+    asyncio.run(run())
+
+
+def test_cached_axes_are_validated_before_use():
+    async def run():
+        backend = Backend()
+        backend.data[persona_axes.CACHE_KEY] = {"fp": {"axes": {
+            "humour": "bad", "initiative": True, "boundary": 10 ** 400,
+            "formality": 3, "note": "secret"}}}
+        assert await persona_axes.load_cached(backend, "fp") == {"formality": 3}
+        backend.data[persona_axes.CACHE_KEY]["fp"]["axes"] = {"humour": object()}
+        assert await persona_axes.load_cached(backend, "fp") is None
+    asyncio.run(run())

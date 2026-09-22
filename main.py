@@ -81,6 +81,8 @@ from .core.platform_bridge import (
     send_plain,
 )
 from .core.integrations.laya import LayaClient, decision_usable
+from .core.decision_learning import DecisionLearning
+from .core.decision_learning_api import DecisionLearningWebAPI
 from .core.integrations.registry import IntegrationRegistry
 from .core.integrations.typesafe import SystemOneClient
 from .core.turn_decisions import MessageOpinions, TurnDecisions, completeness_question
@@ -128,6 +130,7 @@ _VIBE_LLM_MIN_MESSAGES = 12
 _VIBE_LLM_FAILURE_BACKOFF = 15.0
 _SESSION_IDLE_SECONDS = 3600.0
 _SESSION_SWEEP_INTERVAL = 300.0
+_PERSIST_INTERVAL_SECONDS = 30.0
 _MAX_SESSIONS = 1000
 _MAX_TURN_FRAGMENTS = 32
 _KV_COOLING = "cooling_until"
@@ -265,7 +268,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.11.0",
+    "v1.12.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -373,7 +376,7 @@ class ChatDynamicsPlugin(Star):
         # The decision layer's transport. Constructed before the first message so a
         # configured endpoint is live immediately; it holds no session state.
         self.jev = SystemOneClient(
-            enabled=runtime_config.decision_backend == "jev",
+            enabled=runtime_config.decision_backend == "jev" or runtime_config.decision_learning_jev_fallback,
             base_url=runtime_config.jev_base_url,
             api_key=os.environ.get(runtime_config.jev_api_key_env, ""),
             model=runtime_config.jev_model,
@@ -381,9 +384,10 @@ class ChatDynamicsPlugin(Star):
         )
         self.laya = LayaClient(
             enabled=runtime_config.decision_backend == "laya"
-            or runtime_config.vibe_backend == "laya",
+            or runtime_config.vibe_backend == "laya" or runtime_config.decision_learning_mode != "off",
             base_url=runtime_config.laya_base_url,
             timeout=runtime_config.laya_timeout,
+            internal_hosts=runtime_config.laya_internal_hosts,
         )
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -452,10 +456,13 @@ class ChatDynamicsPlugin(Star):
         # The draft path and the web API must share one store (and its lock);
         # the web constructor reuses this instance instead of opening a second.
         self.topic_annotations = TopicAnnotations(self)
+        self.decision_learning = DecisionLearning(self, data_root)
         self._annotation_scheduler = AnnotationDraftScheduler(self)
         self._web = ConsoleWebAPI(self)
         self._web.register()
         self._web_apis_registered = self._web.registered
+        self._decision_learning_web_api = DecisionLearningWebAPI(self)
+        self._decision_learning_web_api.register()
         self.persona_engine = PersonaEngine(self)
         if self._persona_mode() and not self.persona_engine.bridge.check():
             self._persona_fallback = self.persona_engine.bridge.diagnostic or "CD_AGENT_BRIDGE_UNAVAILABLE"
@@ -494,6 +501,16 @@ class ChatDynamicsPlugin(Star):
             if not self.persona_engine.bridge.check():
                 raise RuntimeError(self.persona_engine.bridge.diagnostic)
 
+    def _prepare_config_candidate(self, cfg: RuntimeConfig, *, explicit_persona: bool = False) -> RuntimeConfig:
+        """Keep the stored persona intent while editing an already degraded host."""
+        if cfg.decision_mode == "persona_model" and hasattr(self, "persona_engine"):
+            if not self.persona_engine.bridge.check():
+                if (not explicit_persona and getattr(self, "_persona_fallback", "")
+                        and self._runtime_config.decision_mode == "legacy"):
+                    return replace(cfg, decision_mode="legacy")
+                raise ValueError("CD_AGENT_BRIDGE_UNAVAILABLE: 人设模式所需的宿主能力不可用，请检查宿主或选择 legacy 模式")
+        return cfg
+
     def _apply_runtime_config(
         self,
         cfg: RuntimeConfig,
@@ -505,6 +522,13 @@ class ChatDynamicsPlugin(Star):
             self._validate_runtime_config(cfg)
         previous_shadow = getattr(self, "shadow_mode", False)
         previous_decision = getattr(self, "decision_mode", "legacy")
+        old_cfg = getattr(self, "_runtime_config", None)
+        decision_keys = ("decision_learning_mode", "decision_backend", "laya_base_url",
+                         "laya_min_confidence", "laya_max_uncertainty", "laya_internal_hosts")
+        if old_cfg is not None and any(getattr(old_cfg, k, None) != getattr(cfg, k, None) for k in decision_keys):
+            opinions = getattr(self, "message_opinions", None)
+            if opinions is not None:
+                opinions.clear()
         self.decision_mode = cfg.decision_mode
         if previous_decision != self.decision_mode and hasattr(self, "_sessions"):
             for session_id in list(self._sessions):
@@ -520,7 +544,7 @@ class ChatDynamicsPlugin(Star):
                 embedding_id=cfg.embedding_provider)
         if hasattr(self, "jev"):
             self.jev.configure(
-                enabled=cfg.decision_backend == "jev",
+                enabled=cfg.decision_backend == "jev" or cfg.decision_learning_jev_fallback,
                 base_url=cfg.jev_base_url,
                 api_key=os.environ.get(cfg.jev_api_key_env, ""),
                 model=cfg.jev_model,
@@ -531,9 +555,10 @@ class ChatDynamicsPlugin(Star):
             # calibration are configured independently but share one client, so a
             # service used by only one of them still has to be reachable.
             self.laya.configure(
-                enabled=cfg.decision_backend == "laya" or cfg.vibe_backend == "laya",
+                enabled=cfg.decision_backend == "laya" or cfg.vibe_backend == "laya" or cfg.decision_learning_mode != "off",
                 base_url=cfg.laya_base_url,
                 timeout=cfg.laya_timeout,
+                internal_hosts=cfg.laya_internal_hosts,
             )
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
@@ -602,6 +627,9 @@ class ChatDynamicsPlugin(Star):
                 and source == getattr(self, "_config_source_snapshot", None)):
             return
         cfg, warnings = validated_config or parse_runtime_config(self.config)
+        if (validated_config is None and getattr(self, "_persona_fallback", "")
+                and self._runtime_config.decision_mode == "legacy"):
+            cfg = self._prepare_config_candidate(cfg)
         cfg = self._with_learning_policy(cfg)
         self._apply_runtime_config(cfg, log_warnings=warnings, validated=validated_config is not None)
         self.thread_router.configure_topics(
@@ -642,7 +670,8 @@ class ChatDynamicsPlugin(Star):
             self._registry.bind_semantic_match(self.embeddings.match)
         self._runtime_config = cfg
         self._config_source_snapshot = source
-        self._persona_fallback = ""
+        if not (source.get("decision_mode") == "persona_model" and cfg.decision_mode == "legacy"):
+            self._persona_fallback = ""
 
     # ---- Dynamics Learning policy consumer ------------------------------
 
@@ -1355,6 +1384,9 @@ class ChatDynamicsPlugin(Star):
             self._create_background_task(self.integrations.discover())
         self._web.register()
         self._web_apis_registered = self._web.registered
+        self._decision_learning_web_api.register()
+        if self.decision_learning.path.exists():
+            self.decision_learning.start_worker()
         await self._load_persisted_cooling()
         await self._load_panel_runtime()
         await self._load_shadow_telemetry()
@@ -1464,11 +1496,15 @@ class ChatDynamicsPlugin(Star):
     async def _panel_persistence_loop(self) -> None:
         while not self._shutting_down:
             try:
-                await asyncio.wait_for(self._runtime_persist_stop.wait(), timeout=30.0)
+                await asyncio.wait_for(self._runtime_persist_stop.wait(), timeout=_PERSIST_INTERVAL_SECONDS)
                 break
             except asyncio.TimeoutError:
                 await self._save_panel_runtime(force=False)
                 await self._save_shadow_telemetry()
+                # Failed cooldown writes stay dirty. Retry on this bounded
+                # 30-second cadence, using the existing single writer task.
+                if self._cooling_persist_dirty:
+                    self._schedule_persist_cooling()
 
     def _schedule_persist_cooling(self) -> None:
         if self._shutting_down:
@@ -1506,12 +1542,19 @@ class ChatDynamicsPlugin(Star):
             try:
                 result = writer(_KV_COOLING, payload)
                 if inspect.isawaitable(result):
-                    await result
+                    result = await result
+                if result is False:
+                    raise RuntimeError("cooling storage returned false")
             except asyncio.CancelledError:
+                self._cooling_persist_dirty = True
+                self._cooling_persist_event.set()
                 raise
             except Exception as exc:
+                self._cooling_persist_dirty = True
+                self._cooling_persist_event.set()
                 self._metric("cooling_persist_failed")
-                logger.debug("[ChatDynamics] Cooling persist skipped code=CD_COOLING_PERSIST type=%s", type(exc).__name__)
+                logger.warning("[ChatDynamics] Cooling save deferred code=CD_COOLING_PERSIST type=%s", type(exc).__name__)
+                return
             if revision != self._cooling_persist_revision:
                 self._cooling_persist_dirty = True
         self._cooling_persist_event.clear()
@@ -1589,7 +1632,7 @@ class ChatDynamicsPlugin(Star):
 
     def _release_session_state(self) -> None:
         """Forget every session-scoped object owned by this plugin instance."""
-        for session_id in list(self._sessions):
+        for session_id in set(self._sessions) | set(self.arbiter.cooling_export()):
             self.arbiter.reset_session(session_id)
             self.vibe_analyzer.reset_session(session_id)
         self._in_flight.clear()
@@ -1600,6 +1643,9 @@ class ChatDynamicsPlugin(Star):
 
     async def _shutdown_work(self) -> None:
         """Stop background work and release hosts before the final snapshot."""
+        learning = getattr(self, "decision_learning", None)
+        if learning is not None:
+            await learning.close()
         scheduler = getattr(self, "_annotation_scheduler", None)
         if scheduler is not None:
             await scheduler.close()
@@ -1824,7 +1870,7 @@ class ChatDynamicsPlugin(Star):
             )
             self._metric("message_received")
 
-            self._warm_completeness_opinion(parsed.text)
+            self._warm_completeness_opinion(parsed.text, session_key)
             is_fast_path = not input_truncated and not bare_bot_mention and self._is_fast_path_turn(parsed, runtime)
             fast_path_epoch = runtime.epoch
             if is_fast_path:
@@ -2376,7 +2422,6 @@ class ChatDynamicsPlugin(Star):
         if not fragments:
             return
 
-        sent_any = False
         previous_bot_msg_id: Optional[str] = None
         previous_platform_msg_id: Optional[str] = None
         trigger_platform_msg_id: Optional[str] = None
@@ -2480,7 +2525,6 @@ class ChatDynamicsPlugin(Star):
             # Terminal: a partially delivered reply is a delivered reply, and a
             # later fragment failing does not retract it.
             mark_delivered(trigger_node)
-            sent_any = True
             platform_msg_id = send_result.message_id
             bot_msg_id = platform_msg_id or self._next_outgoing_id()
             async with runtime.state_lock:
@@ -2504,17 +2548,17 @@ class ChatDynamicsPlugin(Star):
                 runtime.touch(self.time_service.time())
                 self._last_bot_nodes[session_id] = bot_node
                 self._schedule_neural_embed(session_id, bot_node)
-
-        if sent_any:
-            async with runtime.state_lock:
-                if expected_epoch == runtime.epoch and not self._shutting_down:
-                    self.arbiter.record_bot_spoke(
-                        session_id,
-                        timestamp=self.time_service.time(),
-                        user_id=trigger_node.user_id,
-                        topic_id=str(getattr(runtime.routing_state, "last_bot_topic_id", "") or ""),
-                        msg_id=str(getattr(runtime.last_bot_node, "msg_id", "") or ""),
-                    )
+                # A delivered first fragment commits the turn immediately:
+                # later failure, cancellation or supersession cannot un-send it.
+                self.arbiter.record_bot_spoke(
+                    session_id,
+                    timestamp=self.time_service.time(),
+                    user_id=trigger_node.user_id,
+                    topic_id=str(getattr(runtime.routing_state, "last_bot_topic_id", "") or ""),
+                    msg_id=bot_msg_id,
+                    count_turn=is_first,
+                )
+                if is_first:
                     self._commit_pending_gate_spoke(runtime, session_id)
 
     def _build_context_prompt(self, nodes: List[ConversationNode], bot_id: str = "") -> str:
@@ -2897,7 +2941,7 @@ class ChatDynamicsPlugin(Star):
         opinion = self.message_opinions.peek(text)
         return opinion if self._opinion_usable(opinion) else None
 
-    def _warm_completeness_opinion(self, text: str) -> None:
+    def _warm_completeness_opinion(self, text: str, session_id: str = "") -> None:
         """Ask whether this message finished its thought. Fired, never awaited.
 
         The read comes later and cannot block, so the only thing that matters is
@@ -2911,16 +2955,20 @@ class ChatDynamicsPlugin(Star):
         client = getattr(self, "laya", None)
         if client is None:
             return
-        self._create_background_task(self._warm_completeness_async(text, client))
+        self._create_background_task(self._warm_completeness_async(text, client, session_id))
 
-    async def _warm_completeness_async(self, text: str, client: Any) -> None:
+    async def _warm_completeness_async(self, text: str, client: Any, session_id: str = "") -> None:
         questions = completeness_question()
         try:
-            answers = await client.evaluate(
-                state={"text": text[:_MAX_INPUT_CHARS]},
-                questions=questions,
-                timeout=self._runtime_config.laya_timeout,
-            )
+            learning = getattr(self, "decision_learning", None)
+            if learning is not None and learning.enabled(session_id):
+                answers = await learning.evaluate(session_id=session_id, state={"text": text[:_MAX_INPUT_CHARS]},
+                    questions=questions, timeout=min(self._runtime_config.decision_timeout,
+                        max(.05, self._runtime_config.debounce_base_cooldown)))
+            else:
+                answers = await client.evaluate(
+                    state={"text": text[:_MAX_INPUT_CHARS]}, questions=questions,
+                    timeout=self._runtime_config.laya_timeout)
         except Exception:
             return
         if self._shutting_down:
@@ -2946,6 +2994,14 @@ class ChatDynamicsPlugin(Star):
         room" — never a negative answer. The hysteresis state machine treats None as
         "keep the reading you already had".
         """
+        learning = getattr(self, "decision_learning", None)
+        if learning is not None and learning.enabled(session_id):
+            evidence = await self._vibe_evidence(session_id, text)
+            tele = evidence["telemetrics"]
+            answers = await learning.evaluate(session_id=session_id, questions=VIBE_QUESTION,
+                state={"recent_messages": evidence["recent_messages"], "scene_tags": list(tele.scene_tags),
+                       "emotion_tags": list(tele.emotion_tags), "mpm": tele.mpm})
+            return parse_mode_label((answers or {}).get("vibe", {}).get("choice", ""))
         if self._vibe_source() == "laya":
             return await self._classify_vibe_with_laya(session_id, text)
         return await self._classify_vibe_with_llm(session_id, text)
@@ -3112,7 +3168,7 @@ class ChatDynamicsPlugin(Star):
             self._vibe_msg_counts.pop(session_id, None)
             self._vibe_llm_backoff_until.pop(session_id, None)
             self.vibe_analyzer.reset_session(session_id)
-            self.arbiter.reset_session(session_id)
+            self.arbiter.reset_session(session_id, keep_cooling=True)
             try:
                 # Idle eviction frees memory, it does not revoke an instruction:
                 # "今天别闹" lasts six hours and must outlive a one-hour silence.
@@ -3127,6 +3183,7 @@ class ChatDynamicsPlugin(Star):
 
     def _prune_idle_sessions(self, now: float) -> None:
         self._prune_native_contexts()
+        self.arbiter.prune_cooling(current_time=now)
         debounce_activity, debounce_active = self.debounce.session_activity_snapshot()
         active_telemetry_sessions = set(self._in_flight)
         for session_id, runtime in self._sessions.items():

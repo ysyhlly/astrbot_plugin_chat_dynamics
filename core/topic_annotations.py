@@ -23,7 +23,6 @@ REQUIRED_FIELDS = {"session_key", "msg_id", "expected_topic", "error_type"}
 # have not seen new traffic, and nobody can even dismiss them.
 DRAFT_KEY_PREFIX = "annotation_drafts_v1_"
 DRAFT_INDEX_KEY = "annotation_drafts_index_v1"
-MAX_INDEXED_SESSIONS = 200
 # A draft outlives its message: each one carries a snapshot of what it is about
 # (see annotation_draft.build_context), and those snapshots -- not the drafts --
 # are what would make the stored document grow without limit. A snapshot that
@@ -168,7 +167,11 @@ class TopicAnnotations:
         }
 
     async def _index_session(self, session, *, remove: bool = False) -> None:
-        """Remember (or forget) a session that has drafts. Caller holds the lock."""
+        """Keep review state discoverable for crash recovery. Caller holds the lock.
+
+        Never truncate this index: even sessions without drafts can have a pending
+        label projection or a committed request that must survive a restart.
+        """
         if remove:
             return  # Retain tombstones so interrupted writes remain discoverable.
         key = DRAFT_INDEX_KEY + "_shard_" + self.digest(session)[:2]
@@ -218,20 +221,21 @@ class TopicAnnotations:
         except (AttributeError, TypeError, ValueError):
             return 0.0
 
-    def _with_contexts(self, session, drafts):
-        """Attach the message snapshot to every draft that is still missing one.
+    def _with_contexts(self, session, drafts, *, generated_ids):
+        """Capture snapshots once, before newly generated drafts are published.
 
-        Capture only ever adds. A draft that already carries a snapshot keeps the
-        one it has, because the snapshot is part of the draft revision: rewriting
-        it would invalidate the revision an open approval page previewed, and turn
-        a human pressing accept into "草稿已更新，请刷新后重新确认".
+        A persisted draft is frozen even when its snapshot did not fit. Backfilling
+        it on a later merge would change the revision an approval page previewed.
+        Membership in the incoming generation identifies a new version; carried
+        drafts, including legacy records, need no migration or extra hash fields.
         """
         dag = (getattr(self.plugin, "dags", None) or {}).get(session)
         nodes = getattr(dag, "nodes", None)
         if not isinstance(nodes, dict) or not nodes:
             return drafts
         pending = [(mid, draft) for mid, draft in drafts.items()
-                   if isinstance(draft, dict) and not isinstance(draft.get(CONTEXT_KEY), dict)]
+                   if mid in generated_ids and isinstance(draft, dict)
+                   and not isinstance(draft.get(CONTEXT_KEY), dict)]
         if not pending:
             return drafts
         held = [self._encoded_size(draft.get(CONTEXT_KEY)) for draft in drafts.values()
@@ -291,7 +295,8 @@ class TopicAnnotations:
             # Contexts are captured after the trim: measuring a snapshot for a draft
             # that is about to be dropped would spend the budget on nothing.
             record["drafts"] = self._with_contexts(
-                session, dict(list(combined.items())[-MAX_PENDING_DRAFTS:]))
+                session, dict(list(combined.items())[-MAX_PENDING_DRAFTS:]),
+                generated_ids=set(record["drafts"]))
             if is_current is not None and not is_current():
                 return None
             await self._index_session(session)
@@ -407,6 +412,8 @@ class TopicAnnotations:
         written from what was saved, not a refusal. The caller decides this -- a
         live node always wins, and a missing message with no snapshot still fails.
         """
+        if not isinstance(body, dict):
+            raise ValueError("invalid annotation fields")
         fingerprint = self.revision({"body": body, "partial": partial, "draft_revision": draft_revision})
         if request_id is not None:
             if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
@@ -415,7 +422,7 @@ class TopicAnnotations:
                 result = await self.request_result(body.get("session_key", ""), request_id, fingerprint=fingerprint)
                 if result is not None:
                     return result
-        if not isinstance(body, dict) or not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision"}:
+        if not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision"}:
             raise ValueError("invalid annotation fields")
         if any(not isinstance(v, str) or not v or len(v) > 256 for v in (body[key] for key in REQUIRED_FIELDS)):
             raise ValueError("invalid annotation value")

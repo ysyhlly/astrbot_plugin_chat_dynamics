@@ -16,6 +16,14 @@ Cancellation removes the waiter or releases its occupied slot. No adapter-level
 retries are introduced; host/provider internal retry policy is outside this
 concurrency controller.
 
+Persona-axis projections use the background `persona_projection` purpose, with
+at most four plugin-owned tasks and one in-flight calculation per fingerprint.
+They never await model or KV I/O on the reply path or under the session lock;
+the current turn reads only completed in-memory results. First use may therefore
+have no axes. The persistent cache retains up to 128 fingerprints and merges
+concurrent writes. Typed backends only load cached projections. Unload cancels
+and drains these tasks; resetting a session does not discard this shared cache.
+
 Routing and title use the reply provider preference; automatic drafts use the
 draft preference. Only vibe uses the vibe preference. Context lifetime owns the
 controller; slots-only weak-referenceable contexts use a weak registry. Unusual

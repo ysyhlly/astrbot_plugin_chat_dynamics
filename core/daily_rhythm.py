@@ -425,7 +425,7 @@ class DailyRhythmGate:
         # Quota is committed in note_spoke after a successful send.
         if is_goodnight_text(clean) and (_local_hour(stamp, sess.timezone) >= 22 or _local_hour(stamp, sess.timezone) < 6):
             self._enter_winding(sess, stamp, heat=heat)
-            if sess.goodnight_text_used < gn_quota and not sess.goodnight_replied:
+            if sess.goodnight_text_used < gn_quota:
                 sess.last_reason_code = "wind_goodnight_ok"
                 sess.last_reason_zh = REASON["wind_goodnight_ok"]
                 self._note_why(sid, stamp, "wind_goodnight_ok", REASON["wind_goodnight_ok"])
@@ -793,7 +793,7 @@ class DailyRhythmGate:
             sess.last_reason_zh = REASON["wind_hot_delay"]
 
         if is_goodnight_text(text):
-            if sess.goodnight_text_used < gn_quota and not sess.goodnight_replied:
+            if sess.goodnight_text_used < gn_quota:
                 sess.last_reason_code = "wind_goodnight_ok"
                 sess.last_reason_zh = REASON["wind_goodnight_ok"]
                 return DailyRhythmVerdict(

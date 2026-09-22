@@ -53,20 +53,23 @@ def test_legacy_file_requires_verifiable_owner(tmp_path, owner, store_type, pref
 def test_wrong_owner_in_new_filename_is_never_loaded(tmp_path):
     store = GroupMemoryNotebook(tmp_path)
     store._path('room').write_text(json.dumps({'umo': 'other', 'mute_until': 999}), encoding='utf-8')
-    assert store.list_all('room')['mute_until'] == 0
+    with pytest.raises(ValueError, match='owner'):
+        store.list_all('room')
 
 
 @pytest.mark.parametrize('payload', [b'{broken', b'\xff', b'[]', b'null'])
 @pytest.mark.parametrize('legacy', [False, True])
-def test_unreadable_session_state_uses_defaults_without_altering_file(tmp_path, caplog, payload, legacy):
+def test_unreadable_session_state_blocks_mutation_without_altering_file(tmp_path, caplog, payload, legacy):
     token = legacy_safe_umo('room') if legacy else safe_umo('room')
     path = tmp_path / f'notebook_{token}.json'
     path.write_bytes(payload)
-    assert read_umo_json(tmp_path, 'notebook', 'room') == {}
-    assert GroupMemoryNotebook(tmp_path).list_all('room')['mute_until'] == 0
+    with pytest.raises((ValueError, UnicodeError)):
+        read_umo_json(tmp_path, 'notebook', 'room')
+    with pytest.raises((ValueError, UnicodeError)):
+        GroupMemoryNotebook(tmp_path).mute_tonight('room')
     assert path.read_bytes() == payload
     if payload in (b'{broken', b'\xff'):
-        assert 'using empty state' in caplog.text
+        assert 'refusing mutation' in caplog.text
 
 
 def test_session_read_error_does_not_restore_stale_legacy(tmp_path, monkeypatch, caplog):
@@ -81,7 +84,8 @@ def test_session_read_error_does_not_restore_stale_legacy(tmp_path, monkeypatch,
         raise PermissionError('denied')
 
     monkeypatch.setattr(Path, 'read_text', denied)
-    assert read_umo_json(tmp_path, 'notebook', 'room') == {}
+    with pytest.raises(PermissionError):
+        read_umo_json(tmp_path, 'notebook', 'room')
     assert 'PermissionError' in caplog.text
 
 

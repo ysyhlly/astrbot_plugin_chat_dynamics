@@ -1,0 +1,66 @@
+name: chat-dynamics-laya
+services:
+  astrbot:
+    image: ${ASTRBOT_IMAGE:?Set ASTRBOT_IMAGE to your tested AstrBot image tag or digest}
+    restart: unless-stopped
+    environment:
+      LAYA_ADMIN_TOKEN: ${LAYA_ADMIN_TOKEN:?Set a long random administrator token}
+      DECISION_DATASETS_DIR: /decision-datasets
+    ports:
+      - "127.0.0.1:6185:6185"
+    volumes:
+      - astrbot-data:/AstrBot/data
+      - ../..:/AstrBot/data/plugins/astrbot_plugin_chat_dynamics:ro
+      - datasets:/decision-datasets
+    networks: [decision]
+  laya-server:
+    build:
+      context: ../..
+      dockerfile: deploy/laya/Dockerfile
+    restart: unless-stopped
+    environment:
+      LAYA_ADMIN_TOKEN: ${LAYA_ADMIN_TOKEN:?Set a long random administrator token}
+      LAYA_DEVICE: cuda
+    volumes:
+      - models:/models
+      - state:/state
+      - datasets:/datasets:ro
+    networks: [decision]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/healthz')"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+  laya-trainer:
+    build:
+      context: ../..
+      dockerfile: deploy/laya/Dockerfile
+    profiles: [training]
+    command: ["python", "-m", "services.laya_service.training", "worker"]
+    restart: unless-stopped
+    volumes:
+      - models:/models
+      - state:/state
+      - datasets:/datasets:ro
+    networks: [decision]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+networks:
+  decision:
+volumes:
+  astrbot-data:
+  models:
+  state:
+  datasets:

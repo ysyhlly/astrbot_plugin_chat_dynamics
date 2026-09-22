@@ -745,6 +745,8 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             })
     for event in events:
         sid = str(event.get("session_id") or selected)
+        # Unknown messages are competing possible causes for this event. Keep
+        # their empty topic to avoid attaching it to an unrelated known topic.
         candidates = {
             _replay_node_topic(node)
             for node in session_nodes.get(sid, [])
