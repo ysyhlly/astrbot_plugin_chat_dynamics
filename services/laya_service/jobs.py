@@ -9,7 +9,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from .backend import LayaBackend, canonical, task_name
+from .backend import LayaBackend, canonical, task_name, validate_snapshot
 from .training import calibrate, label_index, train
 
 
@@ -264,6 +264,9 @@ def run_job(job, jobs, models, datasets):
     if any(not row.get("teacher_model") or row.get("teacher_label") is None for row in rows):
         raise ValueError("training requires genuine teacher labels and model provenance")
     provenance = dataset_provenance(rows)
+    for row in rows:
+        validate_snapshot(row["state"], {
+            row.get("metadata", {}).get("question_id", row["task_id"]): row["candidates"]})
     splits = training_partitions(rows)
     split_report = core_module("dataset").split_report(rows, splits)
     staging = Path(models) / "staging" / job["id"]

@@ -38,7 +38,7 @@ QUESTION = {"join": {"type": "noul", "instructions": "需要回覆嗎？"}}
 
 def test_plugin_turn_questions_accept_structured_instructions(tmp_path):
     from astrbot_plugin_chat_dynamics.core.decision_tasks import turn_questions
-    from astrbot_plugin_chat_dynamics.core.jev_decision import build_state
+    from astrbot_plugin_chat_dynamics.core.jev_decision import build_learning_state
     from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext
 
     turn = TurnContext(
@@ -52,9 +52,9 @@ def test_plugin_turn_questions_accept_structured_instructions(tmp_path):
         started_at=0,
         explicit=True,
     )
-    questions, _ = turn_questions(turn)
+    questions, candidates = turn_questions(turn)
     assert isinstance(questions["join"]["instructions"], dict)
-    snapshot = prepare_state(CharacterTokenizer(), build_state(turn), questions, 4096, 256)
+    snapshot = prepare_state(CharacterTokenizer(), build_learning_state(turn, candidates=candidates), questions, 4096, 256)
     assert "請問如何學習 Python" in snapshot
     assert {"join", "action", "state", "length", "reason", "target.0"} == set(questions)
     pytest.importorskip("fastapi")
@@ -69,10 +69,10 @@ def test_plugin_turn_questions_accept_structured_instructions(tmp_path):
         backend=TurnBackend(), state_root=tmp_path / "state", models_root=tmp_path / "models", admin_token="secret"
     )
     with TestClient(app) as client:
-        response = client.post("/prepare", json={"state": build_state(turn), "questions": questions})
+        response = client.post("/prepare", json={"state": build_learning_state(turn, candidates=candidates), "questions": questions})
         assert response.status_code == 200
         assert response.json()["questions"] == questions
-        invalid = client.post("/prepare", json={"state": {"text": "x" * 5000}, "questions": questions})
+        invalid = client.post("/prepare", json={"state": {"text": "x" * 5000}, "questions": QUESTION})
         assert invalid.status_code == 400
         diagnostics = client.get("/admin/status", headers={"Authorization": "Bearer secret"}).json()
         assert diagnostics["prepare_rejections"] == {"critical_context_over_budget": 1}

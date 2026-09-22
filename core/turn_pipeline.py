@@ -352,12 +352,13 @@ async def _fill_turn_decisions(host, turn: _PreparedTurn, deadline: float) -> No
     try:
         learning = getattr(host, "decision_learning", None)
         if learning is not None and learning.enabled(turn.result.session_id):
-            from .decision_routing import build_routing_tasks
+            from .decision_routing import build_routing_tasks, message_snapshot
             routing_state, routing_questions, mapping = build_routing_tasks(turn)
-            context = [{"message_id": n.msg_id, "author": n.user_id, "text": n.text}
-                       for n in list(turn.dag.nodes.values())[-12:] if n is not turn.node]
+            context = [message_snapshot(n) for n in list(turn.dag.nodes.values())
+                       if n is not turn.node and n.timestamp <= turn.node.timestamp][-12:]
             answers = await learning.evaluate(session_id=turn.result.session_id,
                 state={"text": turn.analysis_text, "recent_messages": context,
+                       "current": message_snapshot(turn.node),
                        "routing": turn.node.metadata.get("routing", {}), "routing_semantics": routing_state},
                 questions={**decisions.questions, **routing_questions}, timeout=remaining, outcome_node=turn.node)
             decisions.source = "decision_learning"

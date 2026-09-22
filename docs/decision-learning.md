@@ -91,3 +91,18 @@ Shadow 模式在共享输入准备后并发调用教师与学生，始终采用�
 导出每次最多 1000 条，若响应有 `next_cursor`，用该值继续请求下一页。删除只针对指定会话，并清理关联数据集；页面会在执行前显示确认。模型晋升和回滚也需要显式操作。
 
 所有管理请求受大小和频率限制，关停期间拒绝操作。训练服务异常不会向页面泄露内部异常文本或密钥。插件面板的接口单元测试不等同于目标 Windows Docker 主机上的 GPU、真实 SDK 或端到端性能验证。
+
+### 快照完整性与旧数据隔离
+
+学习专用快照保留逐条消息正文、时间、回复关系和 @ 对象，并提供 `target_candidates`、`routing_semantics.recipient_candidates` 显式映射。普通回复提示词继续使用原有展示预算。历史消息不能晚于本轮触发消息；未知正文标记为缺失，不从合并正文或后续消息猜补。
+
+`/prepare` 只移除完整的可选历史条目，输出完整 JSON；候选正文、当前消息和被引用的回复上下文放不下时明确拒绝。旧的完整双 JSON 对象快照可无损合并，残缺 JSON 不再被接受。标注与学生仍共享 `state`；`metadata.source_state` 另外保存本轮完整匿名化原始输入，`snapshot_version=1` 标记新采集格式。`tokenizer_prepared=false` 表示使用完整源输入交给教师，尚未适配小模型预算，不可把原始标签直接移植到另一份被截短的输入上。
+
+先审计已有数据，再按需要隔离：
+
+```sh
+python scripts/decision_dataset.py --database /path/to/decision-learning.sqlite3 audit-snapshots
+python scripts/decision_dataset.py --database /path/to/decision-learning.sqlite3 audit-snapshots --quarantine
+```
+
+隔离只标记 `invalid_snapshot` 并停止补标队列，不删除原文、不修改已有教师标签。训练导出、切分和训练入口都会检查快照完整性；后台教师也拒绝损坏输入。旧数据丢失的正文不能靠解析残片恢复，应从完整原始记录重新构建并重新标注。旧导出文件应重新审计，不能仅凭此前的“clean”文件名判定可训练。

@@ -19,6 +19,20 @@ class MessageSnapshot:
     reply_to: str = ""
     attachments: tuple[str, ...] = ()
     semantics: MessageSemantics | None = None
+    source_text: str | None = None
+    timestamp: float | None = None
+    mentioned_users: tuple[str, ...] = ()
+
+    def payload(self, *, learning: bool = False) -> dict:
+        data = asdict(self)
+        source = data.pop("source_text")
+        if learning:
+            data["text"] = source if source is not None else self.text
+            data["text_missing"] = source is None and not self.text
+        else:
+            data.pop("timestamp")
+            data.pop("mentioned_users")
+        return data
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,8 @@ class TurnContext:
     started_at: float
     explicit: bool
     truncated: bool = False
+    source_text: str | None = None
+    source_truncated: bool | None = None
 
     @property
     def allowed_ids(self) -> frozenset[str]:
@@ -50,9 +66,17 @@ class TurnContext:
         # Current text appears exactly once; individual fragments only carry provenance.
         return {
             "author": self.author, "text": self.text, "explicit": self.explicit, "truncated": self.truncated,
-            "messages": [{k: v for k, v in asdict(m).items() if k != "text"} for m in self.messages],
-            "background": [asdict(m) for m in self.background],
+            "messages": [{k: v for k, v in m.payload().items() if k != "text"} for m in self.messages],
+            "background": [m.payload() for m in self.background],
         }
+
+    def learning_payload(self) -> dict:
+        """Preserve source fragments independently of the consolidated turn text."""
+        return {**self.payload(),
+                "text": self.source_text if self.source_text is not None else self.text,
+                "truncated": self.source_truncated if self.source_truncated is not None else self.truncated,
+                "messages": [m.payload(learning=True) for m in self.messages],
+                "background": [m.payload(learning=True) for m in self.background]}
 
 
 ACTIONS = ("ignore", "acknowledge", "clarify", "reply", "close")

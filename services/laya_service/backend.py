@@ -1,8 +1,17 @@
 """Adapter for the pinned upstream Agent; no generated text or act-head gating."""
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+
+_snapshot_spec = importlib.util.spec_from_file_location(
+    "laya_decision_snapshot", Path(__file__).resolve().parents[2] / "core" / "decision_snapshot.py"
+)
+_snapshot_module = importlib.util.module_from_spec(_snapshot_spec)
+_snapshot_spec.loader.exec_module(_snapshot_module)
+parse_snapshot = _snapshot_module.parse_snapshot
+validate_snapshot = _snapshot_module.validate_snapshot
 
 UPSTREAM_REVISION = "573e5b62696ba441230cd6be71d593331b5d23af"
 WEIGHTS_REVISION = "1c5edc17a7acd8701df6fc341c0d179f1c62c982"
@@ -51,58 +60,63 @@ def prepare_state(tokenizer, state, questions, max_len=1024, head_max_len=192):
     def encode(text):
         return tokenizer(text, add_special_tokens=False)["input_ids"]
 
-    if isinstance(state, str):
-        try:
-            parsed = json.loads(state)
-            if isinstance(parsed, dict):
-                state = parsed
-        except (ValueError, TypeError):
-            pass
-    if isinstance(state, dict):
-        critical_keys = (
-            "current_message",
-            "message",
-            "text",
-            "author",
-            "explicit",
-            "messages",
-            "mentions",
-            "reply_to",
-            "persona",
-            "character_card",
-            "targets",
-            "candidates",
-            "topic_candidates",
-        )
-        critical = {k: state[k] for k in critical_keys if k in state}
-        for nested_key in ("routing_semantics", "turn_context", "conversation"):
-            nested = state.get(nested_key)
-            if isinstance(nested, dict):
-                critical[nested_key] = {k: nested[k] for k in critical_keys if k in nested}
-        prefix = canonical(critical) if critical else ""
-        remaining = {k: v for k, v in state.items() if k not in critical}
-        for nested_key in ("routing_semantics", "turn_context", "conversation"):
-            nested = state.get(nested_key)
-            if isinstance(nested, dict):
-                remainder = {k: v for k, v in nested.items() if k not in critical.get(nested_key, {})}
-                if remainder:
-                    remaining[nested_key] = remainder
-        suffix = canonical(remaining)
-        if len(encode(prefix)) > budget:
-            raise ValueError("critical context exceeds tokenizer budget")
-        room = budget - len(encode(prefix + "\n"))
-        suffix_ids = encode(suffix)
-        text = (
-            prefix + "\n" + tokenizer.decode(suffix_ids[-max(0, room) :] if room > 0 else [], skip_special_tokens=True)
-        )
-    else:
+    validate_snapshot(state, questions)
+    parsed = parse_snapshot(state)
+    if parsed is None:
         text = state if isinstance(state, str) else canonical(state)
-        ids = encode(text)
-        if len(ids) > budget:
+        if len(encode(text)) > budget:
             raise ValueError("unstructured state exceeds tokenizer budget; send a structured snapshot")
-    # Decode/re-encode is not guaranteed to preserve token count for every tokenizer.
-    while len(encode(text)) > budget:
-        text = text[:-1]
+        return text
+
+    # Drop whole optional history entries, never JSON tokens or critical evidence.
+    # Candidate maps, current messages, reply relationships and timestamps remain
+    # untouched. The complete source is separately retained by the collector.
+    containers = [parsed] + [parsed[k] for k in ("conversation", "routing_semantics", "turn_context")
+                             if isinstance(parsed.get(k), dict)]
+    reply_ids = set()
+    def find_replies(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in ("reply_to", "reply_to_id") and isinstance(item, str) and item:
+                    reply_ids.add(item)
+                find_replies(item)
+        elif isinstance(value, list):
+            for item in value:
+                find_replies(item)
+    find_replies(parsed)
+    for container in containers:
+        for key in ("background", "history", "recent_messages"):
+            if len(encode(canonical(parsed))) <= budget:
+                break
+            value = container.get(key)
+            if isinstance(value, list):
+                index = 0
+                while index < len(value) and len(encode(canonical(parsed))) > budget:
+                    if isinstance(value[index], dict) and value[index].get("message_id") in reply_ids:
+                        index += 1
+                        continue
+                    removed = value.pop(index)
+                    try:
+                        validate_snapshot(parsed, questions)
+                    except ValueError:
+                        value.insert(index, removed)
+                        index += 1
+            elif isinstance(value, str):
+                # Legacy free-text history can lose its old prefix, but the JSON
+                # string is always re-serialized rather than sliced after encoding.
+                low, high = 0, len(value)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    container[key] = value[-middle:] if middle else ""
+                    if len(encode(canonical(parsed))) <= budget:
+                        low = middle
+                    else:
+                        high = middle - 1
+                container[key] = value[-low:] if low else ""
+    text = canonical(parsed)
+    if len(encode(text)) > budget:
+        raise ValueError("critical context exceeds tokenizer budget")
+    validate_snapshot(parsed, questions)
     return text
 
 

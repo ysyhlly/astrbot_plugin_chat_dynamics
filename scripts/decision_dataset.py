@@ -22,6 +22,7 @@ def main():
     sub.add_parser("split").add_argument("output")
     sub.add_parser("review", help="Import independent human labels from JSONL id,human_label").add_argument("input")
     sub.add_parser("audit", help="Flag recent complete requests without changing labels").add_argument("--limit", type=int, default=200)
+    sub.add_parser("audit-snapshots", help="Check input integrity without reconstructing lost evidence").add_argument("--quarantine", action="store_true")
     args = parser.parse_args()
     store = module.DecisionDataset(args.database)
     if args.command == "purge":
@@ -38,6 +39,8 @@ def main():
                 store.update_human_label(reviewed["id"], reviewed["human_label"])
                 count += 1
         print(json.dumps({"reviewed": count}))
+    elif args.command == "audit-snapshots":
+        print(json.dumps(store.audit_snapshots(quarantine=args.quarantine)))
     elif args.command == "audit":
         if not 1 <= args.limit <= 10000:
             parser.error("audit limit must be between 1 and 10000")
@@ -49,7 +52,7 @@ def main():
         flagged = sum(bool(store.audit_request(request)["flags"]) for request in requests)
         print(json.dumps({"audited_requests": len(requests), "flagged_requests": flagged}))
     else:
-        groups = module.split_samples([r for r in store.samples() if r["teacher_label"] is not None])
+        groups = module.split_samples([r for r in store.samples() if r["teacher_label"] is not None and module.snapshot_usable(r)])
         target = Path(args.output)
         target.mkdir(parents=True, exist_ok=True)
         for name, rows in groups.items():

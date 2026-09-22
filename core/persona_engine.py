@@ -21,7 +21,7 @@ from . import outcome_recorder as outcomes
 from .turn_decision import (
     MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
-from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
+from .jev_decision import build_questions, build_state, build_learning_state, decision_from_answers, describe_answers
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -337,6 +337,8 @@ def snapshot_turn(
         _existing_reply_id(runtime, resolved, parsed),
         tuple(getattr(parsed, "media_component_types", ()) or ()),
         describe_message(resolved, dag, runtime.bot_id),
+        source_text=resolved.text, timestamp=resolved.timestamp,
+        mentioned_users=tuple(resolved.metadata.get("actual_mentions", resolved.mentioned_users)),
     ) for parsed, resolved in zip(events, resolved_nodes))
     current_ids = {m.message_id for m in messages}
     # Follow only explicit DAG parent edges. In particular, mention parents
@@ -363,7 +365,8 @@ def snapshot_turn(
         if not next_frontier:
             break
         frontier = next_frontier
-    candidates = runtime.dag.get_recent_nodes(limit=60)
+    cutoff = max(n.timestamp for n in resolved_nodes)
+    candidates = [n for n in runtime.dag.get_recent_nodes(limit=60) if n.timestamp <= cutoff]
     background = []
     budget = 6000
     current_ids = frozenset(current_ids)
@@ -378,14 +381,18 @@ def snapshot_turn(
         ) and budget > 0:
             text = n.text[:min(1200, budget)]
             background.append(MessageSnapshot(n.msg_id, n.user_id, text, n.reply_to_id or "",
-                                              semantics=describe_message(n, dag, runtime.bot_id)))
+                                              semantics=describe_message(n, dag, runtime.bot_id),
+                                              source_text=n.text, timestamp=n.timestamp,
+                                              mentioned_users=tuple(n.metadata.get("actual_mentions", n.mentioned_users))))
             budget -= len(text)
             if len(background) >= 15:
                 break
     turn = TurnContext(runtime.session_key, result.user_id, result.consolidated_text[:8000], messages,
                        tuple(reversed(background)), runtime.epoch,
                        getattr(result.last_event, "_chat_dynamics_user_revision", runtime.user_revisions.get(result.user_id, 0)),
-                       result.start_time, explicit, bool(result.metadata.get("truncated")) or len(result.consolidated_text) > 8000)
+                       result.start_time, explicit, bool(result.metadata.get("truncated")) or len(result.consolidated_text) > 8000,
+                       source_text=result.consolidated_text,
+                       source_truncated=bool(result.metadata.get("truncated")))
     platform_ids = frozenset(
         str(getattr(parsed, "message_id", "") or "")
         for parsed, resolved in zip(events, resolved_nodes)
@@ -525,11 +532,10 @@ class PersonaEngine:
         if learning is not None and learning.enabled(turn.session_key):
             from .decision_tasks import turn_questions, turn_from_answers
             questions, candidates = turn_questions(turn)
-            learning_state = build_state(turn, previous_state=state, observations=item.observations,
-                                        presence=p._runtime_config.presence_knob, persona_prompt=persona.prompt)
-            learning_state["conversation"]["messages"] = [
-                {"message_id": m.message_id, "author": m.author, "text": m.text[:800], "reply_to": m.reply_to}
-                for m in turn.messages if m.message_id in candidates]
+            learning_state = build_learning_state(turn, candidates=candidates, previous_state=state,
+                                                 observations=item.observations,
+                                                 presence=p._runtime_config.presence_knob,
+                                                 persona_prompt=persona.prompt)
             answers = await learning.evaluate(session_id=turn.session_key,
                 state=learning_state,
                 questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)

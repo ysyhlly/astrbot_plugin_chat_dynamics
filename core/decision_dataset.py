@@ -18,6 +18,17 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
+try:
+    from .decision_snapshot import validate_snapshot
+except ImportError:
+    import importlib.util
+    _snapshot_spec = importlib.util.spec_from_file_location(
+        "decision_snapshot", Path(__file__).with_name("decision_snapshot.py")
+    )
+    _snapshot_module = importlib.util.module_from_spec(_snapshot_spec)
+    _snapshot_spec.loader.exec_module(_snapshot_module)
+    validate_snapshot = _snapshot_module.validate_snapshot
+
 
 try:
     from .decision_catalog import TASK_LABELS, DYNAMIC_TASKS
@@ -56,6 +67,15 @@ def _coverage_label(answer, question, *, hard):
             return None
         return str(round(value))
     return None
+
+
+def snapshot_usable(row):
+    try:
+        validate_snapshot(row["state"], {
+            row.get("metadata", {}).get("question_id", row["task_id"]): row["candidates"]})
+    except (ValueError, KeyError):
+        return False
+    return True
 
 
 class DecisionDataset:
@@ -121,7 +141,7 @@ class DecisionDataset:
                     if key not in {"provider_id", "question_id", "task_id", "model_id", "sample_id", "dataset_id"} and (
                         key.endswith("_id")
                         or key.endswith("_ids")
-                        or key in {"umo", "author", "sender", "recipient", "session", "reply_to"}
+                        or key in {"umo", "author", "sender", "recipient", "session", "reply_to", "mentioned_users", "mentions"}
                     ):
                         for identity in item if isinstance(item, list) else [item]:
                             if isinstance(identity, (str, int)) and str(identity):
@@ -166,6 +186,7 @@ class DecisionDataset:
     ):
         if teacher_label is not None and not teacher_model:
             raise ValueError("Teacher label requires teacher model provenance")
+        validate_snapshot(state, {metadata.get("question_id", task_id): candidates})
         sample_id = uuid.uuid4().hex
         payload = dict(
             id=sample_id,
@@ -486,6 +507,8 @@ class DecisionDataset:
             if (not teacher_only or s["teacher_label"] is not None)
             and (task_version is None or str(s.get("task_version")) == str(task_version))
         ]
+        if teacher_only:
+            rows = [row for row in rows if snapshot_usable(row)]
         target = Path(path).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
@@ -494,6 +517,28 @@ class DecisionDataset:
                 "INSERT OR REPLACE INTO derivatives VALUES (?,?)", (str(target), json.dumps([r["id"] for r in rows]))
             )
         return len(rows)
+
+    def audit_snapshots(self, *, quarantine=False):
+        """Audit old inputs without guessing lost text or changing teacher labels."""
+        rows = self.samples()
+        invalid = [row for row in rows if not snapshot_usable(row)]
+        if quarantine:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                for row in invalid:
+                    current = db.execute("SELECT payload FROM samples WHERE id=?", (row["id"],)).fetchone()
+                    if current is None:
+                        continue
+                    payload = json.loads(current[0])
+                    metadata = payload.setdefault("metadata", {})
+                    metadata["quality_flags"] = sorted(set(metadata.get("quality_flags", [])) | {"invalid_snapshot"})
+                    metadata["review_reason"] = "invalid_snapshot"
+                    db.execute("UPDATE samples SET payload=? WHERE id=?", (json.dumps(payload), row["id"]))
+                    db.execute("INSERT INTO labels(sample,status,reason) VALUES (?,'review','invalid_snapshot') "
+                               "ON CONFLICT(sample) DO UPDATE SET status='review',reason='invalid_snapshot',"
+                               "token=NULL,lease_until=0", (row["id"],))
+        return {"audited": len(rows), "invalid": len(invalid), "valid": len(rows) - len(invalid),
+                "quarantined": len(invalid) if quarantine else 0}
 
     def _delete(self, clause, args):
         with self.connect() as db:

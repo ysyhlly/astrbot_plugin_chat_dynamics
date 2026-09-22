@@ -15,6 +15,7 @@ from .decision_tasks import TASK_VERSION, TASKS, TEACHER_PROMPT_VERSION, task_id
 from .integrations.typesafe import _validated_answers
 from .decision_sampling import AnnotationPriority
 from .decision_rubrics import rubric_questions
+from .decision_snapshot import SNAPSHOT_VERSION, validate_snapshot
 
 
 class TeacherAnswers(dict):
@@ -109,6 +110,7 @@ class DecisionLearning:
         return (id(runtime), getattr(runtime, "epoch", None), getattr(runtime, "revision", None), id(self.cfg))
 
     async def _teacher(self, provider_id, state, questions, *, background=False, prompt_version=TEACHER_PROMPT_VERSION, comparison=False):
+        validate_snapshot(state, questions)
         from .provider_budget import context_budget
         from .persona_engine import completion_text
         budget = getattr(self.host.llm, "provider_budget", None) or context_budget(self.host.context)
@@ -152,6 +154,7 @@ class DecisionLearning:
                 return None
         provider = ""
         prepared = None
+        source_state = None
         student, teacher, chosen, sources = {}, {}, {}, {}
         model_info = {}
         student_status = "not_requested"
@@ -162,12 +165,25 @@ class DecisionLearning:
                 anonymous = await bounded(self._io("anonymize", {"state": state, "questions": questions}))
                 state, questions = anonymous["state"], anonymous["questions"]
                 self.start_worker()
+            # Freeze the full anonymized input before remote preparation. Never
+            # reconstruct missing evidence from subsequent events or outcomes.
+            validate_snapshot(state, questions)
+            source_state = json.loads(json.dumps(state, ensure_ascii=False))
+            state = source_state
             # Preparation reserves most of the turn budget for the teacher if unavailable.
             prepared = await remote(client.request_json("/prepare", {
                 "state": state, "questions": questions,
                 "task_versions": {task_id(key): TASK_VERSION for key in questions}},
                 timeout=min(self.cfg.laya_timeout, max(.05, limit * .25))))
             if prepared and isinstance(prepared.get("state"), (dict, list, str)) and prepared.get("questions") == questions:
+                try:
+                    validate_snapshot(prepared["state"], questions)
+                except ValueError:
+                    self.stats["invalid_prepared_snapshot"] += 1
+                    prepared = None
+            else:
+                prepared = None
+            if prepared:
                 state = prepared["state"]
                 version = str(prepared.get("model_version", ""))
                 if version != self.model_version:
@@ -175,8 +191,6 @@ class DecisionLearning:
                     cache = getattr(self.host, "message_opinions", None)
                     if cache is not None:
                         cache.clear()
-            else:
-                prepared = None
             async def predict_student():
                 nonlocal student, model_info, student_status
                 diagnostics = {}
@@ -288,12 +302,13 @@ class DecisionLearning:
                             "fallback": [k for k in questions if k not in chosen],
                             "teacher_fallback_tasks": [k for k, v in sources.items() if mode == "active" and v == "teacher"],
                             "student_status": student_status})
-        if prepared and self.collecting(session_id) and len(self.tasks) < 64:
+        if source_state is not None and self.collecting(session_id) and len(self.tasks) < 64:
             self._spawn(self._record(session_id, state, questions, teacher, student, sources,
-                                     provider, elapsed, model_info, outcome_node, collection_epoch))
+                                     provider, elapsed, model_info, outcome_node, collection_epoch,
+                                     source_state=source_state, tokenizer_prepared=bool(prepared)))
         return chosen or None
 
-    async def _record(self, session_id, state, questions, teacher, student, sources, provider, elapsed, model_info, outcome_node=None, collection_epoch=0):
+    async def _record(self, session_id, state, questions, teacher, student, sources, provider, elapsed, model_info, outcome_node=None, collection_epoch=0, *, source_state=None, tokenizer_prepared=True):
         if self.closed or not self.enabled() or not self.collecting(session_id):
             return
         if not provider:
@@ -321,6 +336,8 @@ class DecisionLearning:
                 question_id=key, request_id=request_id, request_question_count=len(questions),
                 sampling_reasons=sampling_reasons, random_sample=sample_request,
                 teacher_prompt_version=getattr(teacher, "prompt_version", TEACHER_PROMPT_VERSION),
+                snapshot_version=SNAPSHOT_VERSION, source_state=source_state,
+                tokenizer_prepared=tokenizer_prepared,
                 outcome={"latency_ms": elapsed*1000, "model_version": model_info.get("model_version", ""),
                          "question_id": key})
             sample_ids.append(sid)
@@ -398,6 +415,12 @@ class DecisionLearning:
                 payload = job["payload"]
                 key = payload["question_id"]
                 provider_id = payload["provider_id"]
+                try:
+                    validate_snapshot(sample["state"], {key: sample["candidates"]})
+                except ValueError:
+                    await self._io("mark_review", job["sample_id"], "invalid_snapshot")
+                    self.stats["invalid_snapshot"] += 1
+                    continue
                 try:
                     answers = await asyncio.wait_for(self._teacher(provider_id, sample["state"],
                         {key: sample["candidates"]}, background=True), timeout=self.cfg.decision_timeout)

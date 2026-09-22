@@ -17,6 +17,13 @@ def _protected(node, routing):
                     "explicit_reply", "explicit_mention", "platform_wake", "direct_name_call"})
 
 
+def message_snapshot(node):
+    """Copy actual message evidence without synthesizing absent text or links."""
+    return {"message_id": node.msg_id, "author": node.user_id, "text": node.text,
+            "reply_to": node.reply_to_id or "", "timestamp": node.timestamp,
+            "mentioned_users": list(node.metadata.get("actual_mentions", node.mentioned_users))}
+
+
 def build_routing_tasks(turn):
     """Build only session-local closed candidates, with immutable input copies.
 
@@ -54,8 +61,7 @@ def build_routing_tasks(turn):
                 continue
             key = f"topic_{len(topics)}"
             topics[key] = tid
-            descriptions[key] = {"label": topic.label, "messages": [
-                {"author": n.user_id, "text": n.text} for n in messages]}
+            descriptions[key] = {"label": topic.label, "messages": [message_snapshot(n) for n in messages]}
         if topics:
             questions["topic"] = {"type": "choice", "instructions":
                                   "Which offered topic does the current message continue? "
@@ -63,8 +69,12 @@ def build_routing_tasks(turn):
                                   "criteria": {"KEEP": "Preserve existing unresolved or local assignment",
                                                **{key: f"Continue topic {key}" for key in topics}}}
     state = {"current_message": node.text, "author": node.user_id,
-             "bot_id": runtime.bot_id, "recent_messages": [
-                 {"author": n.user_id, "text": n.text} for n in recent[-16:]],
+             "bot_id": runtime.bot_id, "current": message_snapshot(node),
+             "recent_messages": [message_snapshot(n) for n in recent[-16:]],
+             "recipient_candidates": {
+                 key: {"user_id": uid, "is_bot": uid == str(runtime.bot_id),
+                       "messages": [message_snapshot(n) for n in recent if n.user_id == uid]}
+                 for key, uid in recipients.items()},
              "topic_candidates": descriptions}
     mapping = {"routing": deepcopy(routing), "node_text": node.text, "node": node,
                "runtime": runtime, "dag": dag, "routing_state": runtime.routing_state,

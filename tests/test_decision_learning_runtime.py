@@ -580,3 +580,28 @@ async def test_parallel_annotations_share_budget_and_close_cancels_calls(tmp_pat
         await runtime.close()
     assert active == 0
     assert worker.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_prepared", [None, '{"text":"hello"}\nclipped'])
+async def test_full_source_survives_unavailable_or_corrupt_preparation(tmp_path, bad_prepared):
+    runtime, host, _ = make_runtime(tmp_path, mode="shadow", collect=True)
+    runtime.start_worker = lambda: None
+    async def request(path, payload, **kwargs):
+        assert path == "/prepare"
+        if bad_prepared is None:
+            return None
+        return {"state": bad_prepared, "questions": payload["questions"], "model_version": "v1"}
+    host.laya.request_json.side_effect = request
+    source = {"text": "hello", "author": "123456789", "history": [{"text": "complete history"}]}
+    await runtime.evaluate(session_id="room", state=source, questions=QUESTIONS)
+    await asyncio.gather(*list(runtime.tasks))
+    rows = runtime.store.samples()
+    assert rows
+    for row in rows:
+        assert row["state"] == row["metadata"]["source_state"]
+        assert row["state"]["history"] == source["history"]
+        assert row["metadata"]["tokenizer_prepared"] is False
+        assert "123456789" not in json.dumps(row)
+    assert runtime._teacher.call_args.args[1] == rows[0]["state"]
+    await runtime.close()
