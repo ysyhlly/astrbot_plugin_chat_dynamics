@@ -80,7 +80,7 @@ from .core.platform_bridge import (
     result_has_rich_media,
     send_plain,
 )
-from .core.integrations.laya import LayaClient
+from .core.integrations.laya import LayaClient, decision_uncertainty, decision_usable
 from .core.integrations.registry import IntegrationRegistry
 from .core.integrations.typesafe import SystemOneClient
 from .core.turn_decisions import MessageOpinions, TurnDecisions, completeness_question
@@ -265,7 +265,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.10.1",
+    "v1.11.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -2872,14 +2872,24 @@ class ChatDynamicsPlugin(Star):
     def _opinion_usable(self, opinion: Any) -> bool:
         """Whether a model opinion is worth acting on. The floor lives here.
 
-        This is where the weighting that consumes an opinion is chosen, so this is
-        where "was the model sure enough" gets asked. Refusing upstream would flatten
-        "unsure" into "nothing was said".
+        The criterion is **uncertainty**, not confidence -- see
+        `core.integrations.laya.decision_uncertainty` for why the obvious signal
+        is wrong. In short: `laya` reports `noul.confidence` as `max(p, 1-p)`,
+        which is always >= 0.5, and the shared validator drops that field
+        entirely. Gating on it made this either permanently closed (absent
+        field -> 0.0) or inverted (firing when the model is unsure and staying
+        with it when it is confidently wrong).
+
+        One threshold now means one thing across answer types: 0 is certain,
+        larger is less certain, and above the ceiling the opinion is refused and
+        the caller keeps its conservative plan. Refusing upstream still flattens
+        "unsure" into "nothing was said", which is why the floor lives here and
+        not in the transport.
         """
-        return (
-            opinion is not None
-            and float(getattr(opinion, "confidence", 0.0))
-            >= float(getattr(self._runtime_config, "laya_min_confidence", 0.6))
+        return decision_usable(
+            opinion,
+            max_uncertainty=float(getattr(
+                self._runtime_config, "laya_max_uncertainty", 0.25)),
         )
 
     def _completeness_opinion(self, text: str) -> Any:
@@ -2976,10 +2986,13 @@ class ChatDynamicsPlugin(Star):
         answer = answers.get("vibe")
         if not isinstance(answer, dict) or answer.get("type") != "choice":
             return None
-        confidence = answer.get("confidence")
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            return None
-        if float(confidence) < float(self._runtime_config.vibe_min_confidence):
+        # Uncertainty, not confidence -- same trap as `_opinion_usable`, and the
+        # two must share one scale or "the mood is a choice and the completeness
+        # read is a noul" would make one threshold mean two things.
+        if not decision_usable(
+            answer,
+            max_uncertainty=float(getattr(self._runtime_config, "vibe_max_uncertainty", 0.35)),
+        ):
             return None
         return parse_mode_label(str(answer.get("choice") or ""))
 

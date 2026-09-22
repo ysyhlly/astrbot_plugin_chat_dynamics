@@ -98,6 +98,113 @@ def _cleartext_allowed(hostname: str) -> bool:
     return any(address in network for network in _PRIVATE_NETWORKS)
 
 
+def decision_uncertainty(opinion: Any, *, act_trained: bool = False) -> float | None:
+    """How unsure the decision model actually was, in one scale across answer types.
+
+    This exists because the obvious signal is wrong, and wrong in a way that is
+    invisible: `laya` reports `confidence` for a `noul` answer as
+    `max(p, 1-p)` (see `laya/agent.py:360`), which is **mathematically always
+    >= 0.5**. Gating a "low confidence -> fall back to the LLM" rule on that
+    number means:
+
+    * threshold <= 0.5  -> the gate never fires at all,
+    * threshold  0.6   -> it fires when the model is merely unsure and stays
+      with the model when it is confidently *wrong*, which is the exact opposite
+      of what a safety gate is for.
+
+    Two more things make a single naive threshold meaningless: `choice`/`score`
+    use `1 - H(p)/log k` (which does reach 0) while `noul` is floor-limited at
+    0.5, so the two are not on the same scale; and the shared validator in
+    `typesafe.py` drops `noul.confidence` outright (see this module's
+    docstring), so on some paths the field is simply absent and
+    `getattr(opinion, "confidence", 0.0)` yields 0 -- making the gate
+    permanently closed instead.
+
+    So compute the uncertainty from the *answer* rather than from a reported
+    confidence, and put every type on one scale where **0 means certain and
+    larger means less certain**:
+
+    ============  =========================================================
+    answer kind   uncertainty
+    ============  =========================================================
+    noul          `min(p, 1-p)`, reconstructed from the `noul` scalar that
+                  survives validation even though `confidence` does not.
+    choice/score  `1 - max(probabilities)` when the distribution is present,
+                  else `1 - confidence`.
+    ============  =========================================================
+
+    When more than one signal is available the **largest** (most cautious)
+    uncertainty wins. That is deliberate: this is a safety gate, so any signal
+    saying "unsure" is enough to refuse. It also settles the case where a
+    one-hot `probabilities` disagrees with a low `confidence` -- the gate defers.
+
+    `action.act_probability` is consulted **only** when `act_trained=True`. The
+    upstream trainer leaves `act_head` at `+ 0.0 * act.sum()` (zero gradient,
+    never trained), so on a stock checkpoint that number is noise: blindly
+    preferring it would make every answer look half-unsure and defer everything.
+    On a checkpoint trained by this project's `laya_train.py` it *is* the priced
+    act/defer decision and is worth taking at its word.
+
+    Returns `None` when there is nothing to judge -- the caller must treat that
+    as "no decision available", never as "the model said no".
+    """
+    if not isinstance(opinion, dict):
+        # A wrapper object: fall back to the one number it exposes, but invert it
+        # onto the uncertainty scale so the threshold semantics stay uniform.
+        confidence = getattr(opinion, "confidence", None)
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            return None
+        value = float(confidence)
+        if not 0.0 <= value <= 1.0:
+            return None
+        return max(0.0, min(0.5, 1.0 - value))
+
+    estimates: list[float] = []
+
+    if act_trained:
+        action = opinion.get("action")
+        if isinstance(action, dict):
+            act_probability = action.get("act_probability")
+            if isinstance(act_probability, (int, float)) and not isinstance(act_probability, bool):
+                return max(0.0, min(1.0, 1.0 - float(act_probability)))
+
+    if opinion.get("type") == "noul":
+        p_true = opinion.get("noul")
+        if isinstance(p_true, bool) or not isinstance(p_true, (int, float)):
+            return None
+        p = max(0.0, min(1.0, float(p_true)))
+        estimates.append(min(p, 1.0 - p))
+    else:
+        probabilities = opinion.get("probabilities")
+        if isinstance(probabilities, dict) and probabilities:
+            values = [float(v) for v in probabilities.values()
+                      if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            total = sum(values)
+            if values and total > 0:
+                estimates.append(max(0.0, min(1.0, 1.0 - max(values) / total)))
+
+    confidence = opinion.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        value = float(confidence)
+        if 0.0 <= value <= 1.0:
+            estimates.append(max(0.0, min(1.0, 1.0 - value)))
+
+    return max(estimates) if estimates else None
+
+
+def decision_usable(opinion: Any, *, max_uncertainty: float,
+                    act_trained: bool = False) -> bool:
+    """Whether an opinion is worth acting on, on the uncertainty scale.
+
+    Fail-safe by construction: anything unjudgeable is unusable, so a malformed
+    or partially-validated answer falls back rather than being trusted.
+    """
+    uncertainty = decision_uncertainty(opinion, act_trained=act_trained)
+    if uncertainty is None:
+        return False
+    return uncertainty <= max(0.0, min(0.5, float(max_uncertainty)))
+
+
 class LayaClient:
     """Bounded client for one Laya decision call per turn.
 

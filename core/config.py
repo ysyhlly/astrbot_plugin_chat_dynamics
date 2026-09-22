@@ -104,10 +104,15 @@ class RuntimeConfig:
     laya_base_url: str = "http://127.0.0.1:8900"
     laya_timeout: float = 1.5
     laya_min_confidence: float = 0.6
+    # 不确定度上限，语义与 laya_min_confidence 相反（0 = 完全确定）。两者并存是有意的：
+    # laya_min_confidence 只对 choice/score 有效（它们的 confidence 能低到 0），
+    # 而 noul 的 confidence = max(p, 1-p) 恒 >= 0.5，必须走不确定度那条路。
+    laya_max_uncertainty: float = 0.25
     # The mood calibration has its own backend and its own floor: it is a reading,
     # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
     vibe_backend: str = "llm"
     vibe_min_confidence: float = 0.55
+    vibe_max_uncertainty: float = 0.35
     reply_timeout: float = 60.0
     tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
@@ -364,9 +369,15 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         laya_min_confidence=_number(
             raw, "laya_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
         ),
+        laya_max_uncertainty=_number(
+            raw, "laya_max_uncertainty", 0.25, lambda value: 0.0 <= value <= 0.5, warnings
+        ),
         vibe_backend=_vibe_backend(_get(raw, "vibe_backend", "llm"), warnings),
         vibe_min_confidence=_number(
             raw, "vibe_min_confidence", 0.55, lambda value: 0.3 <= value <= 0.95, warnings
+        ),
+        vibe_max_uncertainty=_number(
+            raw, "vibe_max_uncertainty", 0.35, lambda value: 0.0 <= value <= 0.5, warnings
         ),
         reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
         tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),

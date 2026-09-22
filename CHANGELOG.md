@@ -2,6 +2,21 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.11.0 · 人设投影进训练数据、trace 文本边界、不确定度闸门（2026-09-22）
+
+- **判断依据随人设变化,此前的训练数据看不到人设**。决策提示词本来就把人设正文拼在后面（`DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt`）,所以同样的证据下两个不同人设的正确判断本就不同。而导出的 state 只留 `persona_fingerprint`——一个哈希,等于把决定判断的自变量删了,把人设之间的分歧当噪声喂给模型。新增 `core/persona_axes.py`:把 AstrBot 的人设卡（`persona_manager.personas_v3` 的 `prompt`）由 LLM 判读一次,投影到六条 0–4 序数轴（chattiness / warmth / formality / humour / initiative / boundary）,按现成的 `persona.fingerprint` 缓存,**每人设只调一次模型**,摊到后续回合为零。
+- 投影是**教师侧**的:`decision_backend` 为 `jev`/`laya` 时只读缓存,从不触发判读。学生在线时不该叫教师——「Laya 替代 LLM」只有在教师下线、学生照跑时才算成立。缓存为空就**没有投影**,照常判:一个没被判读过的人设不是「各轴为 0」的人设,是「未知」,补零就是教模型把两者当一回事。
+- 投影不进决策预算与准入槽：它另起一次 `llm_generate`,不占 `budget.run(..., "routing")` 那个预算槽、不占 `self.slots`。抢前者的预算会把真正的决策挤成 `decision_timeout`,占后者会拉长队列——那都是用遥测改行为。**当前只进数据,不改行为**：`wts_questions` / `gate_questions` / `completeness_question` 的判据文字一个字未动,`rubric()` 已写好但未接线。
+- **`decision_trace` 是有界事实记录,任何自由文本一概不进**（对话正文、`response_goal`、人设文本、模型推理）。`tests/test_trace_free_text_boundary.py` 把 "zzsecretxx" 种进每一处散文并断言序列化后不出现,学习层也以「无正文」读它。`TurnDecision` 新增的 `rationale` / `why_rejected` 因此**留在内存供回复阶段用,不落盘**——理由链本该有,但它属于另一份契约（见 `docs/reasoning-store-contract.md`）。
+- 写入点放行的只有闭集词表与数字：`reason_category`（13 选 1）、`confidence`（action/state/length 各 0–1）、`evidence`（消息 ID + 闭集 cue 标签 + 权重）、`alternatives`（只留被否的 `action`,剥掉理由文字）、`assessment`（addressee/topic/completeness/ambiguity 四个读数）,外加 `target_message_ids` 与候选集。**消息 ID 按 `turn.allowed_ids` 过滤**:`TurnDecision.parse` 校验过,但 dataclass 构造器直传没这道关,*a field that is safe only on one code path is not a safe field*。
+- 「对谁说」此前**一个字都没进 trace**——它是判定的核心产物之一,却因为白名单只放行 action/state/length/reason_code 而被整个丢掉。现已补上,连同候选集（否则只有「选中谁」,负例事后补不回来,而负例正是这个任务最难也最值钱的一半）。
+- `TurnDecision.parse` 从 `set(data) != fields` 改为**核心六字段必填 + 增补字段白名单**,且增补部分**畸形时丢弃而不抛异常**:*a half-written record must never cost the decision it describes*。旧的六字段回复照旧能过,所以这是一道开关而不是一次迁移。
+- 新增 `DECISION_INSTRUCTIONS_RECORDED`,把判定提示词扩到可作训练的密记录（推理链、逐字段置信、证据引用、被否选项、四个自评读数）。**暂不生效**:让判官多答六个字段本身就是对被测对象的改动——多要字段要花注意力,而要求推理的提示词与不要求的推理方式本就不同。在有基线可对照之前,首个批次的数据会与「提示词被改了」无法区分。`decision_instructions(record=False)` 默认仍是原来那六字段的原文,开关用 `getattr(cfg, "decision_record_prompt", False)` 读取,**不加配置项也零行为变化**。
+- 新增 `core/scrub.py` 与 `core/reasoning_store.py`（**尚未接线**）:推理链走自己一份键前缀、自己一份契约的存储,入库前去标识化。假名用**带安装期盐的 HMAC** 而非裸 hash——QQ 号只有十位,裸 hash 可秒级穷举反查;跨记录稳定又是必需的,否则同一实体在不同样本里是不同 token,关联被切断。**这是尽力降低,不是匿名化**,主控制仍在提示词层（要求引用 `message_id`、禁止复述名字与原文）。
+- **闸门从「置信度下限」改为「不确定度上限」**：`laya` 报的 `noul.confidence` 是 `max(p, 1-p)`,数学上恒 ≥ 0.5。门槛 ≤ 0.5 闸门永不触发;门槛 0.6 会变成「模型没把握就退、错得越自信越不退」,正好是反的——对安全闸来说这是最坏的一种失效,因为它看起来在工作。新增 `core.integrations.laya.decision_uncertainty` / `decision_usable` 把三类答案归到同一尺度（0 = 完全确定,越大越不确定）:`noul` 取 `min(p, 1-p)`（从能过校验的 `noul` 标量重建）,`choice`/`score` 取 `1 - max(probabilities)`,多信号并存时取**最保守**的那个。新增 `laya_max_uncertainty`（默认 0.25）与 `vibe_max_uncertainty`（默认 0.35,氛围是「读」不是「做」,后面还有迟滞状态机吸收误判）。
+- `action.act_probability` **只在 `act_trained=True` 时采信**:上游训练器把 `act_head` 留在 `+ 0.0 * act.sum()`（零梯度,从未训练）,原厂 checkpoint 上那个数是噪声,盲目采信会让每条答案都显得半信半疑、全部退回。带 `act_costs` 的 checkpoint 才是被定价过的「出手还是退给 LLM」决策。
+- 验证：新增 `tests/test_decision_uncertainty.py`（noul 置信度下限为何使闸门失效、最保守信号胜出、无法判定一律拒绝、act 头只在受训时采信、阈值夹取）、`tests/test_trace_free_text_boundary.py`、`tests/test_persona_axes.py`、`tests/test_persona_axes_record.py`、`tests/test_decision_prompt_staging.py`。
+
 ## v1.10.1 · 修复 noul 决策永不被采纳（2026-09-22）
 
 - 修复 `noul` 类型的小决策（`join`、`completeness`）**永远撑不起决策**：`typesafe` 的共享校验器为 `jev_decision` 有意丢弃 `noul` 自带的 `confidence`，而 `turn_decisions._decision_of` 又要求有 confidence ——同一个校验器的两个消费者约定冲突，导致该槽位一律记 `unusable_answer`。

@@ -99,7 +99,18 @@
       "max": 0.95,
       "step": 0.05
     },
-    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取四项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。"
+    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取 choice/score 各项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。只对 choice / score 有效——这两类的置信度是 1 - H(p)/log k，能低到 0。**不要**把它用在 noul 上：noul 报的 confidence 是 max(p, 1-p)，数学上恒 >= 0.5，门槛 <= 0.5 会让闸门永不触发，门槛 0.6 会变成「模型没把握就退、错得越自信越不退」，正好是反的。noul 请走 laya_max_uncertainty。"
+  },
+  "laya_max_uncertainty": {
+    "description": "Laya 决策不确定度上限",
+    "type": "float",
+    "default": 0.25,
+    "slider": {
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "范围 0~0.5，超过就把决策退回原 LLM。语义统一：0 表示完全确定，越大越不确定。noul 用 min(p, 1-p)，choice/score 用 1 - max(probabilities)，两类问题落在同一尺度上，所以一个阈值通用。多个信号并存时取**最保守**的那个（本插件是安全闸，任何一路说不确定就退）。若模型带训练过的动作头（rl_agent_config.json 里有 act_costs，即本项目 laya_train.py 产出的 checkpoint），则可改用 1 - act_probability——那是被定价过的「出手还是退给 LLM」决策。0.25 约等于「p 落在 (0.25, 0.75) 之外才出手」。"
   },
   "vibe_backend": {
     "description": "氛围分类后端",
@@ -121,6 +132,17 @@
       "step": 0.05
     },
     "hint": "范围 0.3~0.95，仅 vibe_backend=laya 生效。低于门槛就不采用这次校准，沿用当前氛围判定。门槛比决策层低一些：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。"
+  },
+  "vibe_max_uncertainty": {
+    "description": "氛围分类不确定度上限",
+    "type": "float",
+    "default": 0.35,
+    "slider": {
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "范围 0~0.5，仅 vibe_backend=laya 生效。不确定度超过它就不采用这次校准，沿用当前氛围判定。门槛比决策层宽松（0.35 对 0.25）：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。与决策层共用同一套不确定度语义（choice/score 用 1 - max(probabilities)，多个信号取最保守的那个），所以两个数字可以直接比较。"
   },
   "reply_timeout": {
     "description": "回复模型总超时秒数",

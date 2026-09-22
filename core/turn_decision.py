@@ -54,6 +54,73 @@ class TurnContext:
         }
 
 
+ACTIONS = ("ignore", "acknowledge", "clarify", "reply", "close")
+STATES = ("observing", "casual", "focused", "supportive", "playful", "disengaging")
+LENGTHS = ("brief", "normal", "detailed")
+CORE_FIELDS = frozenset({"action", "state", "target_message_ids", "response_goal", "length", "reason_code"})
+RECORD_FIELDS = frozenset({"reason_category", "rationale", "confidence", "evidence", "alternatives", "assessment"})
+CONFIDENCE_KEYS = ("action", "state", "length")
+ASSESSMENT_KEYS = ("addressee", "topic", "completeness", "ambiguity")
+
+
+def _confidences(node: Any) -> tuple[tuple[str, float], ...]:
+    """((field, 0-1),) for the three picks, in a fixed order.
+
+    Fixed order matters: `asdict` round-trips this through JSON as a list, and a
+    free ordering would make two identical decisions compare unequal.
+    """
+    if not isinstance(node, dict):
+        return ()
+    out = []
+    for key in CONFIDENCE_KEYS:
+        value = node.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out.append((key, max(0.0, min(1.0, float(value)))))
+    return tuple(out)
+
+
+def _evidence(node: Any, allowed: frozenset[str]) -> tuple[tuple[str, tuple[str, ...], float], ...]:
+    if not isinstance(node, list):
+        return ()
+    out = []
+    for item in node[:12]:
+        if not isinstance(item, dict):
+            continue
+        message_id = item.get("message_id")
+        if not isinstance(message_id, str) or message_id not in allowed:
+            continue
+        cues = item.get("cues")
+        cues = tuple(str(c)[:32] for c in cues[:8] if isinstance(c, str)) if isinstance(cues, list) else ()
+        weight = item.get("weight")
+        weight = float(weight) if isinstance(weight, (int, float)) and not isinstance(weight, bool) else 0.0
+        out.append((message_id, cues, max(0.0, min(1.0, weight))))
+    return tuple(out)
+
+
+def _alternatives(node: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(node, list):
+        return ()
+    out = []
+    for item in node[:3]:
+        if not isinstance(item, dict) or item.get("action") not in ACTIONS:
+            continue
+        why = item.get("why_rejected")
+        if isinstance(why, str) and why:
+            out.append((item["action"], why[:200]))
+    return tuple(out)
+
+
+def _assessment(node: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(node, dict):
+        return ()
+    out = []
+    for key in ASSESSMENT_KEYS:
+        value = node.get(key)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            out.append((key, str(value)[:48]))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class TurnDecision:
     action: str
@@ -62,6 +129,16 @@ class TurnDecision:
     response_goal: str
     length: str
     reason_code: str
+    # The standing training record: how the call was reached, kept so a later
+    # learner can see the reasoning and not only the outcome. None of it is
+    # load-bearing. Anything malformed here is dropped rather than rejected,
+    # because a half-written record must never cost the decision it describes.
+    reason_category: str = ""
+    rationale: str = ""
+    confidence: tuple[tuple[str, float], ...] = ()
+    evidence: tuple[tuple[str, tuple[str, ...], float], ...] = ()
+    alternatives: tuple[tuple[str, str], ...] = ()
+    assessment: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def parse(cls, text: str, turn: TurnContext) -> TurnDecision:
@@ -72,14 +149,16 @@ class TurnDecision:
         if fenced is not None:
             text = fenced.group(1)
         data = json.loads(text)
-        fields = {"action", "state", "target_message_ids", "response_goal", "length", "reason_code"}
-        if not isinstance(data, dict) or set(data) != fields:
+        # The core six are required and nothing outside core+record is allowed,
+        # but a response that omits the record entirely still counts -- that is
+        # exactly what every pre-record decision looks like.
+        if not isinstance(data, dict) or not CORE_FIELDS <= set(data) or not set(data) <= CORE_FIELDS | RECORD_FIELDS:
             raise ValueError("decision_fields")
-        if data["action"] not in ("ignore", "acknowledge", "clarify", "reply", "close"):
+        if data["action"] not in ACTIONS:
             raise ValueError("decision_action")
-        if data["state"] not in ("observing", "casual", "focused", "supportive", "playful", "disengaging"):
+        if data["state"] not in STATES:
             raise ValueError("decision_state")
-        if data["length"] not in ("brief", "normal", "detailed"):
+        if data["length"] not in LENGTHS:
             raise ValueError("decision_length")
         ids = data["target_message_ids"]
         if not isinstance(ids, list) or len(ids) > 15 or any(not isinstance(i, str) or i not in turn.allowed_ids for i in ids):
@@ -91,7 +170,17 @@ class TurnDecision:
             raise ValueError("decision_goal")
         if not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", reason):
             raise ValueError("decision_reason")
-        return cls(data["action"], data["state"], tuple(dict.fromkeys(ids)), goal, data["length"], reason)
+        category = data.get("reason_category")
+        rationale = data.get("rationale")
+        return cls(
+            data["action"], data["state"], tuple(dict.fromkeys(ids)), goal, data["length"], reason,
+            category if isinstance(category, str) else "",
+            rationale[:800] if isinstance(rationale, str) else "",
+            _confidences(data.get("confidence")),
+            _evidence(data.get("evidence"), turn.allowed_ids),
+            _alternatives(data.get("alternatives")),
+            _assessment(data.get("assessment")),
+        )
 
     @classmethod
     def fallback(cls, turn: TurnContext, reason: str) -> TurnDecision:
@@ -119,6 +208,61 @@ response_goal: short response objective, not final prose (max 600 characters)
 length: brief|normal|detailed
 reason_code: short lowercase ASCII snake_case category, not reasoning.
 """
+
+# ---- staged, not in force ------------------------------------------------
+# The section below is written, and `TurnDecision.parse` already accepts
+# everything it asks for -- but it is not sent. Asking a judge for six more fields
+# is a change to the thing being measured: extra fields cost attention, and a
+# prompt that asks for a rationale is a prompt that reasons differently from one
+# that does not. Until there is a baseline to compare against, the decision path
+# must keep saying exactly what it said before, or the first batch of new data
+# cannot be told apart from a prompt change.
+#
+# `parse` accepting both shapes is what makes this a switch rather than a
+# migration: flipping `decision_record_prompt` on later changes nothing about how
+# records are read.
+RECORD_SECTION = """
+The six fields above are the decision and are load-bearing. The six fields below
+are a standing record of how you got there: they are stored and later used as
+training data, so write them well enough that someone who never saw this
+conversation could follow your reasoning and disagree with it precisely. They
+never change the decision itself and a malformed one is dropped, not rejected --
+but do not pad, do not restate these instructions, and do not hedge.
+
+reason_category: exactly one of direct_address | reply_to_bot | other_addressee |
+  no_addressee | ongoing_thread | question_open | information_request |
+  social_gesture | media_share | off_topic | private_boundary |
+  insufficient_context | meta_control. This is the coarse, stable cause;
+  reason_code stays the fine-grained label it has always been.
+rationale: 2-4 sentences of specific reasoning. Name what in the window drove the
+  call and what you rejected. Not a summary of the rules, not the response goal.
+  Cite messages by their message_id; never reproduce a name, a handle or the text
+  of a message.
+confidence: object with exactly action, state, length, each a number 0-1 for how
+  certain you are of that one pick independently. Say 0.2 when the window is thin;
+  a confident guess over missing context is the main thing this record must not be.
+evidence: array of {message_id, cues, weight}. message_id must be one that was
+  supplied. cues are short snake_case tags for what that message contributed --
+  mention, vocative, direct_question, quoted_bot, reply_chain, media_drop,
+  topic_shift, negation, boundary_signal, name_drop, subject_only, filler.
+  weight is 0-1 for how much that message mattered.
+alternatives: array of {action, why_rejected} for the strongest option you set
+  aside, at most 3. why_rejected is one short sentence of the discriminating fact.
+assessment: object with exactly addressee, topic, completeness, ambiguity --
+  addressee is bot|other|unknown; topic is the topic id or unknown; completeness
+  is complete|fragmented|missing_context; ambiguity is low|medium|high. These are
+  your own readings, not the routing layer's verdicts.
+"""
+
+DECISION_INSTRUCTIONS_RECORDED = DECISION_INSTRUCTIONS + RECORD_SECTION
+
+
+def decision_instructions(record: bool = False) -> str:
+    """The judge prompt. `record` opts into asking for the training record.
+
+    Defaults to the original six-field wording on purpose: see RECORD_SECTION.
+    """
+    return DECISION_INSTRUCTIONS_RECORDED if record else DECISION_INSTRUCTIONS
 
 
 def decision_prompt(turn: TurnContext, state: str, observations: dict, presence: str = "sensible") -> str:

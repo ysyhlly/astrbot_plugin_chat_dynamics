@@ -69,6 +69,7 @@ const CONFIG_GROUPS = [
       "laya_base_url",
       "laya_timeout",
       "laya_min_confidence",
+      "laya_max_uncertainty",
       "reply_timeout",
       "tool_agent_timeout",
       "vibe_provider",
@@ -169,6 +170,7 @@ const CONFIG_GROUPS = [
       "vibe_llm_enabled",
       "vibe_backend",
       "vibe_min_confidence",
+      "vibe_max_uncertainty",
       "telemetrics_window_seconds",
       "fast_banter_enter_mpm",
       "chill_fade_enter_mpm"

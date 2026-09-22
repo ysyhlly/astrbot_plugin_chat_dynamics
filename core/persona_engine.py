@@ -434,6 +434,51 @@ class PersonaEngine:
         runtime.model_diagnostic = {"reason_code": code, **extra}
         self.plugin._mark_panel_runtime_dirty()
 
+    async def _project_persona(self, persona, turn):
+        """Project the persona onto bounded axes. Data collection only.
+
+        Deliberately outside the decision's admission slot and outside the
+        "routing" budget the decision call charges against. Reusing either would
+        be a behaviour change dressed as telemetry: a projection spending the
+        routing budget could push a real decision into `decision_timeout`, and
+        holding a slot would lengthen the queue. This runs on its own, is cached
+        per persona fingerprint, and every failure mode -- no KV, no provider, a
+        timeout, an unparseable reply -- yields None and leaves the record simply
+        without the field.
+
+        Cost is one call per persona per edit, amortised over every later turn.
+        """
+        from . import persona_axes
+
+        p = self.plugin
+        if getattr(p, "get_kv_data", None) is None or getattr(p, "put_kv_data", None) is None:
+            return None
+
+        # A typed-decision backend must work with the teacher offline -- that is
+        # the whole point of routing to it. So it only ever reads the cache and
+        # never triggers a read of the card; when nothing was cached it judges with
+        # no projection at all. The model path is the one that pays for a model call
+        # anyway, so it is the one that fills the cache.
+        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
+        if backend in ("jev", "laya"):
+            return await persona_axes.load_cached(p, persona.fingerprint)
+
+        async def ask(system: str, user: str) -> str:
+            provider_id = (p._runtime_config.decision_provider_id
+                           or await p.llm.resolve_provider_id(turn.session_key))
+            response = await p.context.llm_generate(
+                chat_provider_id=provider_id, system_prompt=system, prompt=user)
+            return completion_text(response)
+
+        try:
+            return await asyncio.wait_for(
+                persona_axes.load(p, persona.fingerprint,
+                                  persona_id=persona.persona_id,
+                                  persona_prompt=persona.prompt, ask=ask),
+                timeout=p._runtime_config.decision_timeout)
+        except Exception:
+            return None
+
     async def decide(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
         p, turn = self.plugin, item.context
         if item.fallback:
@@ -447,11 +492,14 @@ class PersonaEngine:
                 async with self.slots:
                     provider_id = p._runtime_config.decision_provider_id or await p.llm.resolve_provider_id(turn.session_key)
                     from .provider_budget import context_budget
+                    from .turn_decision import decision_instructions
                     budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
                     async def invoke():
                         return await p.context.llm_generate(
                             chat_provider_id=provider_id,
-                            system_prompt=DECISION_INSTRUCTIONS + "\nEffective persona:\n" + persona.prompt,
+                            system_prompt=decision_instructions(
+                                bool(getattr(p._runtime_config, "decision_record_prompt", False))
+                            ) + "\nEffective persona:\n" + persona.prompt,
                             prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
                         )
                     response = await budget.run(provider_id, "routing", invoke)
@@ -688,6 +736,9 @@ class PersonaEngine:
                     type(exc).__name__,
                 )
             # Complete the trace only after the model decision and participation gates.
+            # The projection is read once per turn -- it is a property of the persona,
+            # not of any message -- and cached per fingerprint from there on.
+            projection = await self._project_persona(persona, turn)
             for message in (() if item.shadow else item.context.messages):
                 node = _dag_node(runtime, message.message_id)
                 trace = getattr(node, "metadata", {}).get("decision_trace")
@@ -695,7 +746,8 @@ class PersonaEngine:
                     from .routing_trace import finalize_decision_trace, compact_trace_inputs
                     trace = stage_trace(trace, persona=persona, interaction_state=interaction_state,
                                         presence=p._runtime_config.presence_knob, turn=turn,
-                                        proposed=proposed, final=decision, gate=gate)
+                                        proposed=proposed, final=decision, gate=gate,
+                                        axes=projection)
                     node.metadata["decision_trace"] = finalize_decision_trace(
                         trace, should_reply=decision.action != "ignore", branch=decision.reason_code)
                     node.metadata["trace_inputs"] = compact_trace_inputs(node.metadata["decision_trace"])
