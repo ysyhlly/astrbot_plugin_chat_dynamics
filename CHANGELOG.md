@@ -2,6 +2,11 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.12.4 · 修复学习教师不可用时的人设决策（2026-09-23）
+
+- 开启决策学习采集时，在线教师超时、报错或缺少必需答案后，`decision_backend=model` 回退到原有人设模型决策，避免群聊持续出现 `decision_learning_unavailable` 而无法主动参与。
+- 保留学习样本采集和已完成的教师答案；学习层给出完整有效答案时仍照常使用。回退路径继续接收同一轮的结构化环境特征 E。
+
 ## v1.12.3 · 人设 LLM 使用环境特征判断开口（2026-09-23）
 
 - 在 `decision_mode=persona_model`、`decision_backend=model` 时，把采集到的结构化环境特征 E 与会话状态一起交给 LLM，明确提示其结合人设、聊天、机器人近期发言和冷却状态判断本轮是否开口；`null` 表示未知，群活跃度本身不要求插话。

@@ -544,14 +544,22 @@ class PersonaEngine:
                                                  presence=p._runtime_config.presence_knob,
                                                  persona_prompt=persona.prompt,
                                                  environment=environment)
-            answers = await learning.evaluate(session_id=turn.session_key,
-                state=learning_state,
-                questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
+            try:
+                answers = await learning.evaluate(session_id=turn.session_key,
+                    state=learning_state,
+                    questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Decision learning unavailable; using configured decision backend")
+                answers = None
             if runtime is not None:
                 runtime.jev_decision = describe_answers(answers or {})
             required = set(questions) - OPTIONAL_TURN_QUESTIONS
-            return (turn_from_answers(turn, answers, candidates) if answers and required <= set(answers)
-                    else TurnDecision.fallback(turn, "decision_learning_unavailable"))
+            if answers and required <= set(answers):
+                return turn_from_answers(turn, answers, candidates)
+            if backend != "model":
+                return TurnDecision.fallback(turn, "decision_learning_unavailable")
         if backend in ("jev", "laya"):
             async def request():
                 return await self._decide_layer(item, persona, state, runtime=runtime, backend=backend)

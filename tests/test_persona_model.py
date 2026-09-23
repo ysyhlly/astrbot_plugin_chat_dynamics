@@ -887,3 +887,29 @@ async def test_persona_decision_timeout_includes_provider_queue(model_plugin):
         assert not budget.active
     finally:
         await p.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("learning_result", [None, {"join": {"noul": 0.9}}, RuntimeError("teacher failed")])
+async def test_unavailable_learning_uses_configured_persona_model(model_plugin, monkeypatch, learning_result):
+    from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
+
+    p, bridge = model_plugin
+    p._runtime_config = replace(p._runtime_config, decision_backend="model", decision_learning_mode="collect")
+    monkeypatch.setattr(p.decision_learning, "enabled", lambda session: True)
+
+    async def evaluate(**kwargs):
+        if isinstance(learning_result, Exception):
+            raise learning_result
+        return learning_result
+
+    monkeypatch.setattr(p.decision_learning, "evaluate", evaluate)
+    turn = TurnContext("room", "user", "帮我看一下", (MessageSnapshot("m", "user", "帮我看一下"),),
+                       (), 0, 0, 0, False)
+    try:
+        decision = await p.persona_engine.decide(ModelTurn(turn, (), {}, False), bridge.persona, "observing")
+        assert decision.action == "reply"
+        assert decision.reason_code == "relevant_request"
+        assert len(p.decision_calls) == 1
+    finally:
+        await p.terminate()
