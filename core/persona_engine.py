@@ -22,6 +22,7 @@ from .turn_decision import (
     MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
 )
 from .jev_decision import build_questions, build_state, build_learning_state, decision_from_answers, describe_answers
+from .learning_environment import capture_environment
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -536,7 +537,10 @@ class PersonaEngine:
             learning_state = build_learning_state(turn, candidates=candidates, previous_state=state,
                                                  observations=item.observations,
                                                  presence=p._runtime_config.presence_knob,
-                                                 persona_prompt=persona.prompt)
+                                                 persona_prompt=persona.prompt,
+                                                 environment=capture_environment(
+                                                     runtime, turn, getattr(p, "arbiter", None),
+                                                     now=p.time_service.time()) if runtime is not None else None)
             answers = await learning.evaluate(session_id=turn.session_key,
                 state=learning_state,
                 questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)

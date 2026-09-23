@@ -73,7 +73,8 @@ def _teacher_state(row: dict, source: dict) -> dict:
     original = source["conversation"]
     if (not isinstance(current, dict) or
             any(current.get(key) != original.get(key) for key in ("text", "author", "messages")) or
-            prepared.get("target_candidates") != source.get("target_candidates")):
+            prepared.get("target_candidates") != source.get("target_candidates") or
+            prepared.get("environment") != source.get("environment")):
         raise ValueError("prepared_evidence_mismatch")
     _dataset.validate_snapshot(prepared, {
         (row.get("metadata") or {}).get("question_id", row["task_id"]): row["candidates"]})
@@ -304,6 +305,8 @@ def build_case(rows: list[dict], *, tokenizer=None, max_state_tokens=256,
     # The model sees only state/question text, never teacher labels or IDs.
     result = {"id": request_id, "source": "chat_dynamics_v2", "state": packed_state,
               "questions": questions}
+    if isinstance(state.get("environment"), dict) and state["environment"].get("schema_version") == 1:
+        result["environment"] = state["environment"]
     return result, picks["join"] == "true"
 
 

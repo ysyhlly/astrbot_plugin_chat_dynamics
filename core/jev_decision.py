@@ -144,13 +144,15 @@ def build_state(
 
 
 def build_learning_state(turn: TurnContext, *, candidates=(), previous_state="observing",
-                         observations=None, presence="sensible", persona_prompt="") -> dict:
+                         observations=None, presence="sensible", persona_prompt="",
+                         environment=None) -> dict:
     """Lossless learning input; size admission belongs to the shared preparer."""
     conversation = turn.learning_payload()
     messages = {m["message_id"]: m for m in conversation["background"] + conversation["messages"]}
     return {"persona": str(persona_prompt or ""), "previous_state": previous_state,
             "participation_policy": participation_policy(presence),
-            "observations": dict(observations or {}), "conversation": conversation,
+            "observations": dict(observations or {}),
+            "environment": dict(environment or {}), "conversation": conversation,
             "target_candidates": {f"target.{i}": messages.get(mid, {"message_id": mid, "text_missing": True})
                                   for i, mid in enumerate(candidates)}}
 

@@ -621,7 +621,9 @@ async def test_full_source_survives_unavailable_or_corrupt_preparation(tmp_path,
             return None
         return {"state": bad_prepared, "questions": payload["questions"], "model_version": "v1"}
     host.laya.request_json.side_effect = request
-    source = {"text": "hello", "author": "123456789", "history": [{"text": "complete history"}]}
+    source = {"text": "hello", "author": "123456789", "history": [{"text": "complete history"}],
+              "environment": {"schema_version": 1, "mentioned_self": True,
+                              "active_users_last_5m": 3, "reply_to_self": None}}
     await runtime.evaluate(session_id="room", state=source, questions=QUESTIONS)
     await asyncio.gather(*list(runtime.tasks))
     rows = runtime.store.samples()
@@ -629,6 +631,7 @@ async def test_full_source_survives_unavailable_or_corrupt_preparation(tmp_path,
     for row in rows:
         assert row["state"] == row["metadata"]["source_state"]
         assert row["state"]["history"] == source["history"]
+        assert row["state"]["environment"] == source["environment"]
         assert row["metadata"]["tokenizer_prepared"] is False
         assert "123456789" not in json.dumps(row)
     assert runtime._teacher.call_args.args[1] == rows[0]["state"]

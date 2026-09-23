@@ -64,6 +64,26 @@ def test_complete_request_becomes_one_choice_case():
     assert target["gold"]["distribution"] == [1, 0, 0]
 
 
+def test_environment_is_exported_separately_from_semantic_state():
+    rows = request(1)
+    environment = {"schema_version": 1, "mentioned_self": True,
+                   "seconds_since_last_bot_message": 12.5,
+                   "active_users_last_5m": 3}
+    rows[0]["metadata"]["source_state"]["environment"] = environment
+    case, _ = build_case(rows)
+    assert case["environment"] == environment
+    assert "environment" not in json.loads(case["state"])
+
+    prepared = deepcopy(rows)
+    for row in prepared:
+        row["metadata"]["tokenizer_prepared"] = True
+        row["state"] = json.dumps(row["metadata"]["source_state"], ensure_ascii=False)
+    prepared[0]["state"] = json.dumps({**rows[0]["metadata"]["source_state"],
+                                       "environment": {"schema_version": 1}}, ensure_ascii=False)
+    with pytest.raises(ValueError, match="prepared_evidence_mismatch"):
+        build_case(prepared)
+
+
 def test_long_target_candidates_retain_distinct_tails_after_upstream_truncation():
     rows = request(22)
     state = rows[0]["metadata"]["source_state"]

@@ -6,6 +6,8 @@
 
 `scripts/agentjev_prepare.py` 读取插件的逐题 DecisionDataset JSONL，按同一 `session_id + request_id` 合并为一次决策 case。只接收版本 2、带 `snapshot_version=1`、有来源清楚的完整教师硬标签、无证据不足或决策冲突的请求。修复后的真实记录把原始结构化快照存在 `metadata.source_state`，脚本重新核实触发正文与每条 target 候选正文；仅有 tokenizer 字符串且缺少快照版本的旧记录会被拒绝。若本轮教师看到经过 `/prepare` 处理的输入，训练使用那份实际输入，原始快照仅用于证据完整性核对。输出把当前消息放在历史之前，并用训练时相同的 tokenizer 和序列预算验证每道题仍能看到当前消息；放不下时拒收该 case。
 
+新采集的 `metadata.source_state.environment` 是独立的 E 原始特征，离线 case 在顶层 `environment` 原样导出，并核对 `/prepare` 没有更改它。旧 case 不补造 E。现有 AgentJev `decision.v1` 仍只接收文本 `state` 和题目，尚无环境编码器或 S/E 融合层；顶层 E 仅供后续训练实现使用，不能把这次采集视为已让当前决策头学会利用 E。引入融合层时须同时更新训练输入和在线协议，并用相同场景、不同 E 的对照样本验证效果。
+
 `target.0` 等逐候选 Noul 会合并为一个 Choice，附带 `none`。多个目标同时为正时保留在拒收计数中，因为当前插件允许多目标，不能无依据地把它们压成一个主目标。旧 `recipient` Noul 问的是是否指向机器人，不是候选用户排序；新采集的 `recipient_choice` 直接提供至多八位有消息证据的群友及 `none`，离线转换后成为 AgentJev 的 `recipient` Choice。正例必须同时具有这一题和五档长度题；`join` 与 `action` 仍需一致。
 
 插件现已在决策学习请求中额外收集五档 `reply_length` Choice 和单一主要收件人 Choice。在线教师只回答原有必需题，额外两题由后台标注，不占用本轮参与决策时限；已获准的学生答案仍可在线提供长度。它们只在真正回应的 case 中进入训练；不回应时的假设长度和对象不会污染标签。运行时有效长度答案会映射到现有 `TurnDecision.length` 三档，并把更细的长度指导附在 `response_goal`。缺失这项答案时保留原有长度决策。新的收件人题目前只用于训练采集，不改变既有收件人路由。
