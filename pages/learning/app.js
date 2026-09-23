@@ -3,11 +3,18 @@ import { renderNav } from './shell.js';
 
 const el = id => document.getElementById(id);
 let busy = false;
+let refreshing = false;
 let stopped = false;
 const labels = { off: '关闭', collect: '教师采集', shadow: '旁路比较', active: '学生接管' };
 const percent = value => typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
 function status(message, error = false) { el('status').textContent = message; el('status').dataset.error = String(error); }
 function render(data) {
+  const onlineManagement = data.online_management !== false && data.student_backend !== 'agentjev';
+  el('agentjevNotice').hidden = onlineManagement;
+  el('trainForm').hidden = !onlineManagement;
+  el('candidate').disabled = !onlineManagement;
+  for (const id of ['promote', 'rollback', 'rollout']) el(id).hidden = !onlineManagement;
+  el('modelForm').querySelector('button[type="submit"]').hidden = !onlineManagement;
   const stats = data.stats || {};
   const total = (stats.laya || 0) + (stats.teacher || 0) + (stats.jev || 0);
   data.takeover_rate ??= total ? (stats.laya || 0) / total : null;
@@ -64,14 +71,18 @@ function render(data) {
   el('disagreements').innerHTML = (data.disagreements || []).map(item => `<li><strong>${escapeHtml(item.task_id)}</strong> · 教师：${escapeHtml(JSON.stringify(item.teacher))} · 学生：${escapeHtml(JSON.stringify(item.student))}</li>`).join('') || '<li>暂无分歧记录</li>';
 }
 async function refresh() {
-  if (busy || stopped) return;
+  if (busy || stopped || refreshing) return;
+  refreshing = true;
   try {
     const data = await apiGet('learning/stats');
-    try { const result = await apiPost('learning/jobs/status', {}, { timeoutMs: 35000 }); data.jobs = (result.jobs || []).map(job => ({ ...job, status: job.state, progress: typeof job.progress === 'object' ? JSON.stringify(job.progress) : job.progress })); }
-    catch (error) { data.jobs = []; data.job_error = `训练服务不可用：${error.message}`; }
-    render(data); status('已连接 · 每 10 秒更新');
+    if (data.online_management !== false && data.student_backend !== 'agentjev') {
+      try { const result = await apiPost('learning/jobs/status', {}, { timeoutMs: 35000 }); data.jobs = (result.jobs || []).map(job => ({ ...job, status: job.state, progress: typeof job.progress === 'object' ? JSON.stringify(job.progress) : job.progress })); }
+      catch (error) { data.jobs = []; data.job_error = `训练服务不可用：${error.message}`; }
+    } else { data.jobs = []; data.job_error = 'AgentJev 训练作业在离线流程中管理'; }
+    if (!stopped) { render(data); status('已连接 · 每 10 秒更新'); }
   }
   catch (error) { status(error.message || '读取失败，请重试', true); }
+  finally { refreshing = false; }
 }
 async function act(action, body = {}, timeoutMs = 35000) {
   if (busy) return null;

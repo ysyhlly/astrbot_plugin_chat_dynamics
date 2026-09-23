@@ -543,6 +543,8 @@ class DecisionLearning:
         approved = service.get("metadata", {}).get("approved_tasks", []) if student_backend == "laya" else []
         latencies = sorted(row["latency_ms"] for row in self.recent)
         return {"mode": self.cfg.decision_learning_mode,
+                "student_backend": student_backend,
+                "online_management": student_backend == "laya",
                 "tasks": [{"task_id": key, "samples": counts.get(key, {}).get("samples", 0),
                            "status": "approved" if key in approved else "pending" if self.cfg.decision_learning_mode != "off" else "off"} for key in TASKS],
                 "model_id": next((r["model_version"] for r in reversed(self.recent) if r["model_version"]), ""),

@@ -38,6 +38,18 @@ def test_edge_contract_roundtrip(kind, monkeypatch):
     assert dag.unlink_inferred_reply('c') is (kind in {'inferred_reply', 'semantic'})
 
 
+def test_platform_message_identity_survives_runtime_snapshot():
+    source = plugin(100)
+    node = source._registry.get_or_create('room').dag.add_message(
+        'platform-123', 'u', '原消息', timestamp=95,
+        metadata={'platform_message_id': True})
+    assert node.metadata['platform_message_id'] is True
+    target = plugin(100)
+    restore_runtime_state(target, export_runtime_state(source))
+    restored = target._registry.get('room').dag.nodes['platform-123']
+    assert restored.metadata['platform_message_id'] is True
+
+
 def test_unknown_saved_edge_is_not_platform_fact(monkeypatch, caplog):
     monkeypatch.setattr(codec.time, 'time', lambda: 1000)
     source = plugin(100)

@@ -17,11 +17,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 if __package__:
     from ..core import decision_dataset as _dataset
+    from ..core.agentjev_state import pack_state as _pack_state, path_fits, target_option
 else:
     # Direct `python scripts/agentjev_prepare.py` execution starts with scripts/
     # on sys.path. Use the same canonical module as the plugin and unit tests.
     sys.path.insert(0, str(ROOT.parent))
     from astrbot_plugin_chat_dynamics.core import decision_dataset as _dataset
+    from astrbot_plugin_chat_dynamics.core.agentjev_state import pack_state as _pack_state, path_fits, target_option
 
 LENGTH_OPTIONS = {
     "tiny": "一句很短的确认或回应。",
@@ -76,45 +78,6 @@ def _teacher_state(row: dict, source: dict) -> dict:
     _dataset.validate_snapshot(prepared, {
         (row.get("metadata") or {}).get("question_id", row["task_id"]): row["candidates"]})
     return prepared
-
-
-def _pack_state(state: dict) -> tuple[str, str]:
-    """Put the triggering message before optional history for head truncation."""
-    conversation = state["conversation"]
-    semantic_keys = ("recipient_ids", "basis", "certainty", "quoted_message_id",
-                     "quoted_author_id", "parent_message_id", "mentioned_user_ids",
-                     "bot_is_addressee", "subject_is_bot", "routing_ambiguous")
-    compact_messages = []
-    for message in conversation.get("messages") or []:
-        if not isinstance(message, dict):
-            continue
-        compact = {key: message[key] for key in
-                   ("message_id", "author", "text", "reply_to", "mentioned_users", "timestamp")
-                   if message.get(key) not in (None, "", [], ())}
-        semantics = message.get("semantics")
-        if isinstance(semantics, dict):
-            compact["routing"] = {key: semantics[key] for key in semantic_keys
-                                  if semantics.get(key) not in (None, "", [], ())}
-        compact_messages.append(compact)
-    current = {key: conversation[key] for key in ("text", "author", "explicit", "truncated")
-               if key in conversation}
-    current["messages"] = compact_messages
-    packed = {"current": current}
-    for key in ("target_candidates", "routing_semantics", "observations",
-                "participation_policy", "previous_state", "persona"):
-        if key in state:
-            packed[key] = state[key]
-    if "background" in conversation:
-        packed["background"] = conversation["background"]
-    packed["message_details"] = conversation.get("messages") or []
-    extra = {key: value for key, value in conversation.items()
-             if key not in ("text", "author", "explicit", "truncated", "messages", "background")}
-    if extra:
-        packed["conversation_extra"] = extra
-    packed.update({key: value for key, value in state.items()
-                   if key not in packed and key != "conversation"})
-    return (json.dumps(packed, ensure_ascii=False, separators=(",", ":")),
-            json.dumps({"current": current}, ensure_ascii=False, separators=(",", ":"))[:-1])
 
 
 def _validate_agentjev_budget(tokenizer, current_prefix: str, questions: list[dict],
@@ -218,7 +181,8 @@ def _grouped_choice(rows: list[dict], family: str, state: dict) -> tuple[dict, s
         key = str(candidate_id or len(options))
         if key in options:
             raise ValueError(f"{family}_candidate_duplicate")
-        options[key] = description
+        options[key] = (target_option(key, description) if family == "target"
+                        else description)
         if _label(row) == "true":
             positives.append(key)
     if len(positives) > 1:
@@ -301,7 +265,8 @@ def build_case(rows: list[dict], *, tokenizer=None, max_state_tokens=256,
             target = "true" if pick == "true" else "false"
             distribution = [float(target == "false"), float(target == "true")]
         elif kind == "choice" and isinstance(spec.get("criteria"), dict):
-            options = [f"{key}: {desc}" for key, desc in spec["criteria"].items()]
+            options = [(desc if family == "target" and key != "none" else f"{key}: {desc}")
+                       for key, desc in spec["criteria"].items()]
             distribution = [float(key == pick) for key in spec["criteria"]]
             target = pick
         else:
@@ -330,6 +295,9 @@ def build_case(rows: list[dict], *, tokenizer=None, max_state_tokens=256,
     if tokenizer is not None:
         _validate_agentjev_budget(tokenizer, current_prefix, questions,
                                   max_len=max_len, max_state_tokens=max_state_tokens)
+    if any(not path_fits(packed_state, question["text"], question["candidates"])
+           for question in questions):
+        raise ValueError("agentjev_path_over_budget")
     request_id = metadata.get("request_id")
     if not isinstance(request_id, str) or not request_id:
         raise ValueError("request_id_missing")

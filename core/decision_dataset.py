@@ -79,6 +79,17 @@ def snapshot_usable(row):
     return True
 
 
+def _json_safe(value):
+    """SQLite JSON indexes require finite numbers in stored sample payloads."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 class DecisionDataset:
     def __init__(self, path: str | Path, secret: str | bytes | None = None):
         self.path = Path(path)
@@ -220,6 +231,7 @@ class DecisionDataset:
             }
         )
         payload.update(sensitive)
+        payload = _json_safe(payload)
         with self.connect() as db:
             db.execute(
                 "INSERT INTO samples VALUES (?,?,?,?)",
@@ -470,24 +482,32 @@ class DecisionDataset:
         restored = 0
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            rows = db.execute(
-                "SELECT l.sample,s.payload FROM labels l JOIN samples s ON s.id=l.sample "
-                "WHERE (l.status='failed' OR (l.status IN ('leased','pending') "
-                "AND l.attempts>=5 AND l.lease_until<=?)) "
-                "AND CAST(json_extract(s.payload,'$.metadata.snapshot_version') AS TEXT)=? "
-                "AND json_extract(s.payload,'$.teacher_label') IS NULL "
-                "ORDER BY l.rowid LIMIT ?", (time.time(), snapshot_version, limit),
-            ).fetchall()
-            for sample_id, raw in rows:
-                sample = json.loads(raw)
-                if (str(sample.get("metadata", {}).get("snapshot_version")) != snapshot_version
-                        or sample.get("teacher_label") is not None or not snapshot_usable(sample)):
-                    continue
-                db.execute(
-                    "UPDATE labels SET status='pending',lease_until=0,token=NULL,attempts=0,reason='requeued' "
-                    "WHERE sample=?", (sample_id,),
-                )
-                restored += 1
+            cursor = 0
+            while restored < limit:
+                rows = db.execute(
+                    "SELECT l.rowid,l.sample,s.payload FROM labels l JOIN samples s ON s.id=l.sample "
+                    "WHERE l.rowid>? AND (l.status='failed' OR (l.status IN ('leased','pending') "
+                    "AND l.attempts>=5 AND l.lease_until<=?)) "
+                    "AND CAST(json_extract(s.payload,'$.metadata.snapshot_version') AS TEXT)=? "
+                    "AND json_extract(s.payload,'$.teacher_label') IS NULL "
+                    "ORDER BY l.rowid LIMIT ?", (cursor, time.time(), snapshot_version,
+                                                  min(100, limit - restored)),
+                ).fetchall()
+                if not rows:
+                    break
+                for rowid, sample_id, raw in rows:
+                    cursor = rowid
+                    sample = json.loads(raw)
+                    if (str(sample.get("metadata", {}).get("snapshot_version")) != snapshot_version
+                            or sample.get("teacher_label") is not None or not snapshot_usable(sample)):
+                        continue
+                    db.execute(
+                        "UPDATE labels SET status='pending',lease_until=0,token=NULL,attempts=0,reason='requeued' "
+                        "WHERE sample=?", (sample_id,),
+                    )
+                    restored += 1
+                    if restored >= limit:
+                        break
         return restored
 
     def audit_request(self, request_id):

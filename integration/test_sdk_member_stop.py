@@ -28,7 +28,8 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from astrbot.api.platform import MessageType  # noqa: E402
-from astrbot.core.message.message_event_result import MessageEventResult  # noqa: E402
+from astrbot.core.message.message_event_result import MessageChain, MessageEventResult  # noqa: E402
+from astrbot.core.message.components import Plain  # noqa: E402
 from astrbot.core.platform.astr_message_event import AstrMessageEvent  # noqa: E402
 from astrbot.core.star.filter.command import CommandFilter  # noqa: E402
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter  # noqa: E402
@@ -130,5 +131,26 @@ async def test_native_guard_real_sdk_event_records_head_outcome(failing):
             assert guard.outcome is not None and guard.outcome.success is True
         assert guard.started is True
         assert len(event.calls) == 1
+    finally:
+        guard.restore()
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_segmented_chain_replacement_remains_guarded():
+    event = RealEvent()
+    result = MessageEventResult().message("原回复")
+    event.set_result(result)
+    guard = NativeDeliveryGuard(event, result, lambda: False, lambda: False)
+    assert guard.install()
+    try:
+        # ResultDecorateStage creates new Plain components after the plugin's
+        # decoration hook; RespondStage sends chains derived from the new list.
+        component = Plain("宿主分段")
+        result.chain = [component]
+        derived = result.derive([component]) if hasattr(result, "derive") else MessageChain([component])
+        await event.send(derived)
+        assert event.calls == []
+        assert guard.cancelled
+        assert guard.outcome is not None and not guard.outcome.success
     finally:
         guard.restore()

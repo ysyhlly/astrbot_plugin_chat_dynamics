@@ -162,6 +162,25 @@ async def test_sdk_derived_chain_is_bound_by_identity_without_text_matching():
 
 
 @pytest.mark.asyncio
+async def test_host_replacement_chain_stays_bound_after_decoration():
+    target = Result([object()])
+    calls = []
+
+    async def send(message: Any) -> None:
+        calls.append(message)
+
+    event = Event(target, send)
+    guard = NativeDeliveryGuard(event, target, lambda: False, lambda: False)
+    assert guard.install()
+    replacement = object()
+    target.chain = [replacement]
+    await event.send(Chain([replacement]))
+    assert calls == []
+    assert guard.cancelled
+    assert guard.outcome == SendResult(False)
+
+
+@pytest.mark.asyncio
 async def test_kwargs_are_preserved_and_restore_is_idempotent_and_non_clobbering():
     result = Result([object()])
     calls = []

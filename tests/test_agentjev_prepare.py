@@ -64,6 +64,18 @@ def test_complete_request_becomes_one_choice_case():
     assert target["gold"]["distribution"] == [1, 0, 0]
 
 
+def test_long_target_candidates_retain_distinct_tails_after_upstream_truncation():
+    rows = request(22)
+    state = rows[0]["metadata"]["source_state"]
+    state["conversation"]["text"] = "帮我看看"
+    common_tail = "相同日志尾部" * 30
+    for index in (0, 1):
+        state["target_candidates"][f"target.{index}"]["text"] = f"不同前缀{index}" + common_tail
+    case, _ = build_case(rows)
+    options = case["questions"][2]["candidates"]
+    assert options[0][-64:] != options[1][-64:]
+
+
 def test_prepared_teacher_view_is_used_and_current_state_precedes_history():
     rows = request(11)
     source = rows[0]["metadata"]["source_state"]

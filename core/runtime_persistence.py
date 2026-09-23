@@ -81,7 +81,8 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
                        'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',
                        'inferred_parent_id', 'is_wake', 'trigger_user_id',
-                       'quoted_author_id', 'topic_source_text')
+                       'quoted_author_id', 'topic_source_text',
+                       'platform_message_id')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.

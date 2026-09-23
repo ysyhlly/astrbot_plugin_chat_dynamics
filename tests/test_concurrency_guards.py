@@ -162,6 +162,21 @@ async def test_enabling_shadow_mode_invalidates_inflight_generation():
 
 
 @pytest.mark.asyncio
+async def test_disabling_takeover_invalidates_inflight_generation():
+    plugin = _plugin()
+    key = _session_key("scope-transition")
+    runtime = plugin._get_or_create_runtime(key, group_id="scope-transition", umo=key, bot_id="bot")
+    pending = asyncio.create_task(asyncio.sleep(60))
+    runtime.generation_task = pending
+    plugin.config["enable"] = False
+    plugin.refresh_config()
+    await asyncio.gather(pending, return_exceptions=True)
+    assert pending.cancelled()
+    assert runtime.epoch == 1
+    assert not plugin.is_group_takeover_enabled("scope-transition")
+
+
+@pytest.mark.asyncio
 async def test_preset_only_changes_declared_behavior_fields():
     plugin = _plugin({"provider": "legacy", "takeover_groups": ["keep"]})
     result = await plugin.apply_preset("active")

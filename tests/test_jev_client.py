@@ -20,6 +20,16 @@ ANSWERS = {
 }
 
 
+@pytest.mark.asyncio
+async def test_model_change_invalidates_old_generation():
+    client = SystemOneClient(base_url="http://127.0.0.1:8123", model="old")
+    before = client._generation
+    client.configure(base_url="http://127.0.0.1:8123", model="new")
+    assert client._generation > before
+    assert client.model == "new"
+    await client.close()
+
+
 @asynccontextmanager
 async def server(override=None, answers=None, model="jev-1.13.0"):
     calls = []

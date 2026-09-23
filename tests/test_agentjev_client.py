@@ -8,6 +8,7 @@ import pytest
 from astrbot_plugin_chat_dynamics.core.integrations.agentjev import (
     AgentJevClient, build_request, parse_response,
 )
+from astrbot_plugin_chat_dynamics.core.agentjev_state import MAX_PATH_BYTES
 from astrbot_plugin_chat_dynamics.core.decision_learning import DecisionLearning
 
 
@@ -50,12 +51,56 @@ def test_groups_whole_case_and_maps_typed_answers():
     assert {q["id"] for q in payload["questions"]} == {
         "join", "recipient", "target", "action", "reply_length"}
     assert target_map == {"m1": "target.0"}
-    assert payload["questions"][0]["options"]["m1"].endswith("请解释一下")
+    assert "请解释一下" in payload["questions"][0]["options"]["m1"]
+    assert payload["questions"][0]["options"]["m1"].endswith("]")
     answers = parse_response(response(), QUESTIONS, target_map)
     assert answers["join"]["noul"] == .97
     assert answers["target.0"]["noul"] == .92
     assert answers["recipient_choice"]["choice"] == "u1"
     assert answers["reply_length"]["choice"] == "short"
+
+
+def test_production_instruction_shape_and_addressivity_are_preserved():
+    state = copy.deepcopy(STATE)
+    questions = copy.deepcopy(QUESTIONS)
+    questions["join"]["instructions"] = {"question": "是否参与？", "focus": "检查回复关系"}
+    state["conversation"]["messages"][0]["semantics"] = {"bot_is_addressee": True}
+    first, _ = build_request(state, questions)
+    assert "检查回复关系" in next(q["question"] for q in first["questions"] if q["id"] == "join")
+    assert '"bot_is_addressee":true' in first["state"]
+    state["conversation"]["messages"][0]["semantics"]["bot_is_addressee"] = False
+    second, _ = build_request(state, questions)
+    assert first["state"] != second["state"]
+
+
+def test_real_turn_questions_reach_agentjev_wire_contract():
+    from astrbot_plugin_chat_dynamics.core.decision_tasks import turn_questions
+    from astrbot_plugin_chat_dynamics.core.jev_decision import build_learning_state
+    from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext
+
+    messages = tuple(MessageSnapshot(f"m{index}", "user", "这段对话需要看看具体的错误原因")
+                     for index in range(8))
+    turn = TurnContext("room", "user", "帮我看下", messages, (), 0, 0, 0, True)
+    questions, candidates = turn_questions(turn)
+    state = build_learning_state(turn, candidates=candidates,
+                                 persona_prompt="我是群聊里的助手。" * 30)
+    built = build_request(state, questions)
+    assert built is not None
+    payload, _ = built
+    assert {item["id"] for item in payload["questions"]} >= {"join", "action", "target"}
+
+
+def test_long_agentjev_path_is_bounded_locally():
+    state = copy.deepcopy(STATE)
+    state["conversation"]["messages"] = [{"message_id": "m1", "author": "u1",
+                                            "text": "长日志" * 2000}]
+    state["persona"] = "设定" * 1000
+    request, _ = build_request(state, QUESTIONS)
+    for question in request["questions"]:
+        for option in question["options"].values():
+            assert len(("[STATE] " + request["state"] + "\n[QUESTION] "
+                        + question["question"] + "\n[CANDIDATE] " + option).encode("utf-8")) <= MAX_PATH_BYTES
+    assert "设定" * 1000 not in request["state"]
 
 
 @pytest.mark.parametrize("mutate", [

@@ -42,6 +42,10 @@ async def test_decorating_hook_leaves_streaming_finish_untouched():
     bound = event.get_result()
     assert bound is original
     assert is_streaming_host_result(bound)
+    # The real RespondStage returns on STREAMING_FINISH without event.send or
+    # after_message_sent; the finish hook must have recorded delivery already.
+    assert runtime.last_bot_node is not None
+    assert runtime.last_bot_node.text == "同一答案"
     await event.send(event.get_result())
     await plugin.after_message_sent(event)
     assert event.replies_sent == ["同一答案"]
@@ -49,6 +53,23 @@ async def test_decorating_hook_leaves_streaming_finish_untouched():
     assert not runtime.active_followup_batches
     assert runtime.last_bot_node is not None
     assert runtime.last_bot_node.text == "同一答案"
+
+
+@pytest.mark.asyncio
+async def test_disabling_scope_clears_pending_native_result():
+    plugin = _plugin()
+    key = _session_key("scope-revoked")
+    runtime = plugin._get_or_create_runtime(key, group_id="scope-revoked", umo=key, bot_id="bot_42")
+    event = MockEvent("trigger", group_id="scope-revoked", message_id="in", self_id="bot_42")
+    event.set_result("待发回复")
+    await plugin.on_decorating_result(event)
+    assert event.get_result() is not None
+    initial_epoch = runtime.epoch
+    plugin.config["enable"] = False
+    plugin.refresh_config()
+    assert runtime.epoch > initial_epoch
+    assert event.get_result() is None
+    assert not plugin.is_group_takeover_enabled("scope-revoked")
 
 
 @pytest.mark.asyncio

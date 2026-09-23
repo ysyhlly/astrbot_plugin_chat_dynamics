@@ -548,6 +548,25 @@ class ChatDynamicsPlugin(Star):
         self.takeover_groups = set(cfg.takeover_groups)
         self.exclude_groups = set(cfg.exclude_groups)
         self.bot_names = list(cfg.bot_names)
+        if old_cfg is not None and hasattr(self, "_sessions"):
+            scope_keys = ("enabled", "takeover_all", "takeover_groups", "exclude_groups")
+            if any(getattr(old_cfg, key, None) != getattr(cfg, key, None) for key in scope_keys):
+                for session_id, runtime in list(self._sessions.items()):
+                    if not self.is_group_takeover_enabled(runtime.group_id):
+                        # Clear an unsent native result before its guard is
+                        # restored by invalidation.
+                        for (key, _), context in list(getattr(self, "_native_context_by_event", {}).items()):
+                            if key == session_id and context.event is not None:
+                                clearer = getattr(context.event, "clear_result", None)
+                                if callable(clearer):
+                                    try:
+                                        clearer()
+                                    except Exception as exc:
+                                        logger.debug(
+                                            "[ChatDynamics] Native result clear skipped code=CD_SCOPE_REVOKE type=%s",
+                                            type(exc).__name__,
+                                        )
+                        self._invalidate_pending_generation(session_id)
         if hasattr(self, "selflearning"):
             self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context,
                 hub_url=cfg.selflearning_hub_url, hub_key_env=cfg.selflearning_hub_key_env,
@@ -2405,6 +2424,7 @@ class ChatDynamicsPlugin(Star):
             owner_revision = runtime.user_revisions.get(owner_user_id, 0)
         if (
             self._shutting_down
+            or not self.is_group_takeover_enabled(runtime.group_id)
             or revision != runtime.revision
             or expected_epoch != runtime.epoch
             or not self._user_revision_is_current(runtime, owner_user_id, owner_revision)
@@ -2422,6 +2442,7 @@ class ChatDynamicsPlugin(Star):
         )
         if (
             self._shutting_down
+            or not self.is_group_takeover_enabled(runtime.group_id)
             or revision != runtime.revision
             or expected_epoch != runtime.epoch
             or not self._user_revision_is_current(runtime, owner_user_id, owner_revision)
@@ -3774,13 +3795,23 @@ class ChatDynamicsPlugin(Star):
             # Some host result implementations expose a platform ID before
             # delivery.  The guard's returned ID takes precedence after send.
             platform_message_id=self._outgoing_message_id(result),
+            streamed=streamed,
         )
+
+        if streamed:
+            self._set_native_context(context_key, context, overwrite=True)
+            try:
+                await _native_after_message_sent(self, event)
+            finally:
+                self._drop_native_context(context_key)
+            return
 
         def is_current() -> bool:
             current_runtime = self._sessions.get(session_key)
             if current_runtime is not runtime:
                 return False
-            if self._shutting_down or current_runtime.epoch != context.epoch:
+            if (self._shutting_down or current_runtime.epoch != context.epoch
+                    or not self.is_group_takeover_enabled(current_runtime.group_id)):
                 return False
             return self._user_revision_is_current(
                 current_runtime,

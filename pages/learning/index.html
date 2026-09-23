@@ -39,7 +39,7 @@
       <h3>最近请求</h3><ul id="studentRecent" class="records"></ul>
     </section>
     <div class="learning-grid">
-      <section class="wire-card"><h2>训练作业</h2><p class="section-copy">提交后台作业，训练进度会自动刷新。</p>
+      <section class="wire-card"><h2>训练作业</h2><p class="section-copy">提交后台作业，训练进度会自动刷新。</p><p id="agentjevNotice" class="section-copy" hidden>AgentJev 使用离线训练与模型部署；此页暂不提供训练作业及模型晋升操作。</p>
         <form id="trainForm"><label for="trainModel">新模型标识</label><input id="trainModel" required maxlength="128" placeholder="candidate-001"><label for="epochs">训练轮数</label><input id="epochs" type="number" min="1" max="20" value="3" required><label for="seed">随机种子</label><input id="seed" type="number" min="1" max="2147483648" step="1" value="42" required aria-describedby="seedHelp"><p id="seedHelp" class="section-copy">不同种子用于重复实验，不能用测试集结果挑选最好的模型。</p><p class="section-copy">自动导出当前教师样本到训练数据卷。</p><button type="submit">创建训练作业</button></form>
         <ul id="jobs" class="records" aria-label="训练作业列表"></ul>
       </section>

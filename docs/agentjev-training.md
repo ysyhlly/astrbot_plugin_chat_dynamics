@@ -10,7 +10,7 @@
 
 插件现已在决策学习请求中额外收集五档 `reply_length` Choice 和单一主要收件人 Choice。在线教师只回答原有必需题，额外两题由后台标注，不占用本轮参与决策时限；已获准的学生答案仍可在线提供长度。它们只在真正回应的 case 中进入训练；不回应时的假设长度和对象不会污染标签。运行时有效长度答案会映射到现有 `TurnDecision.length` 三档，并把更细的长度指导附在 `response_goal`。缺失这项答案时保留原有长度决策。新的收件人题目前只用于训练采集，不改变既有收件人路由。
 
-AgentJev 适配器将一次请求的 `join`、主要 `recipient`、独占 `target`、`action`、`reply_length` 合并为一组 typed questions。推理服务缺失、输出格式错误或请求超时均不产生学生决策；`active` 模式还需要独立校准与明确审批元数据，当前公开协议没有这些元数据，故不会让未验收的学生接管。服务运行后，在 AstrBot 容器可达地址上配置 `agentjev_base_url`；Docker 内的 `127.0.0.1` 通常不是宿主 WSL 的服务地址。校准前保持 `shadow`。
+AgentJev 适配器将一次请求的 `join`、主要 `recipient`、独占 `target`、`action`、`reply_length` 合并为一组 typed questions。训练导出与在线推理共用 `core/agentjev_state.py` 的状态格式和请求长度上限，保留消息路由语义、参与策略和有限历史；过长的路径在本地拒收。目标选项末尾含稳定消息身份指纹，以免上游只保留候选尾部时，把正文结尾相同的两个目标压成相同输入。**此前导出的 AgentJev JSONL 必须重新生成，不能与新版在线输入混用。**推理服务缺失、输出格式错误或请求超时均不产生学生决策；`active` 模式还需要独立校准与明确审批元数据，当前公开协议没有这些元数据，故不会让未验收的学生接管。服务运行后，在 AstrBot 容器可达地址上配置 `agentjev_base_url`；Docker 内的 `127.0.0.1` 通常不是宿主 WSL 的服务地址。校准前保持 `shadow`。
 
 准备命令：
 

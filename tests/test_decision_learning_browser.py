@@ -6,7 +6,8 @@ import pytest
 from .test_ui_theme_browser import browser as browser, page_server as page_server
 
 
-def open_learning(context, server, *, fail=None, repeated_cursor=False, stats_override=None):
+def open_learning(context, server, *, fail=None, repeated_cursor=False,
+                  stats_override=None, expect_job=True):
     calls = []
 
     def bridge(_source, method, endpoint, body):
@@ -48,8 +49,24 @@ def open_learning(context, server, *, fail=None, repeated_cursor=False, stats_ov
     """)
     page = context.new_page()
     page.goto(f"{server}/learning/index.html")
-    page.wait_for_selector('[data-cancel="job-123"]')
+    if expect_job:
+        page.wait_for_selector('[data-cancel="job-123"]')
+    else:
+        page.wait_for_function("document.getElementById('mode').textContent === '旁路比较'")
     return page, calls
+
+
+def test_agentjev_hides_laya_management_and_does_not_poll_jobs(browser, page_server):
+    with browser.new_context() as context:
+        page, calls = open_learning(context, page_server,
+                                    stats_override={"student_backend": "agentjev",
+                                                    "online_management": False},
+                                    expect_job=False)
+        assert page.locator("#agentjevNotice").is_visible()
+        assert not page.locator("#trainForm").is_visible()
+        assert not page.locator("#promote").is_visible()
+        assert page.locator("#compareJev").is_visible()
+        assert not any(endpoint == "learning/jobs/status" for _, endpoint, _ in calls)
 
 
 def test_stats_jobs_envelope_and_exact_cancel_request(browser, page_server):

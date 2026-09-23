@@ -4,10 +4,10 @@ This protocol is independent of the TypeSafe Jev and Laya protocols.
 """
 from __future__ import annotations
 
-import json
 import math
 
 from .laya import LayaClient
+from ..agentjev_state import pack_state, path_fits, target_option
 
 API_VERSION = "agentjev.decision.v1"
 
@@ -58,7 +58,7 @@ def build_request(state, questions):
             if not message_id or str(message_id) not in messages or message_id in seen:
                 return None
             seen.add(message_id)
-            choices[str(message_id)] = f"{message_id}: {messages[str(message_id)]}"
+            choices[str(message_id)] = target_option(str(message_id), messages[str(message_id)])
             mapping[str(message_id)] = key
         choices["none"] = "none: 以上候选都不是主要回应对象。"
         request.append({"id": "target", "type": "choice", "question": "选择本轮的主要消息回应对象；无法确定时选 none。", "options": choices})
@@ -69,6 +69,8 @@ def build_request(state, questions):
         qid = "recipient" if key == "recipient_choice" else key
         kind = spec.get("type")
         prompt = spec.get("instructions")
+        if isinstance(prompt, dict):
+            prompt = " ".join(str(value) for value in prompt.values())
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         if kind == "noul" and key == "join":
@@ -83,19 +85,14 @@ def build_request(state, questions):
             return None
     if not request:
         return None
-    # The service does not truncate input. Keep the current message and target
-    # evidence at the front, bounded to fit the model's path token budget.
-    conversation = state.get("conversation", {})
-    current = {key: conversation[key] for key in ("text", "author", "explicit") if key in conversation}
-    history = [{key: item[key] for key in ("message_id", "author", "text", "reply_to") if key in item}
-               for item in (conversation.get("messages") or [])[-5:] if isinstance(item, dict)]
-    compact = {"current": current, "messages": history,
-               "target_candidates": {key: {field: val for field, val in value.items()
-                                             if field in ("message_id", "author", "text")}
-                                     for key, value in (state.get("target_candidates") or {}).items()
-                                     if isinstance(value, dict)}}
-    return {"state": json.dumps(compact, ensure_ascii=False, separators=(",", ":")),
-            "questions": request}, mapping
+    try:
+        packed, _ = pack_state(state)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(not path_fits(packed, item["question"], list(item["options"].values()))
+           for item in request):
+        return None
+    return {"state": packed, "questions": request}, mapping
 
 
 def parse_response(response, questions, target_mapping):

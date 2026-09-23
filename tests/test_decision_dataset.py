@@ -465,6 +465,23 @@ def test_requeue_exhausted_recovers_only_expired_valid_snapshot(tmp_path):
     assert job and job["sample_id"] == valid and job["attempts"] == 1
 
 
+def test_requeue_skips_invalid_front_row_without_starving_valid_row(tmp_path):
+    store = DecisionDataset(tmp_path / "skip-invalid.db")
+    state = {"conversation": {"text": "现在的问题", "messages": []}}
+    bad = store.record_sample("room", "join", state, {"type": "noul"}, snapshot_version="1")
+    good = store.record_sample("room", "join", state, {"type": "noul"}, snapshot_version="1")
+    for sample in (bad, good):
+        store.enqueue_label(sample, {"provider_id": "teacher", "question_id": "join"})
+    with store.connect() as db:
+        row = db.execute("SELECT payload FROM samples WHERE id=?", (bad,)).fetchone()
+        payload = json.loads(row[0])
+        payload["state"]["conversation"]["truncated"] = True
+        db.execute("UPDATE samples SET payload=? WHERE id=?", (json.dumps(payload), bad))
+        db.execute("UPDATE labels SET status='failed',attempts=5")
+    assert store.requeue_exhausted(snapshot_version="1", limit=1) == 1
+    assert store.claim_label()["sample_id"] == good
+
+
 def test_export_task_version_filter_is_optional(tmp_path):
     store = DecisionDataset(tmp_path / "versions.db")
     for version in ["1", "2"]:

@@ -413,6 +413,7 @@ class PersonaEngine:
     def valid(self, runtime, item: ModelTurn) -> bool:
         p, turn = self.plugin, item.context
         return (not p._shutting_down and p._persona_mode() and p.shadow_mode == item.shadow
+                and p.is_group_takeover_enabled(runtime.group_id)
                 and runtime.epoch == turn.epoch
                 and runtime.user_revisions.get(turn.author, 0) == turn.revision
                 and not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time()))

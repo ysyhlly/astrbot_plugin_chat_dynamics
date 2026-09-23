@@ -235,7 +235,14 @@ class NativeDeliveryGuard:
             return False
         if candidate_chain is self._result_chain and candidate_chain is not _MISSING:
             return True
-        return bool(self._component_ids.intersection(self._component_identity_set(candidate_chain)))
+        candidate_ids = self._component_identity_set(candidate_chain)
+        if self._component_ids.intersection(candidate_ids):
+            return True
+        # AstrBot may replace result.chain with freshly constructed Plain
+        # components after the decoration hook (segmented_reply). The result
+        # object remains ours, so bind sends derived from its *current* chain.
+        current_chain = self._read_attr(self._result, "chain")
+        return bool(self._component_identity_set(current_chain).intersection(candidate_ids))
 
     def _is_bound_send(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
         event = self._event()
@@ -367,6 +374,7 @@ class _NativeEventContext:
     owner_revision: int = 0
     platform_message_id: Optional[str] = None
     installed: bool = False
+    streamed: bool = False
 
 
 async def after_message_sent(host, event: AstrMessageEvent) -> None:
@@ -393,11 +401,14 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
     # host while keeping this plugin's bookkeeping side-effect free.
     if native_context is None:
         return
-    if not native_context.installed or native_context.guard is None:
+    if not native_context.streamed and (not native_context.installed or native_context.guard is None):
         host._drop_native_context(context_key)
         return
     guard = native_context.guard
-    outcome = guard.outcome
+    # STREAMING_FINISH is emitted after the host has already delivered the
+    # stream. RespondStage does not call event.send/after_message_sent for it.
+    outcome = SendResult(True) if native_context.streamed else guard.outcome
+    cancelled = bool(guard is not None and guard.cancelled)
     if outcome is None:
         host._drop_native_context(context_key)
         return
@@ -480,7 +491,7 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
             # ``cancelled`` covers a stop/reset that raced an in-flight
             # host send.  The successful first segment is already real;
             # only its not-yet-sent tail is invalid in that case.
-            if owner_current and not guard.cancelled and len(native_context.fragments) > 1:
+            if owner_current and not cancelled and len(native_context.fragments) > 1:
                 fragments = native_context.fragments[1:]
                 queue_full = (
                     runtime.followup_queue.maxlen is not None
@@ -510,7 +521,7 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
 
             # A user stop may have arrived after the first send completed.
             # It must preserve the first node but prevent all tail work.
-            if not owner_current or guard.cancelled:
+            if not owner_current or cancelled:
                 for candidate in list(runtime.followup_queue):
                     if candidate.event_id == id(event):
                         candidate.invalidate()
@@ -523,7 +534,7 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
                     maxlen=runtime.followup_queue.maxlen,
                 )
 
-        if not owner_current or guard.cancelled:
+        if not owner_current or cancelled:
             return
         candidate_index = next(
             (

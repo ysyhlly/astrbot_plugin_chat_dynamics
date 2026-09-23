@@ -276,7 +276,8 @@ class SystemOneClient:
             self.timeout = _timeout_seconds(timeout)
         url = str(base_url or "").strip()
         key = str(api_key or "")
-        desired = (bool(enabled), url, key)
+        # Model changes invalidate in-flight answers just like endpoint changes.
+        desired = (bool(enabled), url, key, self.model)
         if self._configured_input == desired and (self._url or not enabled):
             return
         self._configured_input = desired
