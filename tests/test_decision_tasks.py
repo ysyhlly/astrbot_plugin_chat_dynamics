@@ -37,12 +37,35 @@ def test_primary_recipient_choice_uses_human_source_and_none():
     assert '帮我看一下' in questions['recipient_choice']['criteria']['user']
 
 
+def test_recipient_choice_contains_authors_of_all_offered_targets():
+    turn = TurnContext('room', 'u0', '回复较早的 u1',
+        (MessageSnapshot('now', 'u0', '回复较早的 u1'),),
+        tuple(MessageSnapshot(f'm{i}', f'u{i}', f'消息{i}') for i in range(1, 6)),
+        1, 1, 0, True)
+    questions, candidates = turn_questions(turn)
+    assert 'm1' in candidates
+    assert 'u1' in questions['recipient_choice']['criteria']
+
+
 def test_teacher_labels_are_not_fabricated_probabilities():
     questions = {'join': {'type': 'noul'}}
     assert teacher_answers('{"join":0.99}', questions) is None
     assert teacher_answers('{"join":true,"extra":false}', questions) is None
     assert teacher_answers('{"join":false}', questions)['join']['noul'] == 0
     assert answer_uncertainty({'type': 'noul', 'noul': float('nan')}) is None
+
+
+def test_optional_teacher_questions_do_not_discard_valid_core_answers():
+    questions = {'join': {'type': 'noul'},
+                 'reply_length': {'type': 'choice', 'criteria': {'tiny': '一句', 'short': '几句'}}}
+    assert teacher_answers('{"join":true}', questions) is None
+    answer = teacher_answers('{"join":true}', questions, optional_keys={'reply_length'})
+    assert set(answer) == {'join'} and answer['join']['noul'] == 1
+    answer = teacher_answers('{"join":true,"reply_length":"invalid"}', questions,
+                             optional_keys={'reply_length'})
+    assert set(answer) == {'join'}
+    assert teacher_answers('{"reply_length":"tiny"}', questions,
+                           optional_keys={'reply_length'}) is None
 
 
 @pytest.mark.asyncio

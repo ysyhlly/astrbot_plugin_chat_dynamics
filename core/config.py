@@ -114,6 +114,10 @@ class RuntimeConfig:
     decision_learning_sample_rate: float = 0.05
     decision_learning_labels_per_hour: int = 120
     decision_learning_jev_fallback: bool = False
+    decision_learning_student_backend: str = "agentjev"
+    agentjev_base_url: str = "http://127.0.0.1:18765"
+    agentjev_timeout: float = 1.5
+    agentjev_internal_hosts: tuple[str, ...] = ()
     laya_internal_hosts: tuple[str, ...] = ()
     # The mood calibration has its own backend and its own floor: it is a reading,
     # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
@@ -362,6 +366,13 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         decision_learning_sample_rate=_number(raw, "decision_learning_sample_rate", .05, lambda x: 0 <= x <= 1, warnings),
         decision_learning_labels_per_hour=_integer(raw, "decision_learning_labels_per_hour", 120, 0, 10000, warnings),
         decision_learning_jev_fallback=_bool(_get(raw, "decision_learning_jev_fallback", False), False),
+        decision_learning_student_backend=(str(_get(raw, "decision_learning_student_backend", "agentjev") or "agentjev").lower()
+                                           if _get(raw, "decision_learning_student_backend", "agentjev") in ("agentjev", "laya")
+                                           else "agentjev"),
+        agentjev_base_url=str(_get(raw, "agentjev_base_url", "http://127.0.0.1:18765") or "").strip(),
+        agentjev_timeout=_number(raw, "agentjev_timeout", 1.5, lambda value: 0.05 <= value <= 30, warnings),
+        agentjev_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "agentjev_internal_hosts", ()))
+                                      if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
         laya_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "laya_internal_hosts", ()))
                                   if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
         learning_policy_mode=policy_mode,

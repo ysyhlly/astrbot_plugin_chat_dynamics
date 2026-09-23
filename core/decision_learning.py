@@ -12,7 +12,7 @@ import uuid
 from collections import Counter, deque
 from pathlib import Path
 
-from .decision_tasks import TASK_VERSION, TASKS, TEACHER_PROMPT_VERSION, task_id, teacher_answers, teacher_instructions, answer_uncertainty
+from .decision_tasks import TASK_VERSION, TASKS, TEACHER_PROMPT_VERSION, OPTIONAL_TURN_QUESTIONS, task_id, teacher_answers, teacher_instructions, answer_uncertainty
 from .integrations.typesafe import _validated_answers
 from .decision_sampling import AnnotationPriority
 from .decision_rubrics import rubric_questions
@@ -59,6 +59,9 @@ class DecisionLearning:
         self._annotation_priority = AnnotationPriority()
         self._coverage = {}
         self._coverage_at = 0.0
+        self._summary_cache = {}
+        self._summary_at = 0.0
+        self._summary_lock = asyncio.Lock()
 
     @property
     def cfg(self):
@@ -131,7 +134,8 @@ class DecisionLearning:
                 prompt=json.dumps({"state": state, "questions": questions}, ensure_ascii=False))
         async with (self._comparison_slots if comparison else self._annotation_slots if background else self._slots):
             result = await budget.run(provider_id, "decision_annotation" if background else "routing", invoke)
-        answers = teacher_answers(completion_text(result), questions)
+        optional = OPTIONAL_TURN_QUESTIONS if not background else ()
+        answers = teacher_answers(completion_text(result), questions, optional_keys=optional)
         return TeacherAnswers(answers, model, prompt_version) if answers is not None else None
 
     async def evaluate(self, *, session_id, state, questions, timeout=None, outcome_node=None):
@@ -163,66 +167,84 @@ class DecisionLearning:
         student_status = "not_requested"
         shadow_task = None
         try:
-            client = self.host.laya
+            student_backend = getattr(self.cfg, "decision_learning_student_backend", "agentjev")
+            client = self.host.agentjev if student_backend == "agentjev" else self.host.laya
             if self.collecting(session_id):
                 anonymous = await bounded(self._io("anonymize", {"state": state, "questions": questions}))
                 state, questions = anonymous["state"], anonymous["questions"]
                 self.start_worker()
-            # Freeze the full anonymized input before remote preparation. Never
-            # reconstruct missing evidence from subsequent events or outcomes.
+            # Freeze the anonymized evidence before teacher/student calls.
             validate_snapshot(state, questions)
             source_state = json.loads(json.dumps(state, ensure_ascii=False))
             state = source_state
-            # Preparation reserves most of the turn budget for the teacher if unavailable.
-            prepared = await remote(client.request_json("/prepare", {
-                "state": state, "questions": questions,
-                "task_versions": {task_id(key): TASK_VERSION for key in questions}},
-                timeout=min(self.cfg.laya_timeout, max(.05, limit * .25))))
-            if prepared and isinstance(prepared.get("state"), (dict, list, str)) and prepared.get("questions") == questions:
-                try:
-                    validate_snapshot(prepared["state"], questions)
-                except ValueError:
-                    self.stats["invalid_prepared_snapshot"] += 1
-                    prepared = None
+            if student_backend == "agentjev":
+                prepared = {"state": state, "questions": questions}
             else:
-                prepared = None
-            if prepared:
-                state = prepared["state"]
-                version = str(prepared.get("model_version", ""))
-                if version != self.model_version:
-                    self.model_version = version
-                    cache = getattr(self.host, "message_opinions", None)
-                    if cache is not None:
-                        cache.clear()
+                prepared = await remote(client.request_json("/prepare", {
+                    "state": state, "questions": questions,
+                    "task_versions": {task_id(key): TASK_VERSION for key in questions}},
+                    timeout=min(self.cfg.laya_timeout, max(.05, limit * .25))))
+                if prepared and isinstance(prepared.get("state"), (dict, list, str)) and prepared.get("questions") == questions:
+                    try:
+                        validate_snapshot(prepared["state"], questions)
+                    except ValueError:
+                        self.stats["invalid_prepared_snapshot"] += 1
+                        prepared = None
+                else:
+                    prepared = None
+                if prepared:
+                    state = prepared["state"]
+                    version = str(prepared.get("model_version", ""))
+                    if version != self.model_version:
+                        self.model_version = version
+                        cache = getattr(self.host, "message_opinions", None)
+                        if cache is not None:
+                            cache.clear()
             async def predict_student():
                 nonlocal student, model_info, student_status
-                diagnostics = {}
                 student_status = "unavailable"
-                envelope = await remote(client.request_json("/predict", {
-                    "state": state, "questions": questions, "input_id": prepared.get("input_id"),
-                    "expected_model_version": prepared.get("model_version")},
-                    timeout=min(self.cfg.laya_timeout, max(.05, remaining() * .4)),
-                    diagnostics=diagnostics))
-                student_status = diagnostics.get("status", "unavailable")
+                if student_backend == "laya":
+                    diagnostics = {}
+                    envelope = await remote(client.request_json("/predict", {
+                        "state": state, "questions": questions, "input_id": prepared.get("input_id"),
+                        "expected_model_version": prepared.get("model_version")},
+                        timeout=min(self.cfg.laya_timeout, max(.05, remaining() * .4)),
+                        diagnostics=diagnostics))
+                    student_status = diagnostics.get("status", "unavailable")
+                    if envelope:
+                        model_info = envelope.get("metadata", {})
+                        if not isinstance(model_info, dict):
+                            model_info = {}
+                        student_status = "version_mismatch"
+                        if model_info.get("model_version") == prepared.get("model_version"):
+                            student_status = "invalid_answers"
+                            student = _validated_answers(envelope, questions) or {}
+                            for key in tuple(student):
+                                answer, spec = student[key], questions[key]
+                                if spec["type"] in ("choice", "score"):
+                                    expected = (set(spec["criteria"]) if spec["type"] == "choice"
+                                                else {str(i) for i in range(len(spec["criteria"]))})
+                                    probs = answer.get("probabilities", {})
+                                    if set(probs) != expected or answer_uncertainty(answer) is None:
+                                        student.pop(key)
+                                    elif spec["type"] == "choice" and probs[answer["choice"]] < max(probs.values()):
+                                        student.pop(key)
+                            student_status = "answered" if len(student) == len(questions) else "partial_answers" if student else "invalid_answers"
+                    return
+                envelope = await remote(client.evaluate(state=state, questions=questions,
+                    timeout=min(self.cfg.agentjev_timeout, max(.05, remaining() * .4))))
                 if envelope:
-                    model_info = envelope.get("metadata", {})
-                    if not isinstance(model_info, dict):
-                        model_info = {}
-                    student_status = "version_mismatch"
-                    if model_info.get("model_version") == prepared.get("model_version"):
-                        student_status = "invalid_answers"
-                        student = _validated_answers(envelope, questions) or {}
-                        for key in tuple(student):
-                            answer, spec = student[key], questions[key]
-                            if spec["type"] in ("choice", "score"):
-                                expected = (set(spec["criteria"]) if spec["type"] == "choice"
-                                            else {str(i) for i in range(len(spec["criteria"]))})
-                                probs = answer.get("probabilities", {})
-                                if set(probs) != expected or answer_uncertainty(answer) is None:
-                                    student.pop(key)
-                                elif spec["type"] == "choice" and probs[answer["choice"]] < max(probs.values()):
-                                    student.pop(key)
-                        student_status = "answered" if len(student) == len(questions) else "partial_answers" if student else "invalid_answers"
+                    student = envelope.get("answers", {})
+                    version = envelope.get("model_version", "")
+                    model_info = {"model_version": version}
+                    # AgentJev's public API carries no task approval metadata.
+                    # Active mode therefore cannot promote an uncalibrated model.
+                    student_status = "answered" if student else "invalid_answers"
+                    if version and version != self.model_version:
+                        self.model_version = version
+                        cache = getattr(self.host, "message_opinions", None)
+                        if cache is not None:
+                            cache.clear()
 
             if mode in ("shadow", "active"):
                 if not prepared:
@@ -252,7 +274,7 @@ class DecisionLearning:
                     if (name in approved and versions.get(name) == TASK_VERSION and cohort < rollout
                             and isinstance(threshold, (int, float)) and not isinstance(threshold, bool)
                             and 0 <= threshold <= .5 and uncertainty is not None and uncertainty <= threshold):
-                        chosen[key], sources[key] = answer, "laya"
+                        chosen[key], sources[key] = answer, student_backend
             missing = {k: q for k, q in questions.items() if k not in chosen}
             if mode == "active" and missing and self.cfg.decision_learning_jev_fallback:
                 items = list(missing.items())
@@ -265,16 +287,28 @@ class DecisionLearning:
                         if uncertainty is not None and uncertainty <= 1-self.cfg.jev_min_confidence:
                             chosen[key], sources[key] = answer, "jev"
                 missing = {k: q for k, q in questions.items() if k not in chosen}
-            if missing:
+            online_missing = {key: question for key, question in missing.items()
+                              if key not in OPTIONAL_TURN_QUESTIONS}
+            if online_missing:
                 provider = self.cfg.decision_provider_id or await bounded(self.host.llm.resolve_provider_id(session_id))
-                teacher = await bounded(self._teacher(provider, state, missing))
+                teacher = await bounded(self._teacher(provider, state, online_missing))
+                if teacher is None:
+                    self.stats["teacher_invalid_response"] += 1
+                    if self.stats["teacher_invalid_response"] in (1, 10):
+                        logger.warning("Online decision teacher returned an invalid response: count=%d",
+                                       self.stats["teacher_invalid_response"])
                 teacher = teacher if teacher is not None else {}
                 for key, answer in teacher.items():
                     chosen[key], sources[key] = answer, "teacher"
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             self.stats["failed"] += 1
+            category = "timeout" if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) else type(exc).__name__
+            self.stats["failed_" + category] += 1
+            if self.stats["failed_" + category] in (1, 10):
+                logger.warning("Online decision failed: category=%s count=%d", category,
+                               self.stats["failed_" + category])
         finally:
             if shadow_task is not None:
                 if not shadow_task.done():
@@ -284,7 +318,7 @@ class DecisionLearning:
         if mode in ("shadow", "active"):
             self.stats["student_" + student_status] += 1
         if (self.closed or identity != self._identity(session_id)
-                or (prepared and str(prepared.get("model_version", "")) != self.model_version)):
+                or (student_backend == "laya" and prepared and str(prepared.get("model_version", "")) != self.model_version)):
             self.stats["stale"] += 1
             return None
         elapsed = time.monotonic() - started
@@ -308,7 +342,7 @@ class DecisionLearning:
         if source_state is not None and self.collecting(session_id) and len(self.tasks) < 64:
             self._spawn(self._record(session_id, state, questions, teacher, student, sources,
                                      provider, elapsed, model_info, outcome_node, collection_epoch,
-                                     source_state=source_state, tokenizer_prepared=bool(prepared)))
+                                     source_state=source_state, tokenizer_prepared=student_backend == "laya" and bool(prepared)))
         return chosen or None
 
     async def _record(self, session_id, state, questions, teacher, student, sources, provider, elapsed, model_info, outcome_node=None, collection_epoch=0, *, source_state=None, tokenizer_prepared=True):
@@ -321,7 +355,10 @@ class DecisionLearning:
         sample_request = random.random() < self.cfg.decision_learning_sample_rate
         now = time.monotonic()
         if now - self._coverage_at >= 60:
-            self._coverage = (await self._io("summary")).get("tasks", {})
+            # This read opens its own SQLite connection. Do not hold the write
+            # serialization lock while scanning coverage for annotation priority.
+            self._coverage = (await asyncio.to_thread(self.store.coverage_summary)
+                              if self.store is not None else await self._io("coverage_summary"))
             self._coverage_at = now
         priority, sampling_reasons = self._annotation_priority.choose(
             session_id, state, questions, student, self._coverage, now)
@@ -348,7 +385,8 @@ class DecisionLearning:
                 await self._io("enqueue_label", sid, {"provider_id": provider, "question_id": key})
                 await self._io("mark_review", sid, "insufficient_evidence")
                 self.stats["teacher_insufficient_evidence"] += 1
-            elif key not in teacher and (sources.get(key) != "laya" or sample_request or targeted_request):
+            elif key not in teacher and (sources.get(key) != getattr(self.cfg, "decision_learning_student_backend", "agentjev")
+                                         or sample_request or targeted_request):
                 await self._io("enqueue_label", sid, {"provider_id": provider, "question_id": key},
                                priority=priority, reason=",".join(sampling_reasons) or "random_or_missing")
         await self._io("audit_request", request_id)
@@ -447,11 +485,16 @@ class DecisionLearning:
                     self.stats["teacher_insufficient_evidence"] += 1
                     consecutive_failures = 0
                     continue
-                await self._io("complete_label", job["sample_id"], job["token"], (answers or {}).get(key),
-                               teacher_model=getattr(answers, "model", provider_id),
-                               teacher_prompt_version=getattr(answers, "prompt_version", TEACHER_PROMPT_VERSION))
+                completed = await self._io("complete_label", job["sample_id"], job["token"], (answers or {}).get(key),
+                                           teacher_model=getattr(answers, "model", provider_id),
+                                           teacher_prompt_version=getattr(answers, "prompt_version", TEACHER_PROMPT_VERSION))
+                if not completed:
+                    self.stats["label_lease_lost"] += 1
                 consecutive_failures = 0
             except asyncio.CancelledError:
+                if job is not None:
+                    await self._io("fail_label", job["sample_id"], job["token"], "cancelled",
+                                   transient=True)
                 raise
             except Exception as exc:
                 self.stats["label_failed"] += 1
@@ -460,6 +503,12 @@ class DecisionLearning:
                 if self.stats["label_failed_" + category] in (1, 10) or self.stats["label_failed_" + category] % 100 == 0:
                     logger.warning("Decision annotation failed: category=%s count=%d", category,
                                    self.stats["label_failed_" + category])
+                if job is not None:
+                    transient = category in {"timeout", "ProviderNotFoundError"}
+                    retry_after = (min(3600, 30 * 2 ** min(job["attempts"] - 1, 7)) if transient
+                                   else min(60, 2 ** min(job["attempts"] - 1, 5)))
+                    await self._io("fail_label", job["sample_id"], job["token"], category,
+                                   transient=transient, retry_after=retry_after)
                 consecutive_failures += 1
                 # Providers may not be ready during host startup. Do not burn
                 # the full hourly budget in a burst of immediate failures.
@@ -467,27 +516,42 @@ class DecisionLearning:
                                     min(15, 2 ** min(consecutive_failures - 1, 4)))
 
     async def snapshot(self):
-        local = await self._io("summary") if self.store is not None or self.path.exists() else {}
-        if time.monotonic() - self._status_at > 5:
+        local = {}
+        if self.store is not None or self.path.exists():
+            if time.monotonic() - self._summary_at < 15:
+                local = self._summary_cache
+            else:
+                async with self._summary_lock:
+                    if time.monotonic() - self._summary_at >= 15:
+                        self._summary_cache = (await asyncio.to_thread(self.store.summary)
+                                               if self.store is not None else await self._io("summary"))
+                        self._summary_at = time.monotonic()
+                    local = self._summary_cache
+        student_backend = getattr(self.cfg, "decision_learning_student_backend", "agentjev")
+        if student_backend == "laya" and time.monotonic() - self._status_at > 5:
             token = os.environ.get("LAYA_ADMIN_TOKEN", "")
             if token:
                 status = await self.host.laya.request_json("/admin/status", method="GET", token=token, timeout=2)
                 self._service_status = status or {}
             self._status_at = time.monotonic()
+        elif student_backend == "agentjev":
+            service = getattr(self.host, "agentjev", None)
+            self._service_status = service.snapshot() if service is not None else {}
         counts = local.get("tasks", {})
         total = self.stats["active_questions"]
         service = self._service_status
-        approved = service.get("metadata", {}).get("approved_tasks", [])
+        approved = service.get("metadata", {}).get("approved_tasks", []) if student_backend == "laya" else []
         latencies = sorted(row["latency_ms"] for row in self.recent)
         return {"mode": self.cfg.decision_learning_mode,
                 "tasks": [{"task_id": key, "samples": counts.get(key, {}).get("samples", 0),
                            "status": "approved" if key in approved else "pending" if self.cfg.decision_learning_mode != "off" else "off"} for key in TASKS],
                 "model_id": next((r["model_version"] for r in reversed(self.recent) if r["model_version"]), ""),
-                "takeover_rate": self.stats["laya"] / total if total else 0,
+                "takeover_rate": self.stats[student_backend] / total if total else 0,
                 "teacher_fallback_rate": self.stats["teacher_fallback"] / total if total else 0,
                 "p95_ms": latencies[min(len(latencies)-1, int(len(latencies)*.95))] if latencies else None,
                 "stats": dict(self.stats), "dataset": local, "recent": list(self.recent),
-                "jobs": service.get("jobs", []), "disagreements": list(self.disagreements),
+                "jobs": service.get("jobs", []) if student_backend == "laya" else [],
+                "student_service": service, "disagreements": list(self.disagreements),
                 "collecting_sessions": len(self.collection_sessions())}
 
     async def compare_teacher(self, limit=6):
@@ -584,8 +648,11 @@ class DecisionLearning:
                 raise ValueError("session_id_required")
             self._collection_epochs[session] += 1
             return {"deleted": await self._io("delete_session", session)}
+        if (getattr(self.cfg, "decision_learning_student_backend", "agentjev") == "agentjev"
+                and action in ("jobs/create", "jobs/status", "jobs/cancel", "models/evaluate",
+                               "models/promote", "models/rollback", "models/rollout")):
+            raise ValueError("agentjev_management_not_configured")
         if action in ("jobs/create", "models/rollout"):
-            # Dataset names supplied by the UI never become filesystem paths.
             filename = "decisions-" + uuid.uuid4().hex + ".jsonl"
             directory = Path(os.environ.get("DECISION_DATASETS_DIR", "/decision-datasets"))
             await self._io("export", directory / filename, teacher_only=action == "jobs/create",

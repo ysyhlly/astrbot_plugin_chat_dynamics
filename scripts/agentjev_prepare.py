@@ -51,6 +51,87 @@ def _state(row: dict) -> dict:
     return state
 
 
+def _teacher_state(row: dict, source: dict) -> dict:
+    """Use the state actually sent to the teacher, retaining source for audit."""
+    if (row.get("metadata") or {}).get("tokenizer_prepared") is not True:
+        return source
+    prepared = row.get("state")
+    if isinstance(prepared, str):
+        try:
+            prepared = json.loads(prepared)
+        except ValueError as error:
+            raise ValueError("teacher_state_missing") from error
+    if not isinstance(prepared, dict):
+        raise ValueError("teacher_state_missing")
+    current = prepared.get("conversation")
+    original = source["conversation"]
+    if (not isinstance(current, dict) or
+            any(current.get(key) != original.get(key) for key in ("text", "author", "messages")) or
+            prepared.get("target_candidates") != source.get("target_candidates")):
+        raise ValueError("prepared_evidence_mismatch")
+    _dataset.validate_snapshot(prepared, {
+        (row.get("metadata") or {}).get("question_id", row["task_id"]): row["candidates"]})
+    return prepared
+
+
+def _pack_state(state: dict) -> tuple[str, str]:
+    """Put the triggering message before optional history for head truncation."""
+    conversation = state["conversation"]
+    semantic_keys = ("recipient_ids", "basis", "certainty", "quoted_message_id",
+                     "quoted_author_id", "parent_message_id", "mentioned_user_ids",
+                     "bot_is_addressee", "subject_is_bot", "routing_ambiguous")
+    compact_messages = []
+    for message in conversation.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        compact = {key: message[key] for key in
+                   ("message_id", "author", "text", "reply_to", "mentioned_users", "timestamp")
+                   if message.get(key) not in (None, "", [], ())}
+        semantics = message.get("semantics")
+        if isinstance(semantics, dict):
+            compact["routing"] = {key: semantics[key] for key in semantic_keys
+                                  if semantics.get(key) not in (None, "", [], ())}
+        compact_messages.append(compact)
+    current = {key: conversation[key] for key in ("text", "author", "explicit", "truncated")
+               if key in conversation}
+    current["messages"] = compact_messages
+    packed = {"current": current}
+    for key in ("target_candidates", "routing_semantics", "observations",
+                "participation_policy", "previous_state", "persona"):
+        if key in state:
+            packed[key] = state[key]
+    if "background" in conversation:
+        packed["background"] = conversation["background"]
+    packed["message_details"] = conversation.get("messages") or []
+    extra = {key: value for key, value in conversation.items()
+             if key not in ("text", "author", "explicit", "truncated", "messages", "background")}
+    if extra:
+        packed["conversation_extra"] = extra
+    packed.update({key: value for key, value in state.items()
+                   if key not in packed and key != "conversation"})
+    return (json.dumps(packed, ensure_ascii=False, separators=(",", ":")),
+            json.dumps({"current": current}, ensure_ascii=False, separators=(",", ":"))[:-1])
+
+
+def _validate_agentjev_budget(tokenizer, current_prefix: str, questions: list[dict],
+                              *, max_len: int, max_state_tokens: int) -> None:
+    """Match upstream collate's per-question state budget before exporting."""
+    def token_count(value):
+        return len(tokenizer(value, add_special_tokens=False)["input_ids"])
+
+    current_tokens = token_count("[STATE] " + current_prefix)
+    for question in questions:
+        q_tokens = token_count("\n[QUESTION] " + question["text"])
+        candidate_tokens = max(min(token_count("\n[CANDIDATE] " + str(option)), max_len // 8)
+                               for option in question["candidates"])
+        budget_sq = max_len - candidate_tokens
+        q_tokens = min(q_tokens, max(1, budget_sq - 8))
+        state_budget = min(max_state_tokens, budget_sq - q_tokens)
+        # A small margin covers tokenizer merges at the current/context boundary.
+        if current_tokens + 8 > state_budget:
+            raise ValueError("current_state_over_token_budget")
+
+
 def _snapshot_quality(row: dict) -> None:
     metadata = row.get("metadata") or {}
     if str(row.get("task_version")) != "2":
@@ -143,7 +224,8 @@ def _grouped_choice(rows: list[dict], family: str, state: dict) -> tuple[dict, s
             "instructions": f"选择本轮的主要{('用户' if family == 'recipient' else '消息')}回应对象；无法确定时选 none。"}, positives[0] if positives else "none"
 
 
-def build_case(rows: list[dict]) -> tuple[dict, bool]:
+def build_case(rows: list[dict], *, tokenizer=None, max_state_tokens=256,
+               max_len=512) -> tuple[dict, bool]:
     if not rows:
         raise ValueError("empty_request")
     for row in rows:
@@ -152,16 +234,22 @@ def build_case(rows: list[dict]) -> tuple[dict, bool]:
     expected = metadata.get("request_question_count")
     if type(expected) is not int or expected != len(rows):
         raise ValueError("incomplete_request")
-    state = _state(rows[0])
-    canonical_state = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    source_state = _state(rows[0])
+    state = _teacher_state(rows[0], source_state)
+    canonical_source = json.dumps(source_state, ensure_ascii=False, sort_keys=True)
+    canonical_teacher = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    packed_state, current_prefix = _pack_state(state)
     question_ids = [row["metadata"].get("question_id") for row in rows]
     if len(set(question_ids)) != len(rows) or any(not isinstance(q, str) for q in question_ids):
         raise ValueError("duplicate_question")
     for row in rows:
         if row["session_id"] != rows[0]["session_id"] or row["metadata"].get("request_id") != metadata.get("request_id"):
             raise ValueError("request_mismatch")
-        if json.dumps(_state(row), ensure_ascii=False, sort_keys=True) != canonical_state:
+        row_source = _state(row)
+        if json.dumps(row_source, ensure_ascii=False, sort_keys=True) != canonical_source:
             raise ValueError("state_mismatch")
+        if json.dumps(_teacher_state(row, row_source), ensure_ascii=False, sort_keys=True) != canonical_teacher:
+            raise ValueError("teacher_state_mismatch")
         if row["teacher_model"] != rows[0]["teacher_model"] or row["metadata"]["teacher_prompt_version"] != metadata["teacher_prompt_version"]:
             raise ValueError("teacher_mismatch")
     by_family = defaultdict(list)
@@ -235,19 +323,27 @@ def build_case(rows: list[dict]) -> tuple[dict, bool]:
         raise ValueError("recipient_choice_missing")
     if picks["join"] == "true" and "reply_length" not in picks:
         raise ValueError("reply_length_missing")
+    if tokenizer is not None:
+        _validate_agentjev_budget(tokenizer, current_prefix, questions,
+                                  max_len=max_len, max_state_tokens=max_state_tokens)
     request_id = metadata.get("request_id")
     if not isinstance(request_id, str) or not request_id:
         raise ValueError("request_id_missing")
     # The model sees only state/question text, never teacher labels or IDs.
-    result = {"id": request_id, "source": "chat_dynamics_v2", "state": canonical_state,
+    result = {"id": request_id, "source": "chat_dynamics_v2", "state": packed_state,
               "questions": questions}
     return result, picks["join"] == "true"
 
 
 def prepare(rows: list[dict], *, seed: int = 42, min_cases: int = 1000,
-            min_positive_per_split: int = 10) -> tuple[dict[str, list[dict]], dict]:
+            min_positive_per_split: int = 10, tokenizer=None,
+            max_state_tokens: int = 256, max_len: int = 512) -> tuple[dict[str, list[dict]], dict]:
     if min_cases < 3 or min_positive_per_split < 0:
         raise ValueError("invalid training gates")
+    if type(max_state_tokens) is not int or max_state_tokens < 32:
+        raise ValueError("invalid state token budget")
+    if type(max_len) is not int or max_len < 128 or max_state_tokens > max_len:
+        raise ValueError("invalid model sequence budget")
     requests = defaultdict(list)
     reasons = Counter()
     for row in rows:
@@ -262,7 +358,8 @@ def prepare(rows: list[dict], *, seed: int = 42, min_cases: int = 1000,
     teacher_models = set()
     for group in requests.values():
         try:
-            case, positive = build_case(group)
+            case, positive = build_case(group, tokenizer=tokenizer,
+                                        max_state_tokens=max_state_tokens, max_len=max_len)
         except (KeyError, TypeError, ValueError) as error:
             reasons[str(error) if isinstance(error, ValueError) and str(error) else "malformed"] += 1
             continue
@@ -305,7 +402,8 @@ def prepare(rows: list[dict], *, seed: int = 42, min_cases: int = 1000,
                          for name in ("train", "calibration", "test")},
               "sampled_train_cases": len(sampled),
               "sampled_train_join_true": sum(row["id"] in positives for row in sampled),
-              "seed": seed}
+              "seed": seed, "tokenizer_checked": tokenizer is not None,
+              "max_state_tokens": max_state_tokens, "max_len": max_len}
     return output, report
 
 
@@ -316,10 +414,20 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min-cases", type=int, default=1000)
     parser.add_argument("--min-positive-per-split", type=int, default=10)
+    parser.add_argument("--tokenizer", required=True,
+                        help="AgentJev tokenizer path or model identifier; must match training")
+    parser.add_argument("--max-state-tokens", type=int, default=256,
+                        help="Same max_state_tokens value used by AgentJev training and inference")
+    parser.add_argument("--max-len", type=int, default=512,
+                        help="Same max_len value used by AgentJev training and inference")
     args = parser.parse_args()
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     rows = [json.loads(line) for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
     partitions, report = prepare(rows, seed=args.seed, min_cases=args.min_cases,
-                                 min_positive_per_split=args.min_positive_per_split)
+                                 min_positive_per_split=args.min_positive_per_split,
+                                 tokenizer=tokenizer, max_state_tokens=args.max_state_tokens,
+                                 max_len=args.max_len)
     args.output.mkdir(parents=True, exist_ok=True)
     for name, cases in partitions.items():
         (args.output / f"{name}.jsonl").write_text(

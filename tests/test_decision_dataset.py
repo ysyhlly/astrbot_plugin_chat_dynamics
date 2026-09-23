@@ -12,6 +12,14 @@ from astrbot_plugin_chat_dynamics.core.decision_dataset import (
 )
 
 
+def test_dataset_connection_closes_after_transaction(tmp_path):
+    store = DecisionDataset(tmp_path / "closed.db")
+    with store.connect() as db:
+        assert db.execute("SELECT 1").fetchone() == (1,)
+    with pytest.raises(sqlite3.ProgrammingError):
+        db.execute("SELECT 1")
+
+
 def test_pseudonyms_queue_restart_and_outcomes(tmp_path):
     path = tmp_path / "data.db"
     store = DecisionDataset(path)
@@ -416,6 +424,47 @@ def test_review_quarantine_preserves_flags_and_labels_across_restart(tmp_path):
     assert restarted.summary()["quality_flags"]["insufficient_evidence"] == 1
 
 
+def test_transient_annotation_failure_remains_retryable_and_exhausted_can_be_requeued(tmp_path):
+    store = DecisionDataset(tmp_path / "retry.db")
+    state = {"conversation": {"text": "请帮我看看", "messages": []}}
+    transient_id = store.record_sample("room", "join", state, {"type": "noul"},
+                                       snapshot_version="1")
+    store.enqueue_label(transient_id, {"provider_id": "teacher", "question_id": "join"})
+    for _ in range(6):
+        job = store.claim_label()
+        assert job and job["sample_id"] == transient_id
+        assert store.fail_label(transient_id, job["token"], "timeout", transient=True) == "deferred"
+    assert store.claim_label()["sample_id"] == transient_id
+
+    failed_id = store.record_sample("room", "join", state, {"type": "noul"},
+                                    snapshot_version="1")
+    store.enqueue_label(failed_id, {"provider_id": "teacher", "question_id": "join"})
+    # Release the still-leased transient task so claims advance to this sample.
+    for _ in range(5):
+        job = store.claim_label()
+        assert job and job["sample_id"] == failed_id
+        status = store.fail_label(failed_id, job["token"], "ValueError")
+    assert status == "failed"
+    assert store.claim_label() is None
+    assert store.requeue_exhausted() == 1
+    job = store.claim_label()
+    assert job and job["sample_id"] == failed_id and job["attempts"] == 1
+
+
+def test_requeue_exhausted_recovers_only_expired_valid_snapshot(tmp_path):
+    store = DecisionDataset(tmp_path / "legacy-retry.db")
+    valid = store.record_sample("room", "join", {"conversation": {"text": "现在的问题"}},
+                                {"type": "noul"}, snapshot_version="1")
+    old = store.record_sample("room", "join", "old input", {"type": "noul"})
+    for sample in (valid, old):
+        store.enqueue_label(sample, {"provider_id": "teacher", "question_id": "join"})
+    with store.connect() as db:
+        db.execute("UPDATE labels SET status='leased',attempts=5,lease_until=0")
+    assert store.requeue_exhausted(snapshot_version="1") == 1
+    job = store.claim_label()
+    assert job and job["sample_id"] == valid and job["attempts"] == 1
+
+
 def test_export_task_version_filter_is_optional(tmp_path):
     store = DecisionDataset(tmp_path / "versions.db")
     for version in ["1", "2"]:
@@ -454,6 +503,7 @@ def test_summary_valid_pairs_classes_sessions_and_utc_days(tmp_path):
         )
     report = store.summary()
     join = report["tasks"]["join"]
+    assert store.coverage_summary()["join"]["class_counts"] == join["class_counts"]
     assert join["samples"] == join["teacher_labels"] == 4
     assert join["student_predictions"] == 3
     assert join["valid_teacher_labels"] == 3 and join["valid_pairs"] == 1

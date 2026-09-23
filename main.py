@@ -81,6 +81,7 @@ from .core.platform_bridge import (
     send_plain,
 )
 from .core.integrations.laya import LayaClient, decision_usable
+from .core.integrations.agentjev import AgentJevClient
 from .core.decision_learning import DecisionLearning
 from .core.decision_learning_api import DecisionLearningWebAPI
 from .core.integrations.registry import IntegrationRegistry
@@ -384,10 +385,18 @@ class ChatDynamicsPlugin(Star):
         )
         self.laya = LayaClient(
             enabled=runtime_config.decision_backend == "laya"
-            or runtime_config.vibe_backend == "laya" or runtime_config.decision_learning_mode != "off",
+            or runtime_config.vibe_backend == "laya" or (runtime_config.decision_learning_mode != "off"
+                and runtime_config.decision_learning_student_backend == "laya"),
             base_url=runtime_config.laya_base_url,
             timeout=runtime_config.laya_timeout,
             internal_hosts=runtime_config.laya_internal_hosts,
+        )
+        self.agentjev = AgentJevClient(
+            enabled=runtime_config.decision_learning_mode != "off"
+                    and runtime_config.decision_learning_student_backend == "agentjev",
+            base_url=runtime_config.agentjev_base_url,
+            timeout=runtime_config.agentjev_timeout,
+            internal_hosts=runtime_config.agentjev_internal_hosts,
         )
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -524,6 +533,7 @@ class ChatDynamicsPlugin(Star):
         previous_decision = getattr(self, "decision_mode", "legacy")
         old_cfg = getattr(self, "_runtime_config", None)
         decision_keys = ("decision_learning_mode", "decision_backend", "laya_base_url",
+                         "decision_learning_student_backend", "agentjev_base_url",
                          "laya_min_confidence", "laya_max_uncertainty", "laya_internal_hosts")
         if old_cfg is not None and any(getattr(old_cfg, k, None) != getattr(cfg, k, None) for k in decision_keys):
             opinions = getattr(self, "message_opinions", None)
@@ -555,10 +565,18 @@ class ChatDynamicsPlugin(Star):
             # calibration are configured independently but share one client, so a
             # service used by only one of them still has to be reachable.
             self.laya.configure(
-                enabled=cfg.decision_backend == "laya" or cfg.vibe_backend == "laya" or cfg.decision_learning_mode != "off",
+                enabled=cfg.decision_backend == "laya" or cfg.vibe_backend == "laya" or (cfg.decision_learning_mode != "off"
+                    and cfg.decision_learning_student_backend == "laya"),
                 base_url=cfg.laya_base_url,
                 timeout=cfg.laya_timeout,
                 internal_hosts=cfg.laya_internal_hosts,
+            )
+        if hasattr(self, "agentjev"):
+            self.agentjev.configure(
+                enabled=cfg.decision_learning_mode != "off"
+                        and cfg.decision_learning_student_backend == "agentjev",
+                base_url=cfg.agentjev_base_url, timeout=cfg.agentjev_timeout,
+                internal_hosts=cfg.agentjev_internal_hosts,
             )
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
@@ -1661,6 +1679,9 @@ class ChatDynamicsPlugin(Star):
         laya_close = getattr(getattr(self, "laya", None), "close", None)
         if callable(laya_close):
             await laya_close()
+        agentjev_close = getattr(getattr(self, "agentjev", None), "close", None)
+        if callable(agentjev_close):
+            await agentjev_close()
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
             runtime.clear_active_followup_batches()

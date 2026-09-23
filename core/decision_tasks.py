@@ -10,6 +10,7 @@ from .persona_axes import AXES
 
 TASK_VERSION = "2"
 TEACHER_PROMPT_VERSION = "zh-rubric-v2"
+OPTIONAL_TURN_QUESTIONS = frozenset({"reply_length", "recipient_choice"})
 TASKS = ("join", "action", "state", "length", "reply_length", "recipient_choice", "reason", "target", "vibe",
          "topic_relevance", "question_value", "professionalism", "silence_bias",
          "force_scale", "completeness", "recipient", "topic",
@@ -37,7 +38,7 @@ def task_id(question_id: str) -> str:
     return "recipient" if question_id.startswith("recipient.") else question_id
 
 
-def primary_recipient_options(turn, *, limit=4):
+def primary_recipient_options(turn, *, limit=8):
     """Human authors with source evidence; keys are anonymized with the state."""
     options = {}
     for message in (*reversed(turn.messages), *reversed(turn.background)):
@@ -146,7 +147,7 @@ class TeacherLabels(dict):
         self.abstentions = []
 
 
-def teacher_answers(text, questions):
+def teacher_answers(text, questions, *, optional_keys=()):
     """Hard labels become typed decisions; these unit distributions are not calibration evidence."""
     if not isinstance(text, str) or len(text) > 32768:
         return None
@@ -157,25 +158,35 @@ def teacher_answers(text, questions):
         labels = json.loads(text)
     except (ValueError, RecursionError):
         return None
-    if not isinstance(labels, dict) or set(labels) != set(questions):
+    optional = set(optional_keys) & set(questions)
+    if (not isinstance(labels, dict) or not set(labels) <= set(questions)
+            or not set(questions) - optional <= set(labels)):
         return None
     answers = TeacherLabels()
     for key, spec in questions.items():
+        if key not in labels:
+            continue
         label, kind = labels[key], spec["type"]
         if label is None:
             answers.abstentions.append(key)
             continue
         if kind == "noul":
             if not isinstance(label, bool):
+                if key in optional:
+                    continue
                 return None
             answers[key] = {"type": kind, "noul": float(label)}
         elif kind == "choice":
             if not isinstance(label, str) or label not in spec["criteria"]:
+                if key in optional:
+                    continue
                 return None
             answers[key] = {"type": kind, "choice": label, "confidence": 1.0,
                             "probabilities": {v: float(v == label) for v in spec["criteria"]}}
         else:
             if isinstance(label, bool) or not isinstance(label, int) or not 0 <= label < len(spec["criteria"]):
+                if key in optional:
+                    continue
                 return None
             answers[key] = {"type": kind, "score": float(label), "confidence": 1.0,
                             "probabilities": {str(i): float(i == label) for i in range(len(spec["criteria"]))}}

@@ -530,7 +530,7 @@ class PersonaEngine:
             return TurnDecision.fallback(turn, "queue_overload")
         learning = getattr(p, "decision_learning", None)
         if learning is not None and learning.enabled(turn.session_key):
-            from .decision_tasks import turn_questions, turn_from_answers
+            from .decision_tasks import OPTIONAL_TURN_QUESTIONS, turn_questions, turn_from_answers
             questions, candidates = turn_questions(turn)
             learning_state = build_learning_state(turn, candidates=candidates, previous_state=state,
                                                  observations=item.observations,
@@ -541,7 +541,7 @@ class PersonaEngine:
                 questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
             if runtime is not None:
                 runtime.jev_decision = describe_answers(answers or {})
-            required = set(questions) - {"reply_length", "recipient_choice"}
+            required = set(questions) - OPTIONAL_TURN_QUESTIONS
             return (turn_from_answers(turn, answers, candidates) if answers and required <= set(answers)
                     else TurnDecision.fallback(turn, "decision_learning_unavailable"))
         backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")

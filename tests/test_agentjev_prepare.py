@@ -1,6 +1,7 @@
 """A request stays intact and incomplete candidate snapshots never train."""
 
 from copy import deepcopy
+import json
 import random
 from collections import Counter
 
@@ -55,11 +56,46 @@ def request(number: int, *, join: bool = True):
 def test_complete_request_becomes_one_choice_case():
     case, positive = build_case(request(1))
     assert positive
+    assert case["state"].startswith('{"current":{"text":')
     assert [q["id"] for q in case["questions"]] == ["join", "recipient", "target", "action", "reply_length"]
     target = case["questions"][2]
     assert len(target["candidates"]) == 3
     assert "显卡频率异常" in target["candidates"][0]
     assert target["gold"]["distribution"] == [1, 0, 0]
+
+
+def test_prepared_teacher_view_is_used_and_current_state_precedes_history():
+    rows = request(11)
+    source = rows[0]["metadata"]["source_state"]
+    source["conversation"]["background"].append(
+        {"message_id": "extra", "author": "other", "text": "旧消息" * 1500})
+    prepared = deepcopy(source)
+    prepared["conversation"]["background"].pop()
+    for row in rows:
+        row["metadata"]["tokenizer_prepared"] = True
+        row["state"] = json.dumps(prepared, ensure_ascii=False)
+    case, _ = build_case(rows)
+    packed = json.loads(case["state"])
+    assert packed["current"]["text"] == prepared["conversation"]["text"]
+    assert packed["background"] == prepared["conversation"]["background"]
+    assert "extra" not in case["state"]
+    bad = deepcopy(rows)
+    bad[0]["state"] = json.dumps({**prepared, "conversation": {
+        **prepared["conversation"], "text": "不同的触发正文"}}, ensure_ascii=False)
+    with pytest.raises(ValueError, match="prepared_evidence_mismatch"):
+        build_case(bad)
+
+
+def test_tokenizer_gate_rejects_current_message_that_would_be_cut():
+    rows = request(12)
+    def tokenizer(text, **_):
+        return {"input_ids": list(text)}
+    with pytest.raises(ValueError, match="current_state_over_token_budget"):
+        build_case(rows, tokenizer=tokenizer, max_state_tokens=100)
+    rows = request(13)
+    rows[0]["metadata"]["source_state"]["conversation"]["text"] = "帮我看看"
+    case, _ = build_case(rows, tokenizer=tokenizer, max_state_tokens=256)
+    assert json.loads(case["state"])["current"]["text"] == "帮我看看"
 
 
 def test_incomplete_body_and_multiple_targets_are_rejected():

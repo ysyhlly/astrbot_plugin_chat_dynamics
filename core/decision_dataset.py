@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 try:
     from .decision_snapshot import validate_snapshot
@@ -90,6 +91,8 @@ class DecisionDataset:
                     payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS sample_session ON samples(session);
                 CREATE INDEX IF NOT EXISTS sample_request ON samples(json_extract(payload,'$.metadata.request_id')) WHERE json_valid(payload);
+                CREATE INDEX IF NOT EXISTS sample_labeled ON samples(id)
+                    WHERE json_extract(payload,'$.teacher_label') IS NOT NULL;
                 CREATE TABLE IF NOT EXISTS labels (
                     sample TEXT PRIMARY KEY REFERENCES samples(id) ON DELETE CASCADE,
                     status TEXT NOT NULL DEFAULT 'pending', lease_until REAL DEFAULT 0,
@@ -115,10 +118,15 @@ class DecisionDataset:
                 db.execute("ALTER TABLE labels ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
             db.execute("INSERT OR IGNORE INTO settings VALUES ('claim_count','0')")
 
+    @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
-        db.execute("PRAGMA foreign_keys=ON")
-        return db
+        try:
+            db.execute("PRAGMA foreign_keys=ON")
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def anonymous_id(self, value: Any) -> str:
         if re.fullmatch(r"anon_[a-f0-9]{32}", str(value)):
@@ -318,6 +326,30 @@ class DecisionDataset:
             "teacher_prompt_versions": teacher_prompt_versions,
         }
 
+    def coverage_summary(self):
+        """Small read-only class counts for annotation priority, without source texts."""
+        counts = {name: {"class_counts": {}, "dynamic": name in DYNAMIC_TASKS}
+                  for name in TASK_LABELS}
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT json_extract(payload,'$.task_id'),json_extract(payload,'$.teacher_model'),"
+                "json_type(payload,'$.teacher_label'),json_extract(payload,'$.teacher_label'),"
+                "json_extract(payload,'$.candidates') "
+                "FROM samples WHERE json_extract(payload,'$.teacher_label') IS NOT NULL"
+            )
+            for task, model, label_type, raw_label, raw_question in rows:
+                if not model or not task or not raw_question:
+                    continue
+                teacher = (json.loads(raw_label) if label_type in ("object", "array")
+                           else label_type == "true" if label_type in ("true", "false") else raw_label)
+                label = _coverage_label(teacher, json.loads(raw_question), hard=True)
+                if label is None:
+                    continue
+                item = counts.setdefault(task, {"class_counts": {}, "dynamic": task in DYNAMIC_TASKS})
+                classes = item["class_counts"]
+                classes[label] = classes.get(label, 0) + 1
+        return counts
+
     def update_outcome(self, sample_id, outcome):
         with self.connect() as db:
             row = db.execute("SELECT payload FROM samples WHERE id=?", (sample_id,)).fetchone()
@@ -369,7 +401,8 @@ class DecisionDataset:
             return None
         query = (
             "SELECT sample FROM labels JOIN samples ON samples.id=labels.sample "
-            "WHERE status NOT IN ('done','review') AND lease_until<=? AND attempts<?"
+            "WHERE status IN ('pending','leased','deferred') AND lease_until<=? "
+            "AND (attempts<? OR status='deferred')"
         )
         parameters = (now, max_attempts)
         if allowed is not None:
@@ -394,7 +427,8 @@ class DecisionDataset:
             )
             payload = json.loads(db.execute("SELECT payload FROM samples WHERE id=?", row).fetchone()[0])
             job_payload = json.loads(db.execute("SELECT payload FROM labels WHERE sample=?", row).fetchone()[0])
-            priority, reason = db.execute("SELECT priority,reason FROM labels WHERE sample=?", row).fetchone()
+            priority, reason, attempts = db.execute(
+                "SELECT priority,reason,attempts FROM labels WHERE sample=?", row).fetchone()
             return {
                 "sample": payload,
                 "sample_id": row[0],
@@ -402,7 +436,59 @@ class DecisionDataset:
                 "payload": job_payload,
                 "priority": priority,
                 "reason": reason,
+                "attempts": attempts,
             }
+
+    def fail_label(self, sample_id, token, category, *, transient=False, retry_after=0, max_attempts=5):
+        """Release a failed lease; transient provider faults remain retryable."""
+        if not isinstance(category, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", category):
+            raise ValueError("Invalid annotation failure category")
+        if not isinstance(retry_after, (int, float)) or not math.isfinite(retry_after) or not 0 <= retry_after <= 3600:
+            raise ValueError("Invalid annotation retry delay")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT attempts FROM labels WHERE sample=? AND token=? AND status='leased'",
+                (sample_id, token),
+            ).fetchone()
+            if row is None:
+                return False
+            status = "deferred" if transient else "failed" if row[0] >= max_attempts else "pending"
+            db.execute(
+                "UPDATE labels SET status=?,lease_until=?,token=NULL,reason=? WHERE sample=?",
+                (status, time.time() + retry_after if status != "failed" else 0,
+                 "error:" + category, sample_id),
+            )
+            return status
+
+    def requeue_exhausted(self, *, snapshot_version="1", limit=1000):
+        """Explicitly retry valid unlabeled snapshots after fixing the teacher."""
+        if not isinstance(snapshot_version, str) or not re.fullmatch(r"[0-9]{1,8}", snapshot_version):
+            raise ValueError("Invalid snapshot version")
+        if type(limit) is not int or not 1 <= limit <= 10000:
+            raise ValueError("Invalid retry limit")
+        restored = 0
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT l.sample,s.payload FROM labels l JOIN samples s ON s.id=l.sample "
+                "WHERE (l.status='failed' OR (l.status IN ('leased','pending') "
+                "AND l.attempts>=5 AND l.lease_until<=?)) "
+                "AND CAST(json_extract(s.payload,'$.metadata.snapshot_version') AS TEXT)=? "
+                "AND json_extract(s.payload,'$.teacher_label') IS NULL "
+                "ORDER BY l.rowid LIMIT ?", (time.time(), snapshot_version, limit),
+            ).fetchall()
+            for sample_id, raw in rows:
+                sample = json.loads(raw)
+                if (str(sample.get("metadata", {}).get("snapshot_version")) != snapshot_version
+                        or sample.get("teacher_label") is not None or not snapshot_usable(sample)):
+                    continue
+                db.execute(
+                    "UPDATE labels SET status='pending',lease_until=0,token=NULL,attempts=0,reason='requeued' "
+                    "WHERE sample=?", (sample_id,),
+                )
+                restored += 1
+        return restored
 
     def audit_request(self, request_id):
         """Flag teacher contradictions for review without changing any labels."""

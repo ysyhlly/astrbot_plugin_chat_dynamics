@@ -117,6 +117,27 @@
     "type": "string", "default": "off", "options": ["off", "collect", "shadow", "active"],
     "hint": "off 保持原行为；collect 采集教师标签；shadow 教师执行、学生旁路比较；active 仅已验收任务由学生接管，不确定时回退教师。回复正文仍由主 Agent 生成。"
   },
+  "decision_learning_student_backend": {
+    "description": "决策学习学生模型",
+    "type": "string", "default": "agentjev", "options": ["agentjev", "laya"],
+    "hint": "默认开源 AgentJev；laya 仅用于兼容既有服务。"
+  },
+  "agentjev_base_url": {
+    "description": "AgentJev 学生服务地址",
+    "type": "string", "default": "http://127.0.0.1:18765",
+    "hint": "开源 AgentJev 的 decision.v1 服务地址，调用 /api/evaluate。Docker 内运行时需填写容器可访问的地址。"
+  },
+  "agentjev_timeout": {
+    "description": "AgentJev 学生调用超时秒数",
+    "type": "float", "default": 1.5,
+    "slider": {"min": 0.05, "max": 30, "step": 0.1},
+    "hint": "范围 0.05~30 秒；调用超时或服务未部署时继续教师回退。"
+  },
+  "agentjev_internal_hosts": {
+    "description": "允许明文访问的 AgentJev 内部主机名",
+    "type": "list", "default": [],
+    "hint": "仅填写可信容器内网的精确主机名，不支持通配符。"
+  },
   "decision_learning_sessions": {
     "description": "允许采集的完整会话 UMO", "type": "list", "default": [],
     "hint": "只为这些完整 UMO 保存训练样本，默认不采集。请从会话控制台复制会话标识；明确需要所有生效群时填 *，仍遵守插件的生效和排除规则。"

@@ -29,6 +29,7 @@ STUDENT = {
 def make_runtime(tmp_path, *, mode="active", collect=False):
     cfg = SimpleNamespace(
         decision_learning_mode=mode,
+        decision_learning_student_backend="laya",
         decision_learning_sessions=["room"] if collect else [],
         decision_timeout=1.0,
         laya_timeout=0.2,
@@ -69,6 +70,30 @@ def make_runtime(tmp_path, *, mode="active", collect=False):
     runtime = DecisionLearning(host, tmp_path)
     runtime._teacher = AsyncMock(return_value={"join": {"type": "noul", "noul": 0.0}})
     return runtime, host, metadata
+
+
+@pytest.mark.asyncio
+async def test_optional_turn_questions_are_labeled_in_background_not_online(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path, mode="shadow", collect=True)
+    runtime.start_worker = lambda: None
+    questions = {**QUESTIONS,
+                 "reply_length": {"type": "choice", "instructions": "How long?",
+                                  "criteria": {"tiny": "one line", "short": "a few lines"}},
+                 "recipient_choice": {"type": "choice", "instructions": "Who?",
+                                      "criteria": {"user": "speaker", "none": "whole group"}}}
+    runtime._teacher.return_value = TeacherAnswers(
+        {"join": {"type": "noul", "noul": 1.0},
+         "action": {"type": "choice", "choice": "reply"}}, "teacher:revision")
+    state = {"conversation": {"text": "请回复", "author": "user", "messages": []}}
+    result = await runtime.evaluate(session_id="room", state=state, questions=questions)
+    assert set(result) == {"join", "action"}
+    assert set(runtime._teacher.call_args.args[2]) == {"join", "action"}
+    await asyncio.gather(*tuple(runtime.tasks))
+    with runtime.store.connect() as db:
+        queued = {row[0] for row in db.execute(
+            "SELECT json_extract(payload,'$.question_id') FROM labels")}
+    assert queued == {"reply_length", "recipient_choice"}
+    await runtime.close()
 
 
 def test_all_managed_sessions_still_respect_exclusions(tmp_path):

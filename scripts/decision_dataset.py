@@ -23,6 +23,9 @@ def main():
     sub.add_parser("review", help="Import independent human labels from JSONL id,human_label").add_argument("input")
     sub.add_parser("audit", help="Flag recent complete requests without changing labels").add_argument("--limit", type=int, default=200)
     sub.add_parser("audit-snapshots", help="Check input integrity without reconstructing lost evidence").add_argument("--quarantine", action="store_true")
+    retry = sub.add_parser("requeue-exhausted", help="Retry valid unlabeled snapshot tasks after teacher repair")
+    retry.add_argument("--snapshot-version", default="1")
+    retry.add_argument("--limit", type=int, default=1000)
     args = parser.parse_args()
     store = module.DecisionDataset(args.database)
     if args.command == "purge":
@@ -41,6 +44,9 @@ def main():
         print(json.dumps({"reviewed": count}))
     elif args.command == "audit-snapshots":
         print(json.dumps(store.audit_snapshots(quarantine=args.quarantine)))
+    elif args.command == "requeue-exhausted":
+        print(json.dumps({"requeued": store.requeue_exhausted(
+            snapshot_version=args.snapshot_version, limit=args.limit)}))
     elif args.command == "audit":
         if not 1 <= args.limit <= 10000:
             parser.error("audit limit must be between 1 and 10000")
