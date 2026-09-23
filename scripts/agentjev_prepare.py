@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
-import importlib.util
 import json
 from pathlib import Path
 import random
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("agentjev_decision_dataset", ROOT / "core" / "decision_dataset.py")
-_dataset = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_dataset)
+if __package__:
+    from ..core import decision_dataset as _dataset
+else:
+    # Direct `python scripts/agentjev_prepare.py` execution starts with scripts/
+    # on sys.path. Use the same canonical module as the plugin and unit tests.
+    sys.path.insert(0, str(ROOT.parent))
+    from astrbot_plugin_chat_dynamics.core import decision_dataset as _dataset
 
 LENGTH_OPTIONS = {
     "tiny": "一句很短的确认或回应。",
