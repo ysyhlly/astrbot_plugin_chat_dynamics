@@ -531,16 +531,19 @@ class PersonaEngine:
         if item.fallback:
             return TurnDecision.fallback(turn, "queue_overload")
         learning = getattr(p, "decision_learning", None)
-        if learning is not None and learning.enabled(turn.session_key):
+        learning_enabled = learning is not None and learning.enabled(turn.session_key)
+        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
+        environment = (capture_environment(runtime, turn, getattr(p, "arbiter", None),
+                                           now=p.time_service.time())
+                       if runtime is not None and (learning_enabled or backend == "model") else None)
+        if learning_enabled:
             from .decision_tasks import OPTIONAL_TURN_QUESTIONS, turn_questions, turn_from_answers
             questions, candidates = turn_questions(turn)
             learning_state = build_learning_state(turn, candidates=candidates, previous_state=state,
                                                  observations=item.observations,
                                                  presence=p._runtime_config.presence_knob,
                                                  persona_prompt=persona.prompt,
-                                                 environment=capture_environment(
-                                                     runtime, turn, getattr(p, "arbiter", None),
-                                                     now=p.time_service.time()) if runtime is not None else None)
+                                                 environment=environment)
             answers = await learning.evaluate(session_id=turn.session_key,
                 state=learning_state,
                 questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
@@ -549,7 +552,6 @@ class PersonaEngine:
             required = set(questions) - OPTIONAL_TURN_QUESTIONS
             return (turn_from_answers(turn, answers, candidates) if answers and required <= set(answers)
                     else TurnDecision.fallback(turn, "decision_learning_unavailable"))
-        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
         if backend in ("jev", "laya"):
             async def request():
                 return await self._decide_layer(item, persona, state, runtime=runtime, backend=backend)
@@ -566,7 +568,9 @@ class PersonaEngine:
                             system_prompt=decision_instructions(
                                 bool(getattr(p._runtime_config, "decision_record_prompt", False))
                             ) + "\nEffective persona:\n" + persona.prompt,
-                            prompt=decision_prompt(turn, state, item.observations, p._runtime_config.presence_knob),
+                            prompt=decision_prompt(turn, state, item.observations,
+                                                   p._runtime_config.presence_knob,
+                                                   environment=environment),
                         )
                     response = await budget.run(provider_id, "routing", invoke)
                     return TurnDecision.parse(completion_text(response), turn)

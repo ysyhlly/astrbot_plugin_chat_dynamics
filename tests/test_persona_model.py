@@ -117,6 +117,11 @@ async def test_full_fragment_turn_persona_and_single_delivery(model_plugin):
     assert request["conversation"]["text"] == "\n".join(texts)
     assert request["conversation"]["background"] == []
     assert "克制" in p.decision_calls[0]["system_prompt"]
+    decision_input = json.loads(p.decision_calls[0]["prompt"])
+    assert decision_input["environment"]["schema_version"] == 1
+    assert decision_input["environment"]["room_messages_last_5m"] >= 3
+    assert decision_input["environment"]["cooldown_remaining_seconds"] == 0
+    assert "null value means unavailable" in p.decision_calls[0]["system_prompt"]
     assert bridge.requests[0][1] == bridge.persona
     assert bridge.commits == [bridge.response]
     assert len(events[-1].replies_sent) == 1 and events[-1].replies_sent[0].endswith(bridge.response)
@@ -198,7 +203,7 @@ async def test_persona_explicit_at_and_evicted_quote(model_plugin, kind, invalid
     async def decide(**kwargs):
         payload = json.loads(kwargs["prompt"])
         if "conversation" in payload:
-            captured.append(payload["conversation"])
+            captured.append(payload)
             if invalid_decision:
                 return SimpleNamespace(completion_text="not json")
         return await original(**kwargs)
@@ -210,9 +215,14 @@ async def test_persona_explicit_at_and_evicted_quote(model_plugin, kind, invalid
         await flush(p, event)
         await drain(p)
         assert len(captured) == 1
-        conversation = captured[0]
+        conversation = captured[0]["conversation"]
+        environment = captured[0]["environment"]
         addressed = kind != "human_quote"
         assert conversation["explicit"] is addressed
+        if kind in {"at", "at_human_quote"}:
+            assert environment["mentioned_self"] is True
+        if kind in {"quote", "human_quote"}:
+            assert environment["reply_to_self"] is (kind == "quote")
         semantics = conversation["messages"][0]["semantics"]
         assert semantics["bot_is_addressee"] is addressed
         assert semantics["recipient_ids"] == (["bot_42"] if addressed else ["another-user"])

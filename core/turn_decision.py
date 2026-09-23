@@ -221,6 +221,7 @@ Follow the supplied participation_policy when choosing how readily to join publi
 semantics records sender IDs and recipient evidence. possible is only a topical guess; unknown means no identified recipient. For unknown addressees, normally default to action: "ignore" and state: "observing" unless there is an ongoing question directed to the bot in the current topic. In lively mode, you may also join an open group discussion with a relevant brief contribution even without an @; never reinterpret an explicit other recipient as the bot.
 Distinguish subjects from addressees: subject_user_ids and subject_is_bot indicate who is being discussed; when subject_is_bot is true but bot_is_addressee is false, the bot is merely the topic of conversation, not directly questioned, and must NOT be responded to as an addressee. Quoted authors and subjects are not necessarily addressees. Routing confidence is evidence, not certainty. Explicit mentions outrank inferred recipients. Do not assume every message addresses the bot.
 Telemetry and local labels are uncertain observations, not rules. Private boundaries apply to the relevant conversation only.
+The environment object contains measured runtime facts for this decision. Use it with the persona and conversation when choosing action, especially whether to speak now: recent or repeated bot messages and remaining cooldown favor restraint; an actual @ or reply to the bot supports answering when the message warrants it. A null value means unavailable, not false or zero. Activity counts do not create an obligation to speak, and environment signals do not override explicit boundaries.
 Do not guess attachment contents. Explicit media requests may be sent to the multimodal reply agent.
 A poke / 戳一戳 is an online social signal, not a file, image or physical contact. Choose silence or a brief response according to the effective persona and current state; no playful tone or intimacy is required.
 Prefer observing over interrupting unrelated conversations; use a brief acknowledgement or clarification when appropriate.
@@ -290,10 +291,14 @@ def decision_instructions(record: bool = False) -> str:
     return DECISION_INSTRUCTIONS_RECORDED if record else DECISION_INSTRUCTIONS
 
 
-def decision_prompt(turn: TurnContext, state: str, observations: dict, presence: str = "sensible") -> str:
-    return json.dumps({"conversation": turn.payload(), "previous_state": state,
-                       "participation_policy": participation_policy(presence),
-                       "observations": observations}, ensure_ascii=False)
+def decision_prompt(turn: TurnContext, state: str, observations: dict, presence: str = "sensible",
+                    *, environment: dict | None = None) -> str:
+    payload = {"conversation": turn.payload(), "previous_state": state,
+               "participation_policy": participation_policy(presence),
+               "observations": observations}
+    if environment is not None:
+        payload["environment"] = environment
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def reply_prompt(turn: TurnContext, decision: TurnDecision, *, delivery_constraints: dict | None = None) -> str:

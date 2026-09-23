@@ -13,6 +13,14 @@ from scripts.check_release import iter_release_files, plugin_version, validate_r
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def copy_release_tree(destination: Path) -> None:
+    """Exercise release contracts without copying private data or live lock files."""
+    for source in iter_release_files(ROOT):
+        target = destination / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def test_register_decorator_version_matches_metadata():
     version = plugin_version(ROOT)
     text = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -28,11 +36,7 @@ def test_register_decorator_version_matches_metadata():
 
 def test_plugin_version_follows_metadata_yaml(tmp_path):
     copied = tmp_path / "plugin"
-    shutil.copytree(
-        ROOT,
-        copied,
-        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "dist", "artifacts", ".git", ".venv"),
-    )
+    copy_release_tree(copied)
     metadata = copied / "metadata.yaml"
     changelog = copied / "CHANGELOG.md"
     original = plugin_version(copied)
@@ -56,11 +60,7 @@ def test_release_check_accepts_local_checkout_but_requires_repo_for_public_relea
     # gate passes as-is. The empty-repo rejection is exercised on a copy.
     assert validate_release(ROOT, allow_empty_repo=False) == []
     copied = tmp_path / "plugin"
-    shutil.copytree(
-        ROOT,
-        copied,
-        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "dist", "artifacts", ".git", ".venv"),
-    )
+    copy_release_tree(copied)
     metadata = copied / "metadata.yaml"
     metadata.write_text(
         re.sub(
@@ -91,7 +91,7 @@ def test_release_archive_is_deterministic_when_metadata_has_a_real_repo(tmp_path
     # Work on a temporary copy so this test never changes the checked-in
     # metadata or leaves a dist artifact in the workspace.
     copied = tmp_path / "plugin"
-    shutil.copytree(ROOT, copied, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "dist", "artifacts", ".git", ".venv"))
+    copy_release_tree(copied)
     metadata = copied / "metadata.yaml"
     metadata.write_text(
         metadata.read_text(encoding="utf-8").replace('repo: ""', 'repo: "https://example.invalid/chat-dynamics"'),

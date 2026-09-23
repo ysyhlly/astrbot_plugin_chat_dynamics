@@ -2,6 +2,12 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.12.3 · 人设 LLM 使用环境特征判断开口（2026-09-23）
+
+- 在 `decision_mode=persona_model`、`decision_backend=model` 时，把采集到的结构化环境特征 E 与会话状态一起交给 LLM，明确提示其结合人设、聊天、机器人近期发言和冷却状态判断本轮是否开口；`null` 表示未知，群活跃度本身不要求插话。
+- 决策学习教师与常规 LLM 路径共用同一次决策时的 E 快照；修复引用消息已从 DAG 淘汰时，未使用平台保留的引用作者身份而误判 `reply_to_self` 的问题。
+- 现有 AgentJev `decision.v1` 在线学生尚未接入 E 编码与融合，仍保持原有服务契约。
+
 ## v1.12.2 · AgentJev 决策学习与环境特征采集（2026-09-23）
 
 - 决策学习默认学生改为 AgentJev，新增完整回合的训练转换与服务适配；补齐主要收件人、目标消息及五档回复长度标签。在线接管仍需独立校准与验收。

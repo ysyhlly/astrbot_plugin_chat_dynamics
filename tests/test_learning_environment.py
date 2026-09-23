@@ -56,3 +56,13 @@ def test_full_dag_window_does_not_report_partial_counts_as_exact():
     env = capture_environment(runtime, turn, None, now=102)
     assert env["active_users_last_5m"] is None
     assert env["room_messages_last_5m"] is None
+
+
+def test_evicted_quote_uses_platform_author_evidence():
+    runtime = SimpleNamespace(bot_id="bot", session_key="room",
+                              dag=ConversationDAG(), last_bot_node=None)
+    message = SimpleNamespace(message_id="m", reply_to="", mentioned_users=(),
+                              semantics=SimpleNamespace(quoted_message_id="gone",
+                                                        quoted_author_id="bot"))
+    env = capture_environment(runtime, SimpleNamespace(messages=(message,)), None, now=100)
+    assert env["reply_to_self"] is True

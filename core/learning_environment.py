@@ -34,17 +34,24 @@ def capture_environment(runtime: Any, turn: Any, arbiter: Any, *, now: float) ->
     active_users = {str(node.user_id) for node in window
                     if getattr(node, "user_id", None) and str(node.user_id) != bot_id}
 
-    reply_targets = [str(getattr(message, "reply_to", "") or "") for message in messages]
-    reply_targets = [target for target in reply_targets if target]
-    reply_to_self = False if bot_id else None
-    if bot_id and reply_targets:
-        getter = getattr(dag, "get_node", None)
-        matched = []
-        for target in reply_targets:
-            parent = getter(target) if callable(getter) else None
-            if parent is not None:
-                matched.append(str(getattr(parent, "user_id", "") or "") == bot_id)
-        reply_to_self = any(matched) if matched else None
+    reply_evidence = []
+    unknown_reply = False
+    getter = getattr(dag, "get_node", None)
+    for message in messages:
+        semantics = getattr(message, "semantics", None)
+        target = str(getattr(message, "reply_to", "") or
+                     getattr(semantics, "quoted_message_id", "") or "")
+        if not target:
+            continue
+        parent = getter(target) if callable(getter) else None
+        quoted_author = str(getattr(parent, "user_id", "") or
+                            getattr(semantics, "quoted_author_id", "") or "")
+        if quoted_author and bot_id:
+            reply_evidence.append(quoted_author == bot_id)
+        else:
+            unknown_reply = True
+    reply_to_self = (True if any(reply_evidence) else None if unknown_reply or not bot_id
+                     else False)
 
     last_bot = getattr(runtime, "last_bot_node", None)
     if (last_bot is None or float(getattr(last_bot, "timestamp", 0) or 0) > now) and bot_id:
