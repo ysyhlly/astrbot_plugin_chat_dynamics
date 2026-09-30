@@ -114,10 +114,19 @@ class RuntimeConfig:
     decision_learning_sample_rate: float = 0.05
     decision_learning_labels_per_hour: int = 120
     decision_learning_jev_fallback: bool = False
-    decision_learning_student_backend: str = "agentjev"
+    decision_learning_student_backend: str = "kev"
     agentjev_base_url: str = "http://127.0.0.1:18765"
     agentjev_timeout: float = 1.5
+    agentjev_input_format: str = "legacy"
+    agentjev_all_tasks_shadow: bool = False
+    agentjev_all_tasks_active: bool = False
+    agentjev_active_checkpoint_sha256: str = ""
     agentjev_internal_hosts: tuple[str, ...] = ()
+    kev_base_url: str = "http://127.0.0.1:18766"
+    kev_timeout: float = 2.5
+    kev_checkpoint_id: str = ""
+    kev_canary_percent: float = 0.0
+    kev_internal_hosts: tuple[str, ...] = ()
     laya_internal_hosts: tuple[str, ...] = ()
     # The mood calibration has its own backend and its own floor: it is a reading,
     # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
@@ -239,7 +248,7 @@ def _integer(
 
 _PRESENCE_KNOBS = {"ghost", "sensible", "lively"}
 
-_DECISION_BACKENDS = {"model", "jev", "laya"}
+_DECISION_BACKENDS = {"model", "jev", "laya", "kev"}
 # Which classifier reads the room's mood. Deliberately separate from
 # `decision_backend`: the turn decision runs every turn while this one is a
 # low-frequency calibration, so an operator can want a decision model for one and
@@ -348,6 +357,9 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     decision_mode = str(_get(raw, "decision_mode", "legacy") or "legacy").strip().lower()
     if decision_mode not in ("legacy", "persona_model"):
         decision_mode = "legacy"
+    if decision_backend == "kev" and decision_mode != "persona_model":
+        warnings.append("decision_backend=kev requires persona_model; using persona_model")
+        decision_mode = "persona_model"
     if decision_backend == "jev" and decision_mode != "persona_model":
         # The decision layer lives inside the persona turn, so a Jev backend without
         # that mode would be configured, billed for nothing, and never consulted.
@@ -366,13 +378,29 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         decision_learning_sample_rate=_number(raw, "decision_learning_sample_rate", .05, lambda x: 0 <= x <= 1, warnings),
         decision_learning_labels_per_hour=_integer(raw, "decision_learning_labels_per_hour", 120, 0, 10000, warnings),
         decision_learning_jev_fallback=_bool(_get(raw, "decision_learning_jev_fallback", False), False),
-        decision_learning_student_backend=(str(_get(raw, "decision_learning_student_backend", "agentjev") or "agentjev").lower()
-                                           if _get(raw, "decision_learning_student_backend", "agentjev") in ("agentjev", "laya")
-                                           else "agentjev"),
+        decision_learning_student_backend=(str(_get(raw, "decision_learning_student_backend", "kev") or "kev").lower()
+                                           if _get(raw, "decision_learning_student_backend", "kev") in ("agentjev", "laya", "kev")
+                                           else "kev"),
         agentjev_base_url=str(_get(raw, "agentjev_base_url", "http://127.0.0.1:18765") or "").strip(),
         agentjev_timeout=_number(raw, "agentjev_timeout", 1.5, lambda value: 0.05 <= value <= 30, warnings),
+        agentjev_input_format=(str(_get(raw, "agentjev_input_format", "legacy"))
+                               if _get(raw, "agentjev_input_format", "legacy") in
+                               ("legacy", "cmdcode_full_input_soft_v1") else "legacy"),
+        agentjev_all_tasks_shadow=_bool(_get(raw, "agentjev_all_tasks_shadow", False), False),
+        agentjev_all_tasks_active=_bool(_get(raw, "agentjev_all_tasks_active", False), False),
+        agentjev_active_checkpoint_sha256=(str(_get(raw, "agentjev_active_checkpoint_sha256", "") or "").lower()
+                                           if re.fullmatch(r"[0-9a-fA-F]{64}",
+                                                           str(_get(raw, "agentjev_active_checkpoint_sha256", "") or ""))
+                                           else ""),
         agentjev_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "agentjev_internal_hosts", ()))
                                       if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
+        kev_base_url=str(_get(raw, "kev_base_url", "http://127.0.0.1:18766") or "").strip(),
+        kev_timeout=_number(raw, "kev_timeout", 2.5, lambda value: 0.05 <= value <= 30, warnings),
+        kev_checkpoint_id=str(_get(raw, "kev_checkpoint_id", "") or "").strip()[:256],
+        kev_canary_percent=_number(raw, "kev_canary_percent", 0.0,
+                                   lambda value: 0 <= value <= 100, warnings),
+        kev_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "kev_internal_hosts", ()))
+                                 if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
         laya_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "laya_internal_hosts", ()))
                                   if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
         learning_policy_mode=policy_mode,

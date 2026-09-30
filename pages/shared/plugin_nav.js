@@ -8,7 +8,7 @@ export const PLUGIN_PAGES = [
   { id: "memory", label: "记忆小本" },
   { id: "replay", label: "场景回放" },
   { id: "drafts", label: "AI 标注审批" },
-  { id: "learning", label: "决策学习" },
+  { id: "learning", label: "决策模型" },
 ];
 
 const NAV_ICONS = {

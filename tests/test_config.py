@@ -196,3 +196,11 @@ def test_jev_numeric_ranges_are_validated_before_use():
     cfg, warnings = parse_runtime_config({"jev_timeout": 10, "jev_min_confidence": 0.8})
     assert (cfg.jev_timeout, cfg.jev_min_confidence) == (10.0, 0.8)
     assert not [warning for warning in warnings if "jev" in warning]
+
+
+def test_kev_primary_always_uses_persona_turn_mode():
+    from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
+
+    cfg, warnings = parse_runtime_config({"decision_backend": "kev", "decision_mode": "legacy"})
+    assert cfg.decision_mode == "persona_model"
+    assert any("decision_backend=kev" in warning for warning in warnings)

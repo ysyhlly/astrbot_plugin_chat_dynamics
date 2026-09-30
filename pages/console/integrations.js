@@ -535,6 +535,10 @@ const DECISION_STATES = {
 // `payload[<layer>]` carries that layer's own endpoint and counters, while its
 // `backend` names whichever layer is currently selected.
 const DECISION_BACKENDS = {
+  kev: {
+    label: "Kev 决策模型",
+    who: "已发布的 Kev checkpoint",
+  },
   jev: {
     label: "Jev 决策模型",
     who: "Jev（TypeSafe System One）",
@@ -563,18 +567,18 @@ export function renderDecisionLayer(layer) {
   const note = layer == null
     ? "尚未取得决策层诊断；连接恢复后自动更新。"
     : backend
-      ? `本轮「是否开口、怎么回、什么状态、多长、为什么」由 ${backend.who} 一次回答；回复正文仍由主 Agent 生成。`
-      : "决策由当前会话的聊天模型给出；" + DECISION_BACKENDS.jev.other + DECISION_BACKENDS.laya.other;
+      ? `在线决策使用 ${backend.who}；回复正文由回复模型生成。服务失败时按当前路由约束静默处理。`
+      : "没有可确认的决策模型；请检查配置页和运行日志。";
   const stateText = status === "degraded"
     ? `降级中（${String(data.error_code || data.detail || "未知原因")}）`
     : DECISION_STATES[status] || "状态未知";
   const model = String(data.model || "");
   const served = String(data.served_model || "");
   const rows = [
-    ["后端", backend ? backend.label : "聊天模型（默认）"],
+    ["后端", backend ? backend.label : "未确认"],
     ["状态", layer == null ? "—" : stateText],
     ["端点", String(data.endpoint_host || "") || "—"],
-    ["模型", [model, served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],
+    ["模型", [String(data.checkpoint_id || model), served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],
     ["调用", layer == null ? "—" : `${Number(data.calls) || 0} 次 · 失败 ${Number(data.failures) || 0} 次`],
     ["请求 ID", String(data.request_id || "") || "—"],
     ["置信度门槛", layer != null && Number.isFinite(Number(data.min_confidence)) ? String(data.min_confidence) : "—"],

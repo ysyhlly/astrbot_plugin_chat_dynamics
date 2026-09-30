@@ -25,12 +25,33 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .ops-note { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
 .error { color: var(--danger); }
 .hidden, [hidden] { display: none !important; }
-.config-start { display: flex; justify-content: space-between; gap: 36px; padding: 0 0 28px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
-.config-start h2 { margin: 0 0 8px; font-size: 19px; font-weight: 600; }
-.config-start p { margin-top: 0; }
-#configScopeStatus { margin-bottom: 0; font-size: 13px; }
-.scope-guide { max-width: 30ch; color: var(--muted); font-size: 12px; align-self: center; }
-.settings-workspace { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 28px; align-items: start; }
+.config-overview { margin-bottom: 26px; padding: 25px 28px 27px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.overview-heading { display: flex; justify-content: space-between; gap: 26px; align-items: end; padding-bottom: 23px; border-bottom: 1px solid var(--line); }
+.overview-heading .eyebrow { margin-bottom: 5px; }
+.overview-heading h2 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.025em; }
+.overview-heading > p { max-width: 36ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.overview-state { display: inline-flex; margin-right: 8px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--cyan); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.overview-state[data-state="draft"], .overview-state[data-state="pending"] { color: var(--amber); border-color: var(--amber); }
+.overview-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding-top: 22px; }
+.overview-step { min-width: 0; padding: 0 22px; border-right: 1px solid var(--line); }
+.overview-step:first-child { padding-left: 0; }
+.overview-step:last-child { padding-right: 0; border-right: 0; }
+.step-label { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.step-label span { display: inline-grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--line); border-radius: 4px; color: var(--cyan); font: 10px/1 "Consolas", monospace; }
+.overview-step strong { display: block; min-height: 27px; font-size: 16px; font-weight: 650; line-height: 1.45; }
+.overview-step[data-route="agentjev"] strong { color: var(--cyan); }
+.overview-step p { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.config-conflicts { margin-top: 22px; padding: 16px 18px; border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--surface-soft); }
+.conflict-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.conflict-heading strong { font-size: 12px; }
+.conflict-heading span { color: var(--muted); font: 11px/1.5 "Consolas", monospace; }
+.config-conflicts ul { list-style: none; padding: 0; margin: 9px 0 0; }
+.config-conflicts li { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; gap: 12px; align-items: baseline; padding: 9px 0; border-top: 1px solid var(--line); }
+.config-conflicts li > span { color: var(--amber); font-size: 11px; font-weight: 700; }
+.config-conflicts li p { margin: 0; color: var(--text); font-size: 11px; line-height: 1.6; }
+.config-conflicts li button { padding: 3px 0; border: 0; background: transparent; color: var(--cyan); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.config-conflicts li button:hover { text-decoration: underline; }
+.settings-workspace { display: grid; grid-template-columns: 205px minmax(0, 1fr); gap: 26px; align-items: start; }
 .settings-index { position: sticky; top: 104px; }
 .config-mode { display: flex; gap: 3px; padding: 3px; border-radius: 7px; background: var(--surface-soft); border: 1px solid var(--line); }
 .config-mode .button { flex: 1; border-color: transparent; background: transparent; }
@@ -81,6 +102,8 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .config-check input:checked + .check-state .check-on { display: inline; }
 .config-check input:checked + .check-state .check-off { display: none; }
 .config-hint, .config-effective { font-size: 11px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.config-context { align-self: flex-start; padding: 3px 7px; border-radius: 4px; background: var(--surface-soft); color: var(--cyan); font-size: 10px; line-height: 1.5; }
+.config-field.context-inactive .config-context { color: var(--muted); border: 1px dashed var(--line); }
 .config-basic-hint { display: none; }
 [data-view="basic"] .config-key, [data-view="basic"] .config-detail-hint, [data-view="basic"] .config-field:not(.mismatched) .config-effective { display: none; }
 [data-view="basic"] .config-basic-hint { display: block; }
@@ -88,9 +111,7 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .search-empty h2 { font-size: 18px; color: var(--text); }
 :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 /* Refined settings surfaces; retain the shared day/night palette. */
-.config-start { padding: 22px 24px; gap: 24px; border: 1px solid var(--line); border-left: 3px solid var(--cyan); border-radius: 8px; background: var(--surface-soft); }
-.config-start .eyebrow { margin-bottom: 6px; }
-.scope-guide { font-size: 13px; line-height: 1.8; }
+.config-overview { box-shadow: inset 3px 0 var(--cyan); }
 .action-bar { box-shadow: 0 4px 16px rgb(0 0 0 / .04); }
 .action-bar[data-dirty="true"] { box-shadow: inset 3px 0 var(--cyan), 0 4px 16px rgb(0 0 0 / .04); }
 .button { min-height: 40px; transition: background .15s, border-color .15s; }
@@ -115,7 +136,7 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .config-field[data-dirty="true"] :is(input, textarea, select) { border-color: var(--cyan); }
 @media (prefers-reduced-motion: reduce) { .button, .config-group > summary, .config-check input, .config-check input::before { transition: none; } }
 @media (forced-colors: active) { .config-check input { appearance: auto; } .config-check input::before { display: none; } }
-@media (max-width: 1100px) { .settings-workspace { grid-template-columns: 150px minmax(0, 1fr); gap: 18px; } .config-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .settings-workspace { grid-template-columns: 170px minmax(0, 1fr); gap: 18px; } .config-grid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) {
   .app.plugin-shell { padding: 0 16px 40px; }
   .topbar { padding: 16px 0 24px; flex-wrap: wrap; gap: 12px; }
@@ -123,8 +144,15 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
   .action-bar { position: static; flex-wrap: wrap; padding: 14px; }
   .action-buttons { width: 100%; flex-wrap: wrap; }
   .action-buttons .button { flex: 1; }
-  .config-start { flex-direction: column; gap: 10px; }
-  .scope-guide { max-width: none; margin-bottom: 0; }
+  .config-overview { padding: 20px; }
+  .overview-heading { display: block; padding-bottom: 18px; }
+  .overview-heading > p { max-width: none; margin-top: 9px; }
+  .overview-steps { display: block; padding-top: 0; }
+  .overview-step, .overview-step:first-child, .overview-step:last-child { padding: 17px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .overview-step:last-child { padding-bottom: 0; border-bottom: 0; }
+  .config-conflicts { padding: 14px; }
+  .config-conflicts li { grid-template-columns: 1fr auto; gap: 4px 8px; }
+  .config-conflicts li > span { grid-column: 1 / -1; }
   .settings-workspace { display: block; }
   .settings-index { position: static; margin-bottom: 20px; max-height: none; overflow: visible; padding-right: 0; }
   .index-label, #configCategoryNav { display: none; }
@@ -134,8 +162,48 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
   .group-body { padding: 0 16px; }
   .config-field.span-2 { grid-column: auto; }
   .button { min-height: 44px; }
-  .config-start { padding: 18px; }
-  .scope-guide { align-self: stretch; }
   .config-view-actions .button { flex: 1; }
   .config-field :is(input[type="text"], input[type="number"], textarea, select), .config-toolbar :is(input, select) { font-size: 16px; }
+}
+
+/* Task-first settings: the active route stays visible without pushing the form
+   below several screens of introductory content. */
+.app.plugin-shell .topbar { padding:4px 0 16px; margin-bottom:14px; }
+.app.plugin-shell .brand-copy h1 { margin:3px 0 4px; font-size:clamp(25px,2.2vw,32px); }
+.app.plugin-shell .lede { font-size:14px; }
+.action-bar { top:0; margin-bottom:16px; padding:10px 14px; border-radius:8px; }
+.action-impact { margin:2px 0 0; color:var(--muted); font-size:13px; line-height:1.5; }
+.action-copy { display:grid; gap:1px; }
+.config-overview { margin-bottom:18px; padding:18px 22px; border-radius:8px; }
+.overview-heading { align-items:center; padding-bottom:13px; }
+.overview-heading h2 { font-size:18px; }
+.overview-heading > p { max-width:50ch; font-size:13px; }
+.overview-steps { padding-top:14px; }
+.overview-step { padding:0 16px; }
+.overview-step strong { min-height:0; font-size:16px; }
+.overview-step p { margin-top:4px; font-size:13px; }
+.overview-step[data-route="kev"] strong { color:var(--cyan); }
+.step-label { margin-bottom:5px; }
+.config-conflicts { margin-top:14px; padding:11px 14px; }
+.config-conflicts li { padding:7px 0; }
+.config-conflicts li p { font-size:13px; }
+.settings-workspace { grid-template-columns:184px minmax(0,1fr); gap:18px; }
+.settings-index { top:84px; }
+.index-label { margin:15px 8px 6px; line-height:1.45; }
+.category-link { min-height:38px; padding:6px 8px; }
+.config-toolbar { margin-bottom:12px; padding-bottom:12px; }
+.config-group > summary { padding:15px 18px; }
+.group-title strong { font-size:15px; }
+.group-body { padding:0 18px; }
+.config-field { padding:16px 0; }
+.config-key { font-size:11px; }
+.config-hint,.config-effective { font-size:13px; line-height:1.65; }
+@media(max-width:760px) {
+ .action-bar { position:static; }
+ .config-overview { padding:16px; }
+ .overview-heading { display:block; }
+ .overview-step,.overview-step:first-child,.overview-step:last-child { padding:12px 0; }
+ .settings-workspace { display:block; }
+ .config-group > summary { padding:14px; }
+ .group-body { padding:0 14px; }
 }

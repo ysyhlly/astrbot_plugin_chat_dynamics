@@ -29,6 +29,7 @@ class AnnotationDraftScheduler:
 
     def automatic_enabled(self) -> bool:
         return bool(not self.closed and not getattr(self.host, "_shutting_down", False)
+                    and getattr(getattr(self.host, "_runtime_config", None), "decision_backend", None) != "kev"
                     and getattr(self.host, "enabled", False)
                     and getattr(self.host, "annotation_draft_enabled", False)
                     and getattr(self.host, "annotation_draft_auto_enabled", False))

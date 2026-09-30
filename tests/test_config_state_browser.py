@@ -37,6 +37,17 @@ def test_slow_save_locks_edits_and_sends_only_changed_fields(browser, page_serve
 def test_apply_cancel_preserves_dirty_and_invalid_hidden_field_is_revealed(browser, page_server):
     with browser.new_context() as context:
         setup_config(context)
+        context.add_init_script("""(() => {
+          const get = window.AstrBotPluginPage.apiGet;
+          window.AstrBotPluginPage.apiGet = async (...args) => {
+            const response = await get(...args);
+            if (args[0] === 'config') {
+              response.data.effective = {...response.data.stored, replay_message_limit: 1};
+              response.data.mismatches = ['replay_message_limit'];
+            }
+            return response;
+          };
+        })();""")
         page = context.new_page()
         page.goto(f"{page_server}/config/index.html")
         page.wait_for_load_state("networkidle")
@@ -50,6 +61,7 @@ def test_apply_cancel_preserves_dirty_and_invalid_hidden_field_is_revealed(brows
         assert field.get_attribute('aria-invalid') == 'true'
         assert field.evaluate('node => node === document.activeElement')
         page.on('dialog', lambda dialog: dialog.dismiss())
+        assert page.locator('#btnConfigApply').is_visible()
         page.locator('#btnConfigApply').click()
         assert field.input_value() == '1.5'
         assert not page.locator('#btnConfigSave').is_disabled()

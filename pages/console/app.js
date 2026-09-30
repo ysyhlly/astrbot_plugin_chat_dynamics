@@ -40,6 +40,7 @@ const els = {
   traceMeta: document.getElementById("traceMeta"),
   pipeline: document.getElementById("pipeline"),
   nodeList: document.getElementById("nodeList"),
+  toggleNodeContent: document.getElementById("toggleNodeContent"),
   dagCount: document.getElementById("dagCount"),
   coolMinutes: document.getElementById("coolMinutes"),
   btnCool: document.getElementById("btnCool"),
@@ -88,6 +89,7 @@ async function wirePageNav(currentPage) {
 let overview = null;
 let overviewOnline = false;
 let selectedId = "";
+let revealMessageContent = false;
 let filterText = "";
 let timer = null;
 let lastDetail = null;
@@ -269,6 +271,7 @@ function overviewSnapshotFingerprint(data) {
     safe.pending_count,
     safe.shadow_mode,
     safe.decision_mode,
+    JSON.stringify(safe.kev || {}),
     safe.persona_fallback,
     safe.agent_bridge,
     safe.console_show_message_content,
@@ -348,8 +351,9 @@ function renderOverview(data) {
     els.shadowState.textContent = "—";
   }
   if (safeData.decision_mode === "persona_model") {
-    els.shadowState.textContent += " · 人设模型决策";
-    els.shadowState.title = `Agent: ${safeData.agent_bridge || "未知"}；不参与决策的旧选项：${(safeData.inactive_options || []).join("、")}`;
+    const backend = safeData.kev?.enabled ? "Kev 决策模型" : safeData.jev?.enabled ? "Jev 决策模型" : safeData.laya?.enabled ? "Laya 决策模型" : "决策后端未确认";
+    els.shadowState.textContent += ` · ${backend}`;
+    els.shadowState.title = `人设状态由 ${safeData.agent_bridge || "未知"} 提供`;
   } else if (safeData.persona_fallback) {
     els.shadowState.textContent += " · 人设不可用，已切换规则模式";
     els.shadowState.title = String(safeData.persona_fallback);
@@ -357,26 +361,26 @@ function renderOverview(data) {
     els.shadowState.title = "";
   }
   els.privacyState.textContent = typeof safeData.console_show_message_content === "boolean"
-    ? safeData.console_show_message_content ? "控制台正文：显示" : "控制台正文：已脱敏"
+    ? safeData.console_show_message_content ? "控制台正文：可按需查看" : "控制台正文：已脱敏"
     : "控制台正文：未知";
   const provider = safeData.provider_resolution || {};
   if (safeData.decision_mode === "persona_model") {
     // A Jev backend decides with its own model and endpoint, so naming the chat
     // provider here would credit a model that is not making this decision.
-    const layer = safeData.laya && safeData.laya.enabled ? safeData.laya : safeData.jev || {};
-    const backend = layer.backend || "model";
-    const decidedBy = backend === "jev"
-      ? `Jev ${layer.model || "jev-latest"}${layer.enabled === false ? "（未启用）" : layer.status === "available" ? "" : `（${layer.error_code || layer.status || "未就绪"}）`}`
-      : (provider.decision || provider.reply || "当前 UMO");
-    els.providerState.textContent = `回复 Provider：${provider.reply || "当前 UMO"} · 决策：${decidedBy}`;
+    const layer = safeData.kev?.enabled ? safeData.kev : safeData.laya?.enabled ? safeData.laya : safeData.jev;
+    const label = layer?.backend === "kev" ? "Kev" : layer?.backend === "laya" ? "Laya" : layer?.backend === "jev" ? "Jev" : "未配置";
+    const model = layer?.backend === "kev" ? layer.checkpoint_id : layer?.model;
+    els.providerState.textContent = `决策：${label}${model ? ` ${model}` : ""}${layer?.status === "available" ? "" : `（${layer?.detail || layer?.status || "未就绪"}）`} · 回复正文：${provider.reply || "当前会话"}`;
   } else {
-    els.providerState.textContent = `回复 Provider：${provider.reply || "当前 UMO"} · 氛围：${provider.vibe || "当前 UMO"}`;
+    els.providerState.textContent = `决策模式：${safeData.decision_mode || "未知"} · 回复正文：${provider.reply || "当前会话"}`;
   }
   const metrics = safeData.metrics || {};
   const warnings = Array.isArray(safeData.config_warnings) ? safeData.config_warnings : [];
   const shadowCount = Array.isArray(safeData.shadow_decisions) ? safeData.shadow_decisions.length : 0;
-  const failureCount = Number(metrics.llm_reply_failed || 0) + Number(metrics.llm_vibe_failed || 0) + Number(metrics.send_failed || 0);
-    els.metricState.textContent = `${warnings.length ? `配置提示 ${warnings.length} 条：${warnings[0]} · ` : ""}观察决策 ${shadowCount} 条 · 失败 ${failureCount} 次`;
+  const replyFailures = Number(metrics.llm_reply_failed || 0) + Number(metrics.send_failed || 0);
+  const kevCalls = Number(safeData.kev?.calls || 0);
+  const kevFailures = Number(safeData.kev?.failures || 0);
+  els.metricState.textContent = `${warnings.length ? `配置提示 ${warnings.length} 条：${warnings[0]} · ` : ""}本次运行：Kev 请求 ${kevCalls} 次（失败 ${kevFailures} 次） · 回复或发送失败 ${replyFailures} 次 · 最近保留观察记录 ${shadowCount} 条`;
   const readAir = safeData.read_air || {};
   const occasion = readAir.occasion || {};
   if (els.statOccasion) els.statOccasion.textContent = occasion.kind || "—";
@@ -391,7 +395,7 @@ function renderOverview(data) {
   }
   const partner = safeData.selflearning || {};
   renderIntegrations(safeData.selflearning);
-  renderDecisionLayer(safeData.laya && safeData.laya.enabled ? safeData.laya : safeData.jev);
+  renderDecisionLayer(safeData.kev?.enabled ? safeData.kev : safeData.laya?.enabled ? safeData.laya : safeData.jev);
   if (els.statPartner) els.statPartner.textContent = partner.lamp || partner.status || "—";
   if (els.statPartnerHint) {
     const details = {
@@ -670,7 +674,7 @@ function renderChannels(sessions) {
       <span class="session-key">${escapeHtml(sessionKey)}</span>
       <span class="meta">
         <span class="mode-${cssMode(row.mode)}">${escapeHtml(MODE_LABEL[row.mode] || row.mode || "未知")}</span>
-        <span>${Number(row.mpm || 0).toFixed(1)} MPM</span>
+        <span>${Number(row.mpm || 0).toFixed(1)} 条/分</span>
       </span>
     `;
     setHtmlIfChanged(btn, channelHtml);
@@ -705,7 +709,7 @@ function meter(label, value, ratio) {
 function renderRoom(
   detail,
   emptyTitle = "没有选中的会话",
-  emptyCopy = "从左侧点选一个 UMO 会话，或确认已开启「对全部群聊生效」/填写白名单。",
+  emptyCopy = "从列表选择一个群聊会话，或检查配置页的生效范围。",
 ) {
   if (!detail) {
     els.traceMeta.title = "";
@@ -741,7 +745,7 @@ function renderRoom(
   els.badgeVibe.title = Number.isFinite(llmAge) ? `最近一次 LLM 校准：${Math.ceil(llmAge)} 秒前` : "尚未调用 LLM 校准";
 
   const metersHtml = [
-    meter("MPM", Number(detail.mpm || 0).toFixed(1), Math.min(1, (detail.mpm || 0) / 20)),
+    meter("消息/分钟", Number(detail.mpm || 0).toFixed(1), Math.min(1, (detail.mpm || 0) / 20)),
     meter("平均字符", Number(detail.token_density || 0).toFixed(1), Math.min(1, (detail.token_density || 0) / 40)),
     meter("发言人数", String(detail.unique_speakers || 0), Math.min(1, (detail.unique_speakers || 0) / 6)),
     meter("Emoji 消息", pct(detail.unicode_emoji_ratio), detail.unicode_emoji_ratio),
@@ -778,7 +782,7 @@ function renderRoom(
     window.setTimeout(() => els.rateBars.classList.remove("bars--animate"), 450);
   }
   const labels = [...(detail.scene_tags || []), ...(detail.emotion_tags || [])];
-  els.traceMeta.textContent = `${Number(detail.mpm || 0).toFixed(1)} MPM · ${detail.sample_size || 0} 条${labels.length ? ` · ${labels.join(" / ")}` : ""}`;
+  els.traceMeta.textContent = `${Number(detail.mpm || 0).toFixed(1)} 条/分 · ${detail.sample_size || 0} 条${labels.length ? ` · ${labels.join(" / ")}` : ""}`;
   if (detail.decision_mode === "persona_model") {
     const decision = detail.model_decision || {};
     // The decision layer reports its own typed answers, so the trace names the
@@ -836,10 +840,14 @@ function renderRoom(
   });
 
   if (detail.content_redacted) {
+    els.toggleNodeContent.classList.add("hidden");
     setHtmlIfChanged(els.nodeList, `<li class="empty">正文已脱敏。可在插件配置中临时开启“控制台显示消息正文”。</li>`);
     return;
   }
   const nodes = detail.nodes || [];
+  els.toggleNodeContent.classList.toggle("hidden", !nodes.length);
+  els.toggleNodeContent.textContent = revealMessageContent ? "隐藏消息正文" : "临时显示消息正文";
+  els.toggleNodeContent.setAttribute("aria-pressed", String(revealMessageContent));
   if (!nodes.length) {
     setHtmlIfChanged(els.nodeList, `<li class="empty">图谱还是空的。群消息流入并完成防抖后会出现在这里。</li>`);
     return;
@@ -852,7 +860,7 @@ function renderRoom(
       const parents = Array.isArray(node.parent_ids) ? node.parent_ids : [];
       const reply = parents.length ? ` · parent ${parents.map(escapeHtml).join(", ")}` : "";
       const thread = node.thread_id ? ` · thread ${escapeHtml(String(node.thread_id).slice(0, 12))}` : "";
-      return `<li class="${node.is_bot ? "bot" : ""}"><div class="who">${who}${reply}${thread}</div><div>${escapeHtml(node.text || "")}</div></li>`;
+      return `<li class="${node.is_bot ? "bot" : ""}"><div class="who">${who}${reply}${thread}</div><div>${revealMessageContent ? escapeHtml(node.text || "") : "正文已隐藏"}</div></li>`;
     })
     .join("");
   setHtmlIfChanged(els.nodeList, nodesHtml);
@@ -881,6 +889,7 @@ async function selectSession(sessionId, { silent = false } = {}) {
   const sessions = overview && Array.isArray(overview.sessions) ? overview.sessions : [];
   if (!sessions.some((row) => sessionKey(row) === requestedId)) return;
   const sameSelection = selectedId === requestedId && Boolean(lastDetail) && !detailError;
+  if (selectedId !== requestedId) revealMessageContent = false;
   selectedId = requestedId;
   const requestToken = ++detailRequestToken;
   detailLoading = true;
@@ -943,7 +952,7 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
       lastOverviewFp = "";
       return;
     }
-    setLink(true, "基站在线");
+    setLink(true, "插件已连接");
     const nextFp = overviewSnapshotFingerprint(data);
     const overviewChanged = nextFp !== lastOverviewFp;
     lastOverviewFp = nextFp;
@@ -1015,10 +1024,11 @@ function startPolling() {
   timer = window.setTimeout(async () => {
     timer = null;
     pollTick += 1;
-    // Quiet overview every 5s; full detail fetch at most every 30s (and only silently).
-    await refresh({ refreshDetail: pollTick % 6 === 0, quiet: true });
+    // Keep the panel responsive without rebuilding all room snapshots every 5s.
+    // Full detail is fetched at most once a minute while this page is visible.
+    await refresh({ refreshDetail: pollTick % 4 === 0, quiet: true });
     if (!document.hidden) startPolling();
-  }, 5000);
+  }, 15000);
 }
 
 function setOps(message, isError = false, source = "operation") {
@@ -1082,7 +1092,7 @@ async function resetSelected() {
 async function boot() {
   mountWorkspace();
   els.pageTitle.textContent = t("pages.console.title", "群聊动态控制台");
-  els.pageDesc.textContent = t("pages.console.desc", "按 UMO 会话监视群聊氛围、冷却与对话图谱，并手动冷却或重置状态。");
+  els.pageDesc.textContent = t("pages.console.desc", "按群聊会话查看氛围、冷却和对话记录，并管理当前会话。");
   await wirePageNav("console");
   if (bridge && typeof bridge.ready === "function") {
     try {
@@ -1105,6 +1115,10 @@ async function boot() {
   });
   els.btnCool.addEventListener("click", coolSelected);
   els.btnReset.addEventListener("click", resetSelected);
+  els.toggleNodeContent.addEventListener("click", () => {
+    revealMessageContent = !revealMessageContent;
+    if (lastDetail) renderRoom(lastDetail);
+  });
   els.btnPreset.addEventListener("click", applyPreset);
 
 if (els.btnPresence) els.btnPresence.addEventListener("click", () => { applyPresenceKnob(); });

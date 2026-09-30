@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from astrbot_plugin_chat_dynamics.core.decision_learning import DecisionLearning, TeacherAnswers
+from astrbot_plugin_chat_dynamics.core.decision_learning import (
+    DecisionLearning, TeacherAnswers, _kev_canary_selected,
+)
 from astrbot_plugin_chat_dynamics.core.decision_tasks import TASK_VERSION, TEACHER_PROMPT_VERSION, teacher_answers
 
 
@@ -70,6 +72,175 @@ def make_runtime(tmp_path, *, mode="active", collect=False):
     runtime = DecisionLearning(host, tmp_path)
     runtime._teacher = AsyncMock(return_value={"join": {"type": "noul", "noul": 0.0}})
     return runtime, host, metadata
+
+
+@pytest.mark.asyncio
+async def test_kev_primary_answers_every_question_without_teacher(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path)
+    runtime.cfg.decision_backend = "kev"
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_checkpoint_id = "published/kev"
+    runtime.cfg.kev_canary_percent = 0
+    runtime.cfg.kev_timeout = .2
+    runtime.cfg.decision_learning_jev_fallback = True
+    questions = {**QUESTIONS, "reply_length": {"type": "choice", "criteria": {
+        "tiny": "One", "short": "Few"}}}
+    student = {**STUDENT, "reply_length": {"type": "choice", "choice": "short"}}
+    host.kev = SimpleNamespace(evaluate=AsyncMock(return_value={
+        "answers": student, "model_version": "published/kev"}), snapshot=lambda: {})
+    result = await runtime.evaluate(session_id="room", state={"conversation": {}},
+                                    questions=questions)
+    assert result == student
+    assert host.kev.evaluate.call_args.kwargs["questions"] == questions
+    assert runtime.recent[-1]["strategy"] == "kev_model_only"
+    runtime._teacher.assert_not_awaited()
+    host.jev.evaluate.assert_not_awaited()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_kev_primary_failure_abstains_without_teacher_or_jev(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path)
+    runtime.cfg.decision_backend = "kev"
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_checkpoint_id = "published/kev"
+    runtime.cfg.kev_canary_percent = 0
+    runtime.cfg.kev_timeout = .2
+    runtime.cfg.decision_learning_jev_fallback = True
+    host.kev = SimpleNamespace(evaluate=AsyncMock(return_value=None), snapshot=lambda: {})
+    result = await runtime.evaluate(session_id="room", state={"conversation": {}},
+                                    questions=QUESTIONS)
+    assert result is None
+    assert runtime.recent[-1]["strategy"] == "kev_model_only"
+    runtime._teacher.assert_not_awaited()
+    host.jev.evaluate.assert_not_awaited()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_kev_shadow_records_student_without_adopting_it(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path, mode="shadow")
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_timeout = 0.2
+    host.kev = SimpleNamespace(evaluate=AsyncMock(return_value={
+        "answers": STUDENT, "model_version": "pinned/kev"}), snapshot=lambda: {})
+    teacher = {"join": {"type": "noul", "noul": 0.0},
+               "action": {"type": "choice", "choice": "ignore"}}
+
+    async def delayed_teacher(*args, **kwargs):
+        await asyncio.sleep(.01)
+        return teacher
+
+    runtime._teacher = AsyncMock(side_effect=delayed_teacher)
+    result = await runtime.evaluate(session_id="room", state={"conversation": {}},
+                                    questions=QUESTIONS)
+    assert result == teacher
+    assert host.kev.evaluate.await_count == 1
+    assert runtime.stats["kev"] == 0
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_kev_active_requires_a_release_before_any_prediction(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path, mode="active")
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_timeout = 0.2
+    host.kev = SimpleNamespace(evaluate=AsyncMock(), snapshot=lambda: {})
+    teacher = {"join": {"type": "noul", "noul": 0.0},
+               "action": {"type": "choice", "choice": "ignore"}}
+    runtime._teacher = AsyncMock(return_value=teacher)
+    result = await runtime.evaluate(session_id="room", state={"conversation": {}},
+                                    questions=QUESTIONS)
+    assert result == teacher
+    host.kev.evaluate.assert_not_awaited()
+    assert runtime.stats["kev"] == 0
+    await runtime.close()
+
+
+def test_kev_canary_uses_message_cohort_instead_of_one_group_cohort():
+    one = {"conversation": {"messages": [{"message_id": "one"}]}}
+    two = {"conversation": {"messages": [{"message_id": "two"}]}}
+    assert _kev_canary_selected("room", one, 100)
+    assert not _kev_canary_selected("room", one, 0)
+    assert _kev_canary_selected("room", one, 37) == _kev_canary_selected("room", one, 37)
+    assert _kev_canary_selected("room", one, 37) != _kev_canary_selected("room", two, 37)
+
+
+@pytest.mark.asyncio
+async def test_kev_release_canary_adopts_only_one_consistent_target(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path, mode="active")
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_checkpoint_id = "published/kev"
+    runtime.cfg.kev_canary_percent = 100
+    runtime.cfg.kev_timeout = .2
+    questions = {**QUESTIONS, "target.0": {"type": "noul", "instructions": "m1?"},
+                 "target.1": {"type": "noul", "instructions": "m2?"}}
+    student = {**STUDENT, "target.0": {"type": "noul", "noul": .9},
+               "target.1": {"type": "noul", "noul": .1}}
+    host.kev = SimpleNamespace(evaluate=AsyncMock(return_value={
+        "answers": student, "model_version": "published/kev"}), snapshot=lambda: {})
+    state = {"conversation": {"messages": [{"message_id": "m1"}]}}
+    result = await runtime.evaluate(session_id="room", state=state, questions=questions)
+    assert result == student
+    assert runtime.stats["kev_canary_selected_turns"] == 1
+    assert runtime.stats["kev_canary_adopted_turns"] == 1
+    assert runtime.recent[-1]["strategy"] == "kev_canary"
+    assert host.kev.evaluate.call_args.kwargs["questions"] == questions
+    runtime._teacher.assert_not_awaited()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_kev_release_canary_falls_back_when_targets_conflict(tmp_path):
+    runtime, host, _ = make_runtime(tmp_path, mode="active")
+    runtime.cfg.decision_learning_student_backend = "kev"
+    runtime.cfg.kev_checkpoint_id = "published/kev"
+    runtime.cfg.kev_canary_percent = 100
+    runtime.cfg.kev_timeout = .2
+    questions = {**QUESTIONS, "target.0": {"type": "noul", "instructions": "m1?"},
+                 "target.1": {"type": "noul", "instructions": "m2?"}}
+    student = {**STUDENT, "target.0": {"type": "noul", "noul": .9},
+               "target.1": {"type": "noul", "noul": .8}}
+    teacher = {"join": {"type": "noul", "noul": 0.0},
+               "action": {"type": "choice", "choice": "ignore"},
+               "target.0": {"type": "noul", "noul": 0.0},
+               "target.1": {"type": "noul", "noul": 0.0}}
+    host.kev = SimpleNamespace(evaluate=AsyncMock(return_value={
+        "answers": student, "model_version": "published/kev"}), snapshot=lambda: {})
+    runtime._teacher = AsyncMock(return_value=teacher)
+    result = await runtime.evaluate(session_id="room",
+                                    state={"conversation": {"messages": [{"message_id": "m1"}]}},
+                                    questions=questions)
+    assert result == teacher
+    assert runtime.stats["kev_canary_rejected_turns"] == 1
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_collection_records_bot_identity_for_replay_without_changing_teacher_state(tmp_path):
+    runtime, _, _ = make_runtime(tmp_path, mode="collect", collect=True)
+    runtime.start_worker = lambda: None
+    state = {"conversation": {"text": "@bot 你好", "author": "u1", "messages": []}}
+    await runtime._record("room", state, {"join": QUESTIONS["join"]},
+                          TeacherAnswers({"join": {"type": "noul", "noul": 1.0}}, "teacher"),
+                          {}, {"join": "teacher"}, "teacher", .1, {},
+                          source_state=state, bot_speaker_id="bot",
+                          student_status="canary_not_selected",
+                          student_latency_ms=None, student_timeout_ms=4500,
+                          teacher_latency_ms=80, preparation_latency_ms=4,
+                          student_input={"question_count": 1},
+                          kev_canary_selected=False)
+    with runtime.store.connect() as db:
+        payload = json.loads(db.execute("select payload from samples limit 1").fetchone()[0])
+    assert payload["metadata"]["bot_speaker_id"]
+    assert payload["metadata"]["student_status"] == "canary_not_selected"
+    assert payload["metadata"]["kev_canary_selected"] is False
+    assert payload["metadata"]["student_timeout_ms"] == 4500
+    assert payload["metadata"]["teacher_latency_ms"] == 80
+    assert payload["metadata"]["preparation_latency_ms"] == 4
+    assert payload["metadata"]["student_input"]["question_count"] == 1
+    assert "bot_speaker_id" not in payload["state"]
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -358,6 +529,43 @@ async def test_snapshot_uses_active_denominator_and_service_status(tmp_path, mon
     await runtime.snapshot()
     assert host.laya.request_json.await_count == 1
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_large_dataset_snapshot_does_not_wait_for_full_scan(tmp_path):
+    import threading
+
+    runtime, host, _ = make_runtime(tmp_path)
+    runtime.cfg.decision_learning_student_backend = "agentjev"
+    host.agentjev = SimpleNamespace(snapshot=lambda: {})
+    with runtime.path.open("wb") as dataset:
+        dataset.truncate(64 * 1024 * 1024)
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowStore:
+        def summary(self, cancelled=None):
+            started.set()
+            release.wait(2)
+            return {"tasks": {"join": {"samples": 3}}}
+
+        def close(self):
+            pass
+
+    runtime.store = SlowStore()
+    try:
+        first = await asyncio.wait_for(runtime.snapshot(), 0.5)
+        assert first["dataset_summary_pending"] is True
+        assert next(item for item in first["tasks"] if item["task_id"] == "join")["samples"] == 0
+        assert await asyncio.to_thread(started.wait, 1)
+        release.set()
+        await runtime._summary_task
+        second = await runtime.snapshot()
+        assert second["dataset_summary_pending"] is False
+        assert next(item for item in second["tasks"] if item["task_id"] == "join")["samples"] == 3
+    finally:
+        release.set()
+        await runtime.close()
 
 
 @pytest.mark.asyncio

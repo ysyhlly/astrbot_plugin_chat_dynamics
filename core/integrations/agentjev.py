@@ -5,11 +5,180 @@ This protocol is independent of the TypeSafe Jev and Laya protocols.
 from __future__ import annotations
 
 import math
+import json
 
 from .laya import LayaClient
 from ..agentjev_state import pack_state, path_fits, target_option
 
 API_VERSION = "agentjev.decision.v1"
+CMDCODE_INPUT_FORMAT = "cmdcode_full_input_soft_v1"
+CMDCODE_QUESTION = "Should a naturally conversational group assistant speak now in this hypothetical situation?"
+CMDCODE_OPTIONS = {"false": "否：本轮不参与。", "true": "是：本轮参与。"}
+OBSERVER_INPUT_FORMAT = "agentjev_observer_v1"
+MAX_SHADOW_QUESTIONS = 32
+MAX_SHADOW_OPTIONS = 16
+
+
+def _question_text(instructions):
+    if isinstance(instructions, str):
+        return instructions.strip()
+    if isinstance(instructions, dict) and instructions:
+        if any(not isinstance(value, str) or not value.strip() for value in instructions.values()):
+            return ""
+        return " ".join(instructions.values()).strip()
+    return ""
+
+
+def build_all_tasks_shadow_request(state, questions):
+    """Observe each original typed question, preserving independent target booleans."""
+    if (not isinstance(state, dict) or not state or not isinstance(questions, dict)
+            or not 0 < len(questions) <= MAX_SHADOW_QUESTIONS):
+        return None
+    full_turn = build_cmdcode_request(state, {"join": questions["join"]}) if "join" in questions else None
+    if full_turn is not None:
+        packed = full_turn[0]["state"]
+        state_format = CMDCODE_INPUT_FORMAT
+    else:
+        try:
+            packed = json.dumps(state, ensure_ascii=False, sort_keys=True,
+                                separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            return None
+        state_format = OBSERVER_INPUT_FORMAT
+    request = []
+    for qid, spec in questions.items():
+        if (not isinstance(qid, str) or not qid or len(qid) > 64
+                or not isinstance(spec, dict)):
+            return None
+        kind = spec.get("type")
+        prompt = _question_text(spec.get("instructions"))
+        if qid == "join" and full_turn is not None:
+            prompt = CMDCODE_QUESTION
+        if not prompt:
+            return None
+        if kind == "noul":
+            options = CMDCODE_OPTIONS.copy()
+        elif kind == "choice":
+            criteria = spec.get("criteria")
+            if (not isinstance(criteria, dict) or not 2 <= len(criteria) <= MAX_SHADOW_OPTIONS
+                    or any(not isinstance(key, str) or not key or not isinstance(value, str)
+                           or not value.strip() for key, value in criteria.items())):
+                return None
+            options = {key: f"{key}: {value}" for key, value in criteria.items()}
+        elif kind == "score":
+            criteria = spec.get("criteria")
+            if (not isinstance(criteria, list) or not 2 <= len(criteria) <= MAX_SHADOW_OPTIONS
+                    or any(not isinstance(value, str) or not value.strip() for value in criteria)):
+                return None
+            options = {str(index): f"{index}: {value}" for index, value in enumerate(criteria)}
+        else:
+            return None
+        request.append({"id": qid, "type": "choice", "question": prompt, "options": options})
+    return {"all_tasks_shadow": True, "state_format": state_format,
+            "state": packed, "questions": request}, {}
+
+
+def parse_all_tasks_shadow_response(response, questions):
+    if not isinstance(response, dict) or response.get("api_version") != API_VERSION:
+        raise ValueError("invalid_api_version")
+    results = response.get("results")
+    if (not isinstance(results, list) or len(results) != 1 or
+            not isinstance(results[0], dict) or not isinstance(results[0].get("answers"), list)):
+        raise ValueError("invalid_results")
+    rows = results[0]["answers"]
+    if (len(rows) != len(questions) or any(not isinstance(row, dict) or
+            not isinstance(row.get("id"), str) for row in rows)):
+        raise ValueError("invalid_answers")
+    by_id = {row["id"]: row for row in rows}
+    if len(by_id) != len(rows) or set(by_id) != set(questions):
+        raise ValueError("unexpected_answers")
+    answers = {}
+    for qid, spec in questions.items():
+        item = by_id[qid]
+        kind = spec["type"]
+        criteria = spec.get("criteria")
+        keys = (("false", "true") if kind == "noul" else
+                tuple(criteria) if kind == "choice" else
+                tuple(str(index) for index in range(len(criteria))))
+        probs = _distribution(item, keys)
+        selected = item.get("value")
+        if (item.get("type") != "choice" or selected not in probs or
+                probs[selected] < max(probs.values()) - 1e-6):
+            raise ValueError("invalid_choice")
+        if kind == "noul":
+            answers[qid] = {"type": "noul", "noul": probs["true"]}
+        elif kind == "choice":
+            answers[qid] = {"type": "choice", "choice": selected,
+                            "probabilities": probs, "confidence": max(probs.values())}
+        else:
+            answers[qid] = {"type": "score",
+                            "score": sum(index * probs[str(index)] for index in range(len(keys))),
+                            "probabilities": probs, "confidence": max(probs.values())}
+    return answers
+
+
+def build_cmdcode_request(state, questions):
+    """Recreate the complete Command Code input used by the soft-label export."""
+    if not isinstance(state, dict) or not isinstance(questions, dict) or "join" not in questions:
+        return None
+    conversation = state.get("conversation")
+    persona = state.get("persona")
+    bot_id = state.get("bot_speaker_id")
+    environment = state.get("environment")
+    # An explicitly empty persona is a valid AstrBot setting. Preserve it in the
+    # Command Code wire format instead of falling back to the much larger observer state.
+    if (not isinstance(conversation, dict) or not isinstance(persona, str)
+            or not isinstance(bot_id, str) or not bot_id.strip()
+            or not isinstance(environment, dict) or environment.get("schema_version") != 1):
+        return None
+    current = conversation.get("messages")
+    background = conversation.get("background")
+    if not isinstance(current, list) or not current or not isinstance(background, list):
+        return None
+    raw_chat = background + current
+    if not all(isinstance(message, dict) for message in raw_chat):
+        return None
+    chat = []
+    for message in raw_chat[-8:]:
+        message_id, speaker, raw_text = (message.get("message_id"), message.get("author"),
+                                         message.get("text"))
+        timestamp = message.get("timestamp")
+        if (not isinstance(message_id, str) or not message_id or
+                not isinstance(speaker, str) or not speaker or
+                not isinstance(raw_text, str) or not raw_text or
+                message.get("text_missing") is True or
+                type(timestamp) not in (int, float) or not math.isfinite(timestamp) or
+                timestamp < 0):
+            return None
+        reply = message.get("reply_to")
+        if reply is not None and not isinstance(reply, str):
+            return None
+        semantics = message.get("semantics")
+        if semantics is not None and not isinstance(semantics, dict):
+            return None
+        quoted_author = semantics.get("quoted_author_id") if semantics else None
+        if quoted_author is not None and not isinstance(quoted_author, str):
+            return None
+        mentioned = message.get("mentioned_users")
+        if not isinstance(mentioned, (list, tuple)) or any(
+                not isinstance(user, str) or not user for user in mentioned):
+            return None
+        chat.append({"message_id": message_id, "timestamp": int(timestamp),
+                     "speaker": speaker, "text": raw_text, "reply_to": reply or None,
+                     "reply_to_user": quoted_author or None, "mentions": list(mentioned)})
+    context_id = current[-1].get("message_id")
+    if chat[-1]["message_id"] != context_id or len({row["message_id"] for row in chat}) != len(chat):
+        return None
+    full_input = {"context_id": context_id, "persona": persona, "background": {},
+                  "bot_speaker_id": bot_id, "chat": chat, "environment": environment}
+    try:
+        packed = json.dumps(full_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                            allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    return {"state_format": CMDCODE_INPUT_FORMAT, "state": packed,
+            "questions": [{"id": "join", "type": "choice", "question": CMDCODE_QUESTION,
+                           "options": CMDCODE_OPTIONS.copy()}]}, {}
 
 
 def _unit(value):
@@ -147,15 +316,20 @@ def parse_response(response, questions, target_mapping):
 
 
 class AgentJevClient:
-    def __init__(self, *, enabled=True, base_url="", timeout=1.5, internal_hosts=()):
+    def __init__(self, *, enabled=True, base_url="", timeout=1.5, internal_hosts=(),
+                 input_format="legacy", all_tasks_shadow=False):
         self.transport = LayaClient(enabled=enabled, base_url=base_url, timeout=timeout,
                                     internal_hosts=internal_hosts)
+        self.input_format = input_format
+        self.all_tasks_shadow = bool(all_tasks_shadow)
         self.calls = 0
         self.failures = 0
         self._available = False
         self._detail = "not_called"
 
     def configure(self, **kwargs):
+        self.input_format = kwargs.pop("input_format", self.input_format)
+        self.all_tasks_shadow = bool(kwargs.pop("all_tasks_shadow", self.all_tasks_shadow))
         self.transport.configure(**kwargs)
         self._available = False
         self._detail = "not_called"
@@ -169,28 +343,49 @@ class AgentJevClient:
     async def close(self):
         await self.transport.close()
 
-    async def evaluate(self, *, state, questions, timeout=None):
-        built = build_request(state, questions)
+    async def evaluate(self, *, state, questions, timeout=None, diagnostics=None):
+        def status(code):
+            if diagnostics is not None:
+                diagnostics["status"] = code
+
+        cmdcode = self.input_format == CMDCODE_INPUT_FORMAT
+        all_shadow = cmdcode and self.all_tasks_shadow
+        built = (build_all_tasks_shadow_request(state, questions) if all_shadow else
+                 build_cmdcode_request(state, questions) if cmdcode else
+                 build_request(state, questions))
         if built is None:
             self._detail = "invalid_input"
+            status("invalid_input")
             return None
         self.calls += 1
         payload, mapping = built
+        if diagnostics is not None:
+            diagnostics["state_format"] = payload.get("state_format", "legacy")
+            diagnostics["state_bytes"] = len(payload["state"].encode("utf-8"))
+            diagnostics["question_count"] = len(payload["questions"])
         response = await self.transport.request_json("/api/evaluate", payload,
-            timeout=self.transport.timeout if timeout is None else timeout)
+            timeout=self.transport.timeout if timeout is None else timeout,
+            diagnostics=diagnostics)
         if response is None:
             self.failures += 1
             self._available = False
             self._detail = "request_failed"
+            if diagnostics is not None and diagnostics.get("status") == "answered":
+                status("invalid_response")
             return None
         try:
-            answers = parse_response(response, questions, mapping)
+            answers = (parse_all_tasks_shadow_response(response, questions) if all_shadow else
+                       parse_response(response, {"join": questions["join"]} if cmdcode else questions,
+                                      mapping))
         except (KeyError, TypeError, ValueError):
             self.failures += 1
             self._available = False
             self._detail = "invalid_response"
+            status("invalid_response")
             return None
         self._available = True
         self._detail = "ready"
+        status("answered")
         return {"answers": answers, "model_version": str(response.get("model", "")),
+                "checkpoint_sha256": response.get("checkpoint_sha256", ""),
                 "usage": response.get("usage", {})}

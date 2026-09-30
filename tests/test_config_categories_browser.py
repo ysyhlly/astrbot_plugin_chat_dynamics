@@ -1,4 +1,4 @@
-"""Parameter categories preserve every schema field and unsaved edits."""
+"""Parameter categories expose editable schema fields and preserve unsaved edits."""
 import json
 
 import pytest
@@ -18,8 +18,11 @@ def test_config_categories_navigation_and_save(browser, page_server, width, them
         page.wait_for_load_state("networkidle")
         page.wait_for_selector("[data-config-key]")
         keys = page.locator("[data-config-key]").evaluate_all("nodes => nodes.map(n => n.dataset.configKey)")
-        assert len(keys) == len(set(keys)) == len(schema)
-        assert set(keys) == set(schema)
+        editable_keys = {key for key, field in schema.items() if field.get("invisible") is not True}
+        hidden_keys = set(schema) - editable_keys
+        assert len(keys) == len(set(keys)) == len(editable_keys)
+        assert set(keys) == editable_keys
+        assert hidden_keys.isdisjoint(keys)
         assert page.locator('[data-group-id="other"]').count() == 0
         page.locator("#btnCollapseGroups").click()
         page.locator("#configCategory").select_option("routing")
@@ -57,7 +60,10 @@ def test_config_directory_dirty_revert_and_empty_search(browser, page_server):
         page = context.new_page()
         page.goto(f"{page_server}/config/index.html")
         page.wait_for_selector("[data-config-key]")
+        assert page.locator('[data-category="routing"]').is_hidden()
+        page.locator('#btnAdvancedConfig').click()
         page.locator('[data-category="routing"]').click()
+        assert page.locator('[data-category="routing"]').get_attribute("aria-current") == "true"
         control = page.locator('[data-config-key="topic_window_seconds"]')
         initial = control.input_value()
         control.fill("241")

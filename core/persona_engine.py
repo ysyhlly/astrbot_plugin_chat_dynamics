@@ -491,8 +491,10 @@ class PersonaEngine:
             axes = None
             try:
                 async def fetch():
+                    if getattr(p._runtime_config, "decision_backend", "model") == "kev":
+                        return await persona_axes.load_cached(p, fingerprint)
                     learning = getattr(p, "decision_learning", None)
-                    if learning is not None and learning.enabled(turn.session_key):
+                    if backend != "kev" and learning is not None and learning.enabled(turn.session_key):
                         from .decision_tasks import persona_questions
                         answers = await learning.evaluate(session_id=turn.session_key,
                             state={"character_card": persona.prompt, "persona_fingerprint": fingerprint},
@@ -528,14 +530,16 @@ class PersonaEngine:
 
     async def decide(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
         p, turn = self.plugin, item.context
+        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
+        model_only = backend == "kev"
         if item.fallback:
-            return TurnDecision.fallback(turn, "queue_overload")
+            return (TurnDecision.abstain("queue_overload") if model_only else
+                    TurnDecision.fallback(turn, "queue_overload"))
         learning = getattr(p, "decision_learning", None)
         learning_enabled = learning is not None and learning.enabled(turn.session_key)
-        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
         environment = (capture_environment(runtime, turn, getattr(p, "arbiter", None),
                                            now=p.time_service.time())
-                       if runtime is not None and (learning_enabled or backend == "model") else None)
+                       if runtime is not None and (learning_enabled or backend in ("model", "kev")) else None)
         if learning_enabled:
             from .decision_tasks import OPTIONAL_TURN_QUESTIONS, turn_questions, turn_from_answers
             questions, candidates = turn_questions(turn)
@@ -547,7 +551,8 @@ class PersonaEngine:
             try:
                 answers = await learning.evaluate(session_id=turn.session_key,
                     state=learning_state,
-                    questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None)
+                    questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None,
+                    bot_speaker_id=getattr(runtime, "bot_id", None))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -557,9 +562,13 @@ class PersonaEngine:
                 runtime.jev_decision = describe_answers(answers or {})
             required = set(questions) - OPTIONAL_TURN_QUESTIONS
             if answers and required <= set(answers):
-                return turn_from_answers(turn, answers, candidates)
+                return turn_from_answers(turn, answers, candidates, fail_closed=model_only)
+            if model_only:
+                return TurnDecision.abstain("kev_unavailable")
             if backend != "model":
                 return TurnDecision.fallback(turn, "decision_learning_unavailable")
+        if model_only:
+            return TurnDecision.abstain("kev_not_configured")
         if backend in ("jev", "laya"):
             async def request():
                 return await self._decide_layer(item, persona, state, runtime=runtime, backend=backend)

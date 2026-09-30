@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
 import pytest
 
@@ -277,6 +279,29 @@ async def _poke_at_bot(plugin, *, group_id: str, message_id: str) -> MockEvent:
     await plugin.on_group_message(event)
     await plugin.debounce.flush(session_id=event.unified_msg_origin)
     return event
+
+
+@pytest.mark.asyncio
+async def test_kev_only_poke_never_uses_legacy_poke_policy_or_chat_model():
+    plugin = _plugin({"decision_mode": "persona_model", "decision_backend": "kev",
+                      "decision_learning_mode": "active", "daily_rhythm_enabled": False})
+    plugin.poke_policy.decide = Mock(side_effect=AssertionError("poke policy bypass"))
+    plugin.decision_learning.evaluate = AsyncMock(return_value=None)
+    plugin.context.llm_generate = AsyncMock()
+    try:
+        event = await _poke_at_bot(plugin, group_id="poke-kev", message_id="poke-kev-1")
+        for _ in range(50):
+            if plugin.decision_learning.evaluate.await_count:
+                break
+            await asyncio.sleep(.01)
+        # A deterministic safety gate may suppress the poke before Kev is
+        # asked. If it reaches the model, no other decision path may answer.
+        assert plugin.decision_learning.evaluate.await_count <= 1
+        plugin.poke_policy.decide.assert_not_called()
+        plugin.context.llm_generate.assert_not_awaited()
+        assert event.replies_sent == []
+    finally:
+        await plugin.terminate()
 
 
 @pytest.mark.asyncio

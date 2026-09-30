@@ -249,6 +249,25 @@ class DecisionDataset:
                 )
             return [json.loads(row[0]) for row in rows]
 
+    def _iter_summary_samples(self, cancelled=None):
+        """Bound memory and release the SQLite read transaction between batches."""
+        last_rowid = 0
+        with self.connect() as db:
+            last_existing_rowid = db.execute("SELECT coalesce(max(rowid),0) FROM samples").fetchone()[0]
+        while True:
+            with self.connect() as db:
+                rows = db.execute(
+                    "SELECT rowid,payload FROM samples WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT 64",
+                    (last_rowid, last_existing_rowid),
+                ).fetchall()
+            if not rows:
+                return
+            for rowid, payload in rows:
+                if cancelled is not None and cancelled.is_set():
+                    raise RuntimeError("summary cancelled")
+                yield json.loads(payload)
+                last_rowid = rowid
+
     def sample_page(self, session_id=None, *, offset=0, limit=1000):
         if offset < 0 or not 1 <= limit <= 1000:
             raise ValueError("Invalid sample page")
@@ -265,7 +284,7 @@ class DecisionDataset:
             rows = [json.loads(row[0]) for row in rows]
         return {"records": rows[:limit], "next_cursor": str(offset + limit) if len(rows) > limit else None}
 
-    def summary(self):
+    def summary(self, cancelled=None):
         def empty(labels):
             return {
                 "samples": 0,
@@ -282,7 +301,7 @@ class DecisionDataset:
         quality_flags = {}
         teacher_prompt_versions = {}
         sessions = {}
-        for sample in self.samples():
+        for sample in self._iter_summary_samples(cancelled):
             name = sample["task_id"]
             counts = tasks.setdefault(name, empty([]))
             counts["samples"] += 1
@@ -367,8 +386,30 @@ class DecisionDataset:
             row = db.execute("SELECT payload FROM samples WHERE id=?", (sample_id,)).fetchone()
             if row:
                 payload = json.loads(row[0])
+                status = payload.get("metadata", {}).get("student_training_status")
+                if status and outcome.get("student_training_status") == "no_prediction":
+                    outcome = {**outcome, "student_training_status": status,
+                               "model_version": payload["metadata"].get("student_model_version", "")}
                 payload["outcome"] = self._anonymize(outcome)
                 db.execute("UPDATE samples SET payload=? WHERE id=?", (json.dumps(payload), sample_id))
+
+    def update_student_prediction(self, sample_id, prediction, training_status, model_version):
+        """Attach a late shadow answer to its original question sample."""
+        with self.connect() as db:
+            row = db.execute("SELECT payload FROM samples WHERE id=?", (sample_id,)).fetchone()
+            if row is None:
+                return False
+            payload = json.loads(row[0])
+            if payload.get("student_prediction") is not None:
+                return False
+            payload["student_prediction"] = self._anonymize(prediction)
+            payload["metadata"]["student_training_status"] = training_status
+            payload["metadata"]["student_model_version"] = model_version
+            if isinstance(payload.get("outcome"), dict):
+                payload["outcome"]["student_training_status"] = training_status
+                payload["outcome"]["model_version"] = model_version
+            db.execute("UPDATE samples SET payload=? WHERE id=?", (json.dumps(payload), sample_id))
+            return True
 
     def update_human_label(self, sample_id, label):
         """Attach independently reviewed hard truth, preserving teacher provenance."""

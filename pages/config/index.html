@@ -20,12 +20,13 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title>插件参数配置</title>
+    <title>群聊动态 · 设置</title>
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
+    <a class="skip-link" href="#configMain">跳到设置</a>
     <div class="grain" aria-hidden="true"></div>
     <div class="app plugin-shell">
       <div class="plugin-layout">
@@ -36,9 +37,9 @@
         <div class="plugin-main">
       <header class="topbar">
         <div class="brand-copy">
-          <p class="eyebrow">WORKSPACE / SETTINGS</p>
-          <h1 id="pageTitle">参数配置</h1>
-          <p class="lede" id="pageDesc">定义参与范围，调整每一次回应。</p>
+          <p class="eyebrow">群聊动态 / 设置</p>
+          <h1 id="pageTitle">插件设置</h1>
+          <p class="lede" id="pageDesc">核对生效群聊、Kev 决策和回复生成，再保存到运行时。</p>
         </div>
         <div class="topbar-tools">
           <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
@@ -52,22 +53,45 @@
         <div class="action-copy">
           <strong id="actionTitle">所有修改已保存</strong>
           <p class="ops-note" id="configNote" role="status" aria-live="polite"></p>
+          <p class="action-impact" id="configActionImpact">保存后会立即影响当前生效的群聊。</p>
         </div>
         <div class="action-buttons">
-          <button type="button" class="button button-quiet" id="btnConfigReload">放弃修改并重新读取</button>
-          <button type="button" class="button" id="btnConfigApply">强制应用</button>
-          <button type="button" class="button button-primary" id="btnConfigSave" disabled>保存并应用</button>
+          <button type="button" class="button button-quiet" id="btnConfigReload">重新读取</button>
+          <button type="button" class="button" id="btnConfigApply">重新应用已存配置</button>
+          <button type="button" class="button button-primary" id="btnConfigSave" disabled>保存并立即应用</button>
         </div>
       </div>
 
-      <main class="content">
-        <section class="config-start" aria-labelledby="configStartTitle">
-          <div>
-            <p class="eyebrow">运行范围</p>
-            <h2 id="configStartTitle">先从一个群聊开始</h2>
-            <p id="configScopeStatus" role="status" aria-live="polite">正在读取生效范围…</p>
+      <main class="content" id="configMain" tabindex="-1">
+        <section class="config-overview" aria-labelledby="configStartTitle">
+          <div class="overview-heading">
+            <div>
+              <p class="eyebrow">运行路径</p>
+              <h2 id="configStartTitle">当前运行路径</h2>
+            </div>
+            <p><span class="overview-state" id="configOverviewState">已应用</span>核对这轮对哪些群生效、由谁判断，以及失败时如何处理。编辑时显示保存后预览。</p>
           </div>
-          <p class="scope-guide">选择群聊后即可保存。模型留空时沿用默认设置，细节参数可以稍后调整。</p>
+          <div class="overview-steps">
+            <article class="overview-step">
+              <span class="step-label"><span>01</span> 生效范围</span>
+              <strong id="configScopeHeadline">读取中</strong>
+              <p id="configScopeStatus" role="status" aria-live="polite">正在读取生效范围…</p>
+            </article>
+            <article class="overview-step" id="decisionOverview">
+              <span class="step-label"><span>02</span> 判断方式</span>
+              <strong id="configDecisionHeadline">读取中</strong>
+              <p id="configDecisionStatus" role="status" aria-live="polite">正在读取判断路径…</p>
+            </article>
+            <article class="overview-step">
+              <span class="step-label"><span>03</span> 回复与故障处理</span>
+              <strong id="configModelHeadline">读取中</strong>
+              <p id="configModelStatus" role="status" aria-live="polite">正在读取模型配置…</p>
+            </article>
+          </div>
+          <div class="config-conflicts hidden" id="configConflicts" role="status" aria-live="polite">
+            <div class="conflict-heading"><strong id="configConflictTitle">配置路径需要核对</strong><span id="configConflictCount"></span></div>
+            <ul id="configConflictList"></ul>
+          </div>
         </section>
         <div class="settings-workspace">
           <aside class="settings-index" aria-label="设置目录">
@@ -75,7 +99,7 @@
               <button type="button" class="button" id="btnBasicConfig" aria-pressed="true">常用</button>
               <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false">全部</button>
             </div>
-            <p class="index-label">设置分类</p>
+            <p class="index-label">设置目录 · 数字表示当前显示 / 本类总数</p>
             <nav id="configCategoryNav" aria-label="配置分类导航"></nav>
           </aside>
           <div class="settings-editor">

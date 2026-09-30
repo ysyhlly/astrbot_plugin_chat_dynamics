@@ -151,6 +151,15 @@ def test_summary_zero_catalog_and_raw_gaps(tmp_path):
     assert report["tasks"]["topic"]["class_counts"] == {"KEEP": 0}
 
 
+def test_summary_does_not_materialize_all_samples(tmp_path):
+    store = DecisionDataset(tmp_path / "stream.db")
+    store.record_sample("room", "join", {"text": "hello"},
+                        {"type": "noul", "instructions": "Join?"})
+    store.samples = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("summary must stream samples"))
+    assert store.summary()["tasks"]["join"]["samples"] == 1
+
+
 def test_static_catalog_matches_runtime_vocabulary():
     from astrbot_plugin_chat_dynamics.core.decision_catalog import TASK_LABELS
     from astrbot_plugin_chat_dynamics.core.decision_tasks import TASKS, persona_questions

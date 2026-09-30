@@ -90,16 +90,20 @@ def turn_questions(turn):
     return questions, candidates
 
 
-def turn_from_answers(turn, answers, candidates):
+def turn_from_answers(turn, answers, candidates, *, fail_closed=False):
     decision = decision_from_answers(turn, answers, min_confidence=0.0, prefix="learned_")
-    if decision.reason_code == "learned_invalid_answer":
+    if decision.reason_code in {"learned_invalid_answer", "learned_low_confidence"}:
+        if fail_closed:
+            from .turn_decision import TurnDecision
+            return TurnDecision.abstain(decision.reason_code)
         return decision
     selected = tuple(mid for i, mid in enumerate(candidates)
                      if answers.get(f"target.{i}", {}).get("noul", 0) >= .5)
     if decision.action != "ignore" and not selected:
         # An affirmative action without a valid target cannot authorize delivery.
         from .turn_decision import TurnDecision
-        return TurnDecision.fallback(turn, "learned_missing_target")
+        return (TurnDecision.abstain("learned_missing_target") if fail_closed else
+                TurnDecision.fallback(turn, "learned_missing_target"))
     if decision.action != "ignore":
         reply_length = answers.get("reply_length")
         choice = reply_length.get("choice") if isinstance(reply_length, dict) else None

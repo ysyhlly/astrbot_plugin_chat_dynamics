@@ -52,7 +52,9 @@ MAX_TARGET_OPTIONS = 8
 MAX_PERSONA_CHARS = 1200
 MAX_TOTAL_STATE_CHARS = 12000
 DEFAULT_MIN_CONFIDENCE = 0.6
-JOIN_FLOOR = 0.5
+# Participation floor for the calibrated join answer: a non-ignore action
+# whose join probability is below this value is downgraded to ignore.
+JOIN_FLOOR = 0.7
 
 ACTION_CRITERIA = {
     "ignore": "Stay out of it: nothing here needs this participant, or joining would cut into someone else's exchange",

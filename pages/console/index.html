@@ -56,7 +56,7 @@
               <p class="eyebrow">SYSTEM STATUS</p>
               <h2 id="overviewTitle">系统概览</h2>
             </div>
-            <p class="section-caption">每 5 秒同步 · 隐藏页面时暂停</p>
+            <p class="section-caption">每 15 秒同步 · 隐藏页面时暂停</p>
           </div>
           <div class="stats" aria-label="总览">
             <article class="stat">
@@ -113,7 +113,7 @@
             <div class="rail-header">
               <div>
                 <p class="eyebrow">SESSION INDEX</p>
-                <h2 id="sessionTitle">UMO 会话</h2>
+                <h2 id="sessionTitle">群聊会话</h2>
               </div>
               <span class="rail-count" aria-hidden="true">实时</span>
             </div>
@@ -124,7 +124,7 @@
                   <circle cx="10.8" cy="10.8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.6" />
                   <path d="m16 16 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
                 </svg>
-                <input id="sessionFilter" type="search" placeholder="输入群 ID 或 UMO" autocomplete="off" />
+                <input id="sessionFilter" type="search" placeholder="输入群号或完整会话 ID" autocomplete="off" />
               </div>
             </label>
             <p class="ops-note finder-note" id="sessionFilterNote" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -142,7 +142,7 @@
               </div>
               <p class="empty-kicker">NO SIGNAL</p>
               <h2 id="emptyTitle">没有选中的会话</h2>
-              <p id="emptyCopy">从左侧点选一个 UMO 会话，或确认已开启「对全部群聊生效」/填写白名单。</p>
+              <p id="emptyCopy">从列表选择一个群聊会话，或检查配置页的生效范围。</p>
               <p class="ops-note detail-status" id="detailStatus" role="status" aria-live="polite" aria-atomic="true"></p>
               <button type="button" class="button button-quiet hidden" id="btnRetryDetail">重试详情</button>
             </div>
@@ -178,7 +178,7 @@
                     <p class="eyebrow">MESSAGE RATE</p>
                     <h3 id="traceTitle">消息速率</h3>
                   </div>
-                  <span class="trace-meta" id="traceMeta">0 MPM</span>
+                  <span class="trace-meta" id="traceMeta">0 条/分</span>
                 </div>
                 <div class="bars" id="rateBars" role="img" aria-label="最近窗口内的消息条数"></div>
                 <div class="trace-axis" aria-hidden="true"><span>60 秒前</span><span>现在</span></div>
@@ -209,6 +209,7 @@
                   </div>
                   <span class="trace-meta" id="dagCount">0 节点</span>
                 </div>
+                <button type="button" class="button button-quiet hidden" id="toggleNodeContent" aria-pressed="false">临时显示消息正文</button>
                 <ol class="nodes" id="nodeList"></ol>
               </section>
 
@@ -218,7 +219,7 @@
                     <p class="eyebrow">SESSION CONTROL</p>
                     <h3 id="opsTitle">会话管理</h3>
                   </div>
-                  <p>操作只作用于当前 UMO 会话。</p>
+                  <p>操作只作用于当前群聊会话。</p>
                 </div>
                 <div class="ops-controls">
                   <div class="field">
@@ -285,7 +286,7 @@
         </section>        <details class="diagnostic-drawer" id="readAirPanel" open>
           <summary>
             <span>读空气 · 分寸 · 群记忆</span>
-            <span class="summary-hint">次级面板 · 完整仪表盘见侧栏今日/分寸/记忆</span>
+            <span class="summary-hint">次级面板 · 完整仪表盘见顶部导航的今日、分寸、记忆</span>
           </summary>
           <div style="padding: 12px 4px 4px">
             <div class="section-heading">

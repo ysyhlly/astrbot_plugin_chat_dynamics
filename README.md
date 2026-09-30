@@ -12,7 +12,7 @@ AstrBot 群聊互动插件：合并碎发、追踪话题、判断回应时机，
 
 ## 能做什么
 
-当前版本 **v1.12.4**：修复开启决策学习采集后，在线教师超时或返回不完整结果会让机器人持续沉默的问题。配置为 `decision_backend=model` 时，这种情况会改用原有人设模型继续判断是否参与；学习采集保持开启。人设模型仍读取结构化环境特征 E，未知信号保留为 `null`。AgentJev 服务尚未实现环境编码与融合。
+当前版本 **v1.13.0**：新增 Kev 决策服务接入，完整传递人设、结构化环境 E 和消息目标候选，支持检查点身份核对、独立目标选择与五档回复长度。设置页展示运行路径与冲突原因，主 Agent 过滤停止状态，避免将宿主状态提示发进群聊。Kev 服务不可用时本轮保持沉默；普通聊天模型路径保留原有学习教师失败回退。未知环境信号仍记为 `null`。
 
 - **等你说完**：合并同一用户的连续消息，减少抢答和重复回复。
 - **接对话题**：结合引用、@ 和短期上下文，区分多人交错的讨论。
@@ -89,10 +89,13 @@ AI 草稿会为当前会话还没标注的消息起草两个标签：**该不该
 
 ### 决策层后端
 
-人设模式下「是否开口、怎么回、什么状态、多长、为什么」由 `decision_backend` 决定谁来回答：
+设置页以 Kev 为当前模型入口。选择 `decision_mode=persona_model`、`decision_backend=kev`，并填写 AstrBot 容器可访问的 `kev_base_url` 与发布检查点 `kev_checkpoint_id` 后，由 Kev 决定本轮是否参与、回应目标和回复长度。超时、检查点不匹配或答案无效时本轮保持沉默，聊天模型只在有效参与决定后生成回复正文。Kev 模型与服务单独部署，插件安装包不包含模型权重。
+
+AgentJev 的完整输入与全题接管仍作为兼容能力保留；旧 `model`、TypeSafe Jev 和 Laya 路径也保留原有配置。以下列出各路径的实际行为：
 
 | 后端 | 如何决定 | 适合场景 |
 | --- | --- | --- |
+| `kev` | 独立 Kev 服务回答完整决策题目，并核对检查点身份；失败时本轮保持沉默 | 已部署并核对模型身份的 Kev 决策服务 |
 | `model`（默认） | 当前会话的聊天模型按 JSON 决策 | 希望决策与回复风格最统一 |
 | `jev` | TypeSafe System One（Jev）决策模型一次答题 | 希望决策更快更省，回复正文不变 |
 | `laya` | 自建的 Laya typed-decision 服务一次答题 | 希望决策留在本地、延迟更低、不产生调用费用 |
@@ -103,7 +106,7 @@ Laya 后端回答的题目、封闭词表与映射规则和 Jev 完全一致，�
 
 ## 常用配置
 
-参数页默认只显示 7 项常用设置：启用、生效范围、排除群、昵称、决策模式和参与分寸。初次使用只需填写生效群号，再点「保存并应用」；昵称可不填，直接 @ 机器人即可。模型字段留空时沿用既有回退规则，无需为插件单独选择模型。
+参数页顶部按生效范围、判断方式与模型路径显示运行状态；修改时明确切换为「保存后预览」。常用视图按当前模式逐步展示相关参数，并显示 Kev 服务地址、检查点身份和未满足的启用条件。冲突或未生效设置会说明原因并提供参数定位；旧模型参数保留在兼容配置中。初次使用先填写生效群号，再点「保存并应用」；昵称可不填，直接 @ 机器人即可。
 
 页面会显示当前是否已选择有效群聊，以及是否处于观察模式。需要微调模型、阈值、节奏或联动时，切换「高级设置」；搜索始终查找全部参数。切换视图不会清空修改，也不会重置高级配置。
 
@@ -121,16 +124,16 @@ Laya 后端回答的题目、封闭词表与映射规则和 Jev 完全一致，�
 | `debounce_base_cooldown` | `3.5` | 连续消息的基础等待秒数 |
 | `console_show_message_content` | `false` | 是否在控制台显示截断的消息正文 |
 | `annotation_draft_enabled` | `false` | AI 预标注草稿；会把该会话正文发给模型 |
-| `decision_backend` | `model` | 小决策后端：`model` 聊天模型 / `jev` Jev 决策模型 / `laya` Laya 决策模型 |
-| `jev_base_url` | `https://api.typesafe.ai` | Jev 接口地址；也可填 OpenRouter、Vercel AI Gateway 或自建兼容服务 |
-| `jev_model` | `jev-latest` | Jev 模型 ID；调好门槛后建议钉住具体版本 |
-| `jev_api_key_env` | `TYPESAFE_API_KEY` | 密钥所在环境变量名（不是密钥本身），只从进程环境读取 |
-| `jev_timeout` | `6.0` | Jev 单次决策调用超时秒数（1~30），超时回落本地保守计划 |
-| `jev_min_confidence` | `0.6` | 决策置信度门槛（0.3~0.95），低于它不用这次判断 |
-| `laya_base_url` | `http://127.0.0.1:8900` | 自建 Laya 服务地址；公网走明文 http 会被拒绝 |
-| `laya_timeout` | `1.5` | Laya 单次调用超时秒数（0.05~30），超时回落本地保守计划 |
-| `laya_min_confidence` | `0.6` | Laya 决策置信度门槛，语义与 Jev 一致 |
-| `vibe_backend` | `llm` | 氛围分类后端：`llm` 氛围模型 / `laya` Laya 决策模型 |
+| `decision_learning_mode` | `off` | `shadow` 旁路对照、`active` 实际接管 |
+| `decision_backend` | `model` | `kev` 使用独立 Kev 决策服务；保留旧聊天模型路径 |
+| `decision_learning_student_backend` | `kev` | 学习学生后端；保留 `agentjev`、`laya` 兼容选项 |
+| `kev_base_url` | `http://127.0.0.1:18766` | AstrBot 容器可访问的 Kev 服务地址 |
+| `kev_checkpoint_id` | 空 | 与服务返回的发布检查点 ID 一致，未锁定时不采用答案 |
+| `kev_timeout` | `2.5` | 单次 Kev 请求等待秒数；超时保持沉默 |
+| `agentjev_all_tasks_active` | `false` | active 时让 AgentJev 优先回答全部决策题目 |
+| `agentjev_base_url` | `http://127.0.0.1:18765` | AstrBot 容器可访问的兼容 AgentJev 服务地址 |
+| `agentjev_input_format` | `legacy` | 全题接管使用 `cmdcode_full_input_soft_v1` |
+| `agentjev_active_checkpoint_sha256` | 空 | 全题接管所用检查点的 SHA-256 |
 | `vibe_min_confidence` | `0.55` | 氛围置信度门槛，低于它沿用当前氛围判定 |
 
 更多参数及范围见插件配置页面或仓库中的 `_conf_schema.json`。氛围 LLM 和神经 Embedding 默认关闭，可按需开启。决策层与氛围分类的后端是两套独立开关：回合决策每回合跑一次，氛围是 120 秒一次的低频校准，两者常常想要不同的选择。
@@ -208,6 +211,6 @@ python scripts/check_release.py
 
 情绪与群记事本使用宿主 `StarTools.get_data_dir("astrbot_plugin_chat_dynamics")` 目录。旧源码目录中的文件会复制保留，不覆盖新目录已有文件，也不删除源文件。新文件名带 UMO 哈希，内容记录完整 UMO；没有身份信息的旧文件无法安全区分文件名碰撞，保留备查但不自动归入当前会话。
 
-### Laya 决策学习
+### 决策学习与模型接入
 
-可通过 LLM 教师标签训练 Laya，按任务验收并逐步接管语义决策；默认关闭，回复正文仍由主 Agent 生成。插件侧栏“决策学习”提供样本、训练作业、评估、晋升与回滚入口。详见 [决策学习操作指南](docs/decision-learning.md) 与 [Windows Docker GPU 部署](docs/laya-deployment.md)。
+决策学习使用教师标签与复核样本，默认关闭，回复正文仍由主 Agent 生成。Kev 接入使用包含人设与环境的版本化完整快照，并保留多个独立目标标签；兼容 AgentJev 和旧 Laya 的采集与评估能力。插件侧栏“决策学习”提供样本、评估、晋升与回滚入口。详见 [AgentJev 训练说明](docs/agentjev-training.md) 与 [决策学习操作指南](docs/decision-learning.md)；旧 Laya 资料保留在 [历史部署文档](docs/laya-deployment.md)。

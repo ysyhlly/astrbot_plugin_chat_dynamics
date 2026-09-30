@@ -242,6 +242,17 @@ class AstrBotAgentBridge:
                 raise PersonaChanged()
             if await call_event_hook(agent_event, EventType.OnLLMRequestEvent, req):
                 raise AgentBridgeUnavailable("request_hook_stopped")
+            # QQ Tools' stop_conversation ends the runner with no reply and
+            # writes a synthetic "Conversation stopped." assistant turn into
+            # the host history. That bypasses this bridge's delivered-text
+            # commit and later gets echoed to the group. Persona decisions
+            # already own silence, so do not offer this tool to the owned agent.
+            tool_set = getattr(req, "func_tool", None)
+            if tool_set is not None:
+                remove_tool = getattr(tool_set, "remove_tool", None)
+                if not callable(remove_tool):
+                    raise AgentBridgeUnavailable("owned_tool_filter_unavailable")
+                remove_tool("stop_conversation")
             req.system_prompt += "\n" + REPLY_INSTRUCTIONS
             if execution_log:
                 receipts = json.dumps(list(execution_log), ensure_ascii=False)
@@ -256,10 +267,15 @@ class AstrBotAgentBridge:
             max_steps = self.context.get_config(umo=event.unified_msg_origin).get("provider_settings", {}).get("max_agent_step", 30)
             async for response_event in runner.step_until_done(max_steps):
                 # Consume the runner, never run_agent(), which sends tool status/results directly.
+                if str(getattr(response_event, "type", "") or "").strip().lower() == "aborted":
+                    raise LLMErrorResponse("main agent was stopped")
                 if response_event.type == "tool_direct_result":
                     chain = response_event.data.get("chain")
                     if chain is not None:
                         captured_chains.append(chain)
+            was_aborted = getattr(runner, "was_aborted", None)
+            if callable(was_aborted) and was_aborted():
+                raise LLMErrorResponse("main agent was stopped")
             if not await self.current(event, effective):
                 raise PersonaChanged()
             response = runner.get_final_llm_resp()

@@ -82,6 +82,7 @@ from .core.platform_bridge import (
 )
 from .core.integrations.laya import LayaClient, decision_usable
 from .core.integrations.agentjev import AgentJevClient
+from .core.integrations.kev import KevClient
 from .core.decision_learning import DecisionLearning
 from .core.decision_learning_api import DecisionLearningWebAPI
 from .core.integrations.registry import IntegrationRegistry
@@ -269,7 +270,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.12.4",
+    "v1.13.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -396,7 +397,23 @@ class ChatDynamicsPlugin(Star):
                     and runtime_config.decision_learning_student_backend == "agentjev",
             base_url=runtime_config.agentjev_base_url,
             timeout=runtime_config.agentjev_timeout,
+            input_format=runtime_config.agentjev_input_format,
+            all_tasks_shadow=((runtime_config.decision_learning_mode == "shadow"
+                               and runtime_config.agentjev_all_tasks_shadow)
+                              or (runtime_config.decision_learning_mode == "active"
+                                  and runtime_config.agentjev_all_tasks_active)),
             internal_hosts=runtime_config.agentjev_internal_hosts,
+        )
+        self.kev = KevClient(
+            enabled=(runtime_config.decision_backend == "kev" or
+                     runtime_config.decision_learning_student_backend == "kev"
+                     and (runtime_config.decision_learning_mode == "shadow" or
+                          (runtime_config.decision_learning_mode == "active" and
+                           runtime_config.kev_canary_percent > 0))),
+            base_url=runtime_config.kev_base_url,
+            timeout=runtime_config.kev_timeout,
+            checkpoint_id=runtime_config.kev_checkpoint_id,
+            internal_hosts=runtime_config.kev_internal_hosts,
         )
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -473,7 +490,8 @@ class ChatDynamicsPlugin(Star):
         self._decision_learning_web_api = DecisionLearningWebAPI(self)
         self._decision_learning_web_api.register()
         self.persona_engine = PersonaEngine(self)
-        if self._persona_mode() and not self.persona_engine.bridge.check():
+        if (self._persona_mode() and runtime_config.decision_backend != "kev"
+                and not self.persona_engine.bridge.check()):
             self._persona_fallback = self.persona_engine.bridge.diagnostic or "CD_AGENT_BRIDGE_UNAVAILABLE"
             self._apply_runtime_config(replace(runtime_config, decision_mode="legacy"), validated=True)
             self._runtime_config = replace(runtime_config, decision_mode="legacy")
@@ -506,13 +524,15 @@ class ChatDynamicsPlugin(Star):
 
     def _validate_runtime_config(self, cfg: RuntimeConfig) -> None:
         """Check host requirements before changing runtime state or saving to disk."""
-        if cfg.decision_mode == "persona_model" and hasattr(self, "persona_engine"):
+        if (cfg.decision_mode == "persona_model" and cfg.decision_backend != "kev"
+                and hasattr(self, "persona_engine")):
             if not self.persona_engine.bridge.check():
                 raise RuntimeError(self.persona_engine.bridge.diagnostic)
 
     def _prepare_config_candidate(self, cfg: RuntimeConfig, *, explicit_persona: bool = False) -> RuntimeConfig:
         """Keep the stored persona intent while editing an already degraded host."""
-        if cfg.decision_mode == "persona_model" and hasattr(self, "persona_engine"):
+        if (cfg.decision_mode == "persona_model" and cfg.decision_backend != "kev"
+                and hasattr(self, "persona_engine")):
             if not self.persona_engine.bridge.check():
                 if (not explicit_persona and getattr(self, "_persona_fallback", "")
                         and self._runtime_config.decision_mode == "legacy"):
@@ -534,13 +554,17 @@ class ChatDynamicsPlugin(Star):
         old_cfg = getattr(self, "_runtime_config", None)
         decision_keys = ("decision_learning_mode", "decision_backend", "laya_base_url",
                          "decision_learning_student_backend", "agentjev_base_url",
-                         "laya_min_confidence", "laya_max_uncertainty", "laya_internal_hosts")
+                         "agentjev_all_tasks_shadow", "agentjev_all_tasks_active",
+                         "agentjev_active_checkpoint_sha256", "agentjev_input_format",
+                         "laya_min_confidence", "laya_max_uncertainty", "laya_internal_hosts",
+                         "kev_base_url", "kev_checkpoint_id", "kev_canary_percent")
         if old_cfg is not None and any(getattr(old_cfg, k, None) != getattr(cfg, k, None) for k in decision_keys):
             opinions = getattr(self, "message_opinions", None)
             if opinions is not None:
                 opinions.clear()
         self.decision_mode = cfg.decision_mode
-        if previous_decision != self.decision_mode and hasattr(self, "_sessions"):
+        if (previous_decision != self.decision_mode or
+                (old_cfg is not None and old_cfg.decision_backend != cfg.decision_backend)) and hasattr(self, "_sessions"):
             for session_id in list(self._sessions):
                 self._invalidate_pending_generation(session_id)
         for name in _DIRECT_RUNTIME_ATTRS:
@@ -595,7 +619,23 @@ class ChatDynamicsPlugin(Star):
                 enabled=cfg.decision_learning_mode != "off"
                         and cfg.decision_learning_student_backend == "agentjev",
                 base_url=cfg.agentjev_base_url, timeout=cfg.agentjev_timeout,
+                input_format=cfg.agentjev_input_format,
+                all_tasks_shadow=((cfg.decision_learning_mode == "shadow"
+                                   and cfg.agentjev_all_tasks_shadow)
+                                  or (cfg.decision_learning_mode == "active"
+                                      and cfg.agentjev_all_tasks_active)),
                 internal_hosts=cfg.agentjev_internal_hosts,
+            )
+        if hasattr(self, "kev"):
+            self.kev.configure(
+                enabled=(cfg.decision_backend == "kev" or
+                         cfg.decision_learning_student_backend == "kev"
+                         and (cfg.decision_learning_mode == "shadow" or
+                              (cfg.decision_learning_mode == "active" and
+                               cfg.kev_canary_percent > 0))),
+                base_url=cfg.kev_base_url, timeout=cfg.kev_timeout,
+                checkpoint_id=cfg.kev_checkpoint_id,
+                internal_hosts=cfg.kev_internal_hosts,
             )
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
@@ -615,7 +655,7 @@ class ChatDynamicsPlugin(Star):
                 self._cancel_embedding_tasks(session_id)
                 self._cancel_hook_tasks(session_id)
             self._metric("shadow_transition")
-        if not cfg.vibe_llm_enabled and hasattr(self, "_vibe_llm_tasks_by_session"):
+        if (not cfg.vibe_llm_enabled or cfg.decision_backend == "kev") and hasattr(self, "_vibe_llm_tasks_by_session"):
             for session_id in list(self._vibe_llm_tasks_by_session):
                 self._cancel_vibe_llm(session_id)
         if hasattr(self, "llm"):
@@ -1701,6 +1741,9 @@ class ChatDynamicsPlugin(Star):
         agentjev_close = getattr(getattr(self, "agentjev", None), "close", None)
         if callable(agentjev_close):
             await agentjev_close()
+        kev_close = getattr(getattr(self, "kev", None), "close", None)
+        if callable(kev_close):
+            await kev_close()
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
             runtime.clear_active_followup_batches()
@@ -1969,7 +2012,8 @@ class ChatDynamicsPlugin(Star):
         now: float,
     ) -> None:
         """Reply to a poke-at-bot through the reply LLM or a poke-back."""
-        if self._shutting_down or self.shadow_mode:
+        if (self._shutting_down or self.shadow_mode or
+                self._runtime_config.decision_backend == "kev"):
             return
         session_id = runtime.session_key
         expected_epoch = runtime.epoch
@@ -2320,7 +2364,7 @@ class ChatDynamicsPlugin(Star):
 
     def _topic_reranker(self) -> TopicReranker | None:
         cfg = self._runtime_config
-        if (not cfg.topic_reranker_enabled or self.shadow_mode
+        if (cfg.decision_backend == "kev" or not cfg.topic_reranker_enabled or self.shadow_mode
                 or not cfg.conversation_router_enabled):
             return None
         return TopicReranker(
@@ -2681,7 +2725,9 @@ class ChatDynamicsPlugin(Star):
             return ""
 
     def _schedule_vibe_llm(self, session_id: str, text: str, now: float) -> None:
-        if self._persona_mode() or self.shadow_mode or not self.vibe_llm_enabled or session_id in self._vibe_llm_tasks_by_session:
+        if (self._runtime_config.decision_backend == "kev" or self._persona_mode()
+                or self.shadow_mode or not self.vibe_llm_enabled
+                or session_id in self._vibe_llm_tasks_by_session):
             return
         count = self._vibe_msg_counts.get(session_id, 0)
         if count < _VIBE_LLM_MIN_MESSAGES:
@@ -2990,7 +3036,8 @@ class ChatDynamicsPlugin(Star):
         that the answer has landed by then; awaiting here would put a network call
         on the message hook for a question nobody needs answered yet.
         """
-        if self._shutting_down or not str(text or "").strip():
+        if (self._shutting_down or self._runtime_config.decision_backend == "kev"
+                or not str(text or "").strip()):
             return
         if self.message_opinions.peek(text) is not None:
             return
@@ -3000,6 +3047,8 @@ class ChatDynamicsPlugin(Star):
         self._create_background_task(self._warm_completeness_async(text, client, session_id))
 
     async def _warm_completeness_async(self, text: str, client: Any, session_id: str = "") -> None:
+        if self._runtime_config.decision_backend == "kev":
+            return
         questions = completeness_question()
         try:
             learning = getattr(self, "decision_learning", None)
@@ -3036,6 +3085,8 @@ class ChatDynamicsPlugin(Star):
         room" — never a negative answer. The hysteresis state machine treats None as
         "keep the reading you already had".
         """
+        if self._runtime_config.decision_backend == "kev":
+            return None
         learning = getattr(self, "decision_learning", None)
         if learning is not None and learning.enabled(session_id):
             evidence = await self._vibe_evidence(session_id, text)
@@ -3095,6 +3146,8 @@ class ChatDynamicsPlugin(Star):
         return parse_mode_label(str(answer.get("choice") or ""))
 
     async def _classify_vibe_with_llm(self, session_id: str, text: str) -> Optional[GroupChatMode]:
+        if self._runtime_config.decision_backend == "kev":
+            return None
         evidence = await self._vibe_evidence(session_id, text)
         telemetrics = evidence["telemetrics"]
         prompt = (

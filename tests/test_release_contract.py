@@ -106,3 +106,28 @@ def test_release_archive_is_deterministic_when_metadata_has_a_real_repo(tmp_path
     manifest = json.loads(first[1].read_text(encoding="utf-8"))
     assert manifest["version"] == plugin_version(copied)
     assert all(not item["path"].startswith(("tests/", "scripts/")) for item in manifest["files"])
+
+
+def test_release_archive_excludes_deployed_backups_and_editor_files(tmp_path):
+    copied = tmp_path / "plugin"
+    copy_release_tree(copied)
+    unwanted = (
+        "core/agent_bridge.py.bak-codex-20260925",
+        "core/jev_decision.py.bak",
+        "core/config.py.orig",
+        "core/config.py.rej",
+        "pages/config/.app.js.swp",
+        "pages/config/app.js~",
+    )
+    for name in unwanted:
+        target = copied / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("local backup only", encoding="utf-8")
+    archive, manifest, _checksum = build_archive(copied, tmp_path / "release.zip")
+    import zipfile
+
+    with zipfile.ZipFile(archive) as packaged:
+        assert not set(unwanted).intersection(packaged.namelist())
+        assert "core/agent_bridge.py" in packaged.namelist()
+    names = {item["path"] for item in json.loads(manifest.read_text(encoding="utf-8"))["files"]}
+    assert not set(unwanted).intersection(names)

@@ -194,6 +194,13 @@ def laya_snapshot(plugin: Any) -> Dict[str, Any]:
     return _layer_snapshot(plugin, "laya")
 
 
+def kev_snapshot(plugin: Any) -> Dict[str, Any]:
+    """The selected Kev checkpoint and its live service status."""
+    data = _layer_snapshot(plugin, "kev")
+    data.pop("min_confidence", None)
+    return data
+
+
 def companion_snapshot(plugin: Any) -> Dict[str, Any]:
     bridge = getattr(plugin, "selflearning", None)
     if not callable(getattr(bridge, "snapshot", None)):
@@ -347,6 +354,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "selflearning": companion_snapshot(plugin),
         "jev": jev_snapshot(plugin),
         "laya": laya_snapshot(plugin),
+        "kev": kev_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
             "mood_memory": bool(getattr(plugin, "mood_memory_enabled", False)),

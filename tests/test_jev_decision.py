@@ -129,7 +129,7 @@ def test_join_noul_below_the_floor_declines():
 
 def test_join_above_the_floor_leaves_the_action_alone():
     context = turn("m1")
-    decision = decision_from_answers(context, answers(join={"type": "noul", "noul": 0.5}))
+    decision = decision_from_answers(context, answers(join={"type": "noul", "noul": 0.75}))
     assert decision.action == "reply"
 
 

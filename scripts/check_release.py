@@ -21,6 +21,7 @@ except ImportError:  # direct ``python scripts/check_release.py`` execution
 
 _VERSION_RE = re.compile(r"^\s*version\s*:\s*['\"]?([^'\"\s]+)", re.MULTILINE)
 _REPO_RE = re.compile(r"^\s*repo\s*:\s*['\"]?(.*?)['\"]?\s*$", re.MULTILINE)
+_BACKUP_RE = re.compile(r"\.bak(?:[._-]|$)", re.IGNORECASE)
 
 
 def _required_paths(root: Path) -> tuple[str, ...]:
@@ -152,7 +153,9 @@ def iter_release_files(root: Path) -> Iterable[Path]:
                 for item in path.rglob("*")
                 if item.is_file()
                 and "__pycache__" not in item.parts
-                and item.suffix not in {".pyc", ".pyo"}
+                and item.suffix not in {".pyc", ".pyo", ".orig", ".rej", ".swp", ".swo"}
+                and not _BACKUP_RE.search(item.name)
+                and not item.name.endswith("~")
             )
     return sorted(set(paths), key=lambda item: item.relative_to(root).as_posix())
 

@@ -1,216 +1,15 @@
 {
-  "decision_mode": {
-    "description": "互动决策模式",
-    "type": "string",
-    "default": "legacy",
-    "options": [
-      "legacy",
-      "persona_model"
-    ],
-    "hint": "旧安装保持 legacy。persona_model 沿用当前 AstrBot 人设，每个完整回合先模型决策，再由主 Agent 回复；建议先打开 shadow_mode。"
-  },
-  "decision_provider": {
-    "description": "互动决策 Provider",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "仅 persona_model 生效；为空沿用主回复 Provider。每轮至多一次决策调用，决策模型不调用工具。"
-  },
-  "decision_timeout": {
-    "description": "决策超时秒数",
-    "type": "float",
-    "default": 8.0,
-    "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
-  },
-  "decision_backend": {
-    "description": "决策层后端",
-    "type": "string",
-    "default": "model",
-    "options": [
-      "model",
-      "jev",
-      "laya"
-    ],
-    "hint": "仅 persona_model 生效。model 用当前聊天模型按 JSON 决策；jev 改由 TypeSafe System One（Jev）决策模型答题；laya 用自建的 Laya typed-decision 服务答题。jev 与 laya 回答的题目与映射规则完全相同，一次调用回答「是否开口、怎么回、什么状态、多长、为什么」，选项全部由本插件给定，低于置信度门槛就不采用并回落到本地保守计划。"
-  },
-  "jev_base_url": {
-    "description": "Jev 接口地址",
-    "type": "string",
-    "default": "https://api.typesafe.ai",
-    "hint": "TypeSafe 官方地址；也可填 OpenRouter（https://openrouter.ai/api）、Vercel AI Gateway（https://ai-gateway.vercel.sh/typesafe）或自建的兼容服务。只接受 http(s)、不带账号密码与查询串的地址；填写密钥时非本机地址必须用 https，否则降级为不调用。"
-  },
-  "jev_model": {
-    "description": "Jev 模型 ID",
-    "type": "string",
-    "default": "jev-latest",
-    "hint": "默认别名 jev-latest 指向最新稳定版。调过置信度门槛后建议钉住具体版本（如 jev-1.13.0），别名会随新版本移动；经网关时按各家写法填写，例如 OpenRouter 的 ~typesafe/jev-latest。"
-  },
-  "jev_api_key_env": {
-    "description": "Jev API Key 环境变量名",
-    "type": "string",
-    "default": "TYPESAFE_API_KEY",
-    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不写配置、不进面板、不进日志。变量名须与 Jev 相关（含 JEV、TYPESAFE、OPENROUTER、GATEWAY、AIMLAPI 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
-  },
-  "jev_timeout": {
-    "description": "Jev 决策超时秒数",
-    "type": "float",
-    "default": 6.0,
-    "slider": {
-      "min": 1,
-      "max": 30,
-      "step": 0.5
-    },
-    "hint": "范围 1~30 秒，只包住这一次 HTTP 调用，整体仍受决策超时约束。Jev 通常百毫秒级返回；不重试，超时即回落本地保守计划。"
-  },
-  "jev_min_confidence": {
-    "description": "Jev 决策置信度门槛",
-    "type": "float",
-    "default": 0.6,
-    "slider": {
-      "min": 0.3,
-      "max": 0.95,
-      "step": 0.05
-    },
-    "hint": "范围 0.3~0.95。取「方式、状态、长短、理由」四项置信度的最小值，低于门槛就不采用这次判断：点名消息按本地保守计划回应，环境消息继续旁听。官方建议 0.6 以下不要自动执行。"
-  },
-  "laya_base_url": {
-    "description": "Laya 接口地址",
-    "type": "string",
-    "default": "http://127.0.0.1:8900",
-    "hint": "自建 Laya typed-decision 服务的地址，POST /predict 一次回答与 Jev 完全相同的一组问题。只接受 http(s)、不带账号密码与查询串的地址。走明文 http 时只放行本机与内网网段（10/8、172.16/12、192.168/16、链路本地等），公网地址必须用 https——这里发出去的是群聊内容本身，不只是密钥。"
-  },
-  "laya_timeout": {
-    "description": "Laya 决策超时秒数",
-    "type": "float",
-    "default": 1.5,
-    "slider": {
-      "min": 0.1,
-      "max": 10,
-      "step": 0.1
-    },
-    "hint": "范围 0.05~30 秒，只包住这一次本地 HTTP 调用，整体仍受决策超时约束。Laya 稳态约 20~60 毫秒，1.5 秒已能容纳一次冷启动；不重试，超时即回落本地保守计划。"
-  },
-  "laya_min_confidence": {
-    "description": "Laya 决策置信度门槛",
-    "type": "float",
-    "default": 0.6,
-    "slider": {
-      "min": 0.3,
-      "max": 0.95,
-      "step": 0.05
-    },
-    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取 choice/score 各项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。只对 choice / score 有效——这两类的置信度是 1 - H(p)/log k，能低到 0。**不要**把它用在 noul 上：noul 报的 confidence 是 max(p, 1-p)，数学上恒 >= 0.5，门槛 <= 0.5 会让闸门永不触发，门槛 0.6 会变成「模型没把握就退、错得越自信越不退」，正好是反的。noul 请走 laya_max_uncertainty。"
-  },
-  "laya_max_uncertainty": {
-    "description": "Laya 决策不确定度上限",
-    "type": "float",
-    "default": 0.25,
-    "slider": {
-      "min": 0.0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "范围 0~0.5。noul 使用 min(p, 1-p)，choice/score 使用 1 - max(probabilities)。旧模式遵循各原有决策路径的回退行为；决策学习 active 模式使用独立校准阈值并回退 LLM。初版不依赖 act_head；act_costs 配置不代表动作头已经训练或验证。"
-  },
-  "decision_learning_mode": {
-    "description": "决策学习运行模式",
-    "type": "string", "default": "off", "options": ["off", "collect", "shadow", "active"],
-    "hint": "off 保持原行为；collect 采集教师标签；shadow 教师执行、学生旁路比较；active 仅已验收任务由学生接管，不确定时回退教师。回复正文仍由主 Agent 生成。"
-  },
-  "decision_learning_student_backend": {
-    "description": "决策学习学生模型",
-    "type": "string", "default": "agentjev", "options": ["agentjev", "laya"],
-    "hint": "默认开源 AgentJev；laya 仅用于兼容既有服务。"
-  },
-  "agentjev_base_url": {
-    "description": "AgentJev 学生服务地址",
-    "type": "string", "default": "http://127.0.0.1:18765",
-    "hint": "开源 AgentJev 的 decision.v1 服务地址，调用 /api/evaluate。Docker 内运行时需填写容器可访问的地址。"
-  },
-  "agentjev_timeout": {
-    "description": "AgentJev 学生调用超时秒数",
-    "type": "float", "default": 1.5,
-    "slider": {"min": 0.05, "max": 30, "step": 0.1},
-    "hint": "范围 0.05~30 秒；调用超时或服务未部署时继续教师回退。"
-  },
-  "agentjev_internal_hosts": {
-    "description": "允许明文访问的 AgentJev 内部主机名",
-    "type": "list", "default": [],
-    "hint": "仅填写可信容器内网的精确主机名，不支持通配符。"
-  },
-  "decision_learning_sessions": {
-    "description": "允许采集的完整会话 UMO", "type": "list", "default": [],
-    "hint": "只为这些完整 UMO 保存训练样本，默认不采集。请从会话控制台复制会话标识；明确需要所有生效群时填 *，仍遵守插件的生效和排除规则。"
-  },
-  "decision_learning_retention_days": {
-    "description": "决策样本保留天数", "type": "int", "default": 30,
-    "slider": {"min": 1, "max": 365, "step": 1}, "hint": "到期清理样本，范围 1~365 天。"
-  },
-  "decision_learning_sample_rate": {
-    "description": "接管后教师抽样比例", "type": "float", "default": 0.05,
-    "slider": {"min": 0, "max": 1, "step": 0.01}, "hint": "保留随机教师比较，避免只采集学生不确定的样本。"
-  },
-  "decision_learning_labels_per_hour": {
-    "description": "后台教师补标每小时预算", "type": "int", "default": 120,
-    "slider": {"min": 0, "max": 10000, "step": 1}, "hint": "限制后台补标调用量；0 暂停补标，不影响在线教师回退。"
-  },
-  "decision_learning_jev_fallback": {
-    "description": "在 Laya 与教师之间尝试 Jev", "type": "bool", "default": false,
-    "hint": "默认关闭。开启后按 Laya → Jev → LLM → 本地规则回退，整条链共享截止时间。"
-  },
-  "laya_internal_hosts": {
-    "description": "允许明文访问的 Laya 内部主机名", "type": "list", "default": [],
-    "hint": "Docker Compose 填 laya-server。只接受精确主机名，不支持通配符；用于可信容器私有网络。"
-  },
-  "vibe_backend": {
-    "description": "氛围分类后端",
-    "type": "string",
-    "default": "llm",
-    "options": [
-      "llm",
-      "laya"
-    ],
-    "hint": "决定谁来读群氛围（快嘴玩梗 / 认真探讨 / 冷场衰退）。llm 用氛围模型按单标签分类；laya 改用自建的 Laya 决策服务，在封闭三选项里直接选一，没有自由文本要解析。与决策层后端分开配置：氛围是低频校准，回合决策是每回合都要跑，两者常常想要不同的选择。"
-  },
-  "vibe_min_confidence": {
-    "description": "氛围分类置信度门槛",
-    "type": "float",
-    "default": 0.55,
-    "slider": {
-      "min": 0.3,
-      "max": 0.95,
-      "step": 0.05
-    },
-    "hint": "范围 0.3~0.95，仅 vibe_backend=laya 生效。低于门槛就不采用这次校准，沿用当前氛围判定。门槛比决策层低一些：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。"
-  },
-  "vibe_max_uncertainty": {
-    "description": "氛围分类不确定度上限",
-    "type": "float",
-    "default": 0.35,
-    "slider": {
-      "min": 0.0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "范围 0~0.5，仅 vibe_backend=laya 生效。不确定度超过它就不采用这次校准，沿用当前氛围判定。门槛比决策层宽松（0.35 对 0.25）：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。与决策层共用同一套不确定度语义（choice/score 用 1 - max(probabilities)，多个信号取最保守的那个），所以两个数字可以直接比较。"
-  },
-  "reply_timeout": {
-    "description": "回复模型总超时秒数",
-    "type": "float",
-    "default": 60.0,
-    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。超时取消请求并释放当前生成任务。"
-  },
-  "tool_agent_timeout": {
-    "description": "原生 Agent 总超时秒数",
-    "type": "float",
-    "default": 120.0,
-    "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。"
-  },
   "enable": {
     "description": "是否启用群聊动态过滤器",
     "type": "bool",
     "default": true,
     "hint": "开启后，对生效范围内的群聊做防抖、指代门闩、冷却和回复装饰。主回复仍走 AstrBot 原管线（人格、历史、工具）。"
+  },
+  "shadow_mode": {
+    "description": "插件总观察模式（不发言）",
+    "type": "bool",
+    "default": false,
+    "hint": "这是插件全局观察开关，不同于下方决策学习 shadow。legacy 只记录预计动作；persona_model 仍可调用判断模型记录预判，但插件不生成或发送回复。"
   },
   "pipeline_mode": {
     "description": "管线模式",
@@ -221,12 +20,6 @@
       "exclusive"
     ],
     "hint": "filter：只关门/装饰，不 stop_event，其它插件仍能收到消息。exclusive：旧独占模式，会吞掉后续插件，仅在确实需要时开启。"
-  },
-  "ambient_intervention": {
-    "description": "允许未被点名时主动插话",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。legacy 下按 WTS 决定弱指代是否开口。persona_model 下该开关不再单独否决模型决策，仅作控制台兼容项。"
   },
   "takeover_all": {
     "description": "对全部群聊生效",
@@ -252,6 +45,290 @@
     "default": [],
     "hint": "黑名单中的群聊将保持 AstrBot 默认处理流程，本插件不介入。"
   },
+  "bot_names": {
+    "description": "机器人昵称 / 唤醒名",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "用于识别点名。请填写完整昵称（如“小助手”），不要用“bot”“助手”这种容易误伤的短词。"
+  },
+  "decision_mode": {
+    "description": "互动决策模式",
+    "type": "string",
+    "default": "legacy",
+    "options": [
+      "legacy",
+      "persona_model"
+    ],
+    "hint": "legacy 的主回合由本地规则判断，即使开启决策学习 active 也不会让 AgentJev 接管主回合；persona_model 才会将主回合交给决策学习或所选决策后端。回复正文仍由主 Agent 生成。"
+  },
+  "decision_learning_mode": {
+    "description": "决策学习运行模式",
+    "type": "string", "default": "off", "options": ["off", "collect", "shadow", "active"],
+    "hint": "off 使用原判断后端；collect 教师判断并采集；shadow 教师判断、学生旁路；active 仅在已验收发布版本通过校验时由学生优先判断，失败回退教师。主回合接管还需 persona_model。与插件总观察模式和已发布策略联动分别独立。"
+  },
+  "decision_learning_student_backend": {
+    "description": "决策学习学生模型",
+    "type": "string", "default": "kev", "options": ["kev", "agentjev", "laya"],
+    "hint": "Kev 使用原生决策服务。主后端也设为 kev 且决策学习为 active 时，整组判断只使用 Kev；其他组合保留旧试运行及回退配置。"
+  },
+  "kev_base_url": {
+    "description": "Kev 学生服务地址",
+    "type": "string", "default": "http://127.0.0.1:18766",
+    "hint": "独立 Kev 服务的根地址，插件调用原生 /v1/systemone。"
+  },
+  "kev_timeout": {
+    "description": "Kev 调用超时秒数",
+    "type": "float", "default": 2.5,
+    "slider": {"min": 0.05, "max": 30, "step": 0.1}
+  },
+  "kev_checkpoint_id": {
+    "description": "Kev 固定检查点 ID",
+    "type": "string", "default": "",
+    "hint": "必须与严格检查上下文长度的 Kev 服务 /v1/models 中的 run 完全一致；空值或不一致时拒收。"
+  },
+  "kev_canary_percent": {
+    "description": "Kev 发布版增量开口试运行比例（%）",
+    "type": "float", "default": 0,
+    "slider": {"min": 0, "max": 100, "step": 1},
+    "hint": "仅在主后端不是 kev、学生后端为 kev 且 active 时用于旧教师链的抽样。主后端为 kev 时会全量请求 Kev，此比例不适用；失败保持沉默。"
+  },
+  "kev_internal_hosts": {
+    "description": "允许明文访问的 Kev 内部主机名",
+    "type": "list", "default": [],
+    "hint": "仅填写可信容器内网的精确主机名。"
+  },
+  "agentjev_all_tasks_active": {
+    "description": "AgentJev 接管全部决策题（实验）",
+    "type": "bool", "default": false,
+    "hint": "需同时选择 persona_model、决策学习 active、AgentJev 学生模型、Command Code 完整输入和检查点哈希，才会接管主回合。join 已专项训练，其他题目仍是未训练迁移预测；请求失败或检查点不符时回退教师。"
+  },
+  "agentjev_active_checkpoint_sha256": {
+    "description": "AgentJev 接管时锁定的检查点 SHA-256",
+    "type": "string", "default": "",
+    "hint": "接管开关开启时必须填写当前已核对的 64 位十六进制检查点哈希，防止服务换模型后静默接管。"
+  },
+  "agentjev_input_format": {
+    "description": "AgentJev 决策输入格式",
+    "type": "string", "default": "legacy",
+    "options": ["legacy", "cmdcode_full_input_soft_v1"],
+    "hint": "使用 Command Code 候选头时选 cmdcode_full_input_soft_v1。完整轮次按规范输入判断 join；其他决策题使用明确标记的实验迁移预测。输入超预算或证据无效时回退原判断路径。"
+  },
+  "agentjev_base_url": {
+    "description": "AgentJev 学生服务地址",
+    "type": "string", "default": "http://127.0.0.1:18765",
+    "hint": "开源 AgentJev 的 decision.v1 服务地址，调用 /api/evaluate。Docker 内运行时需填写容器可访问的地址。"
+  },
+  "agentjev_timeout": {
+    "description": "AgentJev 学生调用超时秒数",
+    "type": "float", "default": 1.5,
+    "slider": {"min": 0.05, "max": 30, "step": 0.1},
+    "hint": "范围 0.05~30 秒；调用超时或服务未部署时继续教师回退。"
+  },
+  "decision_timeout": {
+    "description": "决策超时秒数",
+    "type": "float",
+    "default": 8.0,
+    "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
+  },
+  "agentjev_internal_hosts": {
+    "description": "允许明文访问的 AgentJev 内部主机名",
+    "type": "list", "default": [],
+    "hint": "仅填写可信容器内网的精确主机名，不支持通配符。"
+  },
+  "agentjev_all_tasks_shadow": {
+    "description": "AgentJev 旁路观察全部决策题",
+    "type": "bool", "default": false,
+    "hint": "仅在决策学习 shadow 模式且输入格式为 cmdcode_full_input_soft_v1 时生效。教师仍执行判断，AgentJev 逐题记录实验对照；这不是插件总观察模式，也不接管实际决策。"
+  },
+  "decision_provider": {
+    "description": "互动决策 Provider",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "只供旧 LLM 决策、教师标注及回退路径使用；主后端 kev 的在线决策不会读取此 Provider。回复正文仍由主回复 Provider 处理。"
+  },
+  "decision_backend": {
+    "description": "决策层后端",
+    "type": "string",
+    "default": "model",
+    "options": [
+      "kev",
+      "model",
+      "jev",
+      "laya"
+    ],
+    "hint": "选 kev 且决策学习为 active、学生后端也为 kev 时，所有主回合问题仅由 Kev 决策；服务失败则保持沉默，不调用 LLM 教师。model 为旧聊天模型决策，jev 与 laya 为其他决策模型。"
+  },
+  "jev_base_url": {
+    "invisible": true,
+    "description": "Jev 接口地址",
+    "type": "string",
+    "default": "https://api.typesafe.ai",
+    "hint": "TypeSafe 官方地址；也可填 OpenRouter（https://openrouter.ai/api）、Vercel AI Gateway（https://ai-gateway.vercel.sh/typesafe）或自建的兼容服务。只接受 http(s)、不带账号密码与查询串的地址；填写密钥时非本机地址必须用 https，否则降级为不调用。"
+  },
+  "jev_model": {
+    "invisible": true,
+    "description": "Jev 模型 ID",
+    "type": "string",
+    "default": "jev-latest",
+    "hint": "默认别名 jev-latest 指向最新稳定版。调过置信度门槛后建议钉住具体版本（如 jev-1.13.0），别名会随新版本移动；经网关时按各家写法填写，例如 OpenRouter 的 ~typesafe/jev-latest。"
+  },
+  "jev_api_key_env": {
+    "invisible": true,
+    "description": "Jev API Key 环境变量名",
+    "type": "string",
+    "default": "TYPESAFE_API_KEY",
+    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不写配置、不进面板、不进日志。变量名须与 Jev 相关（含 JEV、TYPESAFE、OPENROUTER、GATEWAY、AIMLAPI 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
+  },
+  "jev_timeout": {
+    "invisible": true,
+    "description": "Jev 决策超时秒数",
+    "type": "float",
+    "default": 6.0,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 0.5
+    },
+    "hint": "范围 1~30 秒，只包住这一次 HTTP 调用，整体仍受决策超时约束。Jev 通常百毫秒级返回；不重试，超时即回落本地保守计划。"
+  },
+  "jev_min_confidence": {
+    "invisible": true,
+    "description": "Jev 决策置信度门槛",
+    "type": "float",
+    "default": 0.6,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95。取「方式、状态、长短、理由」四项置信度的最小值，低于门槛就不采用这次判断：点名消息按本地保守计划回应，环境消息继续旁听。官方建议 0.6 以下不要自动执行。"
+  },
+  "laya_base_url": {
+    "invisible": true,
+    "description": "Laya 接口地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8900",
+    "hint": "自建 Laya typed-decision 服务的地址，POST /predict 一次回答与 Jev 完全相同的一组问题。只接受 http(s)、不带账号密码与查询串的地址。走明文 http 时只放行本机与内网网段（10/8、172.16/12、192.168/16、链路本地等），公网地址必须用 https——这里发出去的是群聊内容本身，不只是密钥。"
+  },
+  "laya_timeout": {
+    "invisible": true,
+    "description": "Laya 决策超时秒数",
+    "type": "float",
+    "default": 1.5,
+    "slider": {
+      "min": 0.1,
+      "max": 10,
+      "step": 0.1
+    },
+    "hint": "范围 0.05~30 秒，只包住这一次本地 HTTP 调用，整体仍受决策超时约束。Laya 稳态约 20~60 毫秒，1.5 秒已能容纳一次冷启动；不重试，超时即回落本地保守计划。"
+  },
+  "laya_min_confidence": {
+    "invisible": true,
+    "description": "Laya 决策置信度门槛",
+    "type": "float",
+    "default": 0.6,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取 choice/score 各项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。只对 choice / score 有效——这两类的置信度是 1 - H(p)/log k，能低到 0。**不要**把它用在 noul 上：noul 报的 confidence 是 max(p, 1-p)，数学上恒 >= 0.5，门槛 <= 0.5 会让闸门永不触发，门槛 0.6 会变成「模型没把握就退、错得越自信越不退」，正好是反的。noul 请走 laya_max_uncertainty。"
+  },
+  "laya_max_uncertainty": {
+    "invisible": true,
+    "description": "Laya 决策不确定度上限",
+    "type": "float",
+    "default": 0.25,
+    "slider": {
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "范围 0~0.5。noul 使用 min(p, 1-p)，choice/score 使用 1 - max(probabilities)。旧模式遵循各原有决策路径的回退行为；决策学习 active 模式使用独立校准阈值并回退 LLM。初版不依赖 act_head；act_costs 配置不代表动作头已经训练或验证。"
+  },
+  "decision_learning_sessions": {
+    "description": "允许采集的完整会话 UMO", "type": "list", "default": [],
+    "hint": "只为这些完整 UMO 保存训练样本，默认不采集。请从会话控制台复制会话标识；明确需要所有生效群时填 *，仍遵守插件的生效和排除规则。"
+  },
+  "decision_learning_retention_days": {
+    "description": "决策样本保留天数", "type": "int", "default": 30,
+    "slider": {"min": 1, "max": 365, "step": 1}, "hint": "到期清理样本，范围 1~365 天。"
+  },
+  "decision_learning_sample_rate": {
+    "description": "接管后教师抽样比例", "type": "float", "default": 0.05,
+    "slider": {"min": 0, "max": 1, "step": 0.01}, "hint": "保留随机教师比较，避免只采集学生不确定的样本。"
+  },
+  "decision_learning_labels_per_hour": {
+    "description": "后台教师补标每小时预算", "type": "int", "default": 120,
+    "slider": {"min": 0, "max": 10000, "step": 1}, "hint": "限制后台补标调用量；0 暂停补标，不影响在线教师回退。"
+  },
+  "decision_learning_jev_fallback": {
+    "invisible": true,
+    "description": "学生失败时尝试 TypeSafe Jev", "type": "bool", "default": false,
+    "hint": "这里的 Jev 是 TypeSafe 服务，不是 AgentJev。决策学习 active 模式下学生未回答的题目可先尝试 TypeSafe Jev，再回退教师；整条链共享截止时间。"
+  },
+  "laya_internal_hosts": {
+    "invisible": true,
+    "description": "允许明文访问的 Laya 内部主机名", "type": "list", "default": [],
+    "hint": "Docker Compose 填 laya-server。只接受精确主机名，不支持通配符；用于可信容器私有网络。"
+  },
+  "vibe_backend": {
+    "invisible": true,
+    "description": "氛围分类后端",
+    "type": "string",
+    "default": "llm",
+    "options": [
+      "llm",
+      "laya"
+    ],
+    "hint": "仅规则模式开启低频氛围校准、且决策学习关闭时选择 llm 或 laya。人设模式不运行此低频校准；决策学习启用时氛围题走学习层，当前字段不决定其后端。"
+  },
+  "vibe_min_confidence": {
+    "invisible": true,
+    "description": "氛围分类置信度门槛",
+    "type": "float",
+    "default": 0.55,
+    "slider": {
+      "min": 0.3,
+      "max": 0.95,
+      "step": 0.05
+    },
+    "hint": "范围 0.3~0.95，仅 vibe_backend=laya 生效。低于门槛就不采用这次校准，沿用当前氛围判定。门槛比决策层低一些：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。"
+  },
+  "vibe_max_uncertainty": {
+    "invisible": true,
+    "description": "氛围分类不确定度上限",
+    "type": "float",
+    "default": 0.35,
+    "slider": {
+      "min": 0.0,
+      "max": 0.5,
+      "step": 0.01
+    },
+    "hint": "范围 0~0.5，仅 vibe_backend=laya 生效。不确定度超过它就不采用这次校准，沿用当前氛围判定。门槛比决策层宽松（0.35 对 0.25）：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。与决策层共用同一套不确定度语义（choice/score 用 1 - max(probabilities)，多个信号取最保守的那个），所以两个数字可以直接比较。"
+  },
+  "reply_timeout": {
+    "description": "回复模型总超时秒数",
+    "type": "float",
+    "default": 60.0,
+    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。超时取消请求并释放当前生成任务。"
+  },
+  "tool_agent_timeout": {
+    "description": "原生 Agent 总超时秒数",
+    "type": "float",
+    "default": 120.0,
+    "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。"
+  },
+  "ambient_intervention": {
+    "description": "允许未被点名时主动插话",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。legacy 下按 WTS 决定弱指代是否开口。persona_model 下该开关不再单独否决模型决策，仅作控制台兼容项。"
+  },
   "provider": {
     "description": "旧版统一 Chat Provider（兼容项）",
     "type": "string",
@@ -272,15 +349,6 @@
     "default": "",
     "_special": "select_provider",
     "hint": "仅用于低频氛围校准；为空时回退旧版 provider。persona_model 下不会再调用氛围 LLM，此字段失效。"
-  },
-  "bot_names": {
-    "description": "机器人昵称 / 唤醒名",
-    "type": "list",
-    "items": {
-      "type": "string"
-    },
-    "default": [],
-    "hint": "用于识别点名。请填写完整昵称（如“小助手”），不要用“bot”“助手”这种容易误伤的短词。"
   },
   "command_prefix": {
     "description": "指令前缀",
@@ -427,12 +495,6 @@
     "default": false,
     "hint": "默认关闭。legacy 下可低频校准氛围。persona_model 下不会再调用氛围 LLM，本地遥测仍作为决策参考。"
   },
-  "shadow_mode": {
-    "description": "观察模式（不产生副作用）",
-    "type": "bool",
-    "default": false,
-    "hint": "legacy：只记录预计动作，不抑制、停止、调用 LLM 或发送。persona_model：仍调用决策模型并记录预计动作/状态/目标/耗时，但不生成回复、不改宿主回复。"
-  },
   "learning_policy_mode": {
     "description": "Dynamics Learning 策略消费模式",
     "type": "string",
@@ -442,7 +504,7 @@
       "shadow",
       "active"
     ],
-    "hint": "off：不读取学习层发布的策略（默认）。shadow：读取并解析、算出会改成什么，但不应用，只用于对比与收集分歧数据。active：应用，且必须通过发布协议版本、已验证本体版本、基线配置摘要三项检查；任何一项不通过都会拒绝而不是降级应用。"
+    "hint": "这是 Dynamics Learning 已发布策略的消费开关，与上方决策学习 off/shadow/active 独立。off 不读取；shadow 只比较；active 在协议、本体版本和基线摘要均通过时应用，否则拒绝。"
   },
   "learning_policy_source_id": {
     "description": "学习层插件标识",

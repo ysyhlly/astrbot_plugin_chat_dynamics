@@ -122,3 +122,52 @@ pre,code { font-family:var(--mono); white-space:pre-wrap; overflow-wrap:anywhere
  .plugin-shell .topbar-tools > .button { margin-left:auto; }
  .plugin-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .plugin-shell select, .plugin-shell textarea { font-size:16px; }
 }
+
+/* The host already has a sidebar. Keep this plugin's navigation across the top
+   so configuration, diagnostics and session content retain useful width. */
+body .app.plugin-shell { width:min(100%, 1640px); max-width:none; padding:0 28px 56px; }
+body .app.plugin-shell .plugin-layout { display:block; width:100%; }
+body .app.plugin-shell .plugin-side {
+ display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center;
+ gap:8px 18px; position:relative; top:auto; min-height:0; max-height:none;
+ overflow:visible; padding:14px 0 12px; border:0; border-bottom:1px solid var(--line);
+ border-radius:0; background:transparent; box-shadow:none;
+}
+body .app.plugin-shell .plugin-side-label { margin:0; white-space:nowrap; font-size:14px; }
+body .app.plugin-shell .plugin-side-label::before { width:27px; height:27px; margin-right:8px; }
+body .app.plugin-shell .plugin-side-nav {
+ display:flex; flex-direction:row; flex-wrap:nowrap; grid-column:auto; grid-row:auto;
+ gap:2px; min-width:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin;
+}
+body .app.plugin-shell .plugin-side-item {
+ display:inline-flex; flex:none; align-items:center; width:auto; min-height:42px;
+ padding:8px 10px; border:0; border-radius:6px; white-space:nowrap;
+ font-size:13px; box-shadow:none;
+}
+body .app.plugin-shell .plugin-side-item.is-current { background:var(--cyan-soft); box-shadow:inset 0 -2px var(--cyan); }
+body .app.plugin-shell .plugin-side-item .nav-icon { width:16px; height:16px; flex-basis:16px; }
+body .app.plugin-shell .plugin-theme-toggle {
+ grid-column:auto; grid-row:auto; width:auto; min-width:116px; min-height:40px;
+ max-width:none; margin:0; padding:7px 9px; white-space:nowrap;
+}
+body .app.plugin-shell .plugin-nav-note { grid-column:2; grid-row:2; margin:0; min-height:0; }
+body .app.plugin-shell .plugin-nav-note:empty,
+body .app.plugin-shell .ui-theme-status:empty { display:none; }
+body .app.plugin-shell .ui-theme-status { grid-column:3; grid-row:2; margin:0; }
+body .app.plugin-shell .ui-theme-retry { grid-column:3; grid-row:3; }
+body .app.plugin-shell .plugin-main { padding-top:22px; }
+@media(max-width:1050px) {
+ body .app.plugin-shell .plugin-side { grid-template-columns:minmax(0,1fr) auto; }
+ body .app.plugin-shell .plugin-side-label { grid-column:1; }
+ body .app.plugin-shell .plugin-side-nav { grid-column:1/-1; grid-row:2; }
+ body .app.plugin-shell .plugin-theme-toggle { grid-column:2; grid-row:1; }
+ body .app.plugin-shell .plugin-nav-note { grid-column:1/-1; grid-row:3; }
+ body .app.plugin-shell .ui-theme-status { grid-column:1/-1; grid-row:4; }
+}
+@media(max-width:760px) {
+ body .app.plugin-shell { padding:0 16px 40px; }
+ body .app.plugin-shell .plugin-side { margin:0 -16px; padding:10px 16px; }
+ body .app.plugin-shell .plugin-side-nav { margin:0 -16px; padding:0 16px 4px; }
+ body .app.plugin-shell .plugin-side-item { min-height:44px; }
+ body .app.plugin-shell .plugin-main { padding-top:18px; }
+}

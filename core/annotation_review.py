@@ -41,6 +41,10 @@ class AnnotationReview:
             "undecided": [],
             "note": "草稿只写进本插件自己的键，不会成为标注；采纳与否由你在回放页按下保存决定。",
         }
+        if getattr(getattr(self.host, "_runtime_config", None), "decision_backend", None) == "kev":
+            payload["state"] = "disabled"
+            payload["reason"] = "Kev 决策模式已关闭大模型预标注。"
+            return payload
         if not self.host.annotation_draft_enabled:
             payload["state"] = "disabled"
             payload["reason"] = ("AI 预标注默认关闭：它会把该会话的消息正文发给你配置的模型。"

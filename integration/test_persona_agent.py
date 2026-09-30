@@ -122,6 +122,10 @@ def host_fixture(monkeypatch):
 @pytest.mark.asyncio
 async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(host_fixture):
     ctx, event, calls = host_fixture
+    ctx.tools["stop_conversation"] = FunctionTool(
+        name="stop_conversation", description="stop", parameters={"type": "object", "properties": {}}
+    )
+    ctx.persona_manager.personas_v3[0]["tools"].append("stop_conversation")
     bridge = AstrBotAgentBridge(ctx)
     assert bridge.check(), bridge.diagnostic
     persona = await bridge.snapshot(event)
@@ -133,6 +137,7 @@ async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(h
     assert any("完整聚合请求" in str(m["content"]) for m in messages)
     assert "allowed" in calls[0]["func_tool"].names()
     assert "forbidden" not in calls[0]["func_tool"].names()
+    assert "stop_conversation" not in calls[0]["func_tool"].names()
     assert event.message_str == "完整请求" and not event.sent and not ctx.saved
     assert await bridge.commit(event, output, "第一段。")
     saved = json.dumps(ctx.saved[-1], ensure_ascii=False)

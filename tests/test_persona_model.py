@@ -5,6 +5,7 @@ import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -868,6 +869,46 @@ async def test_persona_decision_uses_shared_routing_budget(model_plugin, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_kev_only_unavailable_turn_does_not_call_chat_model(model_plugin):
+    from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
+    p, bridge = model_plugin
+    p._runtime_config = replace(p._runtime_config, decision_backend="kev")
+    p.decision_learning.enabled = lambda _session: True
+    p.decision_learning.evaluate = AsyncMock(return_value=None)
+    p.context.llm_generate = AsyncMock()
+    turn = TurnContext("room", "user", "请回答",
+        (MessageSnapshot("m", "user", "请回答"),), (), 0, 0, 0, True)
+    try:
+        decision = await p.persona_engine.decide(ModelTurn(turn, (), {}, False),
+                                                 bridge.persona, "observing")
+        assert decision.action == "ignore"
+        assert decision.target_message_ids == ()
+        p.context.llm_generate.assert_not_awaited()
+        assert p._topic_reranker() is None
+        assert await p._classify_vibe_with_llm("room", "你好") is None
+        p.context.llm_generate.assert_not_awaited()
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_kev_only_skips_incomplete_auxiliary_decisions(model_plugin):
+    import time
+    from astrbot_plugin_chat_dynamics.core.turn_pipeline import _fill_turn_decisions
+
+    p, _ = model_plugin
+    p._runtime_config = replace(p._runtime_config, decision_backend="kev")
+    p.decision_learning.evaluate = AsyncMock()
+    try:
+        p._warm_completeness_opinion("这句话说完了吗", "room")
+        await _fill_turn_decisions(p, SimpleNamespace(), time.perf_counter() + 1)
+        await asyncio.sleep(0)
+        p.decision_learning.evaluate.assert_not_awaited()
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
 async def test_persona_decision_timeout_includes_provider_queue(model_plugin):
     from contextlib import AsyncExitStack
     from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
@@ -885,31 +926,5 @@ async def test_persona_decision_timeout_includes_provider_queue(model_plugin):
             assert not p.decision_calls
             assert not budget.waiters
         assert not budget.active
-    finally:
-        await p.terminate()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("learning_result", [None, {"join": {"noul": 0.9}}, RuntimeError("teacher failed")])
-async def test_unavailable_learning_uses_configured_persona_model(model_plugin, monkeypatch, learning_result):
-    from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
-
-    p, bridge = model_plugin
-    p._runtime_config = replace(p._runtime_config, decision_backend="model", decision_learning_mode="collect")
-    monkeypatch.setattr(p.decision_learning, "enabled", lambda session: True)
-
-    async def evaluate(**kwargs):
-        if isinstance(learning_result, Exception):
-            raise learning_result
-        return learning_result
-
-    monkeypatch.setattr(p.decision_learning, "evaluate", evaluate)
-    turn = TurnContext("room", "user", "帮我看一下", (MessageSnapshot("m", "user", "帮我看一下"),),
-                       (), 0, 0, 0, False)
-    try:
-        decision = await p.persona_engine.decide(ModelTurn(turn, (), {}, False), bridge.persona, "observing")
-        assert decision.action == "reply"
-        assert decision.reason_code == "relevant_request"
-        assert len(p.decision_calls) == 1
     finally:
         await p.terminate()

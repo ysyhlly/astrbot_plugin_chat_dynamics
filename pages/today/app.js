@@ -90,13 +90,16 @@ function renderOccasion(air) {
   els.oneLiner.textContent =
     air.rhythm_summary || air.one_liner || occ.reason_zh || "暂无白话摘要";
   if (air.empty) {
-    els.emptyHint.innerHTML = `暂无活跃群 · 可去侧栏「分寸台」`;
+    els.emptyHint.textContent = "暂无活跃群 · 可从顶部导航打开「分寸台」";
   } else {
     els.emptyHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览";
   }
 }
 
 function renderThermo(air) {
+  document.getElementById("thermoScope").textContent = selectedUmo
+    ? "今天 · 当前会话的安静与插话"
+    : "今天 · 所有会话的安静与插话";
   const t = air.thermometer || {};
   const intervene = Number(t.intervene_count || air.intervene_count || 0);
   const quiet = Number(t.quiet_count || air.quiet_count || 0);
@@ -147,6 +150,7 @@ async function refresh() {
     if (revision !== refreshRevision) return;
     online = true;
     setLink(els, true, "已连接");
+    document.getElementById("lastRefresh").textContent = `${new Date().toLocaleTimeString("zh-CN")} 更新`;
     fillSessionSelect(els.sessionSelect, air.sessions || [], selectedUmo);
     renderPartner(air);
     renderOccasion(air);

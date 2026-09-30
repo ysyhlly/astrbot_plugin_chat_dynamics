@@ -123,12 +123,23 @@ def _supported_kwargs(fn: Any, candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_error_response(resp: Any) -> bool:
-    """Whether the host marked this response as a failure rather than model output.
+    """Whether a response is a host failure or a standalone stop marker.
 
     ``LLMResponse.role`` is "assistant", "tool" or "err"; every runner in the
-    host uses "err" for a failure it reports instead of raising.
+    host uses "err" for a failure it reports instead of raising. A stopped
+    runner or provider can also return a status marker with role "assistant".
     """
-    return str(getattr(resp, "role", "") or "").strip().lower() == "err"
+    if str(getattr(resp, "role", "") or "").strip().lower() == "err":
+        return True
+    text = resp if isinstance(resp, str) else getattr(resp, "completion_text", None)
+    # Some providers report a stopped conversation as an assistant completion
+    # instead of an error.  These standalone status markers are not dialogue.
+    if not isinstance(text, str):
+        return False
+    return text.strip().casefold().rstrip(".") in {
+        "conversationstopped", "conversation_stopped", "conversation stopped",
+        "output stopped",
+    }
 
 
 def completion_text(resp: Any) -> str:

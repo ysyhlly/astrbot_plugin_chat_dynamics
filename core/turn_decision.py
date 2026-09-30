@@ -212,6 +212,11 @@ class TurnDecision:
         return cls("reply" if turn.explicit else "ignore", "focused" if turn.explicit else "observing",
                    tuple(m.message_id for m in turn.messages), "回应当前明确请求，不推测缺失内容。", "normal", reason)
 
+    @classmethod
+    def abstain(cls, reason: str) -> TurnDecision:
+        """A missing model decision never authorizes a generated reply."""
+        return cls("ignore", "observing", (), "", "normal", reason)
+
 
 DECISION_INSTRUCTIONS = """You decide participation for a group-chat persona; do not write the group-chat reply or call tools.
 Use the supplied effective persona to choose both participation and interaction state.

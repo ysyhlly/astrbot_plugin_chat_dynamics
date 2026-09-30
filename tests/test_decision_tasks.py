@@ -27,6 +27,20 @@ def test_multi_target_labels_are_preserved_and_unselected_targets_not_injected()
     assert answer.reason_code == 'learned_missing_target'
 
 
+def test_kev_only_missing_target_and_invalid_answer_abstain_even_when_addressed():
+    turn = TurnContext('room', 'user', '请回答',
+        (MessageSnapshot('m1', 'user', '请回答'),), (), 1, 1, 0, True)
+    questions, candidates = turn_questions(turn)
+    labels = {'join': True, 'action': 'reply', 'state': 'focused', 'length': 'normal',
+              'reply_length': 'short', 'recipient_choice': 'user',
+              'reason': 'addressed_request', 'target.0': False}
+    answers = teacher_answers(json.dumps(labels), questions)
+    decision = turn_from_answers(turn, answers, candidates, fail_closed=True)
+    assert decision.action == 'ignore' and decision.target_message_ids == ()
+    invalid = turn_from_answers(turn, {}, candidates, fail_closed=True)
+    assert invalid.action == 'ignore' and invalid.target_message_ids == ()
+
+
 def test_primary_recipient_choice_uses_human_source_and_none():
     turn = TurnContext('room', 'user', '帮我看一下',
         (MessageSnapshot('m1', 'user', '', source_text='帮我看一下'),),

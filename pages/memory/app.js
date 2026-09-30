@@ -135,7 +135,7 @@ function renderList() {
   if (!selectedUmo) {
     els.listHost.innerHTML = "";
     els.listEmpty.classList.remove("hidden");
-    els.listEmpty.innerHTML = `请先选择群会话。也可在侧栏「今日读空气」里挑一个。`;
+    els.listEmpty.textContent = "请先选择群聊会话。也可从顶部导航打开「今日读空气」。";
     return;
   }
   if (!rows.length) {

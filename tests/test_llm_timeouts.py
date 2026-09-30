@@ -11,6 +11,28 @@ from astrbot_plugin_chat_dynamics.core import llm_adapter, native_request
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["Conversation stopped.", "ConversationStopped", "conversation_stopped", "Output stopped."])
+async def test_stopped_provider_output_is_never_returned_as_dialogue(marker):
+    async def respond(**_kwargs):
+        return SimpleNamespace(role="assistant", completion_text=marker)
+
+    adapter = LLMAdapter(SimpleNamespace(llm_generate=respond), "provider")
+    with pytest.raises(llm_adapter.LLMErrorResponse):
+        await adapter.generate(prompt="hello", umo="group", system_prompt="")
+
+
+@pytest.mark.asyncio
+async def test_discussion_of_a_stop_marker_remains_valid_dialogue():
+    text = "Conversation stopped. 是宿主报告的停止状态。"
+
+    async def respond(**_kwargs):
+        return SimpleNamespace(role="assistant", completion_text=text)
+
+    adapter = LLMAdapter(SimpleNamespace(llm_generate=respond), "provider")
+    assert await adapter.generate(prompt="explain", umo="group", system_prompt="") == text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["modern", "legacy", "lookup", "legacy_lookup", "native", "media", "hooks"])
 async def test_timeout_cancels_each_stage_and_next_call_succeeds(monkeypatch, stage):
     cancelled = asyncio.Event()

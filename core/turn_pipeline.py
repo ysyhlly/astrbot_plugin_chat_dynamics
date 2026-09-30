@@ -260,7 +260,10 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         for item in parsed_events
     )
     poke_at_bot = any(getattr(item, "poke_at_bot", False) for item in poke_events)
-    if poke_only:
+    # Kev-only mode sends a poke through the same persona turn as any other
+    # message.  The old poke policy could otherwise authorize a reply or a
+    # poke-back without consulting the decision model.
+    if poke_only and getattr(host._runtime_config, "decision_backend", "model") != "kev":
         if last_event is not None and not host.shadow_mode:
             if poke_at_bot:
                 host._claim_poke_event(last_event)
@@ -337,6 +340,8 @@ async def _fill_turn_decisions(host, turn: _PreparedTurn, deadline: float) -> No
     answer that cannot carry a decision. The decision points then keep the
     heuristics they already had.
     """
+    if getattr(host._runtime_config, "decision_backend", "model") == "kev":
+        return
     client = getattr(host, "laya", None)
     if client is None:
         return
@@ -383,7 +388,8 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
     # allowance: serial stages do not each receive a new full deadline.
     cfg = host._runtime_config
     learning = getattr(host, "decision_learning", None)
-    learning_enabled = learning is not None and learning.enabled(turn.result.session_id)
+    learning_enabled = (cfg.decision_backend != "kev" and learning is not None
+                        and learning.enabled(turn.result.session_id))
     allowance = max(float(cfg.routing_neural_timeout),
                     float(cfg.topic_reranker_timeout) if cfg.topic_reranker_enabled else 0.0)
     if learning_enabled:
