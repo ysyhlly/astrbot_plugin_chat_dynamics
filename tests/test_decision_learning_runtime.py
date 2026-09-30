@@ -532,8 +532,10 @@ async def test_snapshot_uses_active_denominator_and_service_status(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_large_dataset_snapshot_does_not_wait_for_full_scan(tmp_path):
+@pytest.mark.parametrize("uptime", [1.0, 3600.0])
+async def test_large_dataset_snapshot_does_not_wait_for_full_scan(tmp_path, monkeypatch, uptime):
     import threading
+    from astrbot_plugin_chat_dynamics.core import decision_learning
 
     runtime, host, _ = make_runtime(tmp_path)
     runtime.cfg.decision_learning_student_backend = "agentjev"
@@ -553,6 +555,7 @@ async def test_large_dataset_snapshot_does_not_wait_for_full_scan(tmp_path):
             pass
 
     runtime.store = SlowStore()
+    monkeypatch.setattr(decision_learning, "time", SimpleNamespace(monotonic=lambda: uptime))
     try:
         first = await asyncio.wait_for(runtime.snapshot(), 0.5)
         assert first["dataset_summary_pending"] is True

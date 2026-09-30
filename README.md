@@ -213,4 +213,4 @@ python scripts/check_release.py
 
 ### 决策学习与模型接入
 
-决策学习使用教师标签与复核样本，默认关闭，回复正文仍由主 Agent 生成。Kev 接入使用包含人设与环境的版本化完整快照，并保留多个独立目标标签；兼容 AgentJev 和旧 Laya 的采集与评估能力。插件侧栏“决策学习”提供样本、评估、晋升与回滚入口。详见 [AgentJev 训练说明](docs/agentjev-training.md) 与 [决策学习操作指南](docs/decision-learning.md)；旧 Laya 资料保留在 [历史部署文档](docs/laya-deployment.md)。
+决策学习使用教师标签与复核样本，默认关闭，回复正文仍由主 Agent 生成。Kev 接入使用包含人设与环境的版本化完整快照，并保留多个独立目标标签；兼容 AgentJev 和旧 Laya 的采集与评估能力。插件侧栏“决策模型”提供样本与评估信息，管理入口按实际后端能力显示。详见 [AgentJev 训练说明](docs/agentjev-training.md) 与 [决策学习操作指南](docs/decision-learning.md)；旧 Laya 资料保留在 [历史部署文档](docs/laya-deployment.md)。

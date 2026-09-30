@@ -111,7 +111,9 @@ class DecisionLearning:
         self._coverage = {}
         self._coverage_at = 0.0
         self._summary_cache = {}
-        self._summary_at = 0.0
+        # The monotonic clock starts near zero on freshly booted hosts; the
+        # first snapshot must refresh even before the cache interval elapses.
+        self._summary_at = float("-inf")
         self._summary_lock = asyncio.Lock()
         self._summary_task = None
         self._summary_stop = threading.Event()

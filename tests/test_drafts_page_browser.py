@@ -490,7 +490,7 @@ def test_the_side_nav_links_every_page_and_marks_review_current(browser, page_se
         assert current.count() == 1 and "AI 标注审批" in current.inner_text()
         assert page.locator('[data-nav-page="replay"]').count() == 1
         learning = page.locator('[data-nav-page="learning"]')
-        assert learning.count() == 1 and "决策学习" in learning.inner_text()
+        assert learning.count() == 1 and "决策模型" in learning.inner_text()
 
 
 def test_an_empty_backlog_says_so(browser, page_server):

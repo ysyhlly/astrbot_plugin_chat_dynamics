@@ -122,7 +122,9 @@ def console_server():
         thread.join(timeout=2)
 
 
-@pytest.mark.parametrize("persona_mode,backend", [(False, "model"), (True, "model"), (True, "jev")])
+@pytest.mark.parametrize("persona_mode,backend", [
+    (False, "model"), (True, "model"), (True, "jev"), (True, "kev"),
+])
 def test_console_loads_redacted_state_and_applies_preset(console_server, persona_mode, backend):
     calls = []
     logs = []
@@ -156,11 +158,15 @@ def test_console_loads_redacted_state_and_applies_preset(console_server, persona
                         const result = await original(endpoint);
                         Object.assign(result.data, {decision_mode:'persona_model', agent_bridge:'ready',
                             decision_backend:'__BACKEND__',
-                            jev:{backend:'__BACKEND__', model:'jev-latest', status:'available', error_code:''},
+                            kev:{backend:'kev', enabled:'__BACKEND__' === 'kev', checkpoint_id:'kev-release-test',
+                                calls:7, failures:1, status:'__BACKEND__' === 'kev' ? 'available' : 'disabled', error_code:''},
+                            jev:{backend:'__BACKEND__' === 'jev' ? 'jev' : 'model',
+                                enabled:'__BACKEND__' === 'jev', model:'__BACKEND__' === 'jev' ? 'jev-pinned' : '',
+                                status:'__BACKEND__' === 'jev' ? 'available' : 'disabled', error_code:''},
                             interaction_state:'focused', model_queue_depth:2,
                             model_decision:{action:'reply',state:'focused',reason_code:'relevant_request',
                                 backend:'__BACKEND__',
-                                jev:{action:{type:'choice',choice:'reply',confidence:0.93}},
+                                ...('__BACKEND__' === 'jev' ? {jev:{action:{type:'choice',choice:'reply',confidence:0.93}}} : {}),
                                 target_message_ids:['m1'],latency_ms:125,shadow:true}});
                         return result;
                     };
@@ -171,16 +177,27 @@ def test_console_loads_redacted_state_and_applies_preset(console_server, persona
         page.get_by_text("观察模式 · 不产生副作用").wait_for()
         page.get_by_text("控制台正文：已脱敏").wait_for()
         if persona_mode:
-            page.get_by_text("人设模型决策", exact=False).wait_for()
+            expected_backend_label = {"kev": "Kev 决策模型", "jev": "Jev 决策模型", "model": "决策后端未确认"}[backend]
+            page.locator("#shadowState").filter(has_text=expected_backend_label).wait_for()
+            assert page.locator("#shadowState").get_attribute("title") == "人设状态由 ready 提供"
             page.locator("#tab-sessions").click()
             page.locator("#traceMeta").filter(has_text="relevant_request").wait_for()
             page.locator("#tab-policy").click()
             trace = page.locator("#traceMeta").inner_text().lower()
             assert "125ms" in trace
+            assert "人设状态 focused · reply · relevant_request" in trace
+            assert "排队 2 · 仅观察" in trace
+            assert page.locator("#traceMeta").get_attribute("title") == "回应消息：m1"
             # A Jev backend names its own model in the trace; the chat-provider
             # wording would credit a model that did not decide.
             assert ("置信 0.93" in trace) is (backend == "jev")
-            page.locator("#providerState").filter(has_text="Jev" if backend == "jev" else "当前 UMO").wait_for()
+            assert ("jev 决策" in trace) is (backend == "jev")
+            expected_provider = {"kev": "决策：Kev kev-release-test", "jev": "决策：Jev jev-pinned", "model": "决策：未配置（disabled）"}[backend]
+            page.locator("#providerState").filter(has_text=expected_provider).wait_for()
+            assert "回复正文：当前会话" in page.locator("#providerState").inner_text()
+            if backend == "kev":
+                assert "Kev 请求 7 次（失败 1 次）" in page.locator("#metricState").inner_text()
+                assert "Jev" not in page.locator("#providerState").inner_text()
         screenshot_dir = os.environ.get("BROWSER_SCREENSHOT_DIR")
         if screenshot_dir:
             Path(screenshot_dir).mkdir(parents=True, exist_ok=True)

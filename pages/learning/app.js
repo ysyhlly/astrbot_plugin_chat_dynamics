@@ -50,7 +50,7 @@ function render(data) {
   const onlineManagement = data.online_management === true && !modelOnly;
   el('trainingCard').hidden = !onlineManagement;
   el('modelManagementCard').hidden = !onlineManagement;
-  el('teacherHistory').hidden = modelOnly;
+  el('teacherHistory').hidden = modelOnly || data.decision_backend === 'kev';
   el('modelOnlyNote').textContent = modelOnly
     ? '当前使用发布版 Kev 独占在线决策。聊天模型只生成回复正文；Kev 不可用或回答无效时不会由聊天模型补做决策。'
     : `当前配置：${data.decision_backend || '未确认'} · ${labels[data.mode] || data.mode || '未知'}。请在配置页检查在线决策路径。`;

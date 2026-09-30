@@ -20,7 +20,9 @@ def open_learning(context, server, *, fail=None, repeated_cursor=False,
             return {"ok": False, "error": "验收未通过"}
         data = {}
         if endpoint == "learning/stats":
-            data = {"mode": "shadow", "model_id": "candidate-1", "p95_ms": 123,
+            data = {"mode": "shadow", "decision_backend": "model", "model_only": False,
+                    "student_backend": "laya", "online_management": True,
+                    "model_id": "candidate-1", "p95_ms": 123,
                     "takeover_rate": .25, "teacher_fallback_rate": .1,
                     "tasks": [{"task_id": "join", "samples": 650, "status": "collecting"}],
                     "disagreements": [{"task_id": "join", "teacher": True, "student": False}]}
@@ -52,7 +54,7 @@ def open_learning(context, server, *, fail=None, repeated_cursor=False,
     if expect_job:
         page.wait_for_selector('[data-cancel="job-123"]')
     else:
-        page.wait_for_function("document.getElementById('mode').textContent === '旁路比较'")
+        page.wait_for_function("document.getElementById('status').textContent.startsWith('已连接')")
     return page, calls
 
 
@@ -62,11 +64,78 @@ def test_agentjev_hides_laya_management_and_does_not_poll_jobs(browser, page_ser
                                     stats_override={"student_backend": "agentjev",
                                                     "online_management": False},
                                     expect_job=False)
-        assert page.locator("#agentjevNotice").is_visible()
+        assert page.locator("#mode").inner_text() == "旁路比较"
+        assert page.locator("#trainingCard").is_hidden()
+        assert page.locator("#modelManagementCard").is_hidden()
         assert not page.locator("#trainForm").is_visible()
         assert not page.locator("#promote").is_visible()
-        assert page.locator("#compareJev").is_visible()
+        assert not page.locator("#compareJev").is_visible()
+        assert page.locator("#candidate").is_disabled()
+        assert page.locator("#teacherHistory").is_visible()
         assert not any(endpoint == "learning/jobs/status" for _, endpoint, _ in calls)
+
+
+def test_kev_model_only_is_read_only_and_shows_online_results(browser, page_server):
+    with browser.new_context(viewport={"width": 390, "height": 844}) as context:
+        page, calls = open_learning(context, page_server, stats_override={
+            "mode": "active", "decision_backend": "kev", "model_only": True,
+            "student_backend": "kev", "online_management": False,
+            "model_id": "", "student_service": {"checkpoint_id": "kev-release-test"},
+            "takeover_rate": .75, "teacher_fallback_rate": 0,
+            "p95_ms": 45, "student_p95_ms": 22,
+            "stats": {"kev": 6, "active_questions": 8, "student_requests": 3,
+                      "student_answered": 2, "student_timeout": 1},
+            "recent": [{"tasks": ["join", "action"],
+                        "sources": {"join": "kev", "action": "kev"},
+                        "decisions": {"join": True, "action": "reply"},
+                        "student_status": "success", "model_version": "kev-release-test",
+                        "strategy": "kev_model_only", "latency_ms": 45,
+                        "student_latency_ms": 22, "student_timeout_ms": 2500,
+                        "outcome": {"final_outcome": "delivered"}}],
+        }, expect_job=False)
+        assert page.locator("#mode").inner_text() == "Kev 独占"
+        assert page.locator("#model").inner_text() == "kev-release-test"
+        assert page.locator("#takeoverLabel").inner_text() == "Kev 任务采用率"
+        assert page.locator("#takeover").inner_text() == "75.0%"
+        assert page.locator("#fallbackLabel").inner_text() == "教师回退（应为 0）"
+        assert page.locator("#fallback").inner_text() == "0.0%"
+        assert page.locator("#studentLatencyLabel").inner_text() == "Kev 请求 p95"
+        assert page.locator("#studentLatency").inner_text() == "22 ms"
+        assert "不会由聊天模型补做决策" in page.locator("#modelOnlyNote").inner_text()
+        assert page.locator("#trainingCard").is_hidden()
+        assert page.locator("#modelManagementCard").is_hidden()
+        assert page.locator("#candidate").is_disabled()
+        assert page.locator("#teacherHistory").is_hidden()
+        assert not page.locator("#compareTeacher").is_visible()
+        assert "Kev 已采用 2/2" in page.locator("#studentRecent").inner_text()
+        assert "最终结果：已发送" in page.locator("#studentRecent").inner_text()
+        assert "模型请求 22 ms" in page.locator("#studentRecent").inner_text()
+        page.locator("#studentRecent details summary").click()
+        assert "join：true · Kev 已采用" in page.locator("#studentRecent").inner_text()
+        assert "action：reply · Kev 已采用" in page.locator("#studentRecent").inner_text()
+        before = sum(endpoint == "learning/stats" for _, endpoint, _ in calls)
+        page.locator("#refresh").click()
+        page.wait_for_function("document.getElementById('status').textContent.startsWith('已连接')")
+        assert sum(endpoint == "learning/stats" for _, endpoint, _ in calls) > before
+        assert not any(method == "POST" for method, _, _ in calls)
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+
+@pytest.mark.parametrize("mode,label", [("shadow", "旁路比较"), ("off", "关闭")])
+def test_kev_nonactive_hides_teacher_comparison_and_management(browser, page_server, mode, label):
+    with browser.new_context() as context:
+        page, calls = open_learning(context, page_server, stats_override={
+            "mode": mode, "decision_backend": "kev", "model_only": False,
+            "student_backend": "kev", "online_management": False,
+            "model_id": "", "student_service": {"checkpoint_id": "kev-release-test"},
+        }, expect_job=False)
+        assert page.locator("#mode").inner_text() == label
+        assert page.locator("#teacherHistory").is_hidden()
+        assert not page.locator("#compareTeacher").is_visible()
+        assert page.locator("#trainingCard").is_hidden()
+        assert page.locator("#modelManagementCard").is_hidden()
+        assert page.locator("#candidate").is_disabled()
+        assert not any(method == "POST" for method, _, _ in calls)
 
 
 def test_stats_jobs_envelope_and_exact_cancel_request(browser, page_server):
@@ -77,6 +146,11 @@ def test_stats_jobs_envelope_and_exact_cancel_request(browser, page_server):
         assert page.locator("#takeover").inner_text() == "25.0%"
         assert "650" in page.locator("#tasks").inner_text()
         assert "教师：true" in page.locator("#disagreements").inner_text()
+        assert page.locator("#trainingCard").is_visible()
+        assert page.locator("#modelManagementCard").is_visible()
+        assert not page.locator("#candidate").is_disabled()
+        assert page.locator("#teacherHistory").is_visible()
+        assert page.locator("#compareTeacher").is_visible()
         page.locator('[data-cancel="job-123"]').click()
         page.wait_for_function("document.getElementById('status').textContent === '操作完成'")
         assert ("POST", "learning/jobs/cancel", {"job_id": "job-123"}) in calls
@@ -98,12 +172,13 @@ def test_teacher_prompt_comparison_and_hard_label_explanation(browser, page_serv
             "teacher_prompt_versions": {"v1": 32, "v2": 6},
             "quality_flags": {"insufficient_evidence": 4},
         }})
-        assert "不是 100% 置信度" in page.locator("#teacherLabelMeaning").inner_text()
-        assert "概率需要校准" in page.locator("#teacherLabelMeaning").inner_text()
+        assert "0/1 是类别编码" in page.locator("#teacherLabelMeaning").inner_text()
+        assert "不代表置信度，也不代表正确答案" in page.locator("#teacherLabelMeaning").inner_text()
         assert "证据不足" in page.locator("#qualityFlags").inner_text()
         assert "v1" in page.locator("#teacherPromptVersions").inner_text()
         assert "32" in page.locator("#teacherPromptVersions").inner_text()
-        assert "标签改变不等于质量改善" in page.locator("#teacherComparisonMeaning").inner_text()
+        assert "旧后端可比较历史教师提示词" in page.locator("#teacherComparisonMeaning").inner_text()
+        assert "不代表模型质量结论" in page.locator("#qualityMeaning").inner_text()
         page.evaluate("window.__timeouts = []")
         page.locator("#compareTeacher").click()
         page.wait_for_function("document.getElementById('status').textContent === '操作完成'")
@@ -158,7 +233,7 @@ def test_collection_gaps_zero_tasks_pairs_and_student_diagnostics(browser, page_
                        {"tasks": ["join"], "student_status": "teacher_finished_first", "latency_ms": 20}],
         })
         assert "1 个尚无采集样本" in page.locator("#collectionGaps").inner_text()
-        assert "原始采集量不等于独立测试量" in page.locator("#sampleMeaning").inner_text()
+        assert "采集量不是独立测试量" in page.locator("#sampleMeaning").inner_text()
         row = page.locator('[data-task-id="join"]')
         assert row.locator("td").nth(3).inner_text() == "42"
         assert row.locator("td").nth(4).inner_text() == "1 / 2"
@@ -166,7 +241,7 @@ def test_collection_gaps_zero_tasks_pairs_and_student_diagnostics(browser, page_
         zero = page.locator('[data-task-id="recipient"]')
         assert zero.locator("td").nth(1).inner_text() == "0"
         assert zero.locator("td").nth(4).inner_text() == "0 / 2"
-        assert "教师采集缺 500 条" in zero.inner_text()
+        assert "历史采集缺 500 条" in zero.inner_text()
         assert "查看模型评估报告" in zero.inner_text()
         assert "版本不匹配" in page.locator("#studentCounters").inner_text()
         assert "student_http_503" in page.locator("#studentCounters").inner_text()
@@ -181,7 +256,8 @@ def test_quality_flags_are_review_hints_and_optional_queue_is_safe(browser, page
             "quality_flags": {"needs_review": 7, "future_<flag>": 2, "disagreement": 0, "join_action_conflict": 4},
             "queue_priority": {"high": 3, "normal": 6},
         }})
-        assert "需复核不等于教师错误" in page.locator("#qualityMeaning").inner_text()
+        assert "标记用于安排人工检查" in page.locator("#qualityMeaning").inner_text()
+        assert "不自动修改历史标签，也不代表模型质量结论" in page.locator("#qualityMeaning").inner_text()
         assert "需人工复核" in page.locator("#qualityFlags").inner_text()
         assert "参与意愿与动作矛盾" in page.locator("#qualityFlags").inner_text()
         assert "future_<flag>" in page.locator("#qualityFlags").inner_text()
