@@ -177,6 +177,7 @@ async def test_waiting_wake_survives_chatter_but_respects_cancellation(jev_plugi
     waiting = quoted_event(kind, message_id='waiting')
     chatter = quoted_event('quote_peer', message_id='chatter')
     waiters = []
+    callback_tasks = []
     terminated = False
     try:
         await p.on_group_message(head)
@@ -195,6 +196,7 @@ async def test_waiting_wake_survives_chatter_but_respects_cancellation(jev_plugi
         async def observe_acquire():
             if runtime.model_admission.locked():
                 waiting_entered.set()
+                callback_tasks.append(asyncio.current_task())
             return await acquire()
 
         runtime.model_admission.acquire = observe_acquire
@@ -220,9 +222,12 @@ async def test_waiting_wake_survives_chatter_but_respects_cancellation(jev_plugi
         elif ending == 'reset':
             await p._reset_session_state_async(runtime.session_key)
         elif ending == 'cancel':
-            task.cancel()
+            # An immediate @ timer may own the callback before manual flush.
+            # Cancel the callback that actually waits for this request's slot.
+            callback = callback_tasks[-1]
+            callback.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await task
+                await callback
         elif ending == 'unload':
             await p.terminate()
             terminated = True

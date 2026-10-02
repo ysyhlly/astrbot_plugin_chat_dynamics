@@ -37,7 +37,7 @@ def answers(**overrides):
 
 def test_questions_offer_only_the_plugin_vocabulary():
     questions = build_questions(turn("m1", "m2"))
-    assert set(questions) == {"join", "action", "state", "length", "reason", "target"}
+    assert set(questions) == {"completion", "join", "action", "state", "length", "reason", "target"}
     assert questions["join"]["type"] == "noul"
     assert tuple(questions["action"]["criteria"]) == ACTIONS
     assert tuple(questions["state"]["criteria"]) == STATES

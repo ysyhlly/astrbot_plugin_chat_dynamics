@@ -148,6 +148,45 @@ async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(h
 
 
 @pytest.mark.asyncio
+async def test_real_builder_keeps_same_name_qq_members_distinct_in_history(host_fixture):
+    from astrbot_plugin_chat_dynamics.core.member_identity import IDENTITY_INSTRUCTIONS
+    from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, TurnDecision, reply_prompt
+
+    ctx, event, calls = host_fixture
+    event.platform_meta.name = "aiocqhttp"
+    event.message_obj.sender.nickname = "阿青"
+    event.message_obj.self_id = "990009"
+    bridge = AstrBotAgentBridge(ctx)
+    for index, account in enumerate(("111001", "222002")):
+        event.message_obj.sender.user_id = account
+        event.message_obj.message_id = f"m{index}"
+        message = MessageSnapshot(f"m{index}", account, "", author_name="阿青", platform="aiocqhttp")
+        turn = TurnContext(event.unified_msg_origin, account, f"第 {index} 个成员的请求", (message,),
+                           (), 0, 0, 0, True, wake_kind="at", bot_id="990009")
+        decision = TurnDecision("reply", "focused", (f"m{index}",), "回答当前成员", "brief", "at_required")
+        output = await bridge.generate(event, (event,), reply_prompt(turn, decision), await bridge.snapshot(event),
+                                       "provider", history_text=turn.history_text())
+        assert await bridge.commit(event, output, "已送达回复")
+    assert len(calls) == 2
+    second_context = [m if isinstance(m, dict) else m.model_dump() for m in calls[-1]["contexts"]]
+    assert IDENTITY_INSTRUCTIONS in second_context[0]["content"]
+    second_json = json.dumps(second_context, ensure_ascii=False)
+    assert "111001" in second_json and "222002" in second_json
+    user_texts = []
+    for message in ctx.saved[-1]:
+        if message["role"] == "user":
+            content = message["content"]
+            if isinstance(content, list):
+                user_texts.extend(part["text"] for part in content if part.get("type") == "text")
+            else:
+                user_texts.append(content)
+    attributed = [json.loads(text) for text in user_texts if text.startswith('{"speaker_identity"')]
+    assert [m["speaker_identity"]["qq"] for m in attributed] == ["111001", "222002"]
+    assert all(m["speaker_identity"]["display_name"] == "阿青" for m in attributed)
+    assert all("response_plan" not in m for m in attributed)
+
+
+@pytest.mark.asyncio
 async def test_real_builder_forwards_custom_reply_guidance_with_persona(host_fixture):
     from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, TurnDecision, reply_prompt
 

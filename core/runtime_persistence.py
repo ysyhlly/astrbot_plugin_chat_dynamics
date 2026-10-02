@@ -81,13 +81,13 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
                        'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',
                        'inferred_parent_id', 'is_wake', 'trigger_user_id',
-                       'quoted_author_id', 'topic_source_text',
+                       'quoted_author_id', 'quoted_author_name', 'topic_source_text',
+                       'sender_name', 'sender_platform', 'actual_mentions',
                        'platform_message_id')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.
-_LEGACY_META_FIELDS = ('source', 'addressivity', 'decision', 'vibe_mode',
-                       'sender_name', 'display_name')
+_LEGACY_META_FIELDS = ('source', 'addressivity', 'decision', 'vibe_mode', 'display_name')
 META_FIELDS = _WRITTEN_META_FIELDS + _LEGACY_META_FIELDS
 SHADOW_FIELDS = ('session_key', 'timestamp', 'action', 'reason', 'willingness_score',
                  'threshold', 'topic_relevance', 'professionalism', 'question_value',

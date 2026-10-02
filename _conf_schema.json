@@ -140,37 +140,37 @@
     "hint": "以此前缀开头的消息不会被状态机吞掉，交给指令处理器。"
   },
   "debounce_base_cooldown": {
-    "description": "防抖基础冷却时间 (秒)",
+    "description": "消息短暂聚合时间 (秒)",
     "type": "float",
-    "default": 3.5,
+    "default": 0.25,
     "slider": {
       "min": 0,
       "max": 30,
-      "step": 0.1
+      "step": 0.05
     },
-    "hint": "同一用户发送消息后的基础等待时间（默认 3.5 秒）。"
+    "hint": "Jev 判断前用于合并快速连发的短窗口，最多等待 0.25 秒；说完后直接进入回复，不再按标点延长等待。"
   },
   "debounce_extended_cooldown": {
-    "description": "悬挂语句扩展冷却时间 (秒)",
+    "description": "Jev 未说完时继续等待 (秒)",
     "type": "float",
-    "default": 6.5,
+    "default": 1.0,
     "slider": {
       "min": 0,
       "max": 60,
-      "step": 0.1
+      "step": 0.05
     },
-    "hint": "当检测到语句截断或未闭合标点时动态拉伸的冷却时间（默认 6.5 秒）。"
+    "hint": "仅 Jev 明确判断没说完时等待后续消息；收到补充后重新判断完整内容，默认 1 秒。"
   },
   "debounce_max_cap": {
-    "description": "防抖硬上限时间 (秒)",
+    "description": "未说完等待总上限 (秒)",
     "type": "float",
-    "default": 12.0,
+    "default": 4.0,
     "slider": {
       "min": 0,
       "max": 120,
       "step": 0.5
     },
-    "hint": "单次聚合窗口的最长允许持续时间，防止无限推迟（默认 12.0 秒）。"
+    "hint": "从首条碎发开始限制继续等待，默认 4 秒；到上限仍明确没说完时保持旁听，避免反复判断或打断。"
   },
   "strong_addressivity_threshold": {
     "description": "强指代判定阈值",
@@ -219,13 +219,13 @@
   "base_thinking_delay": {
     "description": "基础思考停顿 (秒)",
     "type": "float",
-    "default": 0.8,
+    "default": 0.0,
     "slider": {
       "min": 0,
       "max": 10,
       "step": 0.1
     },
-    "hint": "首次输出前的拟人化思考停顿（默认 0.8 秒）。"
+    "hint": "旧回复路径的拟人化停顿；Jev 决定接话后，正文生成完成即发送，不额外叠加思考停顿。"
   },
   "max_fragments": {
     "description": "最大碎发条数",

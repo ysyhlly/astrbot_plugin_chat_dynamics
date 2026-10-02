@@ -14,6 +14,8 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+from .member_identity import display_name
+
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.platform_bridge")
 
 
@@ -86,6 +88,9 @@ class ParsedEvent:
     poke_at_bot: bool = False
     reply_sender_id: str = ""
     platform_mentions: List[str] = field(default_factory=list)
+    sender_name: str = ""
+    platform: str = ""
+    reply_sender_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -309,6 +314,10 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
     """Normalizes an AstrMessageEvent (or test double) into ParsedEvent."""
     group_id = str(_safe_call(event, "get_group_id", "") or "")
     sender_id = str(_safe_call(event, "get_sender_id", "unknown") or "unknown")
+    sender = getattr(getattr(event, "message_obj", None), "sender", None)
+    sender_name = display_name(_safe_call(event, "get_sender_name", "")) or display_name(
+        getattr(sender, "nickname", ""))
+    platform = str(_safe_call(event, "get_platform_name", "") or "").strip().lower()[:64]
     self_id = str(_safe_call(event, "get_self_id", "") or "")
     text = str(getattr(event, "message_str", "") or "")
     original_text = _original_message_text(event, text)
@@ -328,6 +337,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
     outline = str(_safe_call(event, "get_message_outline", "") or "")
     comps = _extract_components(event)
     reply_sender_id = ""
+    reply_sender_name = ""
     for comp in comps:
         if _comp_type_name(comp).lower() != "reply":
             continue
@@ -338,6 +348,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
             continue
         sender = str(getattr(comp, "sender_id", "") or "")
         reply_sender_id = sender if sender not in {"0", "None"} else ""
+        reply_sender_name = display_name(getattr(comp, "sender_nickname", "")) if reply_sender_id else ""
     media_component_types: List[str] = []
     poke_target_id = ""
     has_poke = False
@@ -371,6 +382,8 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
     return ParsedEvent(
         group_id=group_id,
         sender_id=sender_id,
+        sender_name=sender_name,
+        platform=platform,
         self_id=self_id,
         message_id=message_id,
         text=text,
@@ -378,6 +391,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         platform_mentions=platform_mentions,
         reply_to_id=reply_to_id,
         reply_sender_id=reply_sender_id,
+        reply_sender_name=reply_sender_name,
         unified_msg_origin=umo,
         is_at_or_wake=is_at,
         is_command=is_command_like(text, command_prefixes)

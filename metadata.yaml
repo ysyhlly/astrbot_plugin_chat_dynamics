@@ -8,7 +8,7 @@ desc: |
   提供观察模式、会话控制台、冷却与重置，并支持媒体门闩、今日作息和可选记忆联动。
   按完整 UMO 隔离会话；需配置生效群，默认不处理任何群。
   观察模式仍会调用决策模型；旧学生训练与自动发布策略已移除。
-version: v1.15.1
+version: v1.15.2
 author: ysyhlly
 repo: "https://github.com/ysyhlly/astrbot_plugin_chat_dynamics"
 astrbot_version: ">=4.28.2,<5"

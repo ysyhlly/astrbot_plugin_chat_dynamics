@@ -5,6 +5,7 @@ from copy import deepcopy
 import math
 
 from .evidence import routing_ledger
+from .member_identity import IDENTITY_INSTRUCTIONS, member_identity, quoted_identity
 from .routing_contract import commit_topic_evidence
 from .topic_candidates import parse_candidates
 from .topic_resolution import TopicResolver
@@ -17,9 +18,12 @@ def _protected(node, routing):
                     "explicit_reply", "explicit_mention", "platform_wake", "direct_name_call"})
 
 
-def message_snapshot(node):
+def message_snapshot(node, dag):
     """Copy actual message evidence without synthesizing absent text or links."""
     return {"message_id": node.msg_id, "author": node.user_id, "text": node.text,
+            "author_identity": member_identity(node.user_id, node.metadata.get("sender_name", ""),
+                                               node.metadata.get("sender_platform", "")),
+            "quoted_author_identity": quoted_identity(node, dag),
             "reply_to": node.reply_to_id or "", "timestamp": node.timestamp,
             "mentioned_users": list(node.metadata.get("actual_mentions", node.mentioned_users))}
 
@@ -61,7 +65,7 @@ def build_routing_tasks(turn):
                 continue
             key = f"topic_{len(topics)}"
             topics[key] = tid
-            descriptions[key] = {"label": topic.label, "messages": [message_snapshot(n) for n in messages]}
+            descriptions[key] = {"label": topic.label, "messages": [message_snapshot(n, dag) for n in messages]}
         if topics:
             questions["topic"] = {"type": "choice", "instructions":
                                   "Which offered topic does the current message continue? "
@@ -69,11 +73,17 @@ def build_routing_tasks(turn):
                                   "criteria": {"KEEP": "Preserve existing unresolved or local assignment",
                                                **{key: f"Continue topic {key}" for key in topics}}}
     state = {"current_message": node.text, "author": node.user_id,
-             "bot_id": runtime.bot_id, "current": message_snapshot(node),
-             "recent_messages": [message_snapshot(n) for n in recent[-16:]],
+             "identity_policy": IDENTITY_INSTRUCTIONS,
+             "bot_id": runtime.bot_id,
+             "bot_identity": member_identity(runtime.bot_id, platform=node.metadata.get("sender_platform", "")),
+             "current": message_snapshot(node, dag),
+             "recent_messages": [message_snapshot(n, dag) for n in recent[-16:]],
              "recipient_candidates": {
                  key: {"user_id": uid, "is_bot": uid == str(runtime.bot_id),
-                       "messages": [message_snapshot(n) for n in recent if n.user_id == uid]}
+                       "identity": member_identity(uid, next((n.metadata.get("sender_name", "")
+                                                   for n in reversed(recent) if n.user_id == uid), ""),
+                                                   node.metadata.get("sender_platform", "")),
+                       "messages": [message_snapshot(n, dag) for n in recent if n.user_id == uid]}
                  for key, uid in recipients.items()},
              "topic_candidates": descriptions}
     mapping = {"routing": deepcopy(routing), "node_text": node.text, "node": node,

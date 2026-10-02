@@ -60,8 +60,8 @@ def test_debounce_relationships_are_normalized():
             "debounce_max_cap": 1,
         }
     )
-    assert cfg.debounce_extended_cooldown == 5
-    assert cfg.debounce_max_cap == 5
+    assert cfg.debounce_extended_cooldown == 2
+    assert cfg.debounce_max_cap == 2
 
 
 def test_infinite_and_negative_values_fall_back():
@@ -74,8 +74,8 @@ def test_infinite_and_negative_values_fall_back():
         }
     )
     assert cfg.chars_per_second == 25.0
-    assert cfg.base_thinking_delay == 0.8
-    assert cfg.debounce_base_cooldown == 3.5
+    assert cfg.base_thinking_delay == 0.0
+    assert cfg.debounce_base_cooldown == 0.25
     assert cfg.max_fragments == 3
     assert warnings
 
@@ -93,12 +93,12 @@ def test_values_above_schema_limits_fall_back_to_defaults():
         }
     )
 
-    assert cfg.debounce_base_cooldown == 3.5
-    assert cfg.debounce_extended_cooldown == 6.5
-    assert cfg.debounce_max_cap == 12.0
+    assert cfg.debounce_base_cooldown == 0.25
+    assert cfg.debounce_extended_cooldown == 1.0
+    assert cfg.debounce_max_cap == 4.0
     assert cfg.deep_cooling_minutes == 15.0
     assert cfg.chars_per_second == 25.0
-    assert cfg.base_thinking_delay == 0.8
+    assert cfg.base_thinking_delay == 0.0
     assert cfg.max_fragments == 3
     assert len(warnings) == 7
 

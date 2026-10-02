@@ -26,6 +26,7 @@ class DebounceItem:
     text: str
     event: Any
     timestamp: float
+    node_id: str = ""
 
 
 @dataclass
@@ -92,10 +93,12 @@ class _DebounceSlot:
         self.was_extended: bool = False
         self.dropped_fragments: int = 0
         self.on_flush: Optional[Callable[[DebounceResult], Awaitable[None]]] = None
+        self.pending_result: Optional[DebounceResult] = None
+        self.semantic: bool = False
 
     @property
     def is_empty(self) -> bool:
-        return len(self.items) == 0
+        return not self.items and self.pending_result is None
 
     @property
     def has_active_timer(self) -> bool:
@@ -146,6 +149,7 @@ class DebounceBuffer:
         incompleteness_detector: Optional[Any] = None,
         max_fragments: int = 32,
         max_turn_chars: int = 8000,
+        semantic: bool = False,
     ):
         """Initializes the DebounceBuffer.
 
@@ -164,6 +168,7 @@ class DebounceBuffer:
         self.max_cap: float = float(max_cap)
         self.max_fragments: int = max(1, int(max_fragments))
         self.max_turn_chars: int = max(256, int(max_turn_chars))
+        self.semantic = semantic
 
         if incompleteness_detector is not None:
             self.detector = incompleteness_detector
@@ -222,6 +227,7 @@ class DebounceBuffer:
         on_flush: Callable[[DebounceResult], Awaitable[None]],
         *,
         defer_callback: bool = False,
+        immediate: bool = False,
     ) -> None:
         """Ingests an incoming message into the user's debounce window.
 
@@ -260,6 +266,19 @@ class DebounceBuffer:
             slot.last_touch_time = now
             slot.on_flush = on_flush
 
+            # Keep fragments while Jev is judging them. A newer fragment takes
+            # ownership of the whole pending utterance and invalidates the old
+            # answer, including a late answer from a soft wake.
+            prior = slot.pending_result
+            slot.pending_result = None
+            if prior is not None and self.is_result_current(prior):
+                slot.items[:0] = prior.messages
+                slot.start_time = prior.start_time
+                slot.was_extended = prior.was_extended
+                slot.dropped_fragments = prior.metadata.get("dropped_fragments", 0)
+                prior.metadata["superseded"] = True
+            slot.semantic = self.semantic and not immediate
+
             # If this message opens a new turn
             if not slot.items:
                 slot.start_time = now
@@ -279,7 +298,7 @@ class DebounceBuffer:
 
             # 3. Form candidate text to evaluate incompleteness
             candidate_text = self._merge_texts([it.text for it in slot.items], max_chars=self.max_turn_chars)
-            is_incomplete = self.check_incompleteness(candidate_text)
+            is_incomplete = not slot.semantic and self.check_incompleteness(candidate_text)
             if is_incomplete:
                 slot.was_extended = True
 
@@ -297,6 +316,12 @@ class DebounceBuffer:
                     desired_cooldown = self.extended_cooldown
                 else:
                     desired_cooldown = self.base_cooldown
+                if immediate:
+                    desired_cooldown = 0.0
+                elif slot.semantic:
+                    # Existing configurations may still contain the old 3.5s
+                    # default. Jev needs only a small burst-coalescing window.
+                    desired_cooldown = min(desired_cooldown, 0.25)
 
                 target_cooldown = min(desired_cooldown, max_remaining)
 
@@ -325,6 +350,7 @@ class DebounceBuffer:
                 try:
                     await on_flush(result)
                 except Exception as e:
+                    self.finish_result(result)
                     logger.error("Error executing on_flush callback on hard cap code=CD_DEBOUNCE_CALLBACK type=%s", type(e).__name__)
 
     async def _timer_worker(self, slot: _DebounceSlot, epoch: int, delay: float) -> None:
@@ -357,6 +383,7 @@ class DebounceBuffer:
             try:
                 await callback(result)
             except Exception as e:
+                self.finish_result(result)
                 logger.error("Error executing debounce on_flush callback code=CD_DEBOUNCE_CALLBACK type=%s", type(e).__name__)
 
     def _extract_result_locked(self, slot: _DebounceSlot) -> Optional[DebounceResult]:
@@ -393,6 +420,7 @@ class DebounceBuffer:
             "buffer_user_generation": slot.user_generation,
             "truncated": bool(slot.dropped_fragments) or len(consolidated_text) < sum(len(it.text) for it in items_to_flush),
             "dropped_fragments": slot.dropped_fragments,
+            "semantic": slot.semantic,
         }
 
         result = DebounceResult(
@@ -404,7 +432,41 @@ class DebounceBuffer:
             metadata=metadata,
         )
         self._live_results[id(result)] = result
+        if slot.semantic:
+            slot.pending_result = result
         return result
+
+    def finish_result(self, result: Optional[DebounceResult]) -> None:
+        """Release a judged utterance without touching a newer buffered one."""
+        if result is None:
+            return
+        slot = self._slots.get((result.session_id, result.user_id))
+        if slot is not None and slot.pending_result is result:
+            slot.pending_result = None
+
+    async def defer_result(self, result: Optional[DebounceResult]) -> bool:
+        """Wait for the speaker's continuation after Jev explicitly says wait."""
+        if result is None or self._is_closed or not self.is_result_current(result):
+            return False
+        slot = self._slots.get((result.session_id, result.user_id))
+        if slot is None:
+            return False
+        async with slot.lock:
+            if (self._is_closed or not self.is_result_current(result)
+                    or slot.pending_result is not result):
+                return False
+            remaining = self.max_cap - (self.time_service.time() - result.start_time)
+            slot.pending_result = None
+            if remaining <= 0:
+                return False
+            slot.items = list(result.messages)
+            slot.start_time = result.start_time
+            slot.was_extended = True
+            slot.dropped_fragments = result.metadata.get("dropped_fragments", 0)
+            slot.epoch += 1
+            slot.timer_task = self._create_task(self._timer_worker(
+                slot, slot.epoch, min(max(0.05, self.extended_cooldown), remaining)))
+        return True
 
     async def flush(
         self, session_id: Optional[str] = None, user_id: Optional[str] = None
@@ -458,6 +520,7 @@ class DebounceBuffer:
                 return
             await callback(res)
         except Exception as e:
+            self.finish_result(res)
             logger.error("Error executing on_flush in manual flush code=CD_DEBOUNCE_CALLBACK type=%s", type(e).__name__)
 
     async def flush_all(self) -> List[DebounceResult]:
@@ -476,6 +539,8 @@ class DebounceBuffer:
 
     def is_result_current(self, result: DebounceResult) -> bool:
         """Return whether a flushed result predates the latest session reset."""
+        if result.metadata.get("superseded"):
+            return False
         expected = int(result.metadata.get("buffer_generation", 0))
         if expected != self._session_generations.get(result.session_id, 0):
             return False
@@ -507,10 +572,11 @@ class DebounceBuffer:
         discarded = 0
         for _key, slot in slots:
             async with slot.lock:
-                discarded += len(slot.items)
+                discarded += len(slot.items) + (len(slot.pending_result.messages) if slot.pending_result else 0)
                 if slot.timer_task and not slot.timer_task.done():
                     slot.timer_task.cancel()
                 slot.items.clear()
+                slot.pending_result = None
                 slot.timer_task = None
                 slot.epoch += 1
                 slot.start_time = 0.0
@@ -553,6 +619,7 @@ class DebounceBuffer:
                 if slot.timer_task and not slot.timer_task.done():
                     slot.timer_task.cancel()
                 slot.items.clear()
+                slot.pending_result = None
                 slot.timer_task = None
                 slot.epoch += 1
                 slot.start_time = 0.0
@@ -573,6 +640,8 @@ class DebounceBuffer:
         for (s_id, u_id), slot in self._slots.items():
             if (session_id is None or s_id == session_id) and (user_id is None or u_id == user_id):
                 count += len(slot.items)
+                if slot.pending_result is not None:
+                    count += len(slot.pending_result.messages)
         return count
 
     def is_active(self, session_id: str, user_id: str) -> bool:

@@ -31,6 +31,7 @@ import json
 from typing import Any, Mapping
 
 from .presence_policy import participation_policy
+from .member_identity import IDENTITY_INSTRUCTIONS
 from .prompt_policy import DEFAULT_DECISION_PROMPT, MAX_PROMPT_CHARS
 from .turn_decision import TurnContext, TurnDecision
 
@@ -144,6 +145,7 @@ def build_state(
         "previous_state": str(previous_state or "observing")[:32],
         "participation_policy": participation_policy(presence),
         "decision_prompt": str(decision_prompt or DEFAULT_DECISION_PROMPT).strip()[:MAX_PROMPT_CHARS],
+        "identity_policy": IDENTITY_INSTRUCTIONS,
         "observations": dict(observations or {}),
         "conversation": turn.payload(),
     }
@@ -157,6 +159,18 @@ def _size(state: dict) -> int:
         return len(json.dumps(state, ensure_ascii=False))
     except (TypeError, ValueError):
         return 0
+
+
+def _clip_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    marker = "\n[...]\n"
+    if limit <= len(marker):
+        return text[-limit:]
+    head = (limit - len(marker)) // 2
+    return text[:head] + marker + text[-(limit - head - len(marker)):]
 
 
 def _shrink(state: dict, max_chars: int) -> dict:
@@ -176,8 +190,31 @@ def _shrink(state: dict, max_chars: int) -> dict:
                 if isinstance(message, dict) and len(str(message.get("text") or "")) > 240:
                     message["text"] = str(message["text"])[:240]
     if _size(state) > max_chars:
-        conversation["text"] = str(conversation.get("text") or "")[:4000]
+        text = str(conversation.get("text") or "")
+        conversation["text"] = _clip_text(text, 4000)
+        conversation["truncated"] = bool(conversation.get("truncated") or len(text) > 4000)
         conversation["background"] = list(conversation.get("background") or ())[-4:]
+    if _size(state) > max_chars:
+        # Consolidated text covers every fragment. Retain every message/account
+        # ID and explicit relationship, while compacting repeated local estimates.
+        for message in list(conversation.get("messages") or ())[:-1]:
+            if not isinstance(message, dict):
+                continue
+            if message.get("author") == conversation.get("author"):
+                message.pop("author_identity", None)
+            quoted = message.get("quoted_author_identity")
+            if isinstance(quoted, dict) and quoted.get("user_id"):
+                conversation.setdefault("quoted_identities", {})[quoted["user_id"]] = quoted
+                message.pop("quoted_author_identity")
+            semantics = message.get("semantics")
+            if isinstance(semantics, dict):
+                message["semantics"] = {
+                    key: value for key, value in semantics.items()
+                    if key in {"recipient_ids", "basis", "certainty", "mentioned_user_ids",
+                               "quoted_message_id", "quoted_author_id", "subject_user_ids",
+                               "subject_is_bot", "bot_is_addressee", "intent"}
+                    and value and value != "unknown"
+                }
     if _size(state) > max_chars:
         state["observations"] = {}
     if _size(state) > max_chars:
@@ -186,18 +223,42 @@ def _shrink(state: dict, max_chars: int) -> dict:
         guidance = str(state.get("decision_prompt") or "")
         overflow = _size(state) - max_chars
         state["decision_prompt"] = guidance[:max(0, len(guidance) - overflow)]
+    if _size(state) > max_chars:
+        text = str(conversation.get("text") or "")
+        overflow = _size(state) - max_chars
+        conversation["text"] = _clip_text(text, max(0, len(text) - overflow - 32))
+        conversation["truncated"] = True
     return state
 
 
 def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> dict[str, dict]:
     """One call, with bounded questions about the same state.
 
-    `join` is the calibrated yes/no (a Noul), `action`, `state`, `length` and
+    `completion` judges whether to wait for the speaker, `join` is the
+    calibrated yes/no (a Noul), `action`, `state`, `length` and
     `reason` are Choices over the plugin's own vocabulary, and `target` is a Choice
     over this turn's message IDs when more than one candidate exists. Soft wakes
     also ask who the actual recipient is.
     """
     questions: dict[str, dict] = {
+        "completion": {
+            "type": "choice",
+            "instructions": {
+                "question": "Has the current speaker finished this utterance so a response can begin now?",
+                "focus": (
+                    "Judge the meaning of conversation.text together with its fragments and context. "
+                    "A complete question, statement, greeting or short reaction is complete, even without "
+                    "final punctuation. A trailing comma or conjunction alone does not prove more is coming. "
+                    "Choose wait only for a genuinely unfinished thought, a promised continuation, "
+                    "or an explicit request to wait until the speaker finishes. "
+                    "Do not wait for a complete topic, for more people to talk, or just to be polite."
+                ),
+            },
+            "criteria": {
+                "complete": "The utterance is complete enough to answer or react to now",
+                "wait": "The speaker has not finished; retain these fragments and wait briefly for a continuation",
+            },
+        },
         "join": {
             "type": "noul",
             "instructions": {
@@ -343,6 +404,10 @@ def decision_from_answers(
     """
     if turn.mandatory_reply:
         return TurnDecision.fallback(turn, "at_mandatory")
+    completion = _choice(answers, "completion", ("complete", "wait"))
+    if completion is not None and completion[0] == "wait" and completion[1] >= min_confidence:
+        return TurnDecision("ignore", "observing", _targets(turn, answers, needed=False), "",
+                            "brief", prefix + "waiting_for_completion")
     if turn.soft_wake:
         recipient = _choice(answers, "recipient", ("bot", "other", "unclear"))
         if recipient is None or recipient[1] < WAKE_RECIPIENT_FLOOR:
@@ -405,7 +470,7 @@ def describe_answers(answers: Mapping[str, Any]) -> dict:
     were incomplete and nothing was accepted from them.
     """
     described: dict[str, Any] = {}
-    for key in ("join", "action", "state", "length", "reason", "target", "recipient"):
+    for key in ("completion", "join", "action", "state", "length", "reason", "target", "recipient"):
         answer = answers.get(key)
         if not isinstance(answer, Mapping):
             continue

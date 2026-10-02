@@ -301,7 +301,7 @@ class AstrBotAgentBridge:
                     if message.get("role") == "user":
                         content = message.get("content")
                         if isinstance(content, list):
-                            # Preserve images/audio, replace internal decision/context JSON with actual user text.
+                            # Preserve media; replace internal plans/context with attributed user text.
                             message["content"] = [{"type": "text", "text": history_text}] + [
                                 part for part in content if part.get("type") != "text"]
                         else:

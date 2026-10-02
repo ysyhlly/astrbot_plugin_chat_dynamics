@@ -16,6 +16,7 @@ from .test_plugin_lifecycle import MockEvent, _plugin
 
 def answers(action="reply", state="focused", length="brief", reason="addressed_question", **extra):
     payload = {
+        "completion": {"type": "choice", "choice": "complete", "confidence": 0.9},
         "join": {"type": "noul", "noul": 0.85},
         "recipient": {"type": "choice", "choice": "bot", "confidence": 0.85},
         "action": {"type": "choice", "choice": action, "confidence": 0.9, "probabilities": {}},

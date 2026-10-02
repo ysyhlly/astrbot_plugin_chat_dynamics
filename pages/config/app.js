@@ -179,7 +179,7 @@ const CONFIG_GROUPS = [
   {
     "id": "debounce",
     "title": "消息合并",
-    "blurb": "等待碎片补充，控制一轮消息的最长合并时间",
+    "blurb": "Jev 判断是否说完，只在未说完时继续等待补充",
     "open": false,
     "keys": [
       "debounce_base_cooldown",

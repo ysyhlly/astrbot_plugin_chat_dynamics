@@ -14,6 +14,7 @@ from .pacer import is_rhythm_short_act, scale_delay
 from .topic_identity import node_topic_id
 from .platform_bridge import chain_plain_text
 from .message_semantics import describe_message
+from .member_identity import quoted_identity
 from .presence_policy import participation_policy
 from .persona_trace import record_outcome, stage_trace
 from . import outcome_recorder as outcomes
@@ -38,6 +39,7 @@ class ModelTurn:
     fallback: bool = False
     platform_message_ids: frozenset[str] = frozenset()
     outcome_nodes: tuple[Any, ...] = ()
+    debounce_result: Any = None
 
 
 def _node_metadata(node: Any) -> dict:
@@ -280,6 +282,10 @@ def _is_background_related(
                 and reply_to_id in selected_ids)
 
 
+def _quoted_author_name(node, dag) -> str:
+    return str((quoted_identity(node, dag) or {}).get("display_name") or "")
+
+
 def snapshot_turn(
     runtime: Any,
     result: Any,
@@ -342,6 +348,9 @@ def snapshot_turn(
         describe_message(resolved, dag, runtime.bot_id),
         source_text=resolved.text, timestamp=resolved.timestamp,
         mentioned_users=tuple(resolved.metadata.get("actual_mentions", resolved.mentioned_users)),
+        author_name=str(resolved.metadata.get("sender_name") or ""),
+        platform=str(resolved.metadata.get("sender_platform") or ""),
+        quoted_author_name=_quoted_author_name(resolved, dag),
     ) for parsed, resolved in zip(events, resolved_nodes))
     current_ids = {m.message_id for m in messages}
     # Follow only explicit DAG parent edges. In particular, mention parents
@@ -386,7 +395,10 @@ def snapshot_turn(
             background.append(MessageSnapshot(n.msg_id, n.user_id, text, n.reply_to_id or "",
                                               semantics=describe_message(n, dag, runtime.bot_id),
                                               source_text=n.text, timestamp=n.timestamp,
-                                              mentioned_users=tuple(n.metadata.get("actual_mentions", n.mentioned_users))))
+                                              mentioned_users=tuple(n.metadata.get("actual_mentions", n.mentioned_users)),
+                                              author_name=str(n.metadata.get("sender_name") or ""),
+                                              platform=str(n.metadata.get("sender_platform") or ""),
+                                              quoted_author_name=_quoted_author_name(n, dag)))
             budget -= len(text)
             if len(background) >= 15:
                 break
@@ -395,14 +407,16 @@ def snapshot_turn(
                        getattr(result.last_event, "_chat_dynamics_user_revision", runtime.user_revisions.get(result.user_id, 0)),
                        result.start_time, explicit, bool(result.metadata.get("truncated")) or len(result.consolidated_text) > 8000,
                        source_text=result.consolidated_text,
-                       source_truncated=bool(result.metadata.get("truncated")), wake_kind=wake_kind)
+                       source_truncated=bool(result.metadata.get("truncated")), wake_kind=wake_kind,
+                       bot_id=str(runtime.bot_id or ""))
     platform_ids = frozenset(
         str(getattr(parsed, "message_id", "") or "")
         for parsed, resolved in zip(events, resolved_nodes)
         if getattr(parsed, "message_id", "") and resolved.msg_id == getattr(parsed, "message_id", "")
     )
     return ModelTurn(turn, tuple(result.raw_events), observations, shadow, platform_message_ids=platform_ids,
-                     outcome_nodes=tuple(_dag_node(runtime, message.message_id) for message in turn.messages))
+                     outcome_nodes=tuple(_dag_node(runtime, message.message_id) for message in turn.messages),
+                     debounce_result=result if result.metadata.get("semantic") else None)
 
 
 class PersonaEngine:
@@ -419,18 +433,25 @@ class PersonaEngine:
                 and p.is_group_takeover_enabled(runtime.group_id)
                 and runtime.epoch == turn.epoch
                 and runtime.user_revisions.get(turn.author, 0) == turn.revision
+                and (item.debounce_result is None or p.debounce.is_result_current(item.debounce_result))
                 and (turn.mandatory_reply or turn.soft_wake
                      or not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time())))
 
     async def submit(self, runtime, item: ModelTurn) -> None:
         if not self.valid(runtime, item):
+            self.plugin.debounce.finish_result(item.debounce_result)
             return
         now = self.plugin.time_service.time()
         addressed = turn_is_addressed(runtime, item.context, now)
         if runtime.model_admission.locked() and not addressed:
             self.diagnostic(runtime, "overload_ambient")
+            self.plugin.debounce.finish_result(item.debounce_result)
             return
         fallback = runtime.model_admission.locked()
+        if fallback and item.context.explicit:
+            # An already queued wake keeps its own request identity. Chatter
+            # while it waits for capacity must not replace that request.
+            self.plugin.debounce.finish_result(item.debounce_result)
         # Backpressure is outside state_lock. No dropped explicit request and no unbounded model tasks.
         token = object()
         runtime.model_waiting[token] = item
@@ -450,6 +471,8 @@ class PersonaEngine:
             runtime.model_waiting.pop(token, None)
             if admitted and not queued:
                 runtime.model_admission.release()
+            if not queued:
+                self.plugin.debounce.finish_result(item.debounce_result)
 
     def has_pending_explicit_request(self, runtime, user_id: str, *, mandatory_only: bool = False) -> bool:
         """Ordinary chatter must not cancel a pending, unanswered wake request.
@@ -549,12 +572,18 @@ class PersonaEngine:
             return TurnDecision.fallback(turn, "jev_unavailable")
         timeout = p._runtime_config.jev_timeout
         floor = p._runtime_config.jev_min_confidence
+        observations = dict(item.observations)
+        if item.debounce_result is not None:
+            now = p.time_service.time()
+            observations.update(utterance_pause_seconds=max(0.0, now - item.debounce_result.end_time),
+                                utterance_age_seconds=max(0.0, now - turn.started_at),
+                                completion_waited=item.debounce_result.was_extended)
         async with self.slots:
             answers = await client.evaluate(
                 state=build_state(
                     turn,
                     previous_state=state,
-                    observations=item.observations,
+                    observations=observations,
                     presence=p._runtime_config.presence_knob,
                     persona_prompt=getattr(persona, "prompt", ""),
                     decision_prompt=p._runtime_config.decision_prompt,
@@ -625,6 +654,7 @@ class PersonaEngine:
                     except Exception as exc:
                         self.diagnostic(runtime, "at_fallback_send_failed", error_type=type(exc).__name__)
                     finally:
+                        p.debounce.finish_result(item.debounce_result)
                         if runtime.active_model_turn is item:
                             runtime.active_model_turn = None
                         runtime.model_admission.release()
@@ -711,6 +741,20 @@ class PersonaEngine:
             ):
                 return
             now = p.time_service.time()
+            if decision.reason_code == "jev_waiting_for_completion":
+                deferred = await p.debounce.defer_result(item.debounce_result)
+                reason = decision.reason_code if deferred else "jev_incomplete_expired"
+                self.diagnostic(runtime, reason, action="wait" if deferred else "ignore",
+                                reason_zh="等待这句话的后续内容" if deferred else "未说完等待已结束",
+                                shadow=item.shadow, jev=dict(runtime.jev_decision))
+                if item.shadow:
+                    p._record_shadow_decision(turn.session_key, action="ignore", reason=reason,
+                        decision=replace(decision, reason_code=reason), timestamp=now)
+                    p._metric("shadow_decision")
+                else:
+                    record_outcome(runtime, item, outcomes.mark_suppressed, reason, stage="completion")
+                return
+            p.debounce.finish_result(item.debounce_result)
             while runtime.ambient_openings and now - runtime.ambient_openings[0] >= 60:
                 runtime.ambient_openings.popleft()
             continuation = turn_is_continuation(runtime, turn, now)
@@ -882,7 +926,7 @@ class PersonaEngine:
                 persona,
                 provider,
                 execution_log=runtime.tool_executions,
-                history_text=turn.text,
+                history_text=turn.history_text(),
                 media_understand=understand,
             )
             # A first request may create the host conversation; keep that exact identity for sending.
@@ -913,8 +957,7 @@ class PersonaEngine:
                 delay_scale = float(gate.delay_scale or delay_scale)
             try:
                 for index, fragment in enumerate(fragments):
-                    delay = (min(1.5, p.pacer.inter_burst_interval) if index else
-                             max(0.0, min(1.0, p.pacer.base_thinking_delay - (p.time_service.time() - turn.started_at))))
+                    delay = min(1.5, p.pacer.inter_burst_interval) if index else 0.0
                     delay = scale_delay(delay, delay_scale)
                     if delay:
                         await p.time_service.sleep(delay)

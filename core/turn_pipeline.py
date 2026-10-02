@@ -175,7 +175,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         elif parsed.self_id:
             runtime.bot_id = parsed.self_id
         parsed_events.append(parsed)
-        for mention in parsed.mentions:
+        for mention in parsed.platform_mentions:
             if mention not in turn_mentions:
                 turn_mentions.append(mention)
         if parsed.is_at_or_wake:
@@ -201,8 +201,10 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
             _MAX_INPUT_CHARS,
         )
         fragment_time = float(getattr(item, "timestamp", now) or now)
-        fragment_id = parsed.message_id or f"{turn_id}_{index}"
-        actual_mentions = list(dict.fromkeys(parsed.mentions))
+        fragment_id = parsed.message_id or getattr(item, "node_id", "") or f"{turn_id}_{index}"
+        if item is not None:
+            item.node_id = fragment_id
+        actual_mentions = list(dict.fromkeys(parsed.platform_mentions))
         current_node = dag.add_message(
             msg_id=fragment_id,
             user_id=parsed.sender_id or user_id,
@@ -219,6 +221,9 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
                 "is_wake": parsed.is_at_or_wake,
                 "actual_mentions": actual_mentions,
                 "quoted_author_id": getattr(parsed, "reply_sender_id", ""),
+                "quoted_author_name": parsed.reply_sender_name,
+                "sender_name": parsed.sender_name,
+                "sender_platform": parsed.platform,
                 "platform_message_id": bool(parsed.message_id),
             },
         )
@@ -391,6 +396,8 @@ async def _enrich_topic_background(host, turn: _PreparedTurn) -> None:
     """Optional display enrichment never delays a reply or outlives reset."""
     host._track_hook_task(turn.result.session_id)
     runtime = turn.runtime
+    if host.debounce.semantic and not turn.explicit_platform:
+        await _enrich_turn(host, turn)
     async with runtime.state_lock:
         if (host._shutting_down or host._sessions.get(turn.result.session_id) is not runtime
                 or runtime.epoch != turn.epoch or runtime.dag is not turn.dag

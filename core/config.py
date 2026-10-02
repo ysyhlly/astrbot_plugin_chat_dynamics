@@ -246,15 +246,19 @@ def _prompt(raw: Any, key: str, default: str, warnings: List[str]) -> str:
 def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     """Parse user configuration without allowing invalid values into the pipeline."""
     warnings: List[str] = []
-    base = _number(raw, "debounce_base_cooldown", 3.5, lambda value: 0 <= value <= 30, warnings)
-    extended = _number(raw, "debounce_extended_cooldown", 6.5, lambda value: 0 <= value <= 60, warnings)
-    cap = _number(raw, "debounce_max_cap", 12.0, lambda value: 0 <= value <= 120, warnings)
-    if extended < base:
-        warnings.append("debounce_extended_cooldown is below base cooldown; using base cooldown")
-        extended = base
-    if cap < max(base, extended):
+    base = _number(raw, "debounce_base_cooldown", 0.25, lambda value: 0 <= value <= 30, warnings)
+    extended = _number(raw, "debounce_extended_cooldown", 1.0, lambda value: 0 <= value <= 60, warnings)
+    cap = _number(raw, "debounce_max_cap", 4.0, lambda value: 0 <= value <= 120, warnings)
+    if (base, extended, cap) == (3.5, 6.5, 12.0):
+        # Upgrade the previous default combination; custom windows remain intact.
+        base, extended, cap = 0.25, 1.0, 4.0
+    merge_window = min(base, 0.25)
+    if extended < merge_window:
+        warnings.append("debounce_extended_cooldown is below merge window; using merge window")
+        extended = merge_window
+    if cap < max(merge_window, extended):
         warnings.append("debounce_max_cap is below cooldowns; using the larger cooldown")
-        cap = max(base, extended)
+        cap = max(merge_window, extended)
 
     hover = _number(raw, "safe_hover_threshold", 0.40, lambda value: 0 <= value <= 1, warnings)
     strong = _number(raw, "strong_addressivity_threshold", 0.70, lambda value: 0 <= value <= 1, warnings)
@@ -322,7 +326,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             raw, "deep_cooling_minutes", 15.0, lambda value: 0 <= value <= 180, warnings
         ),
         chars_per_second=_number(raw, "chars_per_second", 25.0, lambda value: 1 <= value <= 100, warnings),
-        base_thinking_delay=_number(raw, "base_thinking_delay", 0.8, lambda value: 0 <= value <= 10, warnings),
+        base_thinking_delay=_number(raw, "base_thinking_delay", 0.0, lambda value: 0 <= value <= 10, warnings),
         max_fragments=_integer(raw, "max_fragments", 3, 1, 3, warnings),
         max_fragment_chars=_integer(raw, "max_fragment_chars", 120, 40, 500, warnings),
         inter_burst_interval=_number(raw, "inter_burst_interval", 1.2, lambda value: 0.6 <= value <= 3, warnings),

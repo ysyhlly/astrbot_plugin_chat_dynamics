@@ -7,6 +7,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 from .message_semantics import MessageSemantics
+from .member_identity import IDENTITY_INSTRUCTIONS, member_identity
 from .vision_context import MAIN_VISION_HINT
 from .presence_policy import participation_policy
 from .prompt_policy import DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS
@@ -23,10 +24,18 @@ class MessageSnapshot:
     source_text: str | None = None
     timestamp: float | None = None
     mentioned_users: tuple[str, ...] = ()
+    author_name: str = ""
+    platform: str = ""
+    quoted_author_name: str = ""
 
     def payload(self, *, learning: bool = False) -> dict:
         data = asdict(self)
         source = data.pop("source_text")
+        data["author_identity"] = member_identity(self.author, data.pop("author_name"), data.pop("platform"))
+        quoted_name = data.pop("quoted_author_name")
+        if self.semantics and self.semantics.quoted_author_id:
+            data["quoted_author_identity"] = member_identity(
+                self.semantics.quoted_author_id, quoted_name, self.platform)
         if learning:
             data["text"] = source if source is not None else self.text
             data["text_missing"] = source is None and not self.text
@@ -59,6 +68,27 @@ class TurnContext:
     source_text: str | None = None
     source_truncated: bool | None = None
     wake_kind: str = "legacy"
+    bot_id: str = ""
+
+    @property
+    def speaker_identity(self) -> dict:
+        message = next((m for m in reversed(self.messages) if m.author == self.author), None)
+        return member_identity(self.author, message.author_name if message else "",
+                               message.platform if message else "")
+
+    def history_text(self) -> str:
+        """Keep attribution with delivered exchanges without saving internal plans."""
+        messages = []
+        for message in self.messages:
+            data = message.payload()
+            entry = {key: data[key] for key in ("message_id", "author_identity", "quoted_author_identity")
+                     if key in data}
+            if message.semantics:
+                entry["mentioned_user_ids"] = message.semantics.mentioned_user_ids
+                entry["quoted_message_id"] = message.semantics.quoted_message_id
+            messages.append(entry)
+        return json.dumps({"speaker_identity": self.speaker_identity, "text": self.text,
+                           "messages": messages}, ensure_ascii=False)
 
     @property
     def mandatory_reply(self) -> bool:
@@ -76,6 +106,8 @@ class TurnContext:
         # Current text appears exactly once; individual fragments only carry provenance.
         return {
             "author": self.author, "text": self.text, "explicit": self.explicit, "truncated": self.truncated,
+            "speaker_identity": self.speaker_identity,
+            "bot_identity": member_identity(self.bot_id, platform=str(self.speaker_identity.get("platform", ""))),
             "wake_kind": self.wake_kind, "reply_required": self.mandatory_reply,
             "messages": [{k: v for k, v in m.payload().items() if k != "text"} for m in self.messages],
             "background": [m.payload() for m in self.background],
@@ -250,7 +282,7 @@ target_message_ids: array of existing message IDs (nonempty for any response)
 response_goal: short response objective, not final prose (max 600 characters)
 length: brief|normal|detailed
 reason_code: short lowercase ASCII snake_case category, not reasoning.
-"""
+""" + "\n" + IDENTITY_INSTRUCTIONS
 
 # ---- staged, not in force ------------------------------------------------
 # The section below is written, and `TurnDecision.parse` already accepts
@@ -344,4 +376,4 @@ Never describe a poke as a media attachment. Do not force emojis,
 follow-up questions, corporate signoffs, or slang. Preserve code, formulas, links and meaningful structure.
 Never claim an unsent draft was delivered. Do not use messaging tools to duplicate the current reply;
 the caller owns delivery. Tools with external side effects still require the user's actual request.
-""" + "\n" + MAIN_VISION_HINT
+""" + "\n" + IDENTITY_INSTRUCTIONS + "\n" + MAIN_VISION_HINT

@@ -241,7 +241,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.15.1",
+    "v1.15.2",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -267,6 +267,7 @@ class ChatDynamicsPlugin(Star):
             extended_cooldown=runtime_config.debounce_extended_cooldown,
             max_cap=runtime_config.debounce_max_cap,
             max_fragments=_MAX_TURN_FRAGMENTS,
+            semantic=True,
             max_turn_chars=_MAX_TURN_CHARS,
         )
         self.thread_router = ThreadRouter(
@@ -1678,6 +1679,7 @@ class ChatDynamicsPlugin(Star):
                         event=event,
                         on_flush=self.on_turn_flushed,
                         defer_callback=True,
+                        immediate=self._wake_kind(parsed, runtime) == "at",
                     )
                 except RuntimeError:
                     if not self._shutting_down:
@@ -2023,7 +2025,7 @@ class ChatDynamicsPlugin(Star):
                 record_stage(model_turn.node, 'prepare', prepare_started)
         if isinstance(model_turn, _PreparedTurn):
             prepared = model_turn
-            if not prepared.explicit_platform:
+            if not prepared.explicit_platform and not self.debounce.semantic:
                 await self._enrich_turn(prepared)
             async with runtime.state_lock:
                 if not self._prepared_turn_current(prepared):
@@ -2044,6 +2046,8 @@ class ChatDynamicsPlugin(Star):
             return
         if model_turn is not None:
             await self.persona_engine.submit(runtime, model_turn)
+        else:
+            self.debounce.finish_result(result)
 
     @staticmethod
     def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
