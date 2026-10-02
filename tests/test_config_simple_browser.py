@@ -8,7 +8,7 @@ BASIC_KEYS = {
     "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
     "decision_mode", "decision_backend", "decision_learning_mode",
     "decision_learning_student_backend", "kev_base_url", "kev_checkpoint_id",
-    "kev_timeout", "reply_provider", "reply_timeout", "bot_names",
+    "kev_timeout", "reply_probability_threshold", "reply_provider", "reply_timeout", "bot_names",
 }
 
 
@@ -66,6 +66,10 @@ def test_simple_config_preserves_advanced_edits_and_saves(browser, page_server, 
         page.screenshot(path=str(ROOT / "output" / f"config-simple-{width}-{theme}.png"), full_page=True)
         page.locator('[data-config-key="takeover_groups"]').fill("123，456\n123")
         page.locator('[data-config-key="exclude_groups"]').fill("456")
+        threshold = page.locator('[data-config-key="reply_probability_threshold"]')
+        assert threshold.get_attribute('min') == '0'
+        assert threshold.get_attribute('max') == '100'
+        threshold.fill('60')
         assert "保存后：对 1 个指定群生效" in page.locator('#configScopeStatus').inner_text()
         page.locator('#configSearch').fill('decision_timeout')
         field = page.locator('[data-config-key="decision_timeout"]')
@@ -84,6 +88,7 @@ def test_simple_config_preserves_advanced_edits_and_saves(browser, page_server, 
         page.locator('#btnConfigSave').click()
         page.wait_for_function("window.__savedConfig?.decision_timeout === 12")
         assert page.evaluate("window.__stored.reply_provider") == "existing-model"
+        assert page.evaluate("window.__savedConfig.reply_probability_threshold") == 60
         assert page.evaluate("!('reply_provider' in window.__savedConfig)")
         assert page.evaluate("Object.entries(window.__legacyStored).every(([key, value]) => "
                              "window.__stored[key] === value && !(key in window.__savedConfig))")
@@ -91,7 +96,7 @@ def test_simple_config_preserves_advanced_edits_and_saves(browser, page_server, 
             assert page.locator(f'[data-config-key="{key}"]').count() == 0
         assert page.evaluate("window.__savedConfig.takeover_groups") == ["123", "456", "123"]
         assert "当前：对 1 个指定群生效" in page.locator('#configScopeStatus').inner_text()
-        assert set(page.evaluate("Object.keys(window.__savedConfig)")) == {"takeover_groups", "exclude_groups", "decision_timeout"}
+        assert set(page.evaluate("Object.keys(window.__savedConfig)")) == {"takeover_groups", "exclude_groups", "decision_timeout", "reply_probability_threshold"}
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not errors
 

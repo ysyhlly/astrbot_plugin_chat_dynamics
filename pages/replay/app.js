@@ -1,10 +1,10 @@
+import { navigateToPluginPage } from "./plugin_nav.js";
 import {
   apiGet,
   apiPost,
   escapeHtml,
   formatTs,
   friendlyError,
-  PRESENCE_LABEL,
   readyBridge,
   redactId,
   setLink,
@@ -12,7 +12,6 @@ import {
   storageSet,
 } from "./api.js";
 import { fillSessionSelect, renderNav } from "./shell.js";
-import { navigateToPluginPage } from "./plugin_nav.js";
 
 const UMO_KEY = "cd_wire_umo";
 const LANE_ZH = {
@@ -40,9 +39,6 @@ const els = {
   blockEvents: document.getElementById("blockEvents"),
   tonightNote: document.getElementById("tonightNote"),
   btnRefresh: document.getElementById("btnRefresh"),
-  btnGhostTonight: document.getElementById("btnGhostTonight"),
-  btnSensibleTonight: document.getElementById("btnSensibleTonight"),
-  btnLivelyTonight: document.getElementById("btnLivelyTonight"),
 };
 
 let online = false;
@@ -63,21 +59,6 @@ const annotationBindings = new WeakMap();
 function markAnnotationDirty(row) {
   row.dataset.dirty = "true";
   row.dataset.editVersion = String(Number(row.dataset.editVersion || 0) + 1);
-}
-const draftButton = document.getElementById("btnDraftAnnotations");
-const regenerateDraftButton = document.getElementById("btnRegenerateDismissed");
-const draftGenerationStatus = document.getElementById("draftGenerationStatus");
-const draftRequests = new Set();
-const draftStatuses = new Map();
-let sessionRevision = 0;
-
-function renderDraftGeneration() {
-  draftButton.disabled = !online || !selectedUmo || draftRequests.has(selectedUmo);
-  regenerateDraftButton.disabled = draftButton.disabled;
-  draftButton.textContent = draftRequests.has(selectedUmo) ? "正在生成 AI 草稿…" : "一键生成 AI 草稿";
-  draftGenerationStatus.textContent = !selectedUmo
-    ? "选择一个会话即可生成，无需打开话题。"
-    : draftStatuses.get(selectedUmo) || "为当前会话生成 AI 草稿，无需打开话题。";
 }
 const ERROR_LABELS = { correct: "判断正确", topic_merge: "不同话题被合并", topic_split: "同话题被拆分", wrong_assignment: "选错已有话题", premature_assignment: "过早归类", reopen_miss: "遗漏历史话题", unknown: "无法判断" };
 
@@ -116,31 +97,6 @@ function recipientEditor(index) {
     <p id="recipient-help-${index}" class="ops-note">留空表示未标注；输入 [] 表示没有对象。每项最多 256 字符，最多 64 项。</p>
     ${select("recipient_error_type", "收件人错误类型", Object.entries(RECIPIENT_ERRORS).map(([key, label]) => `<option value="${key}">${label}</option>`).join(""))}</details><p data-saved-annotation class="ops-note"></p>`;
 }
-function draftNote(draft) {
-  if (!draft || typeof draft !== "object") return "";
-  const parts = [];
-  if (typeof draft.expected_reply === "boolean") parts.push(`该回复：${draft.expected_reply ? "是" : "否"}`);
-  if (typeof draft.bot_targeted === "boolean") parts.push(`对 Bot 说话：${draft.bot_targeted ? "是" : "否"}`);
-  const confidence = Number(draft.confidence);
-  const confidenceText = Number.isFinite(confidence) ? ` · 置信度 ${confidence}` : "";
-  const reason = draft.reason ? ` · ${escapeHtml(draft.reason)}` : "";
-  return `<p class="ops-note" data-draft-note>AI 草稿：${escapeHtml(parts.join(" · "))}${confidenceText}${reason} <button type="button" class="button" data-apply-draft>按草稿填写</button></p>`;
-}
-function applyDraftToRow(row, draft) {
-  if (!draft) return false;
-  row.querySelectorAll("[data-recipient]").forEach(input => {
-    const value = draft[input.dataset.recipient];
-    if (value === undefined || value === null) return;
-    input.value = typeof value === "boolean" ? String(value) : Array.isArray(value) ? value.join(", ") : String(value);
-  });
-  markAnnotationDirty(row);
-  return true;
-}
-function draftFor(message) {
-  if (!message || !annotationData) return null;
-  return (annotationData.drafts || {})[message.msg_id] || null;
-}
-
 function applyAnnotationData(data, block, prefill = false) {
   annotationData = data;
   annotationMetrics.textContent = `已标注 ${data.metrics.total} 条 · 收件人标注 ${data.recipient_metrics?.total || 0} 条 · ${Object.entries(data.metrics.error_counts).map(([key, count]) => `${ERROR_LABELS[key] || key} ${count}`).join(" · ")}。${data.metrics.sample_note}`;
@@ -148,12 +104,6 @@ function applyAnnotationData(data, block, prefill = false) {
     const row = annotationMessages.children[index];
     if (!row) return;
     const record = (data.records || []).find(item => item.msg_id === message.msg_id);
-    // The draft is shown whether or not a label exists yet — an unlabelled
-    // message is the one a draft is for.
-    const note = row.querySelector("[data-draft-note]");
-    if (note) note.remove();
-    const draft = draftFor(message);
-    if (draft) row.querySelector("[data-saved-annotation]").insertAdjacentHTML("afterend", draftNote(draft));
     if (!record) return;
     const descriptions = Object.entries(RECIPIENT_BOOLS).filter(([key]) => typeof record[key] === "boolean").map(([key, label]) => `${label}：${record[key] ? "是" : "否"}`);
     for (const [key, label] of [["recipient_ids", "收件人"], ["subject_ids", "讨论对象"]]) {
@@ -219,12 +169,6 @@ async function renderAnnotations(block) {
   }
 }
 
-function setTonightEnabled(ok) {
-  for (const id of ["btnGhostTonight", "btnSensibleTonight", "btnLivelyTonight"]) {
-    if (els[id]) els[id].disabled = !ok;
-  }
-}
-
 function selectBlock(index, discardConfirmed = false) {
   if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
   selectedIndex = index;
@@ -253,7 +197,7 @@ function selectBlock(index, discardConfirmed = false) {
   if (!speak) {
     els.tonightNote.textContent = "这段主题没有开口记录。可按需要调整全局参与程度。";
   } else {
-    els.tonightNote.textContent = "参与程度会应用于全局会话，可按需要调整。";
+    els.tonightNote.textContent = "参与设置已集中到控制台，对所有生效群聊应用。";
   }
 }
 
@@ -318,18 +262,13 @@ async function refresh() {
     fillSessionSelect(els.sessionSelect, data.sessions || [], selectedUmo);
     if (selectedUmo !== els.sessionSelect.value) {
       selectedUmo = els.sessionSelect.value;
-      sessionRevision += 1;
       storageSet(UMO_KEY, selectedUmo);
     }
-    renderDraftGeneration();
     renderRail(data, true);
-    setTonightEnabled(true);
   } catch (err) {
     if (revision !== refreshRevision) return;
     online = false;
-    renderDraftGeneration();
     setLink(els, false, friendlyError(err, "离线"));
-    setTonightEnabled(false);
     if (dirtyAnnotationCount()) return;
     els.replayRail.innerHTML = "";
     blocks = [];
@@ -343,27 +282,9 @@ async function refresh() {
   }
 }
 
-async function savePresence(value) {
-  if (!online || busy) return;
-  busy = true;
-  setTonightEnabled(false);
-  els.tonightNote.classList.remove("error");
-  els.tonightNote.textContent = "正在保存参与程度…";
-  try {
-    await apiPost("config", { config: { presence_knob: value } });
-    els.tonightNote.textContent = `已设为「${PRESENCE_LABEL[value] || value}」，对所有会话生效。`;
-    await refresh();
-  } catch (err) {
-    els.tonightNote.classList.add("error");
-    els.tonightNote.textContent = friendlyError(err, "保存失败，请稍后重试。");
-  } finally {
-    busy = false;
-    setTonightEnabled(online);
-  }
-}
-
 async function boot() {
   renderNav("replay");
+  document.getElementById("btnOpenParticipation").addEventListener("click", () => { storageSet("cd_console_next_view", "policy"); void navigateToPluginPage("console"); });
   document.getElementById("topicSearch").addEventListener("input", () => { if (replayData) renderRail(replayData); });
   document.getElementById("decisionFilter").addEventListener("change", () => { if (replayData) renderRail(replayData); });
   const markDirty = event => {
@@ -378,16 +299,6 @@ async function boot() {
     row.querySelector("[data-error]").value = event.target.value === "UNKNOWN" ? "premature_assignment" : event.target.value === "NEW" ? "topic_merge" : "wrong_assignment";
   });
   annotationMessages.addEventListener("click", async event => {
-    const applyButton = event.target.closest("[data-apply-draft]");
-    if (applyButton) {
-      const row = applyButton.closest(".annotation-row");
-      const message = annotationBindings.get(row)?.message;
-      if (applyDraftToRow(row, draftFor(message))) {
-        annotationStatus.textContent = ("已按草稿填写收件人与回复标签；话题仍由你选择，确认后按保存标注。"
-          + "保存后记录里会写明这条采纳了草稿。");
-      }
-      return;
-    }
     const button = event.target.closest("[data-annotate]");
     if (!button || button.disabled) return;
     const row = button.closest(".annotation-row");
@@ -418,60 +329,6 @@ async function boot() {
       }
     } finally { button.disabled = false; }
   });
-  const generateDrafts = async (regenerateDismissed = false) => {
-    const sessionKey = selectedUmo;
-    if (!online || !sessionKey || draftRequests.has(sessionKey)) return;
-    const revision = sessionRevision;
-    draftRequests.add(sessionKey);
-    draftStatuses.set(sessionKey, "正在生成 AI 草稿…");
-    renderDraftGeneration();
-    try {
-      // The model call is not a panel read: it needs its own budget.
-      const data = await apiPost("annotation_draft",
-        { session_key: sessionKey, refresh: true, ...(regenerateDismissed ? { regenerate_dismissed: true } : {}) }, { timeoutMs: 180000 });
-      const asked = data?.stats?.asked ?? 0;
-      const drafts = data?.drafts || {};
-      const drafted = Number.isFinite(data?.drafted) ? data.drafted : Object.keys(drafts).length;
-      draftStatuses.set(sessionKey, data?.state === "fresh"
-        ? `已生成 ${drafted} 条草稿（窗口内可起草 ${asked} 条）。请打开审批页确认，采纳后才成为标注。`
-        : (data?.reason || "本次没有生成草稿。"));
-      if (revision !== sessionRevision || selectedUmo !== sessionKey) return;
-      const block = blocks[selectedIndex];
-      if (block?.session_id === sessionKey) {
-        const detailRevision = annotationRevision;
-        const refreshed = await apiGet("topic_annotations", { session_key: sessionKey });
-        if (revision === sessionRevision && detailRevision === annotationRevision) applyAnnotationData(refreshed, block);
-      }
-    } catch (err) {
-      draftStatuses.set(sessionKey, friendlyError(err, "生成草稿失败，请稍后重试。"));
-    } finally {
-      draftRequests.delete(sessionKey);
-      renderDraftGeneration();
-    }
-  };
-  draftButton.addEventListener("click", () => void generateDrafts());
-  regenerateDraftButton.addEventListener("click", () => void generateDrafts(true));
-  document.getElementById("btnApplyDrafts").addEventListener("click", () => {
-    const block = blocks[selectedIndex];
-    let filled = 0;
-    annotationMessages.querySelectorAll(".annotation-row").forEach((row, index) => {
-      const message = block?.messages?.[index];
-      if (applyDraftToRow(row, draftFor(message))) filled += 1;
-    });
-    const stored = Object.keys(annotationData?.drafts || {}).length;
-    annotationStatus.textContent = filled
-      ? `已按草稿填写 ${filled} 条；话题仍由你选择，逐条确认后按保存标注。`
-      : stored
-        ? `本会话存有 ${stored} 条草稿，但都对应其他消息：草稿覆盖该会话最近窗口里未标注的消息，包含尚未形成话题、不在任何回放块里的那些。`
-        : "本页没有可用的草稿，请关闭详情，在会话筛选区点击「一键生成 AI 草稿」。";
-  });
-  document.getElementById("btnOpenDrafts").addEventListener("click", () => {
-    // Reviewing drafts belongs on its own page now: one list, one decision per card.
-    void navigateToPluginPage("drafts");
-  });
-  document.getElementById("btnOpenSessionDrafts").addEventListener("click", () => {
-    void navigateToPluginPage("drafts");
-  });
   document.getElementById("btnExportAnnotations").addEventListener("click", () => {
     if (!annotationData) { annotationStatus.textContent = "请先等待标注加载完成。"; return; }
     const blob = new Blob([JSON.stringify(annotationData, null, 2)], { type: "application/json" });
@@ -492,9 +349,7 @@ async function boot() {
     }
     selectBlock(-1, true);
     selectedUmo = els.sessionSelect.value || "";
-    sessionRevision += 1;
     ++annotationRevision;
-    renderDraftGeneration();
     storageSet(UMO_KEY, selectedUmo);
     void refresh();
   });
@@ -524,9 +379,6 @@ async function boot() {
     event.returnValue = "";
   });
   els.btnRefresh.addEventListener("click", () => void refresh());
-  els.btnGhostTonight.addEventListener("click", () => void savePresence("ghost"));
-  els.btnSensibleTonight.addEventListener("click", () => void savePresence("sensible"));
-  els.btnLivelyTonight.addEventListener("click", () => void savePresence("lively"));
   await refresh();
 }
 

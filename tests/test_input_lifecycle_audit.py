@@ -94,10 +94,9 @@ async def test_small_chunked_body_parses_with_supported_raw_api(monkeypatch, loa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("endpoint", ["annotation_draft", "annotation_drafts_post", "annotations_post", "ui_preferences_save"])
+@pytest.mark.parametrize("endpoint", ["annotations_post", "ui_preferences_save"])
 async def test_invalid_body_is_rejected_before_annotation_operations(monkeypatch, offline_web_responses, endpoint):
-    plugin = SimpleNamespace(_shutting_down=False, annotation_draft_payload=AsyncMock(),
-                             annotation_drafts_apply=AsyncMock(), put_kv_data=AsyncMock())
+    plugin = SimpleNamespace(_shutting_down=False, put_kv_data=AsyncMock())
     api = web.ConsoleWebAPI(plugin)
     api.topic_annotations.save = AsyncMock()
     monkeypatch.setattr(api, "_rate_limit", lambda *args: None)
@@ -105,19 +104,5 @@ async def test_invalid_body_is_rejected_before_annotation_operations(monkeypatch
     monkeypatch.setattr(web, "_json_body", AsyncMock(return_value={"__invalid_body__": "body too large"}))
     response = await getattr(api, endpoint)()
     assert response["status_code"] == 400 and response["error"] == "body too large"
-    plugin.annotation_draft_payload.assert_not_awaited()
-    plugin.annotation_drafts_apply.assert_not_awaited()
     plugin.put_kv_data.assert_not_awaited()
     api.topic_annotations.save.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("flag", ["refresh", "regenerate_dismissed"])
-@pytest.mark.parametrize("value", ["false", 0, None])
-async def test_draft_flags_require_actual_booleans(monkeypatch, offline_web_responses, flag, value):
-    plugin = SimpleNamespace(_shutting_down=False, annotation_draft_payload=AsyncMock())
-    api = web.ConsoleWebAPI(plugin)
-    monkeypatch.setattr(api, "_rate_limit", lambda *args: None)
-    monkeypatch.setattr(web, "_json_body", AsyncMock(return_value={"session_key": "s", flag: value}))
-    assert (await api.annotation_draft())["status_code"] == 400
-    plugin.annotation_draft_payload.assert_not_awaited()

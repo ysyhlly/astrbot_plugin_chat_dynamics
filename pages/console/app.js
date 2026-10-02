@@ -271,7 +271,7 @@ function overviewSnapshotFingerprint(data) {
     safe.pending_count,
     safe.shadow_mode,
     safe.decision_mode,
-    JSON.stringify(safe.kev || {}),
+    JSON.stringify(safe.jev || {}),
     safe.persona_fallback,
     safe.agent_bridge,
     safe.console_show_message_content,
@@ -351,7 +351,7 @@ function renderOverview(data) {
     els.shadowState.textContent = "—";
   }
   if (safeData.decision_mode === "persona_model") {
-    const backend = safeData.kev?.enabled ? "Kev 决策模型" : safeData.jev?.enabled ? "Jev 决策模型" : safeData.laya?.enabled ? "Laya 决策模型" : "决策后端未确认";
+    const backend = "Jev 决策模型";
     els.shadowState.textContent += ` · ${backend}`;
     els.shadowState.title = `人设状态由 ${safeData.agent_bridge || "未知"} 提供`;
   } else if (safeData.persona_fallback) {
@@ -367,9 +367,9 @@ function renderOverview(data) {
   if (safeData.decision_mode === "persona_model") {
     // A Jev backend decides with its own model and endpoint, so naming the chat
     // provider here would credit a model that is not making this decision.
-    const layer = safeData.kev?.enabled ? safeData.kev : safeData.laya?.enabled ? safeData.laya : safeData.jev;
-    const label = layer?.backend === "kev" ? "Kev" : layer?.backend === "laya" ? "Laya" : layer?.backend === "jev" ? "Jev" : "未配置";
-    const model = layer?.backend === "kev" ? layer.checkpoint_id : layer?.model;
+    const layer = safeData.jev;
+    const label = "Jev";
+    const model = layer?.model;
     els.providerState.textContent = `决策：${label}${model ? ` ${model}` : ""}${layer?.status === "available" ? "" : `（${layer?.detail || layer?.status || "未就绪"}）`} · 回复正文：${provider.reply || "当前会话"}`;
   } else {
     els.providerState.textContent = `决策模式：${safeData.decision_mode || "未知"} · 回复正文：${provider.reply || "当前会话"}`;
@@ -378,9 +378,9 @@ function renderOverview(data) {
   const warnings = Array.isArray(safeData.config_warnings) ? safeData.config_warnings : [];
   const shadowCount = Array.isArray(safeData.shadow_decisions) ? safeData.shadow_decisions.length : 0;
   const replyFailures = Number(metrics.llm_reply_failed || 0) + Number(metrics.send_failed || 0);
-  const kevCalls = Number(safeData.kev?.calls || 0);
-  const kevFailures = Number(safeData.kev?.failures || 0);
-  els.metricState.textContent = `${warnings.length ? `配置提示 ${warnings.length} 条：${warnings[0]} · ` : ""}本次运行：Kev 请求 ${kevCalls} 次（失败 ${kevFailures} 次） · 回复或发送失败 ${replyFailures} 次 · 最近保留观察记录 ${shadowCount} 条`;
+  const jevCalls = Number(safeData.jev?.calls || 0);
+  const jevFailures = Number(safeData.jev?.failures || 0);
+  els.metricState.textContent = `${warnings.length ? `配置提示 ${warnings.length} 条：${warnings[0]} · ` : ""}本次运行：Jev 请求 ${jevCalls} 次（失败 ${jevFailures} 次） · 回复或发送失败 ${replyFailures} 次 · 最近保留观察记录 ${shadowCount} 条`;
   const readAir = safeData.read_air || {};
   const occasion = readAir.occasion || {};
   if (els.statOccasion) els.statOccasion.textContent = occasion.kind || "—";
@@ -395,7 +395,7 @@ function renderOverview(data) {
   }
   const partner = safeData.selflearning || {};
   renderIntegrations(safeData.selflearning);
-  renderDecisionLayer(safeData.kev?.enabled ? safeData.kev : safeData.laya?.enabled ? safeData.laya : safeData.jev);
+  renderDecisionLayer(safeData.jev);
   if (els.statPartner) els.statPartner.textContent = partner.lamp || partner.status || "—";
   if (els.statPartnerHint) {
     const details = {
@@ -1189,7 +1189,7 @@ async function applyPresenceKnob() {
   if (els.presenceNote) els.presenceNote.textContent = "正在应用分寸旋钮…";
   try {
     await apiPost("config", { config: { presence_knob: value } });
-    if (els.presenceNote) els.presenceNote.textContent = "分寸旋钮已保存。";
+    if (els.presenceNote) els.presenceNote.textContent = "参与程度已保存，对所有生效群聊应用。";
     await refresh({ quiet: false, operationToken: token });
   } catch (err) {
     if (els.presenceNote) els.presenceNote.textContent = friendlyError(err, "保存失败，请稍后重试。");

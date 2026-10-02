@@ -249,7 +249,7 @@ def test_metrics_recorded_outside_the_fixed_list_are_still_restored(monkeypatch)
     """恢复循环只更新已存在的键，所以这些名字必须出现在 _METRIC_NAMES 里。"""
     from astrbot_plugin_chat_dynamics.main import _METRIC_NAMES
 
-    for name in ("config_saved", "config_applied", "shadow_telemetry_persist_failed"):
+    for name in ("config_saved", "config_applied", "panel_persist_failed"):
         assert name in _METRIC_NAMES
 
     monkeypatch.setattr(codec.time, 'time', lambda: 1000)

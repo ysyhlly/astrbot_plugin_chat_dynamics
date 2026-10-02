@@ -67,17 +67,15 @@ def _check_schema(root: Path) -> list[str]:
     pipeline = schema.get("pipeline_mode", {})
     if pipeline.get("options") != ["filter", "exclusive"]:
         errors.append("pipeline_mode.options must be ['filter', 'exclusive']")
-    for key in ("reply_provider", "vibe_provider"):
+    for key in ("reply_provider", "decision_provider"):
         if key not in schema or schema[key].get("default") != "":
             errors.append(f"{key} must exist with an empty default")
-    for key in ("vibe_llm_enabled", "shadow_mode", "console_show_message_content"):
+    for key in ("shadow_mode", "console_show_message_content"):
         if schema.get(key, {}).get("default") is not False:
             errors.append(f"{key} must default to false")
-    decision = schema.get("decision_mode", {})
-    if decision.get("default") != "legacy":
-        errors.append("decision_mode must default to legacy")
-    if decision.get("options") != ["legacy", "persona_model"]:
-        errors.append("decision_mode.options must be ['legacy', 'persona_model']")
+    retired = {"decision_backend", "decision_mode", "vibe_provider", "vibe_llm_enabled", "learning_policy_mode", "decision_learning_mode"}
+    if retired.intersection(schema):
+        errors.append("retired runtime configuration must not be exposed")
     return errors
 
 
@@ -98,12 +96,6 @@ def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]
     except (OSError, ValueError) as exc:
         errors.append(str(exc))
         version, repo = "", ""
-    try:
-        metadata_text = (root / "metadata.yaml").read_text(encoding="utf-8")
-    except OSError:
-        metadata_text = ""
-    if "vibe_llm_enabled=false" not in metadata_text:
-        errors.append("metadata.yaml must declare vibe_llm_enabled=false")
     if not allow_empty_repo and (not repo or not re.match(r"https?://[^\s]+", repo)):
         errors.append("metadata.yaml repo must be a real https/http URL before release")
 

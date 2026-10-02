@@ -88,7 +88,7 @@
         </section>
             <div class="workspace-navigation" role="tablist" aria-label="控制台工作区">
               <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions">会话工作台</button>
-              <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy">运行策略</button>
+              <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy">参与与分寸</button>
               <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations">互联诊断</button>
             </div>
             <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions">
@@ -272,7 +272,7 @@
               </div>
             </div>
             <p class="ops-note" id="presetNote" role="status" aria-live="polite"></p>
-            <p class="config-migrate-note">完整参数编辑请打开插件页「插件参数配置」。分寸/记忆/媒体开关也在配置页。</p>
+            <p class="config-migrate-note">完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。</p>
           </article>
 
           <p class="ops-note metric-note" id="metricState" role="status" aria-live="polite"></p>
@@ -286,7 +286,7 @@
         </section>        <details class="diagnostic-drawer" id="readAirPanel" open>
           <summary>
             <span>读空气 · 分寸 · 群记忆</span>
-            <span class="summary-hint">次级面板 · 完整仪表盘见顶部导航的今日、分寸、记忆</span>
+            <span class="summary-hint">统一查看群聊状态、参与程度与记忆入口</span>
           </summary>
           <div style="padding: 12px 4px 4px">
             <div class="section-heading">
@@ -325,7 +325,8 @@
             </div>
             <p class="ops-note metric-note" id="whySilentState" role="status" aria-live="polite"></p>
             <div class="preset-form" id="presenceForm">
-              <label for="presenceSelect">分寸旋钮</label>
+              <p class="ops-note">参与程度对所有生效群聊应用；排除名单仍然优先。</p>
+<label for="presenceSelect">分寸旋钮</label>
               <div class="control-row">
                 <select id="presenceSelect" aria-describedby="presenceNote">
                   <option value="ghost">隐身</option>

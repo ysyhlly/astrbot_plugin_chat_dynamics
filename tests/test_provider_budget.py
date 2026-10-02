@@ -37,12 +37,12 @@ async def test_shared_adapters_queue_timeout_and_provider_selection():
         await release.wait()
         return "ok"
     ctx = SimpleNamespace(llm_generate=generate)
-    first = LLMAdapter(ctx, "p", vibe_provider_id="v", draft_provider_id="d")
+    first = LLMAdapter(ctx, "p", vibe_provider_id="v")
     second = LLMAdapter(ctx, "p")
     assert first.provider_budget is second.provider_budget
     assert first.configured_provider("routing") == "p"
     assert first.configured_provider("title") == "p"
-    assert first.configured_provider("auto_draft") == "d"
+    assert first.configured_provider("vibe") == "v"
     tasks = [asyncio.create_task(first.generate(prompt="x", umo="u", system_prompt="", purpose="title")) for _ in range(3)]
     await asyncio.sleep(.01)
     with pytest.raises(LLMUnavailable, match="timed out"):
@@ -81,12 +81,12 @@ async def test_fresh_reply_precedes_background_in_shared_queue():
     budget.active["p"] = (2, 0)
     order = []
     tasks = [asyncio.create_task(budget.run("p", purpose, lambda p=purpose: order.append(p)))
-             for purpose in ("title", "draft", "reply", "routing")]
+             for purpose in ("title", "vibe", "reply", "routing")]
     await asyncio.sleep(0)
     budget.active["p"] = (1, 0)
     budget._dispatch()
     await asyncio.gather(*tasks)
-    assert order == ["reply", "routing", "draft", "title"]
+    assert order == ["reply", "routing", "title", "vibe"]
 
 
 @pytest.mark.asyncio
@@ -192,8 +192,8 @@ async def test_legacy_lookup_has_separate_samples(configured, monkeypatch):
         return provider
     ctx = SimpleNamespace(get_using_provider=lookup, get_provider_by_id=lookup)
     adapter = LLMAdapter(ctx, "p" if configured else "")
-    assert await adapter.generate(prompt="hi", umo="u", system_prompt="", purpose="draft") == "ok"
-    stages = adapter.provider_budget.diagnostics()["stages"]["draft"]
+    assert await adapter.generate(prompt="hi", umo="u", system_prompt="", purpose="title") == "ok"
+    stages = adapter.provider_budget.diagnostics()["stages"]["title"]
     assert stages["lookup"]["calls"] == 1
     assert stages["lookup"]["p50_seconds"] == .125
     assert stages["generation"]["calls"] == 1

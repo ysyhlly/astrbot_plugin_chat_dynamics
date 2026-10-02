@@ -10,7 +10,6 @@ from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from .agent_bridge import AstrBotAgentBridge, PersonaChanged
-from .llm_adapter import completion_text
 from .pacer import is_rhythm_short_act, scale_delay
 from .topic_identity import node_topic_id
 from .platform_bridge import chain_plain_text
@@ -19,10 +18,9 @@ from .presence_policy import participation_policy
 from .persona_trace import record_outcome, stage_trace
 from . import outcome_recorder as outcomes
 from .turn_decision import (
-    MessageSnapshot, TurnContext, TurnDecision, decision_prompt, reply_prompt,
+    MessageSnapshot, TurnContext, TurnDecision, reply_prompt,
 )
-from .jev_decision import build_questions, build_state, build_learning_state, decision_from_answers, describe_answers
-from .learning_environment import capture_environment
+from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -137,6 +135,8 @@ def _routing_other(runtime: Any, routing: dict) -> bool:
 
 
 def turn_is_addressed(runtime: Any, turn: TurnContext, now: float) -> bool:
+    if turn.mandatory_reply or turn.soft_wake:
+        return True
     routing = _routing_for_turn(runtime, turn)
     if _routing_other(runtime, routing):
         return False
@@ -288,6 +288,8 @@ def snapshot_turn(
     explicit: bool,
     observations: dict,
     shadow: bool,
+    *,
+    wake_kind: str = "legacy",
 ) -> ModelTurn | None:
     """Build a model turn from the caller's ordered, canonical DAG IDs.
 
@@ -393,7 +395,7 @@ def snapshot_turn(
                        getattr(result.last_event, "_chat_dynamics_user_revision", runtime.user_revisions.get(result.user_id, 0)),
                        result.start_time, explicit, bool(result.metadata.get("truncated")) or len(result.consolidated_text) > 8000,
                        source_text=result.consolidated_text,
-                       source_truncated=bool(result.metadata.get("truncated")))
+                       source_truncated=bool(result.metadata.get("truncated")), wake_kind=wake_kind)
     platform_ids = frozenset(
         str(getattr(parsed, "message_id", "") or "")
         for parsed, resolved in zip(events, resolved_nodes)
@@ -417,7 +419,8 @@ class PersonaEngine:
                 and p.is_group_takeover_enabled(runtime.group_id)
                 and runtime.epoch == turn.epoch
                 and runtime.user_revisions.get(turn.author, 0) == turn.revision
-                and not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time()))
+                and (turn.mandatory_reply or turn.soft_wake
+                     or not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time())))
 
     async def submit(self, runtime, item: ModelTurn) -> None:
         if not self.valid(runtime, item):
@@ -443,6 +446,20 @@ class PersonaEngine:
             if not queued:
                 runtime.model_admission.release()
 
+    def has_pending_explicit_request(self, runtime, user_id: str, *, mandatory_only: bool = False) -> bool:
+        """Ordinary chatter must not cancel an admitted, unanswered wake request.
+
+        A pending @ also survives a newer wake. Stop/reset still advance the
+        owner revision. This check grants no wake status to the incoming message.
+        """
+        pending = (runtime.active_model_turn, *runtime.model_queue)
+        return any(
+            item is not None and item.context.author == user_id
+            and item.context.explicit and self.valid(runtime, item)
+            and (not mandatory_only or item.context.mandatory_reply)
+            for item in pending
+        )
+
     def diagnostic(self, runtime, code: str, **extra) -> None:
         runtime.model_diagnostic = {"reason_code": code, **extra}
         self.plugin._mark_panel_runtime_dirty()
@@ -453,9 +470,6 @@ class PersonaEngine:
 
         p = self.plugin
         fingerprint = persona.fingerprint
-        learning = getattr(p, "decision_learning", None)
-        if learning is not None and learning.enabled(turn.session_key):
-            fingerprint += f":learning:{id(p._runtime_config)}:{learning.model_version}"
         if not fingerprint or getattr(p, "_shutting_down", False):
             return None
         hit = self._projection_cache.get(fingerprint)
@@ -469,45 +483,12 @@ class PersonaEngine:
                 or not callable(getattr(p, "_create_background_task", None))
                 or not callable(getattr(p, "get_kv_data", None))):
             return None
-        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
-
-        async def ask(system: str, user: str) -> str:
-            from .provider_budget import context_budget
-            provider_id = (p._runtime_config.decision_provider_id
-                           or await p.llm.resolve_provider_id(turn.session_key))
-            budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
-
-            async def invoke():
-                # Admission may outlive a configuration switch or shutdown.
-                current_backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
-                if getattr(p, "_shutting_down", False) or current_backend != "model":
-                    return None
-                return await p.context.llm_generate(
-                    chat_provider_id=provider_id, system_prompt=system, prompt=user)
-
-            return completion_text(await budget.run(provider_id, "persona_projection", invoke))
-
         async def warm():
             axes = None
             try:
-                async def fetch():
-                    if getattr(p._runtime_config, "decision_backend", "model") == "kev":
-                        return await persona_axes.load_cached(p, fingerprint)
-                    learning = getattr(p, "decision_learning", None)
-                    if backend != "kev" and learning is not None and learning.enabled(turn.session_key):
-                        from .decision_tasks import persona_questions
-                        answers = await learning.evaluate(session_id=turn.session_key,
-                            state={"character_card": persona.prompt, "persona_fingerprint": fingerprint},
-                            questions=persona_questions())
-                        return {name: int(round(answers[f"persona.{name}"]["score"]))
-                                for name in persona_axes.AXIS_NAMES if f"persona.{name}" in (answers or {})} or None
-                    if backend != "model" or not callable(getattr(p, "put_kv_data", None)):
-                        return await persona_axes.load_cached(p, fingerprint)
-                    return await persona_axes.load(
-                        p, fingerprint, persona_id=persona.persona_id,
-                        persona_prompt=persona.prompt, ask=ask, now=time.time())
-
-                axes = await asyncio.wait_for(fetch(), timeout=p._runtime_config.decision_timeout)
+                axes = await asyncio.wait_for(
+                    persona_axes.load_cached(p, fingerprint),
+                    timeout=p._runtime_config.decision_timeout)
             except Exception:
                 pass
             else:
@@ -530,72 +511,16 @@ class PersonaEngine:
 
     async def decide(self, item: ModelTurn, persona, state: str, *, runtime: Any = None) -> TurnDecision:
         p, turn = self.plugin, item.context
-        backend = str(getattr(p._runtime_config, "decision_backend", "model") or "model")
-        model_only = backend == "kev"
-        if item.fallback:
-            return (TurnDecision.abstain("queue_overload") if model_only else
-                    TurnDecision.fallback(turn, "queue_overload"))
-        learning = getattr(p, "decision_learning", None)
-        learning_enabled = learning is not None and learning.enabled(turn.session_key)
-        environment = (capture_environment(runtime, turn, getattr(p, "arbiter", None),
-                                           now=p.time_service.time())
-                       if runtime is not None and (learning_enabled or backend in ("model", "kev")) else None)
-        if learning_enabled:
-            from .decision_tasks import OPTIONAL_TURN_QUESTIONS, turn_questions, turn_from_answers
-            questions, candidates = turn_questions(turn)
-            learning_state = build_learning_state(turn, candidates=candidates, previous_state=state,
-                                                 observations=item.observations,
-                                                 presence=p._runtime_config.presence_knob,
-                                                 persona_prompt=persona.prompt,
-                                                 environment=environment)
-            try:
-                answers = await learning.evaluate(session_id=turn.session_key,
-                    state=learning_state,
-                    questions=questions, outcome_node=item.outcome_nodes[-1] if item.outcome_nodes else None,
-                    bot_speaker_id=getattr(runtime, "bot_id", None))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Decision learning unavailable; using configured decision backend")
-                answers = None
-            if runtime is not None:
-                runtime.jev_decision = describe_answers(answers or {})
-            required = set(questions) - OPTIONAL_TURN_QUESTIONS
-            if answers and required <= set(answers):
-                return turn_from_answers(turn, answers, candidates, fail_closed=model_only)
-            if model_only:
-                return TurnDecision.abstain("kev_unavailable")
-            if backend != "model":
-                return TurnDecision.fallback(turn, "decision_learning_unavailable")
-        if model_only:
-            return TurnDecision.abstain("kev_not_configured")
-        if backend in ("jev", "laya"):
-            async def request():
-                return await self._decide_layer(item, persona, state, runtime=runtime, backend=backend)
-        else:
-            async def request():
-                async with self.slots:
-                    provider_id = p._runtime_config.decision_provider_id or await p.llm.resolve_provider_id(turn.session_key)
-                    from .provider_budget import context_budget
-                    from .turn_decision import decision_instructions
-                    budget = getattr(p.llm, "provider_budget", None) or context_budget(p.context)
-                    async def invoke():
-                        return await p.context.llm_generate(
-                            chat_provider_id=provider_id,
-                            system_prompt=decision_instructions(
-                                bool(getattr(p._runtime_config, "decision_record_prompt", False))
-                            ) + "\nEffective persona:\n" + persona.prompt,
-                            prompt=decision_prompt(turn, state, item.observations,
-                                                   p._runtime_config.presence_knob,
-                                                   environment=environment),
-                        )
-                    response = await budget.run(provider_id, "routing", invoke)
-                    return TurnDecision.parse(completion_text(response), turn)
         if runtime is not None:
             runtime.jev_decision = {}
+        if turn.mandatory_reply:
+            return TurnDecision.fallback(turn, "at_mandatory")
+        if item.fallback and not turn.soft_wake:
+            return TurnDecision.fallback(turn, "queue_overload")
         try:
-            # Timeout covers global admission and the single request, with no automatic retry.
-            return await asyncio.wait_for(request(), timeout=p._runtime_config.decision_timeout)
+            return await asyncio.wait_for(
+                self._decide_layer(item, persona, state, runtime=runtime),
+                timeout=p._runtime_config.decision_timeout)
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
@@ -610,28 +535,15 @@ class PersonaEngine:
         state: str,
         *,
         runtime: Any = None,
-        backend: str = "jev",
     ) -> TurnDecision:
-        """Ask the typed-decision model, or fall back to the local plan.
-
-        One bounded call under the same admission slot a model decision uses, and no
-        retry: an unavailable decision layer must not become a second, slower failure
-        path. A response that cannot be mapped exactly is treated as no decision at
-        all, never as an approximate one.
-
-        `backend` names which transport to speak — `jev` (TypeSafe System One) or
-        `laya` (a self-hosted Laya service). Both answer the identical contract, so
-        the questions asked and the mapping to `TurnDecision` are shared outright;
-        only the client, the diagnostic prefix and the metric names differ.
-        """
+        """One bounded native Jev call, with the local conservative fallback."""
         p, turn = self.plugin, item.context
-        laya = backend == "laya"
-        prefix, layer = ("laya_", "laya") if laya else ("jev_", "jev")
-        client = getattr(p, layer, None)
+        prefix = "jev_"
+        client = getattr(p, "jev", None)
         if client is None:
-            return TurnDecision.fallback(turn, prefix + "unavailable")
-        timeout = getattr(p._runtime_config, f"{layer}_timeout", 6.0)
-        floor = getattr(p._runtime_config, f"{layer}_min_confidence", 0.6)
+            return TurnDecision.fallback(turn, "jev_unavailable")
+        timeout = p._runtime_config.jev_timeout
+        floor = p._runtime_config.jev_min_confidence
         async with self.slots:
             answers = await client.evaluate(
                 state=build_state(
@@ -654,6 +566,7 @@ class PersonaEngine:
             turn,
             answers,
             min_confidence=floor,
+            join_floor=getattr(p._runtime_config, "reply_probability_threshold", 70.0) / 100.0,
             prefix=prefix,
         )
 
@@ -672,12 +585,17 @@ class PersonaEngine:
                         break
                     item = runtime.model_queue.popleft()
                     runtime.active_model_turn = item
+                item_cancelled = False
                 try:
                     if self.valid(runtime, item):
                         # Final watchdog covers bridge/provider lookup, native
                         # generation and delivery, not only the decision model.
-                        await asyncio.wait_for(self.process(runtime, item), timeout=p._runtime_config.tool_agent_timeout)
+                        timeout = p._runtime_config.tool_agent_timeout
+                        if item.context.mandatory_reply:
+                            timeout = min(timeout, p._runtime_config.reply_timeout)
+                        await asyncio.wait_for(self.process(runtime, item), timeout=timeout)
                 except asyncio.CancelledError:
+                    item_cancelled = True
                     raise
                 except asyncio.TimeoutError:
                     if self.valid(runtime, item):
@@ -693,9 +611,17 @@ class PersonaEngine:
                         record_outcome(runtime, item, outcomes.mark_generation_failed, "agent_failed")
                     self.diagnostic(runtime, "agent_failed", error_type=type(exc).__name__)
                 finally:
-                    if runtime.active_model_turn is item:
-                        runtime.active_model_turn = None
-                    runtime.model_admission.release()
+                    try:
+                        if not item_cancelled and item.context.mandatory_reply and self.valid(runtime, item):
+                            await asyncio.wait_for(self._ensure_mandatory_reply(runtime, item), timeout=10.0)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self.diagnostic(runtime, "at_fallback_send_failed", error_type=type(exc).__name__)
+                    finally:
+                        if runtime.active_model_turn is item:
+                            runtime.active_model_turn = None
+                        runtime.model_admission.release()
         except asyncio.CancelledError:
             # The worker is being torn down (reset, member stop, unload). Every
             # turn still queued was queued with one admission permit held, and
@@ -712,6 +638,50 @@ class PersonaEngine:
                 p._in_flight.discard(runtime.session_key)
                 if cancelled:
                     runtime.clear_model_queue()
+
+    async def _ensure_mandatory_reply(self, runtime, item: ModelTurn) -> None:
+        """Give a still-current @ one visible response even when generation fails."""
+        p, turn = self.plugin, item.context
+        if item.shadow or not item.events or not self.valid(runtime, item):
+            return
+        nodes = item.outcome_nodes
+        if not nodes or len(nodes) != len(turn.messages) or any(node is None or runtime.dag.get_node(message.message_id) is not node
+                            for message, node in zip(turn.messages, nodes)):
+            return
+        if any(outcomes.read_outcome(node).get("delivered") for node in nodes):
+            return
+        failure = next((outcomes.read_outcome(node).get("suppression_reason") for node in nodes
+                        if outcomes.read_outcome(node).get("suppression_reason")),
+                       runtime.model_diagnostic.get("reason_code", "empty_reply"))
+        text = "收到你的@，但这次暂时没能生成完整回复，请再试一次。"
+        target = turn.messages[-1].message_id
+        async with runtime.send_lock:
+            if not self.valid(runtime, item):
+                return
+            sent = await p._send_owned(runtime, item.events[-1], text,
+                                       reply_to_id=_platform_reply_id(runtime, item, target))
+        if not sent.success:
+            record_outcome(runtime, item, outcomes.mark_delivery_failed, "at_fallback_send_failed")
+            self.diagnostic(runtime, "at_fallback_send_failed")
+            p._metric("send_failed")
+            return
+        p._metric("send_succeeded")
+        record_outcome(runtime, item, outcomes.mark_delivered, reason="at_reply_fallback")
+        self.diagnostic(runtime, "at_reply_fallback", failure_reason=failure, action="acknowledge",
+                        wake_kind="at", reply_required=True)
+        if not self.valid(runtime, item):
+            return
+        real_id = str(sent.message_id) if sent.message_id else None
+        bot = runtime.dag.add_message(real_id or p._next_outgoing_id(), runtime.bot_id, text,
+                                      timestamp=p.time_service.time(), reply_to_id=target,
+                                      metadata={"platform_message_id": real_id is not None})
+        p._observe_routed_bot(runtime, bot)
+        runtime.last_bot_node = bot
+        p._last_bot_nodes[runtime.session_key] = bot
+        runtime.remember_sent(bot.msg_id)
+        runtime.last_interlocutor = turn.author
+        runtime.last_model_send = p.time_service.time()
+        p.arbiter.record_bot_spoke(runtime.session_key, timestamp=runtime.last_model_send, user_id=turn.author)
 
     async def process(self, runtime, item: ModelTurn) -> None:
         p, turn = self.plugin, item.context
@@ -738,7 +708,9 @@ class PersonaEngine:
             while runtime.ambient_openings and now - runtime.ambient_openings[0] >= 60:
                 runtime.ambient_openings.popleft()
             continuation = turn_is_continuation(runtime, turn, now)
-            addressed = turn_is_addressed(runtime, turn, now)
+            addressed = (turn_is_addressed(runtime, turn, now)
+                         or (turn.soft_wake and decision.reason_code == "jev_wake_addressed"))
+            wake_admitted = turn.mandatory_reply or (turn.soft_wake and decision.reason_code == "jev_wake_addressed")
             opening = not addressed and not continuation
             opening_limit = participation_policy(p._runtime_config.presence_knob)["ambient_openings_per_minute"]
             if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:
@@ -747,6 +719,7 @@ class PersonaEngine:
             # Quotas are committed only after a successful send, never on observe/fail.
             # Civil wall time is only for hour/day gates; interval math above stays monotonic.
             gate = None
+            runtime.request_media_understand = False
             gate_engine = getattr(p, "decision_gate", None)
             gate_now = p.time_service.wall_time()
             try:
@@ -796,7 +769,14 @@ class PersonaEngine:
                     runtime.request_media_understand = bool(gate.request_understand)
                     runtime.last_proactive = gate.proactive.as_dict() if gate.proactive is not None else {}
                     runtime.last_rhythm = gate.rhythm.as_dict() if gate.rhythm is not None else {}
-                    if not gate.should_speak:
+                    if not gate.should_speak and wake_admitted:
+                        # Reply to the @ without treating blocked/private media
+                        # as authorised for understanding or forwarding.
+                        runtime.request_media_understand = False
+                        decision = replace(decision, action="acknowledge", length="brief",
+                                           reason_code="at_required_gate_reply" if turn.mandatory_reply else "wake_addressed_gate_reply",
+                                           response_goal="明确回应这次呼唤。暂不处理附件或延长对话，简短说明当前限制。")
+                    elif not gate.should_speak:
                         decision = replace(decision, action="ignore", reason_code=gate.reason_code[:48] if gate.reason_code else "manners_silence")
                     else:
                         runtime.last_length_hint = gate.length_hint or "normal"
@@ -817,7 +797,10 @@ class PersonaEngine:
                 # saw). A gate that cannot be read denies the turn, and says so.
                 gate = None
                 runtime.request_media_understand = False
-                decision = replace(decision, action="ignore", reason_code="gate_unavailable")
+                decision = replace(decision, action="acknowledge" if wake_admitted else "ignore",
+                                   reason_code=("at_required_gate_unavailable" if turn.mandatory_reply else
+                                                "wake_addressed_gate_unavailable" if wake_admitted else "gate_unavailable"),
+                                   response_goal="简短回应这次呼唤，不读取或处理附件。" if wake_admitted else decision.response_goal)
                 p._metric("gate_unavailable")
                 logger.warning(
                     "[ChatDynamics] Participation gate unavailable code=CD_GATE_UNAVAILABLE type=%s",
@@ -847,6 +830,7 @@ class PersonaEngine:
                             target_message_ids=list(decision.target_message_ids), length=decision.length,
                             latency_ms=round((now - started) * 1000), shadow=item.shadow,
                             backend=str(getattr(p._runtime_config, "decision_backend", "model") or "model"),
+                            wake_kind=turn.wake_kind, reply_required=turn.mandatory_reply,
                             **({"jev": evidence} if evidence else {}))
             if item.shadow:
                 p._record_shadow_decision(

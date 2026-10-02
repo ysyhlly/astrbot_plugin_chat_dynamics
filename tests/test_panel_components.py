@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrbot_plugin_chat_dynamics.core.config_panel import ConfigPanel
-from astrbot_plugin_chat_dynamics.core.annotation_review import AnnotationReview
 
 
 class Config(dict):
@@ -61,42 +60,8 @@ def test_config_schema_fallback_resolves_plugin_root():
     assert schema["enable"]["type"] == "bool"
 
 
-@pytest.mark.asyncio
-async def test_review_only_saves_explicitly_accepted_live_messages():
-    store = SimpleNamespace(
-        read_drafts=AsyncMock(return_value={"drafts": {
-            "live": {"expected_reply": True, "bot_targeted": False},
-            "gone": {"expected_reply": False},
-            "unselected": {"expected_reply": True},
-        }}),
-        save=AsyncMock(return_value={"saved": True, "accepted_draft_revision": "revision"}),
-        remove_drafts=AsyncMock(), revision=lambda value: "revision",
-    )
-    host = SimpleNamespace(topic_annotations=store, dags={"umo-a": SimpleNamespace(nodes={"live": object(), "unselected": object()})})
-    result = await AnnotationReview(host).annotation_drafts_apply({
-        "action": "accept", "session_key": "umo-a", "msg_ids": ["live", "gone"],
-        "expected_topic": "NEW",
-    })
-    assert result["saved"] == 1
-    assert result["skipped"][0]["msg_id"] == "gone"
-    store.save.assert_awaited_once_with({
-        "session_key": "umo-a", "msg_id": "live", "expected_topic": "NEW",
-        "error_type": "topic_merge", "expected_reply": True, "bot_targeted": False,
-        # No snapshot on this draft, but the message is live, so nothing is recovered.
-    }, partial=True, draft_revision="revision", request_id=None, recovered_node=None)
-    store.remove_drafts.assert_awaited_once_with("umo-a", ["live"], revisions={"live": "revision"})
 
 
-@pytest.mark.asyncio
-async def test_review_missing_session_drafts_cannot_be_accepted():
-    store = SimpleNamespace(read_drafts=AsyncMock(return_value={"drafts": {"m": {}}}), save=AsyncMock(), remove_drafts=AsyncMock())
-    result = await AnnotationReview(SimpleNamespace(topic_annotations=store, dags={})).annotation_drafts_apply({
-        "action": "accept", "session_key": "umo-a", "msg_ids": ["m"],
-    })
-    assert result["saved"] == 0
-    assert result["skipped"][0]["msg_id"] == "m"
-    store.save.assert_not_awaited()
-    store.remove_drafts.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_config_success_uses_component_panel_without_host_wrappers():

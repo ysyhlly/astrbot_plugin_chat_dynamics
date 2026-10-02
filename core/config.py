@@ -27,12 +27,6 @@ class RuntimeConfig:
     provider_id: str
     reply_provider_id: str
     vibe_provider_id: str
-    draft_provider_id: str
-    annotation_draft_enabled: bool
-    annotation_draft_limit: int
-    annotation_draft_timeout: float
-    annotation_draft_auto_enabled: bool
-    annotation_draft_interval_minutes: float
     command_prefix: str
     debounce_base_cooldown: float
     debounce_extended_cooldown: float
@@ -63,16 +57,6 @@ class RuntimeConfig:
     neural_link_threshold: float
     embedding_cache_size: int
     embedding_cache_ttl_seconds: int
-    # ---- Dynamics Learning policy consumer -----------------------------
-    # Default off: a published policy changes how the bot behaves in real
-    # groups, and that must be opted into, never inherited from the fact that a
-    # companion plugin happens to be installed.
-    learning_policy_mode: str = "off"
-    learning_policy_source_id: str = "ysyhlly/astrbot_plugin_dynamics_learning"
-    learning_policy_expected_policy_id: str = ""
-    learning_policy_expected_dataset_fingerprint: str = ""
-    learning_policy_refresh_seconds: int = 60
-
     conversation_router_enabled: bool = True
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
@@ -86,53 +70,14 @@ class RuntimeConfig:
     topic_margin_threshold: float = 0.06
     parent_window_seconds: float = 180.0
     parent_accept_threshold: float = 0.72
-    decision_mode: str = "legacy"
+    decision_mode: str = "persona_model"
     decision_provider_id: str = ""
     decision_timeout: float = 8.0
-    # Which decision layer answers "participate or not" inside persona_model mode:
-    # the host's own chat model, or TypeSafe's System One (Jev) decision model.
-    decision_backend: str = "model"
-    jev_base_url: str = "https://api.typesafe.ai"
-    jev_model: str = "jev-latest"
-    jev_api_key_env: str = "TYPESAFE_API_KEY"
+    # Native Jev decision; legacy is only an internal bridge-degradation state.
+    decision_backend: str = "jev"
+    reply_probability_threshold: float = 70.0
     jev_timeout: float = 6.0
     jev_min_confidence: float = 0.6
-    # The same turn decision can be answered by a self-hosted Laya service. It
-    # speaks the identical typed-decision contract as System One (see
-    # `core/integrations/laya.py`) but runs locally, so there is no credential and
-    # the per-call budget is a fraction of the remote one.
-    laya_base_url: str = "http://127.0.0.1:8900"
-    laya_timeout: float = 1.5
-    laya_min_confidence: float = 0.6
-    # 不确定度上限，语义与 laya_min_confidence 相反（0 = 完全确定）。两者并存是有意的：
-    # laya_min_confidence 只对 choice/score 有效（它们的 confidence 能低到 0），
-    # 而 noul 的 confidence = max(p, 1-p) 恒 >= 0.5，必须走不确定度那条路。
-    laya_max_uncertainty: float = 0.25
-    decision_learning_mode: str = "off"
-    decision_learning_sessions: tuple[str, ...] = ()
-    decision_learning_retention_days: int = 30
-    decision_learning_sample_rate: float = 0.05
-    decision_learning_labels_per_hour: int = 120
-    decision_learning_jev_fallback: bool = False
-    decision_learning_student_backend: str = "kev"
-    agentjev_base_url: str = "http://127.0.0.1:18765"
-    agentjev_timeout: float = 1.5
-    agentjev_input_format: str = "legacy"
-    agentjev_all_tasks_shadow: bool = False
-    agentjev_all_tasks_active: bool = False
-    agentjev_active_checkpoint_sha256: str = ""
-    agentjev_internal_hosts: tuple[str, ...] = ()
-    kev_base_url: str = "http://127.0.0.1:18766"
-    kev_timeout: float = 2.5
-    kev_checkpoint_id: str = ""
-    kev_canary_percent: float = 0.0
-    kev_internal_hosts: tuple[str, ...] = ()
-    laya_internal_hosts: tuple[str, ...] = ()
-    # The mood calibration has its own backend and its own floor: it is a reading,
-    # not an action, and the Schmitt hysteresis behind it absorbs a wrong call.
-    vibe_backend: str = "llm"
-    vibe_min_confidence: float = 0.55
-    vibe_max_uncertainty: float = 0.35
     reply_timeout: float = 60.0
     tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
@@ -248,12 +193,10 @@ def _integer(
 
 _PRESENCE_KNOBS = {"ghost", "sensible", "lively"}
 
-_DECISION_BACKENDS = {"model", "jev", "laya", "kev"}
 # Which classifier reads the room's mood. Deliberately separate from
 # `decision_backend`: the turn decision runs every turn while this one is a
 # low-frequency calibration, so an operator can want a decision model for one and
 # not the other.
-_VIBE_BACKENDS = {"llm", "laya"}
 
 # The Hub reads one credential out of the process environment. The variable name
 # is part of the published config, so it is restricted to names that are
@@ -271,33 +214,6 @@ def _hub_key_env(value: Any, warnings: List[str]) -> str:
             f"selflearning_hub_key_env must be a Hub-related environment variable name ({_HUB_KEY_ENV_DEFAULT} is used)"
         )
         return _HUB_KEY_ENV_DEFAULT
-    return name
-
-
-# The Jev decision layer reads its credential out of the process environment. The
-# variable name is part of the published config, so it is restricted the same way
-# the Hub's is: an arbitrary name would let a config write turn any unrelated
-# secret into an Authorization header sent to the decision endpoint.
-_JEV_KEY_ENV_HINT = re.compile(r"JEV|TYPESAFE|OPENROUTER|GATEWAY|AIMLAPI|CHAT_DYNAMICS", re.IGNORECASE)
-_JEV_KEY_ENV_DEFAULT = "TYPESAFE_API_KEY"
-
-
-def _vibe_backend(value: Any, warnings: List[str]) -> str:
-    """The mood classifier's backend, or `llm` when the value names no known one."""
-    name = str(value or "").strip().lower() or "llm"
-    if name not in _VIBE_BACKENDS:
-        warnings.append(f"vibe_backend is invalid; using llm (got {value!r})")
-        return "llm"
-    return name
-
-
-def _jev_key_env(value: Any, warnings: List[str]) -> str:
-    name = str(value or "").strip() or _JEV_KEY_ENV_DEFAULT
-    if not _HUB_KEY_ENV_NAME.match(name) or not _JEV_KEY_ENV_HINT.search(name):
-        warnings.append(
-            f"jev_api_key_env must be a Jev-related environment variable name ({_JEV_KEY_ENV_DEFAULT} is used)"
-        )
-        return _JEV_KEY_ENV_DEFAULT
     return name
 
 
@@ -337,11 +253,6 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         warnings.append(f"pipeline_mode is invalid; using {PIPELINE_FILTER}")
         mode = PIPELINE_FILTER
 
-    policy_mode = str(_get(raw, "learning_policy_mode", "off") or "off").strip().lower()
-    if policy_mode not in ("off", "shadow", "active"):
-        warnings.append(f"learning_policy_mode is invalid; using off (got {policy_mode!r})")
-        policy_mode = "off"
-
     rhythm_timezone = str(_get(raw, "rhythm_timezone", "") or "").strip()
     if rhythm_timezone:
         try:
@@ -350,121 +261,39 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             warnings.append("rhythm_timezone is invalid or unavailable; using system local timezone")
             rhythm_timezone = ""
 
-    decision_backend = str(_get(raw, "decision_backend", "model") or "model").strip().lower()
-    if decision_backend not in _DECISION_BACKENDS:
-        warnings.append(f"decision_backend is invalid; using model (got {decision_backend!r})")
-        decision_backend = "model"
-    decision_mode = str(_get(raw, "decision_mode", "legacy") or "legacy").strip().lower()
-    if decision_mode not in ("legacy", "persona_model"):
-        decision_mode = "legacy"
-    if decision_backend == "kev" and decision_mode != "persona_model":
-        warnings.append("decision_backend=kev requires persona_model; using persona_model")
-        decision_mode = "persona_model"
-    if decision_backend == "jev" and decision_mode != "persona_model":
-        # The decision layer lives inside the persona turn, so a Jev backend without
-        # that mode would be configured, billed for nothing, and never consulted.
-        warnings.append("decision_backend=jev is only used by decision_mode=persona_model")
-    # `decision_backend=laya` is deliberately not gated the same way: it also feeds
-    # the willingness-to-speak sub-scores, which only the legacy path computes. A
-    # Jev backend answers the turn decision alone; a Laya backend answers whichever
-    # small decisions the active path asks for.
+    # Old routing/training settings cannot reactivate removed consumers.
 
     config = RuntimeConfig(
-        decision_learning_mode=(str(_get(raw, "decision_learning_mode", "off"))
-                                if _get(raw, "decision_learning_mode", "off") in
-                                ("off", "collect", "shadow", "active") else "off"),
-        decision_learning_sessions=_strings(_get(raw, "decision_learning_sessions", ())),
-        decision_learning_retention_days=_integer(raw, "decision_learning_retention_days", 30, 1, 365, warnings),
-        decision_learning_sample_rate=_number(raw, "decision_learning_sample_rate", .05, lambda x: 0 <= x <= 1, warnings),
-        decision_learning_labels_per_hour=_integer(raw, "decision_learning_labels_per_hour", 120, 0, 10000, warnings),
-        decision_learning_jev_fallback=_bool(_get(raw, "decision_learning_jev_fallback", False), False),
-        decision_learning_student_backend=(str(_get(raw, "decision_learning_student_backend", "kev") or "kev").lower()
-                                           if _get(raw, "decision_learning_student_backend", "kev") in ("agentjev", "laya", "kev")
-                                           else "kev"),
-        agentjev_base_url=str(_get(raw, "agentjev_base_url", "http://127.0.0.1:18765") or "").strip(),
-        agentjev_timeout=_number(raw, "agentjev_timeout", 1.5, lambda value: 0.05 <= value <= 30, warnings),
-        agentjev_input_format=(str(_get(raw, "agentjev_input_format", "legacy"))
-                               if _get(raw, "agentjev_input_format", "legacy") in
-                               ("legacy", "cmdcode_full_input_soft_v1") else "legacy"),
-        agentjev_all_tasks_shadow=_bool(_get(raw, "agentjev_all_tasks_shadow", False), False),
-        agentjev_all_tasks_active=_bool(_get(raw, "agentjev_all_tasks_active", False), False),
-        agentjev_active_checkpoint_sha256=(str(_get(raw, "agentjev_active_checkpoint_sha256", "") or "").lower()
-                                           if re.fullmatch(r"[0-9a-fA-F]{64}",
-                                                           str(_get(raw, "agentjev_active_checkpoint_sha256", "") or ""))
-                                           else ""),
-        agentjev_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "agentjev_internal_hosts", ()))
-                                      if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
-        kev_base_url=str(_get(raw, "kev_base_url", "http://127.0.0.1:18766") or "").strip(),
-        kev_timeout=_number(raw, "kev_timeout", 2.5, lambda value: 0.05 <= value <= 30, warnings),
-        kev_checkpoint_id=str(_get(raw, "kev_checkpoint_id", "") or "").strip()[:256],
-        kev_canary_percent=_number(raw, "kev_canary_percent", 0.0,
-                                   lambda value: 0 <= value <= 100, warnings),
-        kev_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "kev_internal_hosts", ()))
-                                 if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
-        laya_internal_hosts=tuple(host.lower() for host in _strings(_get(raw, "laya_internal_hosts", ()))
-                                  if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host)),
-        learning_policy_mode=policy_mode,
-        learning_policy_source_id=(str(_get(raw, "learning_policy_source_id", "") or "").strip()
-                                   or "ysyhlly/astrbot_plugin_dynamics_learning"),
-        learning_policy_expected_policy_id=str(
-            _get(raw, "learning_policy_expected_policy_id", "") or "").strip(),
-        learning_policy_expected_dataset_fingerprint=str(
-            _get(raw, "learning_policy_expected_dataset_fingerprint", "") or "").strip(),
-        learning_policy_refresh_seconds=_integer(
-            raw, "learning_policy_refresh_seconds", 60, 10, 3600, warnings),
         rhythm_timezone=rhythm_timezone,
-        decision_mode=decision_mode,
+        decision_mode="persona_model",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),
-        decision_backend=decision_backend,
-        jev_base_url=str(_get(raw, "jev_base_url", "https://api.typesafe.ai") or "").strip(),
-        jev_model=(str(_get(raw, "jev_model", "") or "").strip() or "jev-latest")[:64],
-        jev_api_key_env=_jev_key_env(_get(raw, "jev_api_key_env", _JEV_KEY_ENV_DEFAULT), warnings),
+        decision_backend="jev",
+        reply_probability_threshold=_number(raw, "reply_probability_threshold", 70.0,
+                                            lambda value: 0 <= value <= 100, warnings),
         jev_timeout=_number(raw, "jev_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
         jev_min_confidence=_number(
             raw, "jev_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
         ),
-        laya_base_url=str(_get(raw, "laya_base_url", "http://127.0.0.1:8900") or "").strip(),
         # A local decision call is tens of milliseconds; the budget only has to
         # absorb a cold first request, not a remote round trip.
-        laya_timeout=_number(raw, "laya_timeout", 1.5, lambda value: 0.05 <= value <= 30, warnings),
-        laya_min_confidence=_number(
-            raw, "laya_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
-        ),
-        laya_max_uncertainty=_number(
-            raw, "laya_max_uncertainty", 0.25, lambda value: 0.0 <= value <= 0.5, warnings
-        ),
-        vibe_backend=_vibe_backend(_get(raw, "vibe_backend", "llm"), warnings),
-        vibe_min_confidence=_number(
-            raw, "vibe_min_confidence", 0.55, lambda value: 0.3 <= value <= 0.95, warnings
-        ),
-        vibe_max_uncertainty=_number(
-            raw, "vibe_max_uncertainty", 0.35, lambda value: 0.0 <= value <= 0.5, warnings
-        ),
         reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
         tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),
+        wts_topic_weight=0.12,
+        wts_professionalism_weight=0.08,
+        wts_question_weight=0.08,
+        wts_participation_weight=0.06,
+        wts_fatigue_weight=1.0,
         enabled=_bool(_get(raw, "enable", True), True),
         pipeline_mode=mode,
-        ambient_intervention=_bool(_get(raw, "ambient_intervention", False), False),
+        ambient_intervention=False,
         takeover_all=_bool(_get(raw, "takeover_all", False), False),
         takeover_groups=frozenset(takeover),
         exclude_groups=frozenset(excluded),
         bot_names=names,
-        provider_id=str(_get(raw, "provider", "") or "").strip(),
+        provider_id="",
         reply_provider_id=str(_get(raw, "reply_provider", "") or "").strip(),
-        vibe_provider_id=str(_get(raw, "vibe_provider", "") or "").strip(),
-        draft_provider_id=str(_get(raw, "annotation_draft_provider", "") or "").strip(),
-        # Off by default: drafting sends other people messages to a model, and the
-        # feature only becomes useful once somebody has decided to review drafts.
-        annotation_draft_enabled=_bool(_get(raw, "annotation_draft_enabled", False), False),
-        annotation_draft_auto_enabled=_bool(_get(raw, "annotation_draft_auto_enabled", False), False),
-        annotation_draft_interval_minutes=_number(
-            raw, "annotation_draft_interval_minutes", 15.0, lambda value: 1 <= value <= 1440, warnings
-        ),
-        annotation_draft_limit=_integer(raw, "annotation_draft_limit", 20, 1, 40, warnings),
-        annotation_draft_timeout=_number(
-            raw, "annotation_draft_timeout", 60.0, lambda value: 10 <= value <= 300, warnings
-        ),
+        vibe_provider_id="",
         command_prefix=prefix,
         debounce_base_cooldown=base,
         debounce_extended_cooldown=extended,
@@ -479,9 +308,9 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         max_fragments=_integer(raw, "max_fragments", 3, 1, 3, warnings),
         max_fragment_chars=_integer(raw, "max_fragment_chars", 120, 40, 500, warnings),
         inter_burst_interval=_number(raw, "inter_burst_interval", 1.2, lambda value: 0.6 <= value <= 3, warnings),
-        casual_emoji_enabled=_bool(_get(raw, "casual_emoji_enabled", False), False),
+        casual_emoji_enabled=False,
         strip_markdown_in_banter=_bool(_get(raw, "strip_markdown_in_banter", True), True),
-        vibe_llm_enabled=_bool(_get(raw, "vibe_llm_enabled", False), False),
+        vibe_llm_enabled=False,
         shadow_mode=_bool(_get(raw, "shadow_mode", False), False),
         console_show_message_content=_bool(_get(raw, "console_show_message_content", False), False),
         telemetrics_window_seconds=_number(
@@ -492,19 +321,6 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         ),
         chill_fade_enter_mpm=_number(
             raw, "chill_fade_enter_mpm", 3.0, lambda value: 0.5 <= value <= 12, warnings
-        ),
-        wts_topic_weight=_number(raw, "wts_topic_weight", 0.12, lambda value: 0 <= value <= 0.5, warnings),
-        wts_professionalism_weight=_number(
-            raw, "wts_professionalism_weight", 0.08, lambda value: 0 <= value <= 0.5, warnings
-        ),
-        wts_question_weight=_number(
-            raw, "wts_question_weight", 0.08, lambda value: 0 <= value <= 0.5, warnings
-        ),
-        wts_participation_weight=_number(
-            raw, "wts_participation_weight", 0.06, lambda value: 0 <= value <= 0.5, warnings
-        ),
-        wts_fatigue_weight=_number(
-            raw, "wts_fatigue_weight", 1.0, lambda value: 0 <= value <= 2, warnings
         ),
         neural_embedding_enabled=_bool(_get(raw, "neural_embedding_enabled", False), False),
         conversation_router_enabled=_bool(_get(raw, "conversation_router_enabled", True), True),

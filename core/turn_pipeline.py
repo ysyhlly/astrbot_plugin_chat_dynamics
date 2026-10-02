@@ -21,7 +21,6 @@ from .native_delivery import _NativeEventContext
 from .outcome_recorder import STAGE_GATE, mark_not_attempted, mark_suppressed
 from .persona_engine import is_request_supplement, snapshot_turn
 from .platform_bridge import parse_group_event, is_poke_placeholder
-from .runtime_persistence import host_version as _host_plugin_version
 from .session_runtime import PendingTurn, SessionRuntime
 from .thread_router import build_contextual_query
 from .turn_latency import degrade, record_stage
@@ -263,7 +262,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     # Kev-only mode sends a poke through the same persona turn as any other
     # message.  The old poke policy could otherwise authorize a reply or a
     # poke-back without consulting the decision model.
-    if poke_only and getattr(host._runtime_config, "decision_backend", "model") != "kev":
+    if poke_only:
         if last_event is not None and not host.shadow_mode:
             if poke_at_bot:
                 host._claim_poke_event(last_event)
@@ -278,8 +277,6 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     telemetrics = atmosphere.energy
     runtime.vibe_message_count += 1
     host._vibe_msg_counts[session_id] = runtime.vibe_message_count
-    if not host.shadow_mode and not host._persona_mode():
-        host._schedule_vibe_llm(session_id, analysis_text, now)
     if not host.shadow_mode:
         # Both decision modes dispatch the LLM-request hook, so the partner's
         # approved memories are warmed here for either of them.
@@ -326,59 +323,6 @@ def _prepared_turn_current(host, turn: _PreparedTurn) -> bool:
     )
 
 
-async def _fill_turn_decisions(host, turn: _PreparedTurn, deadline: float) -> None:
-    """Ask the turn's small decisions while the session lock is free.
-
-    One bounded request covers every question `_finish_turn_locked` will want, and
-    the decision points there read the result with a plain lookup. Laya answers the
-    whole batch in a single forward pass, so gathering them here is what keeps the
-    synchronous step free of network calls instead of trading one blocking call for
-    three.
-
-    Every way this can fail leaves the slots empty rather than wrong: no client, no
-    budget left in the enrichment allowance, a transport that could not answer, an
-    answer that cannot carry a decision. The decision points then keep the
-    heuristics they already had.
-    """
-    if getattr(host._runtime_config, "decision_backend", "model") == "kev":
-        return
-    client = getattr(host, "laya", None)
-    if client is None:
-        return
-    remaining = deadline - time.perf_counter()
-    if remaining <= 0:
-        degrade(turn.node, 'enrichment_budget_exhausted')
-        return
-    from .turn_decisions import TurnDecisions
-
-    decisions = TurnDecisions.for_turn()
-    turn.decisions = decisions
-    started = time.perf_counter()
-    try:
-        learning = getattr(host, "decision_learning", None)
-        if learning is not None and learning.enabled(turn.result.session_id):
-            from .decision_routing import build_routing_tasks, message_snapshot
-            routing_state, routing_questions, mapping = build_routing_tasks(turn)
-            context = [message_snapshot(n) for n in list(turn.dag.nodes.values())
-                       if n is not turn.node and n.timestamp <= turn.node.timestamp][-12:]
-            answers = await learning.evaluate(session_id=turn.result.session_id,
-                state={"text": turn.analysis_text, "recent_messages": context,
-                       "current": message_snapshot(turn.node),
-                       "routing": turn.node.metadata.get("routing", {}), "routing_semantics": routing_state},
-                questions={**decisions.questions, **routing_questions}, timeout=remaining, outcome_node=turn.node)
-            decisions.source = "decision_learning"
-            turn.semantic_routing = (answers or {}, mapping)
-        else:
-            answers = await client.evaluate(
-            # The opinions are about the message itself, which is exactly what the
-            # regex heuristics they replace read. Room physics stays out of it.
-                state={"text": turn.analysis_text},
-                questions=decisions.questions,
-                timeout=min(float(host._runtime_config.laya_timeout), remaining),
-            )
-    finally:
-        record_stage(turn.node, 'small_decisions', started)
-    decisions.ingest(answers)
 
 
 async def _enrich_turn(host, turn: _PreparedTurn) -> None:
@@ -387,17 +331,10 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
     # Reuse the largest configured stage allowance as the entire enrichment
     # allowance: serial stages do not each receive a new full deadline.
     cfg = host._runtime_config
-    learning = getattr(host, "decision_learning", None)
-    learning_enabled = (cfg.decision_backend != "kev" and learning is not None
-                        and learning.enabled(turn.result.session_id))
     allowance = max(float(cfg.routing_neural_timeout),
                     float(cfg.topic_reranker_timeout) if cfg.topic_reranker_enabled else 0.0)
-    if learning_enabled:
-        allowance = max(allowance, float(cfg.decision_timeout))
     deadline = time.perf_counter() + max(0.0, allowance)
     started = time.perf_counter()
-    if not learning_enabled:
-        await _fill_turn_decisions(host, turn, deadline)
     if turn.neural_ready is not None:
         wait_started = time.perf_counter()
         try:
@@ -447,10 +384,6 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
                 task.cancel()
             record_stage(turn.node, 'rerank_wait', wait_started)
         host._mark_panel_runtime_dirty()
-    if learning_enabled and host._prepared_turn_current(turn):
-        # Judge the final candidate shortlist; an earlier opinion would be
-        # immediately invalidated by the embedding/reranker commits above.
-        await _fill_turn_decisions(host, turn, deadline)
     record_stage(turn.node, 'enrichment', started)
 
 
@@ -525,26 +458,6 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
             ('session_id', 'message_id', 'turn_id', 'epoch', 'revision', 'owner_revision', 'config_id', 'policy_id')}):
         host._metric('stale_turn_ignored')
         return
-    # Phase one of a shadow run: the runtime keeps the baseline behaviour and
-    # the policy's decision is computed beside it. Computed here, before the
-    # trace is frozen, so the comparison travels inside the same snapshot the
-    # rest of the decision does.
-    shadow_runtime = getattr(host, "learning_policy", None)
-    shadow_recorded = (
-        shadow_runtime.shadow_decision(
-            score=float(addressivity.contribution_total or 0.0),
-            level=addressivity.level.value if hasattr(addressivity.level, "value")
-            else str(addressivity.level),
-            evidence_codes=[item.code for item in addressivity.evidence],
-            has_prior_bot=last_bot_node is not None,
-            baseline_threshold=float(host.addressivity_router.strong_threshold),
-            now=host.time_service.wall_time(),
-        ) if shadow_runtime is not None else None)
-    if shadow_recorded is not None:
-        node.metadata["shadow_decision"] = shadow_recorded
-        host.shadow_telemetry.record(
-            shadow_recorded, session=session_id, message_id=node.msg_id,
-            host_version=_host_plugin_version())
     node.metadata["decision_trace"] = build_routing_trace(
         routing=node.metadata.get("routing", {}), identity=identity,
         participation={"score": addressivity.score, "level": addressivity.level,
@@ -562,7 +475,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
                    and n.user_id not in {runtime.bot_id, node.user_id}})},
         mode="persona" if host._persona_mode() else "legacy",
         weights_version=ROUTING_WEIGHTS_VERSION,
-        shadow=shadow_recorded)
+        shadow=None)
     if evidence is not None:
         node.metadata['decision_trace']['turn'] = evidence.identity()
     # Every processed turn starts as "the reply flow was never entered" and
@@ -584,6 +497,9 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         observations = {"mpm": telemetrics.mpm, "mode": vibe_mode.value,
                         "addressivity": addressivity.score, "scene_tags": list(telemetrics.scene_tags)}
         canonical_ids = tuple(turn_node.msg_id for turn_node in turn_nodes) or (node.msg_id,)
+        kinds = {host._wake_kind(parsed, runtime) for parsed in parsed_events}
+        wake_kind = next((kind for kind in ("at", "quote", "name", "poke") if kind in kinds),
+                         "supplement" if explicit else "none")
         return snapshot_turn(
             runtime,
             result,
@@ -592,6 +508,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
             explicit,
             observations,
             host.shadow_mode,
+            wake_kind=wake_kind,
         )
 
     logger.debug(
@@ -626,7 +543,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         current_time=now,
         allow_ambient=host._allow_ambient(),
         decisions=getattr(turn, "decisions", None),
-        decision_floor=float(host._runtime_config.laya_min_confidence),
+        decision_floor=float(0.6),
     )
 
     explicit_addr = addressivity.level == AddressivityLevel.STRONG
@@ -663,7 +580,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         willingness=float(getattr(arb_res, "willingness_score", 0.0) or 0.0),
         cfg=host._runtime_config,
         decisions=getattr(turn, "decisions", None),
-        decision_floor=float(host._runtime_config.laya_min_confidence),
+        decision_floor=float(0.6),
         now=host.time_service.wall_time(),
         node_now=now,
         has_media=has_media_turn,

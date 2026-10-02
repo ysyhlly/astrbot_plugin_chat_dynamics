@@ -8,10 +8,10 @@ Run `python scripts/sync_page_assets.py` from the repository root to publish all
 The manual equivalent:
 
 ```bash
-for p in console config today manners memory replay drafts; do
+for p in console config today manners memory replay learning; do
   cp base.css plugin_nav.js plugin_nav.css theme.js theme.css errors.js ../$p/
 done
-for p in config today manners memory replay drafts; do
+for p in config today manners memory replay learning; do
   cp shell.css api.js shell.js ../$p/   # config included to avoid stray 404s
 done
 ```

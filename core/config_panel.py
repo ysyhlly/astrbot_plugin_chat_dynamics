@@ -16,24 +16,18 @@ _PRESETS = {
     "balanced": {
         "pipeline_mode": PIPELINE_FILTER,
         "shadow_mode": False,
-        "ambient_intervention": False,
-        "vibe_llm_enabled": False,
         "debounce_base_cooldown": 3.5,
         "debounce_extended_cooldown": 6.5,
         "debounce_max_cap": 12.0,
         "deep_cooling_minutes": 15.0,
-        "casual_emoji_enabled": False,
     },
     "active": {
         "pipeline_mode": PIPELINE_FILTER,
         "shadow_mode": False,
-        "ambient_intervention": True,
-        "vibe_llm_enabled": True,
         "debounce_base_cooldown": 2.0,
         "debounce_extended_cooldown": 4.0,
         "debounce_max_cap": 8.0,
         "deep_cooling_minutes": 10.0,
-        "casual_emoji_enabled": True,
     },
 }
 
@@ -68,8 +62,6 @@ class ConfigPanel:
             "current": {
                 "shadow_mode": self.host.shadow_mode,
                 "pipeline_mode": self.host.pipeline_mode,
-                "ambient_intervention": self.host.ambient_intervention,
-                "vibe_llm_enabled": self.host.vibe_llm_enabled,
             },
         }
 
@@ -80,9 +72,6 @@ class ConfigPanel:
 
 
     def _config_schema(self) -> dict[str, Any]:
-        schema = getattr(getattr(self.host, "config", None), "schema", None)
-        if isinstance(schema, dict) and schema:
-            return schema
         try:
             from pathlib import Path as _Path
             path = _Path(__file__).resolve().parents[1] / "_conf_schema.json"
@@ -110,47 +99,16 @@ class ConfigPanel:
             cfg, _ = parse_runtime_config(self.host._coerce_config(getattr(self.host, "config", {}) or {}))
         return {
             "enable": bool(getattr(cfg, "enabled", True)),
-            "decision_mode": getattr(cfg, "decision_mode", "legacy"),
             "conversation_router_enabled": getattr(cfg, "conversation_router_enabled", True),
             "routing_neural_timeout": getattr(cfg, "routing_neural_timeout", 0.5),
             "topic_reranker_enabled": cfg.topic_reranker_enabled,
             "topic_reranker_provider": cfg.topic_reranker_provider,
             "topic_reranker_timeout": cfg.topic_reranker_timeout,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
-            "decision_backend": getattr(cfg, "decision_backend", "model"),
+            "reply_probability_threshold": getattr(cfg, "reply_probability_threshold", 70.0),
             "decision_timeout": getattr(cfg, "decision_timeout", 8.0),
-            "jev_base_url": getattr(cfg, "jev_base_url", ""),
-            "jev_model": getattr(cfg, "jev_model", "jev-latest"),
-            "jev_api_key_env": getattr(cfg, "jev_api_key_env", "TYPESAFE_API_KEY"),
             "jev_timeout": getattr(cfg, "jev_timeout", 6.0),
             "jev_min_confidence": getattr(cfg, "jev_min_confidence", 0.6),
-            "laya_base_url": getattr(cfg, "laya_base_url", ""),
-            "laya_timeout": getattr(cfg, "laya_timeout", 1.5),
-            "laya_min_confidence": getattr(cfg, "laya_min_confidence", 0.6),
-            "laya_max_uncertainty": getattr(cfg, "laya_max_uncertainty", 0.25),
-            "decision_learning_mode": getattr(cfg, "decision_learning_mode", "off"),
-            "decision_learning_student_backend": getattr(cfg, "decision_learning_student_backend", "kev"),
-            "agentjev_base_url": getattr(cfg, "agentjev_base_url", "http://127.0.0.1:18765"),
-            "agentjev_timeout": getattr(cfg, "agentjev_timeout", 1.5),
-            "agentjev_input_format": getattr(cfg, "agentjev_input_format", "legacy"),
-            "agentjev_all_tasks_shadow": bool(getattr(cfg, "agentjev_all_tasks_shadow", False)),
-            "agentjev_all_tasks_active": bool(getattr(cfg, "agentjev_all_tasks_active", False)),
-            "agentjev_active_checkpoint_sha256": getattr(cfg, "agentjev_active_checkpoint_sha256", ""),
-            "agentjev_internal_hosts": list(getattr(cfg, "agentjev_internal_hosts", ())),
-            "kev_base_url": getattr(cfg, "kev_base_url", "http://127.0.0.1:18766"),
-            "kev_timeout": getattr(cfg, "kev_timeout", 2.5),
-            "kev_checkpoint_id": getattr(cfg, "kev_checkpoint_id", ""),
-            "kev_canary_percent": getattr(cfg, "kev_canary_percent", 0.0),
-            "kev_internal_hosts": list(getattr(cfg, "kev_internal_hosts", ())),
-            "decision_learning_sessions": list(getattr(cfg, "decision_learning_sessions", ())),
-            "decision_learning_retention_days": getattr(cfg, "decision_learning_retention_days", 30),
-            "decision_learning_sample_rate": getattr(cfg, "decision_learning_sample_rate", 0.05),
-            "decision_learning_labels_per_hour": getattr(cfg, "decision_learning_labels_per_hour", 120),
-            "decision_learning_jev_fallback": getattr(cfg, "decision_learning_jev_fallback", False),
-            "laya_internal_hosts": list(getattr(cfg, "laya_internal_hosts", ())),
-            "vibe_backend": getattr(cfg, "vibe_backend", "llm"),
-            "vibe_min_confidence": getattr(cfg, "vibe_min_confidence", 0.55),
-            "vibe_max_uncertainty": getattr(cfg, "vibe_max_uncertainty", 0.35),
             "reply_timeout": cfg.reply_timeout,
             "tool_agent_timeout": cfg.tool_agent_timeout,
             "topic_commit_threshold": cfg.topic_commit_threshold,
@@ -160,31 +118,12 @@ class ConfigPanel:
             "topic_window_seconds": cfg.topic_window_seconds,
             "replay_message_limit": cfg.replay_message_limit,
             "pipeline_mode": getattr(cfg, "pipeline_mode", PIPELINE_FILTER),
-            "ambient_intervention": bool(getattr(cfg, "ambient_intervention", False)),
             "takeover_all": bool(getattr(cfg, "takeover_all", False)),
             "takeover_groups": sorted(getattr(cfg, "takeover_groups", ()) or ()),
             "exclude_groups": sorted(getattr(cfg, "exclude_groups", ()) or ()),
-            "provider": getattr(cfg, "provider_id", ""),
             "reply_provider": getattr(cfg, "reply_provider_id", ""),
-            "vibe_provider": getattr(cfg, "vibe_provider_id", ""),
-            # The panel reads this map by *schema* key, and the schema key is
-            # annotation_draft_provider: publishing it as `draft_provider` left the row
-            # showing "生效：—" and excluded it from the drift check.
-            "annotation_draft_provider": getattr(cfg, "draft_provider_id", ""),
-            "annotation_draft_enabled": bool(getattr(cfg, "annotation_draft_enabled", False)),
-            "annotation_draft_auto_enabled": bool(getattr(cfg, "annotation_draft_auto_enabled", False)),
-            "annotation_draft_interval_minutes": getattr(cfg, "annotation_draft_interval_minutes", 15.0),
-            "annotation_draft_limit": getattr(cfg, "annotation_draft_limit", 20),
-            "annotation_draft_timeout": getattr(cfg, "annotation_draft_timeout", 60.0),
             "parent_window_seconds": getattr(cfg, "parent_window_seconds", 180.0),
             "parent_accept_threshold": getattr(cfg, "parent_accept_threshold", 0.72),
-            "learning_policy_mode": getattr(cfg, "learning_policy_mode", "off"),
-            "learning_policy_source_id": getattr(cfg, "learning_policy_source_id", ""),
-            "learning_policy_expected_policy_id": getattr(
-                cfg, "learning_policy_expected_policy_id", ""),
-            "learning_policy_expected_dataset_fingerprint": getattr(
-                cfg, "learning_policy_expected_dataset_fingerprint", ""),
-            "learning_policy_refresh_seconds": getattr(cfg, "learning_policy_refresh_seconds", 60),
             "bot_names": list(getattr(cfg, "bot_names", ()) or ()),
             "command_prefix": getattr(cfg, "command_prefix", "/"),
             "debounce_base_cooldown": getattr(cfg, "debounce_base_cooldown", 3.5),
@@ -198,19 +137,12 @@ class ConfigPanel:
             "max_fragments": getattr(cfg, "max_fragments", 3),
             "max_fragment_chars": getattr(cfg, "max_fragment_chars", 120),
             "inter_burst_interval": getattr(cfg, "inter_burst_interval", 1.2),
-            "casual_emoji_enabled": bool(getattr(cfg, "casual_emoji_enabled", False)),
             "strip_markdown_in_banter": bool(getattr(cfg, "strip_markdown_in_banter", True)),
-            "vibe_llm_enabled": bool(getattr(cfg, "vibe_llm_enabled", False)),
             "shadow_mode": bool(getattr(cfg, "shadow_mode", False)),
             "console_show_message_content": bool(getattr(cfg, "console_show_message_content", False)),
             "telemetrics_window_seconds": getattr(cfg, "telemetrics_window_seconds", 60.0),
             "fast_banter_enter_mpm": getattr(cfg, "fast_banter_enter_mpm", 12.0),
             "chill_fade_enter_mpm": getattr(cfg, "chill_fade_enter_mpm", 3.0),
-            "wts_topic_weight": getattr(cfg, "wts_topic_weight", 0.12),
-            "wts_professionalism_weight": getattr(cfg, "wts_professionalism_weight", 0.08),
-            "wts_question_weight": getattr(cfg, "wts_question_weight", 0.08),
-            "wts_participation_weight": getattr(cfg, "wts_participation_weight", 0.06),
-            "wts_fatigue_weight": getattr(cfg, "wts_fatigue_weight", 1.0),
             "neural_embedding_enabled": bool(getattr(cfg, "neural_embedding_enabled", False)),
             "embedding_provider": getattr(cfg, "embedding_provider", ""),
             "neural_link_threshold": getattr(cfg, "neural_link_threshold", 0.78),
@@ -273,20 +205,11 @@ class ConfigPanel:
                 value = sorted({str(item).strip() for item in source if str(item).strip()})
             if value != eff:
                 mismatches.append(key)
-        # A parameter the learning policy has overridden legitimately differs
-        # from the stored value, so it is listed separately instead of being
-        # reported as an unexplained mismatch: "effective != stored" is a
-        # finding, and the reason has to travel with it.
-        policy = self.host.get_learning_policy_status()
-        overridden = sorted((policy.get("overrides") or {}).keys()) if policy.get("applied") \
-            else []
         return {
             "schema": self._config_schema(),
             "stored": stored,
             "effective": effective,
-            "mismatches": [key for key in mismatches if key not in overridden],
-            "learning_policy": policy,
-            "learning_policy_overridden": overridden,
+            "mismatches": mismatches,
             "warnings": list(getattr(self.host, "_config_warnings_seen", set()) or []),
         }
 
@@ -324,6 +247,8 @@ class ConfigPanel:
                 raise ValueError(f"{key} must be a number") from None
             if not math.isfinite(number):
                 raise ValueError(f"{key} must be a finite number")
+            if key == "reply_probability_threshold" and not 0 <= number <= 100:
+                raise ValueError("回复概率门槛必须在 0–100 之间")
             return number
         if field_type == "list":
             if value is None:
@@ -376,6 +301,7 @@ class ConfigPanel:
                     except Exception as exc:
                         raise RuntimeError(f"failed to set {key}: {type(exc).__name__}") from exc
                 candidate = parse_runtime_config(self.host.config)
+                self._validate_model_selection(candidate[0], normalized)
                 candidate = self._prepare_config_candidate(candidate, normalized)
                 saver = getattr(self.host.config, "save_config", None)
                 if not callable(saver):
@@ -402,6 +328,24 @@ class ConfigPanel:
             self.host._metric("config_saved")
             return self.get_config_panel(refresh=False)
 
+
+    def _validate_model_selection(self, cfg: RuntimeConfig, updates: dict[str, Any]) -> None:
+        context = getattr(self.host, "context", None)
+        getter = getattr(context, "get_provider_by_id", None)
+        text_keys = {"reply_provider", "topic_reranker_provider"}
+        for key in text_keys.intersection(updates):
+            provider = getter(updates[key]) if callable(getter) and updates[key] else None
+            if getattr(provider, "is_systemone_provider", False):
+                raise ValueError(f"{key}：Jev / System One 只用于决策，请选择普通聊天模型生成文字。")
+        if "decision_provider" not in updates:
+            return
+        if not cfg.decision_provider_id:
+            raise ValueError("decision_provider：请选择在 AstrBot 模型服务中添加的 Jev / System One 模型。")
+        provider = getter(cfg.decision_provider_id) if callable(getter) else None
+        if not getattr(provider, "is_systemone_provider", False):
+            raise ValueError("decision_provider：所选 Jev 模型未加载或类型不匹配，请在模型服务中启用 Jev / System One。")
+        if not getattr(getattr(self.host, "jev", None), "is_systemone_router", False):
+            raise ValueError("内置 Jev 模型连接尚未就绪，请重新加载 Chat Dynamics。")
 
     def _serialize_provider(self, provider: Any) -> dict[str, Any]:
         meta = None
@@ -441,6 +385,7 @@ class ConfigPanel:
             "model": model,
             "type": ptype,
             "provider_type": provider_type,
+            "systemone": bool(getattr(provider, "is_systemone_provider", False)),
             "label": " · ".join(bit for bit in label_bits if bit) or pid or "(unnamed)",
         }
 
@@ -478,7 +423,12 @@ class ConfigPanel:
         # Stable order for UI.
         chat.sort(key=lambda row: str(row.get("id") or "").lower())
         embedding.sort(key=lambda row: str(row.get("id") or "").lower())
-        return {"chat": chat, "embedding": embedding}
+        return {
+            "chat": chat,
+            "systemone": [row for row in chat if row["systemone"]],
+            "embedding": embedding,
+            "systemone_router_ready": bool(getattr(getattr(self.host, "jev", None), "is_systemone_router", False)),
+        }
 
 
     async def apply_stored_config(self) -> dict[str, Any]:

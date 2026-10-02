@@ -41,7 +41,7 @@ class ProviderBudget:
         now = time.monotonic()
         def rank(item):
             _, purpose, started, _ = item
-            base = 0 if purpose in ("reply", "routing") else 1 if purpose == "draft" else 2
+            base = 0 if purpose in ("reply", "routing") else 2
             return (base - int((now-started)/self.aging_seconds), started)
         for item in sorted(self.waiters, key=rank):
             provider, purpose, _, future = item

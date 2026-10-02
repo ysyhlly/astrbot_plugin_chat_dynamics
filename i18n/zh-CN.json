@@ -8,15 +8,9 @@
   "active_group_mode": "活跃群聊",
   "content_redacted": "控制台正文：已脱敏",
   "pages.config.title": "插件参数配置",
-  "pages.config.desc": "先选生效群聊，其余可保持默认。需要细调时再打开高级设置。",
-  "pages.today.title": "今日读空气",
-  "pages.today.desc": "场合胶囊、存在感温度计与最近为什么没回（群主仪表盘首页）。",
-  "pages.manners.title": "分寸台",
-  "pages.manners.desc": "隐身—懂事—活跃旋钮与社交/媒体分寸芯片。",
+  "pages.config.desc": "选择生效群聊、决策模型和回复模型，核对后保存。",
   "pages.memory.title": "记忆小本",
   "pages.memory.desc": "纪念日、约定与试用梗；忘掉或今晚别提。",
   "pages.replay.title": "场景回放",
-  "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。",
-  "pages.drafts.title": "AI 标注审批",
-  "pages.drafts.desc": "逐条或批量审阅模型预标注：采纳才写入标注，忽略即丢弃草稿。"
+  "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。"
 }

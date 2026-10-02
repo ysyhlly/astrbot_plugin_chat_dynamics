@@ -39,7 +39,6 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .step-label { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .step-label span { display: inline-grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--line); border-radius: 4px; color: var(--cyan); font: 10px/1 "Consolas", monospace; }
 .overview-step strong { display: block; min-height: 27px; font-size: 16px; font-weight: 650; line-height: 1.45; }
-.overview-step[data-route="agentjev"] strong { color: var(--cyan); }
 .overview-step p { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .config-conflicts { margin-top: 22px; padding: 16px 18px; border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--surface-soft); }
 .conflict-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
@@ -182,7 +181,6 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .overview-step { padding:0 16px; }
 .overview-step strong { min-height:0; font-size:16px; }
 .overview-step p { margin-top:4px; font-size:13px; }
-.overview-step[data-route="kev"] strong { color:var(--cyan); }
 .step-label { margin-bottom:5px; }
 .config-conflicts { margin-top:14px; padding:11px 14px; }
 .config-conflicts li { padding:7px 0; }
@@ -206,4 +204,20 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
  .settings-workspace { display:block; }
  .config-group > summary { padding:14px; }
  .group-body { padding:0 14px; }
+}
+.model-connection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px;
+  margin: 0 0 24px;
+  border: 1px solid var(--line, #879b9433);
+  border-radius: 18px;
+}
+.model-connection h2 { margin: 4px 0 12px; font-size: 20px; }
+.model-connection p { max-width: 72ch; line-height: 1.7; }
+.model-connection .action-buttons { flex-shrink: 0; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .model-connection { align-items: stretch; flex-direction: column; padding: 18px; }
 }

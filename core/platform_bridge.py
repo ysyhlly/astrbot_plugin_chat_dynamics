@@ -85,6 +85,7 @@ class ParsedEvent:
     poke_target_id: str = ""
     poke_at_bot: bool = False
     reply_sender_id: str = ""
+    platform_mentions: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -319,6 +320,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
     message_id = str(message_id) if message_id else ""
 
     mentions, reply_to_id = extract_mentions_and_reply(event, text)
+    platform_mentions, _ = extract_mentions_and_reply(event, "")
     is_at = bool(getattr(event, "is_at_or_wake_command", False))
     # Only treat a real At component of the bot as a mention. Platform wake
     # words are too generic to inject self_id (that would force STRONG).
@@ -373,6 +375,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         message_id=message_id,
         text=text,
         mentions=mentions,
+        platform_mentions=platform_mentions,
         reply_to_id=reply_to_id,
         reply_sender_id=reply_sender_id,
         unified_msg_origin=umo,

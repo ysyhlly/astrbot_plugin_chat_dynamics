@@ -729,7 +729,7 @@ async def test_llm_adapter_legacy_provider_success_path():
 
 
 @pytest.mark.asyncio
-async def test_llm_adapter_legacy_path_keeps_the_three_providers_apart():
+async def test_llm_adapter_legacy_path_keeps_reply_and_vibe_providers_apart():
     """没有 llm_generate 的宿主上，草稿不能悄悄走 vibe 模型。"""
     seen = []
 
@@ -746,12 +746,12 @@ async def test_llm_adapter_legacy_path_keeps_the_three_providers_apart():
             raise AssertionError("配置好的 provider 不该回落到会话默认值")
 
     adapter = LLMAdapter(LegacyContext(), reply_provider_id="reply-1",
-                         vibe_provider_id="vibe-1", draft_provider_id="draft-1")
+                         vibe_provider_id="vibe-1")
 
-    await adapter.generate(prompt="hi", umo="room", system_prompt="sys", purpose="draft")
+    await adapter.generate(prompt="hi", umo="room", system_prompt="sys", purpose="reply")
     await adapter.generate(prompt="hi", umo="room", system_prompt="sys", purpose="vibe")
 
-    assert seen == ["draft-1", "vibe-1"]
+    assert seen == ["reply-1", "vibe-1"]
 
 
 @pytest.mark.asyncio
@@ -768,54 +768,10 @@ async def test_llm_adapter_does_not_switch_from_unavailable_configured_provider(
         await adapter.generate(prompt="hi", umo="room", system_prompt="sys")
 
 
-def test_vibe_llm_can_be_disabled_without_changing_local_vibe_analysis():
-    plugin = _plugin({"vibe_llm_enabled": False})
-    session_id = _session_key("quiet")
-    plugin._vibe_msg_counts[session_id] = 12
-
-    plugin._schedule_vibe_llm(session_id, "最新消息", now=500.0)
-
-    assert plugin._vibe_llm_tasks == set()
-    assert plugin.vibe_analyzer.get_mode(session_id, current_time=500.0) == GroupChatMode.CHILL_FADE
 
 
-@pytest.mark.asyncio
-async def test_vibe_llm_allows_only_one_in_flight_task_per_session():
-    plugin = _plugin({"vibe_llm_enabled": True})
-    session_id = _session_key("busy")
-    plugin._vibe_msg_counts[session_id] = 12
-    started = asyncio.Event()
-    release = asyncio.Event()
-    calls = []
-
-    async def slow_refresh(sid, text, now):
-        calls.append((sid, text, now))
-        started.set()
-        await release.wait()
-
-    plugin._refresh_vibe_from_llm = slow_refresh
-    plugin._schedule_vibe_llm(session_id, "first", now=500.0)
-    plugin._schedule_vibe_llm(session_id, "second", now=501.0)
-    await asyncio.wait_for(started.wait(), timeout=1.0)
-
-    assert calls == [(session_id, "first", 500.0)]
-    assert len(plugin._vibe_llm_tasks_by_session) == 1
-
-    release.set()
-    await asyncio.gather(*list(plugin._vibe_llm_tasks))
-    await asyncio.sleep(0)
-    assert session_id not in plugin._vibe_llm_tasks_by_session
 
 
-def test_vibe_llm_throttles_snapshot_recorded_at_zero_time():
-    plugin = _plugin({"vibe_llm_enabled": True})
-    session_id = _session_key("epoch")
-    plugin._vibe_msg_counts[session_id] = 12
-    plugin.vibe_analyzer.mark_llm_snapshot(session_id, 0.0)
-
-    plugin._schedule_vibe_llm(session_id, "too soon", now=60.0)
-
-    assert plugin._vibe_llm_tasks == set()
 
 
 @pytest.mark.asyncio
@@ -864,18 +820,6 @@ async def test_safe_hover_followup_is_re_evaluated_once():
     assert runtime.pending_hover is None
 
 
-@pytest.mark.asyncio
-async def test_vibe_classifier_prompt_contains_window_telemetrics_and_labels():
-    plugin = _plugin()
-    key = _session_key("vibe_prompt")
-    plugin.vibe_analyzer.record_message(key, "这个 Python 接口报错了", timestamp=plugin.time_service.time())
-
-    await plugin._classify_vibe_with_llm(key, "最新一条")
-
-    prompt = plugin.context.llm_prompts[-1]
-    assert "Telemetrics: mpm=" in prompt
-    assert "technical_help" in prompt
-    assert "Recent messages:" in prompt
 
 
 @pytest.mark.asyncio

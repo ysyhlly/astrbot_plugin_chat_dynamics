@@ -11,7 +11,7 @@ import pytest
 from .test_console_redesign_verification import _launch_browser, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ("console", "config", "today", "manners", "memory", "replay", "drafts", "learning")
+PAGES = ("console", "config", "memory", "replay", "learning")
 
 
 @pytest.fixture(scope="module")
@@ -161,8 +161,8 @@ def test_theme_survives_reload_navigation_and_new_context_without_storage(browse
         assert account["ui"] == "night"
         page.reload()
         page.wait_for_function("document.documentElement.dataset.uiTheme === 'night'")
-        page.locator('[data-nav-page="today"]').click()
-        page.wait_for_url("**/today/index.html?**")
+        page.locator('[data-nav-page="learning"]').click()
+        page.wait_for_url("**/learning/index.html?**")
         assert "asset_token=fresh" in page.url and "ui=night" in page.url
         page.wait_for_function("document.querySelector('#uiThemeStatus')?.textContent === '已恢复账号偏好'")
         assert page.locator("#btnUiTheme").get_attribute("aria-pressed") == "true"
@@ -229,7 +229,7 @@ def test_real_opaque_iframe_restores_account_theme(browser, page_server):
         setup(context, state)
         page = context.new_page()
         page.goto(page_server)
-        page.set_content(f'<iframe sandbox="allow-scripts" src="{page_server}/today/index.html"></iframe>')
+        page.set_content(f'<iframe sandbox="allow-scripts" src="{page_server}/learning/index.html"></iframe>')
         frame = page.frame_locator("iframe")
         frame.locator("#uiThemeStatus").filter(has_text="已恢复账号偏好").wait_for()
         assert frame.locator("html").get_attribute("data-ui-theme") == "night"

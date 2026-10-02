@@ -1,7 +1,6 @@
 """The Jev decision layer runs inside the persona turn, and degrades locally."""
 
 import asyncio
-import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -18,6 +17,7 @@ from .test_plugin_lifecycle import MockEvent, _plugin
 def answers(action="reply", state="focused", length="brief", reason="addressed_question", **extra):
     payload = {
         "join": {"type": "noul", "noul": 0.85},
+        "recipient": {"type": "choice", "choice": "bot", "confidence": 0.85},
         "action": {"type": "choice", "choice": action, "confidence": 0.9, "probabilities": {}},
         "state": {"type": "choice", "choice": state, "confidence": 0.8, "probabilities": {}},
         "length": {"type": "choice", "choice": length, "confidence": 0.75, "probabilities": {}},
@@ -103,7 +103,7 @@ async def test_jev_decides_the_turn_and_the_model_decision_is_not_asked(jev_plug
 
         plan = bridge.requests[0][0]["response_plan"]
         assert plan["action"] == "reply" and plan["length"] == "brief"
-        assert plan["reason_code"] == "jev_addressed_question"
+        assert plan["reason_code"] == "jev_wake_addressed"
         runtime = p._sessions[event.unified_msg_origin]
         assert runtime.model_diagnostic["backend"] == "jev"
         assert runtime.jev_decision["action"] == {"type": "choice", "choice": "reply", "confidence": 0.9}
@@ -113,9 +113,10 @@ async def test_jev_decides_the_turn_and_the_model_decision_is_not_asked(jev_plug
 
 
 @pytest.mark.asyncio
-async def test_jev_can_stay_silent_on_an_addressed_turn(jev_plugin):
+async def test_jev_can_reject_a_soft_wake_aimed_at_someone_else(jev_plugin):
     p, bridge = jev_plugin
-    p.jev.payload = answers(action="ignore", state="observing", reason="low_value_chatter")
+    p.jev.payload = answers(action="ignore", state="observing", reason="other_recipient",
+                            recipient={"type": "choice", "choice": "other", "confidence": 0.9})
     try:
         event = MockEvent("帮我看下这个报错", message_id="m1", is_at_or_wake_command=True)
         await p.on_group_message(event)
@@ -124,13 +125,13 @@ async def test_jev_can_stay_silent_on_an_addressed_turn(jev_plugin):
         assert bridge.requests == []
         runtime = p._sessions[event.unified_msg_origin]
         assert runtime.interaction_state == "observing"
-        assert runtime.model_diagnostic["reason_code"] == "jev_low_value_chatter"
+        assert runtime.model_diagnostic["reason_code"] == "jev_wake_other"
     finally:
         await p.terminate()
 
 
 @pytest.mark.asyncio
-async def test_an_unavailable_decision_layer_falls_back_to_the_local_plan(jev_plugin):
+async def test_an_unavailable_decision_layer_does_not_admit_a_soft_wake(jev_plugin):
     p, bridge = jev_plugin
     p.jev.payload = None
     try:
@@ -139,15 +140,16 @@ async def test_an_unavailable_decision_layer_falls_back_to_the_local_plan(jev_pl
         await flush(p, event)
         await drain(p)
         assert not p.decision_calls
-        plan = bridge.requests[0][0]["response_plan"]
-        assert plan["action"] == "reply" and plan["reason_code"] == "jev_unavailable"
+        assert not bridge.requests and not event.replies_sent
+        runtime = p._sessions[event.unified_msg_origin]
+        assert runtime.model_diagnostic["reason_code"] == "jev_unavailable"
         assert p._metrics["jev_unavailable"] == 1 and p._metrics["jev_decision"] == 0
     finally:
         await p.terminate()
 
 
 @pytest.mark.asyncio
-async def test_a_low_confidence_answer_is_refused(jev_plugin):
+async def test_soft_wake_depends_on_recipient_not_action_confidence(jev_plugin):
     p, bridge = jev_plugin
     weak = answers()
     weak["action"] = {"type": "choice", "choice": "reply", "confidence": 0.2, "probabilities": {}}
@@ -157,7 +159,7 @@ async def test_a_low_confidence_answer_is_refused(jev_plugin):
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        assert bridge.requests[0][0]["response_plan"]["reason_code"] == "jev_low_confidence"
+        assert bridge.requests[0][0]["response_plan"]["reason_code"] == "jev_wake_addressed"
     finally:
         await p.terminate()
 
@@ -186,81 +188,20 @@ async def test_the_turn_deadline_still_bounds_a_slow_decision_layer(jev_plugin):
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        assert bridge.requests[0][0]["response_plan"]["reason_code"] == "decision_timeout"
+        assert not bridge.requests and not event.replies_sent
+        assert p._sessions[event.unified_msg_origin].model_diagnostic["reason_code"] == "decision_timeout"
     finally:
         await p.terminate()
 
 
-@pytest.mark.asyncio
-async def test_the_model_backend_never_consults_the_decision_layer(jev_plugin):
-    p, bridge = jev_plugin
-    try:
-        await p.save_config_values({"decision_backend": "model"})
-        event = MockEvent("帮我看下这个报错", message_id="m1", is_at_or_wake_command=True)
-        await p.on_group_message(event)
-        await flush(p, event)
-        await drain(p)
-        assert p.jev.calls == [] and p.decision_calls
-    finally:
-        await p.terminate()
 
 
-@pytest.mark.asyncio
-async def test_decision_layer_evidence_never_outlives_its_backend(jev_plugin):
-    p, bridge = jev_plugin
-    try:
-        event = MockEvent("帮我看下这个报错", message_id="m1", is_at_or_wake_command=True)
-        await p.on_group_message(event)
-        await flush(p, event)
-        await drain(p)
-        runtime = p._sessions[event.unified_msg_origin]
-        assert runtime.jev_decision
-
-        await p.save_config_values({"decision_backend": "model"})
-        second = MockEvent("再来一次", message_id="m2", is_at_or_wake_command=True)
-        await p.on_group_message(second)
-        await flush(p, second)
-        await drain(p)
-        assert runtime.jev_decision == {}
-        assert "jev" not in runtime.model_diagnostic
-    finally:
-        await p.terminate()
 
 
-def test_configuration_reaches_the_decision_layer(monkeypatch):
-    monkeypatch.setenv("TYPESAFE_API_KEY", "secret-value")
-    p = _plugin({
-        "decision_mode": "persona_model",
-        "decision_backend": "jev",
-        "jev_base_url": "https://api.typesafe.ai",
-        "jev_model": "jev-1.13.0",
-        "jev_timeout": 4.0,
-    })
-    snapshot = p.jev.snapshot()
-    assert snapshot["configured"] and snapshot["status"] == "configured"
-    assert snapshot["model"] == "jev-1.13.0" and snapshot["endpoint_host"] == "api.typesafe.ai"
-    assert "secret-value" not in json.dumps(snapshot)
-    assert p._runtime_config.jev_timeout == 4.0
-    assert p.get_effective_config()["decision_backend"] == "jev"
-
-    p._apply_runtime_config(replace(p._runtime_config, decision_backend="model"), validated=True)
-    assert p.jev.snapshot()["status"] == "disabled"
 
 
-def test_an_unrelated_environment_variable_name_is_refused():
-    from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
-
-    cfg, warnings = parse_runtime_config({"jev_api_key_env": "AWS_SECRET_ACCESS_KEY"})
-    assert cfg.jev_api_key_env == "TYPESAFE_API_KEY"
-    assert any("jev_api_key_env" in warning for warning in warnings)
 
 
-def test_a_jev_backend_without_the_persona_mode_is_reported():
-    from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
-
-    cfg, warnings = parse_runtime_config({"decision_backend": "jev"})
-    assert cfg.decision_backend == "jev"
-    assert any("persona_model" in warning for warning in warnings)
 
 
 @pytest.mark.asyncio

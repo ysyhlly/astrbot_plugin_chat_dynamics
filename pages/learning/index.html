@@ -1,57 +1,22 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
+<html lang="zh-CN"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="light dark"><title>决策模型 · 群聊动态</title>
   <style>html{background:#f5f6f4;color-scheme:light}html[data-ui-theme="night"]{background:#0b1419;color-scheme:dark}</style>
   <script>(()=>{let s;try{s=localStorage.getItem('chat_dynamics_ui')}catch{}const q=new URLSearchParams(location.search).get('ui');document.documentElement.dataset.uiTheme=['day','night'].includes(q)?q:s==='night'?'night':'day'})();</script>
   <script src="./theme.js"></script>
-  <title>决策模型 · 群聊动态</title>
   <link rel="stylesheet" href="./base.css"><link rel="stylesheet" href="./shell.css">
   <link rel="stylesheet" href="./plugin_nav.css"><link rel="stylesheet" href="./theme.css"><link rel="stylesheet" href="./style.css">
-</head>
-<body><div class="app plugin-shell"><div class="plugin-layout">
+</head><body><div class="app plugin-shell"><div class="plugin-layout">
   <aside class="plugin-side" aria-label="插件页面"><p class="plugin-side-label">群聊动态</p><nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav></aside>
   <main class="plugin-main">
-    <header class="topbar"><div><p class="eyebrow">群聊动态 / 决策</p><h1>决策模型</h1><p class="lede">查看 Kev 的在线采用情况、耗时和最近结果。这里的运行统计不代表模型质量验收。</p></div><button type="button" id="refresh">立即刷新</button></header>
+    <header class="topbar"><div><p class="eyebrow">群聊动态 / 决策</p><h1>决策模型</h1><p class="lede">查看 Jev 的连接、调用与耗时。运行统计不代表模型质量验收。</p></div><button type="button" id="refresh">立即刷新</button></header>
     <p id="status" role="status" aria-live="polite">正在连接…</p>
     <section class="metrics" aria-label="运行摘要">
       <div><span>在线决策路径</span><strong id="mode">—</strong></div><div><span>当前模型</span><strong id="model">—</strong></div>
-        <div><span id="takeoverLabel">决策任务采用率</span><strong id="takeover">—</strong></div><div><span id="fallbackLabel">回退率</span><strong id="fallback">—</strong></div><div><span>总耗时 p95</span><strong id="latency">—</strong></div><div><span id="studentLatencyLabel">模型请求 p95</span><strong id="studentLatency">—</strong></div>
-    </section>
-    <p id="modelOnlyNote" class="section-copy" role="status"></p>
-    <section class="wire-card" aria-labelledby="studentTitle"><h2 id="studentTitle">在线请求</h2>
-      <p class="section-copy">下列次数从本次插件运行开始累计；最近 10 次请求每 10 秒更新。采用率只说明决策来源，不能证明判断正确。服务失败会按当前路由约束静默处理。</p>
-      <dl id="studentCounters" class="diagnostic-counters"></dl>
-      <h3>最近请求</h3><ul id="studentRecent" class="records"></ul>
-    </section>
-    <section class="wire-card"><div class="card-heading"><h2>历史样本与任务</h2><span class="card-note">供离线评估使用</span></div>
-      <p id="sampleMeaning" class="section-copy">采集量不是独立测试量。历史教师标签和模型预测只供离线分析；当前在线决策不会调用教师模型。</p>
-      <p id="teacherLabelMeaning" class="section-copy">历史教师标签的 0/1 是类别编码，不代表置信度，也不代表正确答案。</p>
-      <p id="collectionGaps" class="section-copy" role="status"></p>
-      <div class="table-wrap" tabindex="0" role="region" aria-label="任务采集明细，可横向滚动"><table aria-describedby="sampleMeaning"><thead><tr><th scope="col">任务</th><th scope="col">原始采集</th><th scope="col">教师标签</th><th scope="col">师生配对</th><th scope="col">已采类别数</th><th scope="col">类别分布与缺口</th><th scope="col">接管状态</th><th scope="col">独立测试质量</th></tr></thead><tbody id="tasks"></tbody></table></div>
-    </section>
-    <section class="wire-card" aria-labelledby="qualityTitle"><h2 id="qualityTitle">样本质量复核</h2>
-      <p id="qualityMeaning" class="section-copy">标记用于安排人工检查，不自动修改历史标签，也不代表模型质量结论。同一请求的多道题可分别计入。</p>
-      <dl id="qualityFlags" class="diagnostic-counters" aria-describedby="qualityMeaning"></dl>
-      <div id="teacherHistory"><h3>历史教师提示词版本</h3><dl id="teacherPromptVersions" class="diagnostic-counters"></dl>
-      <p id="teacherComparisonMeaning" class="section-copy">旧后端可比较历史教师提示词；Kev 独占决策时此功能不可用。</p>
-      <button type="button" id="compareTeacher" aria-describedby="teacherComparisonMeaning">对比历史教师提示词（6 条）</button></div>
-      <div id="queuePrioritySection" hidden><h3>补标队列优先级</h3><dl id="queuePriority" class="diagnostic-counters"></dl></div>
-    </section>
-    <div class="learning-grid">
-      <section class="wire-card" id="trainingCard"><h2>训练作业</h2><p class="section-copy">仅适用于支持在线管理的旧后端。</p><p id="agentjevNotice" class="section-copy" hidden>Kev 使用已发布权重；训练和部署在离线流程中管理。</p>
-        <form id="trainForm"><label for="trainModel">新模型标识</label><input id="trainModel" required maxlength="128" placeholder="candidate-001"><label for="epochs">训练轮数</label><input id="epochs" type="number" min="1" max="20" value="3" required><label for="seed">随机种子</label><input id="seed" type="number" min="1" max="2147483648" step="1" value="42" required aria-describedby="seedHelp"><p id="seedHelp" class="section-copy">不同种子用于重复实验，不能用测试集结果挑选最好的模型。</p><p class="section-copy">自动导出当前教师样本到训练数据卷。</p><button type="submit">创建训练作业</button></form>
-        <ul id="jobs" class="records" aria-label="训练作业列表"></ul>
-      </section>
-      <section class="wire-card" id="modelManagementCard"><h2>模型验收与发布</h2><p class="section-copy">仅适用于支持在线管理的旧后端。</p>
-        <form id="modelForm"><label for="candidate">候选模型标识</label><input id="candidate" required maxlength="256"><div class="actions"><button type="submit">查看评估</button><button type="button" id="promote">晋升模型</button><button type="button" id="rollout">下一阶段</button><button type="button" id="rollback">回滚上一版本</button><button type="button" id="compareJev">Jev 对照最近样本</button></div></form>
-        <pre id="result" aria-label="操作结果" tabindex="0"></pre>
-      </section>
-    </div>
-    <section class="wire-card"><h2>分歧案例</h2><ul id="disagreements" class="records"></ul></section>
-    <section class="wire-card"><h2>样本管理</h2><p class="section-copy">仅采集已启用会话。删除会话样本时，同时清理关联数据集。</p>
-      <form id="sampleForm"><label for="session">会话标识（删除时必填）</label><input id="session" maxlength="256"><div class="actions"><button type="submit">导出样本 JSON</button><button type="button" id="deleteSamples">删除会话样本</button></div></form>
-    </section>
-  </main>
-</div></div><script type="module" src="./app.js"></script></body></html>
+      <div><span>调用次数</span><strong id="calls">—</strong></div><div><span>失败次数</span><strong id="failures">—</strong></div>
+      <div><span>最近请求耗时</span><strong id="latency">—</strong></div><div><span>模型连接</span><strong id="serviceState">—</strong></div>
+    </section><p id="detail" class="section-copy"></p>
+    <section class="wire-card"><h2>失败时保守处理</h2><p class="section-copy">Jev 超时、不可用或置信度不足时采用本地保守计划：点名请求可能回应，普通群聊继续旁听。参与限制、冷却和发送保护仍然生效。</p></section>
+    <section class="wire-card"><h2>历史样本导出</h2><p class="section-copy">历史数据库保留，只在点击导出时读取。每批最多 500 条；聊天内容按控制台隐私设置隐藏。模型调用不会再采集样本或启动训练。</p><button type="button" id="export">导出历史样本（最多 500 条）</button><p id="historyStatus" role="status" aria-live="polite"></p></section>
+  </main></div></div><script type="module" src="./app.js"></script></body></html>

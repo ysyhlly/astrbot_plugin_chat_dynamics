@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +16,7 @@ from astrbot_plugin_chat_dynamics.core.platform_bridge import (
 from astrbot_plugin_chat_dynamics.main import _NativeEventContext
 
 from .test_persona_model import BridgeDouble
-from .test_plugin_lifecycle import MockEvent, _plugin, _session_key
+from .test_plugin_lifecycle import At, MockEvent, _plugin, _session_key
 
 
 class NativeEvent(MockEvent):
@@ -121,26 +120,9 @@ async def test_persona_stop_blocks_active_member_and_releases_queued_quota(monke
 
     bridge.before_reply = blocked_reply
 
-    async def decide(**kwargs):
-        payload = json.loads(kwargs["prompt"])
-        ids = [item["message_id"] for item in payload["conversation"]["messages"]]
-        return SimpleNamespace(
-            completion_text=json.dumps(
-                {
-                    "action": "reply",
-                    "state": "focused",
-                    "target_message_ids": ids,
-                    "response_goal": "回应当前请求",
-                    "length": "brief",
-                    "reason_code": "member_stop_test",
-                }
-            )
-        )
-
-    plugin.context.llm_generate = decide
-    first = MockEvent("帮我处理第一个", sender_id="alice", group_id="persona-stop", message_id="a1", is_at_or_wake_command=True)
-    queued_alice = MockEvent("帮我处理排队项", sender_id="alice", group_id="persona-stop", message_id="a2", is_at_or_wake_command=True)
-    queued_bob = MockEvent("帮我处理 Bob 请求", sender_id="bob", group_id="persona-stop", message_id="b1", is_at_or_wake_command=True)
+    first = MockEvent("帮我处理第一个", sender_id="alice", group_id="persona-stop", message_id="a1", components=[At("bot_42")])
+    queued_alice = MockEvent("帮我处理排队项", sender_id="alice", group_id="persona-stop", message_id="a2", components=[At("bot_42")])
+    queued_bob = MockEvent("帮我处理 Bob 请求", sender_id="bob", group_id="persona-stop", message_id="b1", components=[At("bot_42")])
     try:
         await plugin.on_group_message(first)
         await plugin.debounce.flush(session_id=first.unified_msg_origin)

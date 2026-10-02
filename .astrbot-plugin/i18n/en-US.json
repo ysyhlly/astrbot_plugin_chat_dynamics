@@ -13,14 +13,6 @@
       "title": "Plugin Config",
       "desc": "Choose your groups and keep the defaults. Open advanced settings when you need more control."
     },
-    "today": {
-      "title": "Today · Read the Air",
-      "desc": "Occasion capsule, presence thermometer, and recent why-silent reasons."
-    },
-    "manners": {
-      "title": "Manners Desk",
-      "desc": "Ghost–sensible–lively knob plus social/media manner chips."
-    },
     "memory": {
       "title": "Notebook",
       "desc": "Anniversaries, reminders, and slang trials; forget or mute tonight."
@@ -29,9 +21,9 @@
       "title": "Scene Replay",
       "desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
     },
-    "drafts": {
-      "title": "AI Label Review",
-      "desc": "Review model-drafted reply labels one by one or in bulk: accepting writes a label, dismissing drops the draft."
+    "learning": {
+      "title": "Decision model",
+      "desc": "Native Jev status and read-only history export."
     }
   }
 }

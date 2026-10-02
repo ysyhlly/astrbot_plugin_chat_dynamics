@@ -12,16 +12,17 @@ Two properties are load-bearing:
 * **The vocabulary is closed.** Every question offers the plugin's own options, so a
   remote answer can never introduce an unknown action, state, length or reason.
   Answers are located by the option keys we sent, never parsed out of prose.
-* **Below the confidence floor nothing is used.** A split or uncertain answer is not
-  a decision: the local conservative plan runs instead, which replies to an explicit
-  request and stays silent in ambient chatter.
+* **Wake types have separate admission rules.** A real platform @ always replies
+  without this decision call. A quote/name wake needs a bot recipient at the lower
+  recipient floor; ambient chatter needs the normal join and confidence floors.
+  An unavailable or uncertain decision never admits a quote/name wake by itself.
 
 Instructions and criteria are written in English because that is the language the
 model documents as its strongest; the state it judges stays exactly as the
 conversation is, untranslated. Only the response goal handed to the reply agent is
 Chinese, matching the plugin's other response plans.
 
-Nothing here performs IO; `core/integrations/typesafe.py` owns the transport.
+Nothing here performs IO; the AstrBot native model catalog owns transport.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ MAX_TARGET_OPTIONS = 8
 MAX_PERSONA_CHARS = 1200
 MAX_TOTAL_STATE_CHARS = 12000
 DEFAULT_MIN_CONFIDENCE = 0.6
+WAKE_RECIPIENT_FLOOR = 0.35
 # Participation floor for the calibrated join answer: a non-ignore action
 # whose join probability is below this value is downgraded to ignore.
 JOIN_FLOOR = 0.7
@@ -72,8 +74,8 @@ STATE_CRITERIA = {
     "disengaging": "Disengaging: do not continue this exchange afterwards",
 }
 LENGTH_CRITERIA = {
-    "brief": "Very short: one or two sentences, or a single line",
-    "normal": "Normal: short but complete",
+    "brief": "Very short: a few characters or one sentence; follow reply_length guidance when supplied",
+    "normal": "Normal: one to three sentences, concise but complete",
     "detailed": "Expanded: it takes points or explanation to be clear",
 }
 REASON_CRITERIA = {
@@ -145,18 +147,6 @@ def build_state(
     return _shrink(state, max_chars)
 
 
-def build_learning_state(turn: TurnContext, *, candidates=(), previous_state="observing",
-                         observations=None, presence="sensible", persona_prompt="",
-                         environment=None) -> dict:
-    """Lossless learning input; size admission belongs to the shared preparer."""
-    conversation = turn.learning_payload()
-    messages = {m["message_id"]: m for m in conversation["background"] + conversation["messages"]}
-    return {"persona": str(persona_prompt or ""), "previous_state": previous_state,
-            "participation_policy": participation_policy(presence),
-            "observations": dict(observations or {}),
-            "environment": dict(environment or {}), "conversation": conversation,
-            "target_candidates": {f"target.{i}": messages.get(mid, {"message_id": mid, "text_missing": True})
-                                  for i, mid in enumerate(candidates)}}
 
 
 def _size(state: dict) -> int:
@@ -193,11 +183,12 @@ def _shrink(state: dict, max_chars: int) -> dict:
 
 
 def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> dict[str, dict]:
-    """One call, five or six independent questions about the same state.
+    """One call, with bounded questions about the same state.
 
     `join` is the calibrated yes/no (a Noul), `action`, `state`, `length` and
     `reason` are Choices over the plugin's own vocabulary, and `target` is a Choice
-    over this turn's message IDs when more than one candidate exists.
+    over this turn's message IDs when more than one candidate exists. Soft wakes
+    also ask who the actual recipient is.
     """
     questions: dict[str, dict] = {
         "join": {
@@ -211,7 +202,9 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
                     "Judge whether speaking now is useful and appropriate, not whether the "
                     "content is interesting. Being addressed or continuing a live exchange is "
                     "usually yes; an exchange between other people, private matters, conflict, "
-                    "or a request to stop is no."
+                    "or a request to stop is no. conversation.wake_kind distinguishes a real @ "
+                    "from a quote/name wake candidate. For a quote/name wake, identifying this "
+                    "participant as the actual addressee is enough; topic value is not required."
                 ),
             },
             "criteria": {
@@ -252,6 +245,26 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "criteria": REASON_CRITERIA,
         },
     }
+    if turn.soft_wake:
+        questions["recipient"] = {
+            "type": "choice",
+            "instructions": {
+                "question": "Who is the current message actually asking to respond?",
+                "focus": (
+                    "Judge the current speaker's intent using conversation.text and attributed context. "
+                    "A reply quoting the bot, its nickname or a wake name is a wake candidate, "
+                    "not proof of the addressee. Distinguish calling the bot from discussing it "
+                    "in the third person. If the speaker is addressing the bot, choose bot even "
+                    "for short chatter, a fragment or a simple greeting. A quoted author's words "
+                    "are context and do not themselves address the bot."
+                ),
+            },
+            "criteria": {
+                "bot": "The current speaker is addressing this bot and expects its response",
+                "other": "The current speaker is addressing someone else or merely discussing the bot",
+                "unclear": "There is not enough evidence to tell who should respond",
+            },
+        }
     options = target_options(turn, limit=limit)
     if len(options) > 1:
         questions["target"] = {
@@ -315,10 +328,31 @@ def decision_from_answers(
     vocabulary, a confidence below the floor — returns the local conservative plan
     with a `<prefix>` reason instead of an approximation of the model's intent.
 
-    `prefix` names which decision layer produced the reason. The two backends speak
-    the same contract and share this mapping verbatim, so the only way to tell a
-    Laya turn from a Jev turn in a trace is the reason prefix.
+    `prefix` identifies the source of the diagnostic reason in a decision trace.
     """
+    if turn.mandatory_reply:
+        return TurnDecision.fallback(turn, "at_mandatory")
+    if turn.soft_wake:
+        recipient = _choice(answers, "recipient", ("bot", "other", "unclear"))
+        if recipient is None or recipient[1] < WAKE_RECIPIENT_FLOOR:
+            return TurnDecision.fallback(turn, prefix + "wake_uncertain")
+        if recipient[0] != "bot":
+            return TurnDecision.fallback(turn, prefix + "wake_" + recipient[0])
+        # A confirmed bot addressee is sufficient for soft wake. The other
+        # questions tune the reply, rather than imposing ambient participation.
+        action = _choice(answers, "action", ACTIONS)
+        state = _choice(answers, "state", STATES)
+        length = _choice(answers, "length", LENGTHS)
+        reason = _choice(answers, "reason", REASONS)
+        chosen = action[0] if action is not None and action[0] != "ignore" else "reply"
+        if reason is not None and reason[0] == "boundary_or_sensitive" and chosen == "reply":
+            chosen = "close"
+        return TurnDecision(
+            chosen, state[0] if state is not None and state[0] != "observing" else "focused",
+            _targets(turn, answers, needed=True),
+            _goal(chosen, reason[0] if reason is not None else "addressed_request"),
+            length[0] if length is not None else "brief", prefix + "wake_addressed",
+        )
     action = _choice(answers, "action", ACTIONS)
     state = _choice(answers, "state", STATES)
     length = _choice(answers, "length", LENGTHS)
@@ -329,6 +363,10 @@ def decision_from_answers(
     if min(action[1], state[1], length[1], reason[1]) < floor:
         return TurnDecision.fallback(turn, prefix + "low_confidence")
     chosen, reason_code = action[0], prefix + reason[0]
+    explicit_wake = bool(turn.explicit and turn.wake_kind == "legacy"
+                         and reason[0] != "boundary_or_sensitive")
+    if chosen == "ignore" and explicit_wake:
+        return TurnDecision.fallback(turn, prefix + "explicit_wake")
     join = answers.get("join")
     if isinstance(join, Mapping) and join.get("type") == "noul":
         probability = join.get("noul")
@@ -336,7 +374,7 @@ def decision_from_answers(
             value = float(probability)
             if value != value or not 0.0 <= value <= 1.0:
                 return TurnDecision.fallback(turn, prefix + "invalid_answer")
-            if chosen != "ignore" and value < float(join_floor):
+            if chosen != "ignore" and value < float(join_floor) and not explicit_wake:
                 chosen, reason_code = "ignore", prefix + "join_declined"
     return TurnDecision(
         chosen,
@@ -356,7 +394,7 @@ def describe_answers(answers: Mapping[str, Any]) -> dict:
     were incomplete and nothing was accepted from them.
     """
     described: dict[str, Any] = {}
-    for key in ("join", "action", "state", "length", "reason", "target"):
+    for key in ("join", "action", "state", "length", "reason", "target", "recipient"):
         answer = answers.get(key)
         if not isinstance(answer, Mapping):
             continue

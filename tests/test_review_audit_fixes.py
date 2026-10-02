@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrbot_plugin_chat_dynamics.core import topic_annotations
 from astrbot_plugin_chat_dynamics.core.dashboard import replay_topic_blocks
 from astrbot_plugin_chat_dynamics.core.graph import ConversationNode
 from astrbot_plugin_chat_dynamics.core.topic_annotations import TopicAnnotations
@@ -27,65 +26,18 @@ def review_store():
     return TopicAnnotations(plugin), kv
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bound", ["MAX_DRAFT_CONTEXTS", "MAX_DRAFT_CONTEXT_TOTAL_BYTES"])
-async def test_freeing_snapshot_capacity_keeps_published_revision(monkeypatch, bound):
-    store, _ = review_store()
-    monkeypatch.setattr(topic_annotations, bound, 0)
-    await store.save_drafts("s", {"drafts": {"first": {"expected_reply": True}}})
-    old = (await store.read_drafts("s"))["drafts"]["first"]
-    assert "context" not in old
-    revision = store.revision(old)
-    monkeypatch.setattr(topic_annotations, bound, 10000)
-    await store.save_drafts("s", {"drafts": {"second": {}}}, merge=True)
-    current = (await store.read_drafts("s"))["drafts"]
-    assert current["first"] == old
-    assert "context" in current["second"]
-    result = await store.save({"session_key": "s", "msg_id": "first",
-                              "expected_topic": "CORRECT", "error_type": "correct"},
-                             draft_revision=revision)
-    assert result["saved"]
 
 
-@pytest.mark.asyncio
-async def test_removing_snapshot_does_not_backfill_existing_draft(monkeypatch):
-    store, _ = review_store()
-    monkeypatch.setattr(topic_annotations, "MAX_DRAFT_CONTEXTS", 1)
-    await store.save_drafts("s", {"drafts": {"first": {}, "second": {}}})
-    old = (await store.read_drafts("s"))["drafts"]["second"]
-    assert "context" not in old
-    await store.remove_drafts("s", ["first"])
-    await store.save_drafts("s", {"drafts": {"third": {}}}, merge=True)
-    current = (await store.read_drafts("s"))["drafts"]
-    assert current["second"] == old
-    assert "context" in current["third"]
 
 
-@pytest.mark.asyncio
-async def test_legacy_missing_snapshot_stays_frozen_but_regeneration_has_new_revision():
-    store, kv = review_store()
-    old = {"expected_reply": True}
-    kv[store.draft_key("s")] = {"drafts": {"first": deepcopy(old)}}
-    revision = store.revision(old)
-    await store.save_drafts("s", {"drafts": {}}, merge=True)
-    assert (await store.read_drafts("s"))["drafts"]["first"] == old
-    await store.save_drafts("s", {"drafts": {"first": deepcopy(old)}}, merge=True)
-    regenerated = (await store.read_drafts("s"))["drafts"]["first"]
-    assert "context" in regenerated
-    assert store.revision(regenerated) != revision
-    with pytest.raises(ValueError):
-        await store.save({"session_key": "s", "msg_id": "first",
-                          "expected_topic": "CORRECT", "error_type": "correct"},
-                         draft_revision=revision)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [None, [], "text", 3])
-@pytest.mark.parametrize("request_id", [None, "request"])
-async def test_non_object_annotation_body_is_rejected_before_idempotency(body, request_id):
+async def test_non_object_annotation_body_is_rejected(body):
     store, kv = review_store()
     with pytest.raises(ValueError, match="invalid annotation fields"):
-        await store.save(body, request_id=request_id)
+        await store.save(body)
     assert not kv
 
 

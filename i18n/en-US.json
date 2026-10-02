@@ -4,14 +4,8 @@
   "pages.console.desc": "Monitor vibe, cooling, and conversation graphs by UMO session. Cool or reset session state.",
   "pages.config.title": "Plugin Config",
   "pages.config.desc": "Choose your groups and keep the defaults. Open advanced settings when you need more control.",
-  "pages.today.title": "Today · Read the Air",
-  "pages.today.desc": "Occasion capsule, presence thermometer, and recent why-silent reasons.",
-  "pages.manners.title": "Manners Desk",
-  "pages.manners.desc": "Ghost–sensible–lively knob plus social/media manner chips.",
   "pages.memory.title": "Notebook",
   "pages.memory.desc": "Anniversaries, reminders, and slang trials; forget or mute tonight.",
   "pages.replay.title": "Scene Replay",
-  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default.",
-  "pages.drafts.title": "AI Label Review",
-  "pages.drafts.desc": "Review model-drafted reply labels one by one or in bulk: accepting writes a label, dismissing drops the draft."
+  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
 }

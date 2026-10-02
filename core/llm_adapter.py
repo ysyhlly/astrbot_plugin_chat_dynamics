@@ -171,7 +171,6 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
-        draft_provider_id: str = "",
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
         integrations: Any = None,
@@ -182,7 +181,6 @@ class LLMAdapter:
         self.configured_provider_id = str(configured_provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
-        self.draft_provider_id = str(draft_provider_id or "").strip()
         self.reply_timeout = reply_timeout
         self.tool_agent_timeout = tool_agent_timeout
         self.integrations = integrations
@@ -193,28 +191,22 @@ class LLMAdapter:
         *,
         reply_provider_id: str = "",
         vibe_provider_id: str = "",
-        draft_provider_id: str = "",
         reply_timeout: float = 60.0,
         tool_agent_timeout: float = 120.0,
     ) -> None:
         self.configured_provider_id = str(provider_id or "").strip()
         self.reply_provider_id = str(reply_provider_id or "").strip()
         self.vibe_provider_id = str(vibe_provider_id or "").strip()
-        self.draft_provider_id = str(draft_provider_id or "").strip()
         self.reply_timeout = reply_timeout
         self.tool_agent_timeout = tool_agent_timeout
 
     def _dedicated_provider(self, purpose: str) -> str:
         """The provider pinned for one kind of call, if any.
 
-        Three purposes, three answers: a reply is the product, a vibe snapshot is
-        a background reading, and a draft is an offline labelling aid. Sharing one
-        of them with another would make one setting silently move two costs.
+        Reply and mood calls may select separate chat providers.
         """
         if purpose in ("reply", "routing", "title"):
             return self.reply_provider_id
-        if purpose in ("draft", "auto_draft"):
-            return self.draft_provider_id
         return self.vibe_provider_id if purpose == "vibe" else ""
 
     def configured_provider(self, purpose: str = "reply") -> str:
@@ -281,9 +273,7 @@ class LLMAdapter:
     ) -> str:
         """Bound provider lookup and completion by one shared deadline.
 
-        `timeout` overrides the reply deadline for callers whose work is not a
-        reply (a draft over a whole window is one call over many messages, and
-        the reply budget would cut it short).
+        `timeout` overrides the reply deadline for background calls.
         """
         try:
             return await asyncio.wait_for(
@@ -446,9 +436,6 @@ class LLMAdapter:
     ) -> str:
         """AstrBot builds that expose get_using_provider but not llm_generate."""
         ctx = self.context
-        # Three purposes, three answers (see _dedicated_provider): collapsing them to
-        # reply/vibe sent a draft to the vibe model while the panel reported the
-        # draft provider.
         explicit = self._dedicated_provider(purpose)
         if not explicit:
             explicit = self.configured_provider_id

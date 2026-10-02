@@ -52,139 +52,33 @@
       "type": "string"
     },
     "default": [],
-    "hint": "用于识别点名。请填写完整昵称（如“小助手”），不要用“bot”“助手”这种容易误伤的短词。"
+    "hint": "@机器人必须回复，无需填写昵称。引用机器人或叫这里的昵称 / 唤醒名时，Jev 只需确认是在对机器人说话即可接话。请填完整昵称，避免过短词。"
   },
-  "decision_mode": {
-    "description": "互动决策模式",
-    "type": "string",
-    "default": "legacy",
-    "options": [
-      "legacy",
-      "persona_model"
-    ],
-    "hint": "legacy 的主回合由本地规则判断，即使开启决策学习 active 也不会让 AgentJev 接管主回合；persona_model 才会将主回合交给决策学习或所选决策后端。回复正文仍由主 Agent 生成。"
-  },
-  "decision_learning_mode": {
-    "description": "决策学习运行模式",
-    "type": "string", "default": "off", "options": ["off", "collect", "shadow", "active"],
-    "hint": "off 使用原判断后端；collect 教师判断并采集；shadow 教师判断、学生旁路；active 仅在已验收发布版本通过校验时由学生优先判断，失败回退教师。主回合接管还需 persona_model。与插件总观察模式和已发布策略联动分别独立。"
-  },
-  "decision_learning_student_backend": {
-    "description": "决策学习学生模型",
-    "type": "string", "default": "kev", "options": ["kev", "agentjev", "laya"],
-    "hint": "Kev 使用原生决策服务。主后端也设为 kev 且决策学习为 active 时，整组判断只使用 Kev；其他组合保留旧试运行及回退配置。"
-  },
-  "kev_base_url": {
-    "description": "Kev 学生服务地址",
-    "type": "string", "default": "http://127.0.0.1:18766",
-    "hint": "独立 Kev 服务的根地址，插件调用原生 /v1/systemone。"
-  },
-  "kev_timeout": {
-    "description": "Kev 调用超时秒数",
-    "type": "float", "default": 2.5,
-    "slider": {"min": 0.05, "max": 30, "step": 0.1}
-  },
-  "kev_checkpoint_id": {
-    "description": "Kev 固定检查点 ID",
-    "type": "string", "default": "",
-    "hint": "必须与严格检查上下文长度的 Kev 服务 /v1/models 中的 run 完全一致；空值或不一致时拒收。"
-  },
-  "kev_canary_percent": {
-    "description": "Kev 发布版增量开口试运行比例（%）",
-    "type": "float", "default": 0,
-    "slider": {"min": 0, "max": 100, "step": 1},
-    "hint": "仅在主后端不是 kev、学生后端为 kev 且 active 时用于旧教师链的抽样。主后端为 kev 时会全量请求 Kev，此比例不适用；失败保持沉默。"
-  },
-  "kev_internal_hosts": {
-    "description": "允许明文访问的 Kev 内部主机名",
-    "type": "list", "default": [],
-    "hint": "仅填写可信容器内网的精确主机名。"
-  },
-  "agentjev_all_tasks_active": {
-    "description": "AgentJev 接管全部决策题（实验）",
-    "type": "bool", "default": false,
-    "hint": "需同时选择 persona_model、决策学习 active、AgentJev 学生模型、Command Code 完整输入和检查点哈希，才会接管主回合。join 已专项训练，其他题目仍是未训练迁移预测；请求失败或检查点不符时回退教师。"
-  },
-  "agentjev_active_checkpoint_sha256": {
-    "description": "AgentJev 接管时锁定的检查点 SHA-256",
-    "type": "string", "default": "",
-    "hint": "接管开关开启时必须填写当前已核对的 64 位十六进制检查点哈希，防止服务换模型后静默接管。"
-  },
-  "agentjev_input_format": {
-    "description": "AgentJev 决策输入格式",
-    "type": "string", "default": "legacy",
-    "options": ["legacy", "cmdcode_full_input_soft_v1"],
-    "hint": "使用 Command Code 候选头时选 cmdcode_full_input_soft_v1。完整轮次按规范输入判断 join；其他决策题使用明确标记的实验迁移预测。输入超预算或证据无效时回退原判断路径。"
-  },
-  "agentjev_base_url": {
-    "description": "AgentJev 学生服务地址",
-    "type": "string", "default": "http://127.0.0.1:18765",
-    "hint": "开源 AgentJev 的 decision.v1 服务地址，调用 /api/evaluate。Docker 内运行时需填写容器可访问的地址。"
-  },
-  "agentjev_timeout": {
-    "description": "AgentJev 学生调用超时秒数",
-    "type": "float", "default": 1.5,
-    "slider": {"min": 0.05, "max": 30, "step": 0.1},
-    "hint": "范围 0.05~30 秒；调用超时或服务未部署时继续教师回退。"
+  "reply_probability_threshold": {
+    "description": "回复概率门槛（%）",
+    "type": "float",
+    "default": 70,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "填 0–100；例如 60 表示普通群聊开口概率达到 60% 才回复。@机器人不受这个门槛限制；引用或昵称唤醒只判断接话对象，确认是机器人即可回复。"
   },
   "decision_timeout": {
     "description": "决策超时秒数",
     "type": "float",
     "default": 8.0,
-    "hint": "范围 1~30 秒，包含等待全局调用名额；不重试。环境消息超时静默，明确求助保守交给 Agent。"
-  },
-  "agentjev_internal_hosts": {
-    "description": "允许明文访问的 AgentJev 内部主机名",
-    "type": "list", "default": [],
-    "hint": "仅填写可信容器内网的精确主机名，不支持通配符。"
-  },
-  "agentjev_all_tasks_shadow": {
-    "description": "AgentJev 旁路观察全部决策题",
-    "type": "bool", "default": false,
-    "hint": "仅在决策学习 shadow 模式且输入格式为 cmdcode_full_input_soft_v1 时生效。教师仍执行判断，AgentJev 逐题记录实验对照；这不是插件总观察模式，也不接管实际决策。"
+    "hint": "范围 1~30 秒，包含等待全局决策名额；不重试。@机器人直接回复，不等待 Jev。引用或昵称唤醒仍需 Jev 确认对象；决策超时继续旁听。"
   },
   "decision_provider": {
-    "description": "互动决策 Provider",
+    "description": "决策模型",
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "只供旧 LLM 决策、教师标注及回退路径使用；主后端 kev 的在线决策不会读取此 Provider。回复正文仍由主回复 Provider 处理。"
-  },
-  "decision_backend": {
-    "description": "决策层后端",
-    "type": "string",
-    "default": "model",
-    "options": [
-      "kev",
-      "model",
-      "jev",
-      "laya"
-    ],
-    "hint": "选 kev 且决策学习为 active、学生后端也为 kev 时，所有主回合问题仅由 Kev 决策；服务失败则保持沉默，不调用 LLM 教师。model 为旧聊天模型决策，jev 与 laya 为其他决策模型。"
-  },
-  "jev_base_url": {
-    "invisible": true,
-    "description": "Jev 接口地址",
-    "type": "string",
-    "default": "https://api.typesafe.ai",
-    "hint": "TypeSafe 官方地址；也可填 OpenRouter（https://openrouter.ai/api）、Vercel AI Gateway（https://ai-gateway.vercel.sh/typesafe）或自建的兼容服务。只接受 http(s)、不带账号密码与查询串的地址；填写密钥时非本机地址必须用 https，否则降级为不调用。"
-  },
-  "jev_model": {
-    "invisible": true,
-    "description": "Jev 模型 ID",
-    "type": "string",
-    "default": "jev-latest",
-    "hint": "默认别名 jev-latest 指向最新稳定版。调过置信度门槛后建议钉住具体版本（如 jev-1.13.0），别名会随新版本移动；经网关时按各家写法填写，例如 OpenRouter 的 ~typesafe/jev-latest。"
-  },
-  "jev_api_key_env": {
-    "invisible": true,
-    "description": "Jev API Key 环境变量名",
-    "type": "string",
-    "default": "TYPESAFE_API_KEY",
-    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不写配置、不进面板、不进日志。变量名须与 Jev 相关（含 JEV、TYPESAFE、OPENROUTER、GATEWAY、AIMLAPI 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
+    "hint": "选择在 AstrBot 模型服务中添加并启用的 Jev / System One 模型，沿用该服务的地址、密钥和模型 ID。回复正文使用普通聊天模型。"
   },
   "jev_timeout": {
-    "invisible": true,
     "description": "Jev 决策超时秒数",
     "type": "float",
     "default": 6.0,
@@ -193,10 +87,9 @@
       "max": 30,
       "step": 0.5
     },
-    "hint": "范围 1~30 秒，只包住这一次 HTTP 调用，整体仍受决策超时约束。Jev 通常百毫秒级返回；不重试，超时即回落本地保守计划。"
+    "hint": "范围 1~30 秒，只限制单次 Jev 请求，整体仍受决策超时及模型服务上限约束。引用或昵称唤醒在 Jev 超时 / 失败时继续旁听；@机器人不调用 Jev。"
   },
   "jev_min_confidence": {
-    "invisible": true,
     "description": "Jev 决策置信度门槛",
     "type": "float",
     "default": 0.6,
@@ -205,117 +98,13 @@
       "max": 0.95,
       "step": 0.05
     },
-    "hint": "范围 0.3~0.95。取「方式、状态、长短、理由」四项置信度的最小值，低于门槛就不采用这次判断：点名消息按本地保守计划回应，环境消息继续旁听。官方建议 0.6 以下不要自动执行。"
-  },
-  "laya_base_url": {
-    "invisible": true,
-    "description": "Laya 接口地址",
-    "type": "string",
-    "default": "http://127.0.0.1:8900",
-    "hint": "自建 Laya typed-decision 服务的地址，POST /predict 一次回答与 Jev 完全相同的一组问题。只接受 http(s)、不带账号密码与查询串的地址。走明文 http 时只放行本机与内网网段（10/8、172.16/12、192.168/16、链路本地等），公网地址必须用 https——这里发出去的是群聊内容本身，不只是密钥。"
-  },
-  "laya_timeout": {
-    "invisible": true,
-    "description": "Laya 决策超时秒数",
-    "type": "float",
-    "default": 1.5,
-    "slider": {
-      "min": 0.1,
-      "max": 10,
-      "step": 0.1
-    },
-    "hint": "范围 0.05~30 秒，只包住这一次本地 HTTP 调用，整体仍受决策超时约束。Laya 稳态约 20~60 毫秒，1.5 秒已能容纳一次冷启动；不重试，超时即回落本地保守计划。"
-  },
-  "laya_min_confidence": {
-    "invisible": true,
-    "description": "Laya 决策置信度门槛",
-    "type": "float",
-    "default": 0.6,
-    "slider": {
-      "min": 0.3,
-      "max": 0.95,
-      "step": 0.05
-    },
-    "hint": "范围 0.3~0.95，语义与 Jev 置信度门槛一致：取 choice/score 各项置信度的最小值，低于门槛就不采用这次判断并回落本地保守计划。只对 choice / score 有效——这两类的置信度是 1 - H(p)/log k，能低到 0。**不要**把它用在 noul 上：noul 报的 confidence 是 max(p, 1-p)，数学上恒 >= 0.5，门槛 <= 0.5 会让闸门永不触发，门槛 0.6 会变成「模型没把握就退、错得越自信越不退」，正好是反的。noul 请走 laya_max_uncertainty。"
-  },
-  "laya_max_uncertainty": {
-    "invisible": true,
-    "description": "Laya 决策不确定度上限",
-    "type": "float",
-    "default": 0.25,
-    "slider": {
-      "min": 0.0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "范围 0~0.5。noul 使用 min(p, 1-p)，choice/score 使用 1 - max(probabilities)。旧模式遵循各原有决策路径的回退行为；决策学习 active 模式使用独立校准阈值并回退 LLM。初版不依赖 act_head；act_costs 配置不代表动作头已经训练或验证。"
-  },
-  "decision_learning_sessions": {
-    "description": "允许采集的完整会话 UMO", "type": "list", "default": [],
-    "hint": "只为这些完整 UMO 保存训练样本，默认不采集。请从会话控制台复制会话标识；明确需要所有生效群时填 *，仍遵守插件的生效和排除规则。"
-  },
-  "decision_learning_retention_days": {
-    "description": "决策样本保留天数", "type": "int", "default": 30,
-    "slider": {"min": 1, "max": 365, "step": 1}, "hint": "到期清理样本，范围 1~365 天。"
-  },
-  "decision_learning_sample_rate": {
-    "description": "接管后教师抽样比例", "type": "float", "default": 0.05,
-    "slider": {"min": 0, "max": 1, "step": 0.01}, "hint": "保留随机教师比较，避免只采集学生不确定的样本。"
-  },
-  "decision_learning_labels_per_hour": {
-    "description": "后台教师补标每小时预算", "type": "int", "default": 120,
-    "slider": {"min": 0, "max": 10000, "step": 1}, "hint": "限制后台补标调用量；0 暂停补标，不影响在线教师回退。"
-  },
-  "decision_learning_jev_fallback": {
-    "invisible": true,
-    "description": "学生失败时尝试 TypeSafe Jev", "type": "bool", "default": false,
-    "hint": "这里的 Jev 是 TypeSafe 服务，不是 AgentJev。决策学习 active 模式下学生未回答的题目可先尝试 TypeSafe Jev，再回退教师；整条链共享截止时间。"
-  },
-  "laya_internal_hosts": {
-    "invisible": true,
-    "description": "允许明文访问的 Laya 内部主机名", "type": "list", "default": [],
-    "hint": "Docker Compose 填 laya-server。只接受精确主机名，不支持通配符；用于可信容器私有网络。"
-  },
-  "vibe_backend": {
-    "invisible": true,
-    "description": "氛围分类后端",
-    "type": "string",
-    "default": "llm",
-    "options": [
-      "llm",
-      "laya"
-    ],
-    "hint": "仅规则模式开启低频氛围校准、且决策学习关闭时选择 llm 或 laya。人设模式不运行此低频校准；决策学习启用时氛围题走学习层，当前字段不决定其后端。"
-  },
-  "vibe_min_confidence": {
-    "invisible": true,
-    "description": "氛围分类置信度门槛",
-    "type": "float",
-    "default": 0.55,
-    "slider": {
-      "min": 0.3,
-      "max": 0.95,
-      "step": 0.05
-    },
-    "hint": "范围 0.3~0.95，仅 vibe_backend=laya 生效。低于门槛就不采用这次校准，沿用当前氛围判定。门槛比决策层低一些：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。"
-  },
-  "vibe_max_uncertainty": {
-    "invisible": true,
-    "description": "氛围分类不确定度上限",
-    "type": "float",
-    "default": 0.35,
-    "slider": {
-      "min": 0.0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "范围 0~0.5，仅 vibe_backend=laya 生效。不确定度超过它就不采用这次校准，沿用当前氛围判定。门槛比决策层宽松（0.35 对 0.25）：氛围是「读」不是「做」，而且后面还有迟滞状态机吸收误判。与决策层共用同一套不确定度语义（choice/score 用 1 - max(probabilities)，多个信号取最保守的那个），所以两个数字可以直接比较。"
+    "hint": "范围 0.3~0.95，仅用于普通群聊，取「方式、状态、长短、理由」四项置信度的最小值。引用或昵称唤醒另用较低的对象判断门槛 0.35；确认对象是机器人即可回复。"
   },
   "reply_timeout": {
     "description": "回复模型总超时秒数",
     "type": "float",
     "default": 60.0,
-    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。超时取消请求并释放当前生成任务。"
+    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。@机器人超时后会补一条简短回应，避免一直无回复。"
   },
   "tool_agent_timeout": {
     "description": "原生 Agent 总超时秒数",
@@ -323,32 +112,12 @@
     "default": 120.0,
     "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。"
   },
-  "ambient_intervention": {
-    "description": "允许未被点名时主动插话",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。legacy 下按 WTS 决定弱指代是否开口。persona_model 下该开关不再单独否决模型决策，仅作控制台兼容项。"
-  },
-  "provider": {
-    "description": "旧版统一 Chat Provider（兼容项）",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "兼容 v1.1：当 reply_provider/vibe_provider 为空时同时作为主回复和氛围校准 Provider。新配置请优先填写专用字段。"
-  },
   "reply_provider": {
     "description": "主回复 Chat Provider",
     "type": "string",
     "default": "",
     "_special": "select_provider",
     "hint": "为空时回退旧版 provider，再为空时按当前 UMO 使用会话默认 Provider。"
-  },
-  "vibe_provider": {
-    "description": "氛围校准 Chat Provider",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "仅用于低频氛围校准；为空时回退旧版 provider。persona_model 下不会再调用氛围 LLM，此字段失效。"
   },
   "command_prefix": {
     "description": "指令前缀",
@@ -477,107 +246,17 @@
     },
     "hint": "连续短消息之间的基础间隔，会按消息长度和群聊模式微调。"
   },
-  "casual_emoji_enabled": {
-    "description": "允许闲聊表情反应",
-    "type": "bool",
-    "default": false,
-    "hint": "legacy 下仅在非正式短回复末尾追加一个场景匹配的认可 Emoji。persona_model 下后处理不补表情，表情由带人设的生成决定。"
-  },
   "strip_markdown_in_banter": {
     "description": "闲聊模式格式降级",
     "type": "bool",
     "default": true,
     "hint": "在快速碎梗与非正式闲聊氛围下自动清洗 Markdown 格式与生硬标点。"
   },
-  "vibe_llm_enabled": {
-    "description": "启用低频 LLM 氛围校准",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。legacy 下可低频校准氛围。persona_model 下不会再调用氛围 LLM，本地遥测仍作为决策参考。"
-  },
-  "learning_policy_mode": {
-    "description": "Dynamics Learning 策略消费模式",
-    "type": "string",
-    "default": "off",
-    "options": [
-      "off",
-      "shadow",
-      "active"
-    ],
-    "hint": "这是 Dynamics Learning 已发布策略的消费开关，与上方决策学习 off/shadow/active 独立。off 不读取；shadow 只比较；active 在协议、本体版本和基线摘要均通过时应用，否则拒绝。"
-  },
-  "learning_policy_source_id": {
-    "description": "学习层插件标识",
-    "type": "string",
-    "default": "ysyhlly/astrbot_plugin_dynamics_learning",
-    "hint": "Dynamics Learning 在共享首选项里的作用域标识，格式 author/name（均小写）。它把发布契约写在 learning_published_v1 这一个键里，本插件只读、从不写入。"
-  },
-  "learning_policy_expected_policy_id": {
-    "description": "锁定策略 ID（可选）",
-    "type": "string",
-    "default": "",
-    "hint": "填了就只接受这一个 policy_id，别的版本一律拒绝。这是「人为批准锁定」的正确位置——管理员表达的是「我批准运行 policy X」，而不是批准训练它的那批数据。留空表示接受最新的 promoted 策略。"
-  },
-  "learning_policy_expected_dataset_fingerprint": {
-    "description": "锁定数据指纹（可选）",
-    "type": "string",
-    "default": "",
-    "hint": "默认留空：数据指纹是来源证明，不是运行时兼容条件，本插件不会因为它缺失或变化而拒绝策略。只有在这里显式填写时才做完全匹配校验。"
-  },
-  "learning_policy_refresh_seconds": {
-    "description": "学习策略刷新间隔（秒）",
-    "type": "int",
-    "default": 60,
-    "hint": "读取发布文件的最小间隔。默认 60 秒：另一个插件的共享首选项不该出现在每条群消息的热路径上。范围 10~3600。"
-  },
   "console_show_message_content": {
     "description": "控制台显示消息正文",
     "type": "bool",
     "default": false,
     "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
-  },
-  "annotation_draft_enabled": {
-    "description": "AI 预标注（草稿）",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。开启后可在回放页外层一键生成，也可另行开启定时生成。生成时会把会话消息正文发给预标注模型，起草「该不该回 / 是否在对机器人说话」。草稿仍需在回放或审批页人工采纳，记录会保留 AI 草稿来源。每条草稿会连它对应的消息一起保存（路由、决策轨迹、时间；正文仅在开启控制台消息内容显示时保存），这样重启或消息超出保留窗口后仍可采纳。"
-  },
-  "annotation_draft_provider": {
-    "description": "AI 预标注 Chat Provider",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "留空时回退旧版 provider，再为空时按会话默认 Provider。预标注是一次离线判读，建议固定一个便宜且稳定的模型。"
-  },
-  "annotation_draft_auto_enabled": {
-    "description": "定时生成 AI 标注草稿",
-    "type": "bool",
-    "default": false,
-    "hint": "需同时开启 AI 预标注。按设定间隔依次检查生效群的会话，把未标注且没有草稿的消息正文发给预标注模型；已有草稿不重复生成。只生成待审草稿，仍需人工采纳。"
-  },
-  "annotation_draft_interval_minutes": {
-    "description": "自动生成间隔（分钟）",
-    "type": "float",
-    "default": 15.0,
-    "slider": { "min": 1, "max": 1440, "step": 1 },
-    "hint": "范围 1–1440 分钟，默认 15 分钟。开启或修改间隔后等待一个间隔开始；各会话依次生成，上轮未完成时不会叠加新一轮。每次仍受单次预标注条数限制。"
-  },
-  "annotation_draft_limit": {
-    "description": "单次预标注条数",
-    "type": "int",
-    "default": 20,
-    "hint": "一次为多少条未标注消息起草（范围 1~40）。条数越多，一次调用越贵，草稿之间也更容易互相影响。"
-  },
-  "annotation_draft_timeout": {
-    "description": "预标注超时 (秒)",
-    "type": "float",
-    "default": 60.0,
-    "slider": {
-      "min": 10,
-      "max": 300,
-      "step": 5
-    },
-    "hint": "一次预标注要读整段窗口，比单条回复慢；超时即放弃，不写任何草稿。范围 10~300。"
   },
   "telemetrics_window_seconds": {
     "description": "遥测滑动窗口 (秒)",
@@ -611,61 +290,6 @@
       "step": 0.5
     },
     "hint": "消息速率低于该阈值时，氛围状态机更倾向进入 chill_fade。"
-  },
-  "wts_topic_weight": {
-    "description": "WTS 话题相关度权重",
-    "type": "float",
-    "default": 0.12,
-    "slider": {
-      "min": 0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "legacy 环境插话时，话题相关度对发言欲望的加分权重。persona_model 下不单独否决是否开口，仅作决策参考。"
-  },
-  "wts_professionalism_weight": {
-    "description": "WTS 专业度权重",
-    "type": "float",
-    "default": 0.08,
-    "slider": {
-      "min": 0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "legacy 下内容专业度对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
-  },
-  "wts_question_weight": {
-    "description": "WTS 问题价值权重",
-    "type": "float",
-    "default": 0.08,
-    "slider": {
-      "min": 0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "legacy 下问句或求助句对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
-  },
-  "wts_participation_weight": {
-    "description": "WTS 多人参与度权重",
-    "type": "float",
-    "default": 0.06,
-    "slider": {
-      "min": 0,
-      "max": 0.5,
-      "step": 0.01
-    },
-    "hint": "legacy 下窗口内独立发言人数对发言欲望的加分权重。persona_model 下不单独否决是否开口。"
-  },
-  "wts_fatigue_weight": {
-    "description": "WTS 发言疲劳权重",
-    "type": "float",
-    "default": 1.0,
-    "slider": {
-      "min": 0,
-      "max": 2,
-      "step": 0.05
-    },
-    "hint": "legacy 下五分钟内累计发言对发言欲望的惩罚倍率。persona_model 下不因连续短句强制冷却。"
   },
   "conversation_router_enabled": {
     "description": "启用短期会话路由",

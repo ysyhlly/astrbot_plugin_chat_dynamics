@@ -267,38 +267,6 @@ def test_the_media_gate_learns_whether_the_host_can_carry_media(monkeypatch):
     assert degraded.multimodal_degraded is True
 
 
-@pytest.mark.asyncio
-async def test_an_active_policy_reaches_the_routers_without_a_config_save(monkeypatch):
-    """active 策略不依赖“有人保存过一次配置”才能生效。
-
-    折入策略的代码在“配置没变就早退”的守卫之后，而策略并不属于宿主配置，
-    所以未保存配置时它永远到不了路由器；refresh 必须绕过那两个守卫。
-    """
-    from astrbot_plugin_chat_dynamics.core.learning_policy import (
-        MODE_ACTIVE, STATUS_ACTIVE, Decision,
-    )
-    from .test_plugin_lifecycle import _plugin
-
-    plugin = _plugin({"learning_policy_mode": "active", "strong_addressivity_threshold": 0.70})
-    plugin._sync_runtime_from_config()
-    assert plugin.addressivity_router.strong_threshold == pytest.approx(0.70)
-
-    applied = Decision(mode=MODE_ACTIVE, status=STATUS_ACTIVE, policy_id="policy_v3",
-                       applied=True, overrides={"strong_addressivity_threshold": 0.85})
-
-    async def refresh(*, effective_config):
-        # The real consumer stores the resolved decision; the plugin's fold-in reads
-        # it back through `consumer.decision.applied`.
-        plugin.learning_policy.consumer.decision = applied
-        return applied
-
-    monkeypatch.setattr(plugin.learning_policy, "refresh", refresh)
-
-    await plugin._refresh_learning_policy(force=True)
-
-    assert plugin.learning_policy.last_apply_reason == "applied"
-    assert plugin._runtime_config.strong_addressivity_threshold == pytest.approx(0.85)
-    assert plugin.addressivity_router.strong_threshold == pytest.approx(0.85)
 
 
 @pytest.mark.asyncio

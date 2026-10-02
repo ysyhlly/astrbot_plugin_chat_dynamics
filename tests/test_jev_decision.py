@@ -121,7 +121,7 @@ def test_ignore_keeps_the_turn_messages_as_context():
 
 
 def test_join_noul_below_the_floor_declines():
-    context = turn("m1")
+    context = turn("m1", explicit=False)
     decision = decision_from_answers(context, answers(join={"type": "noul", "noul": 0.2}))
     assert decision.action == "ignore"
     assert decision.reason_code == "jev_join_declined"

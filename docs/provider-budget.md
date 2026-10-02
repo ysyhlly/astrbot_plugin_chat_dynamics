@@ -3,7 +3,7 @@
 `LLMAdapter.provider_budget` is shared by adapters attached to the same host
 Context. It limits each resolved provider to four concurrent invocations;
 background work may use at most three slots. Reply and necessary routing have
-priority, followed by manual drafts, then automatic drafts, title and vibe work.
+priority, followed by title and vibe work.
 Every five seconds of waiting improves priority by one level, so an old background
 request can progress even with continuing foreground arrivals. Running calls are
 not preempted. These limits describe concurrency, **not RPM or token quotas**.
@@ -24,8 +24,7 @@ have no axes. The persistent cache retains up to 128 fingerprints and merges
 concurrent writes. Typed backends only load cached projections. Unload cancels
 and drains these tasks; resetting a session does not discard this shared cache.
 
-Routing and title use the reply provider preference; automatic drafts use the
-draft preference. Only vibe uses the vibe preference. Context lifetime owns the
+Routing and title use the reply provider preference. Only vibe uses the vibe preference. Context lifetime owns the
 controller; slots-only weak-referenceable contexts use a weak registry. Unusual
 legacy objects supporting neither attributes nor weak references should inject
 the same `provider_budget=ProviderBudget()` into their adapters explicitly.

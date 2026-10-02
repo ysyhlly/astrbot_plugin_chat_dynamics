@@ -118,13 +118,6 @@ def _write(node: object, value: str, *, delivered: bool, reason: str = "",
         updated = deepcopy(trace)
         updated[OUTCOME_KEY] = dict(block)
         metadata["decision_trace"] = updated
-    observer = getattr(node, "_decision_learning_outcome", None)
-    if callable(observer):
-        try:
-            observer(dict(block))
-        except Exception:
-            # Optional training telemetry never changes delivery semantics.
-            pass
     return block
 
 
@@ -162,9 +155,9 @@ def mark_in_flight(node: object, *, now: float | None = None) -> dict:
     return _write(node, VALUE_IN_FLIGHT, delivered=False, stage=STAGE_GENERATION, now=now)
 
 
-def mark_delivered(node: object, *, now: float | None = None) -> dict:
+def mark_delivered(node: object, *, now: float | None = None, reason: str = "") -> dict:
     """At least one fragment reached the platform. Terminal."""
-    return _write(node, VALUE_DELIVERED, delivered=True, stage=STAGE_DELIVERY, now=now)
+    return _write(node, VALUE_DELIVERED, delivered=True, reason=reason, stage=STAGE_DELIVERY, now=now)
 
 
 __all__ = [

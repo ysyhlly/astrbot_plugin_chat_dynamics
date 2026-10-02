@@ -521,7 +521,7 @@ export function renderIntegrations(partner) {
   }
 }
 
-// ---- decision layer (model / Jev / Laya) --------------------------------
+// ---- native Jev decision layer --------------------------------
 
 const DECISION_STATES = {
   available: "已就绪",
@@ -534,22 +534,7 @@ const DECISION_STATES = {
 // transports, so one card describes either and only the naming differs. Each
 // `payload[<layer>]` carries that layer's own endpoint and counters, while its
 // `backend` names whichever layer is currently selected.
-const DECISION_BACKENDS = {
-  kev: {
-    label: "Kev 决策模型",
-    who: "已发布的 Kev checkpoint",
-  },
-  jev: {
-    label: "Jev 决策模型",
-    who: "Jev（TypeSafe System One）",
-    other: "把决策层后端切到 jev 可改由 Jev 决策模型回答。",
-  },
-  laya: {
-    label: "Laya 决策模型",
-    who: "Laya（自建）",
-    other: "把决策层后端切到 laya 可改由自建的 Laya 决策模型回答。",
-  },
-};
+const DECISION_BACKENDS = { jev: {label: "Jev 决策模型", who: "所选 Jev / System One 模型"} };
 
 /** The decision layer's own status: which backend decides, and how it has answered. */
 export function renderDecisionLayer(layer) {
@@ -567,7 +552,7 @@ export function renderDecisionLayer(layer) {
   const note = layer == null
     ? "尚未取得决策层诊断；连接恢复后自动更新。"
     : backend
-      ? `在线决策使用 ${backend.who}；回复正文由回复模型生成。服务失败时按当前路由约束静默处理。`
+      ? `在线决策使用 ${backend.who}；回复正文由回复模型生成。服务失败时采用本地保守计划。`
       : "没有可确认的决策模型；请检查配置页和运行日志。";
   const stateText = status === "degraded"
     ? `降级中（${String(data.error_code || data.detail || "未知原因")}）`
@@ -578,7 +563,7 @@ export function renderDecisionLayer(layer) {
     ["后端", backend ? backend.label : "未确认"],
     ["状态", layer == null ? "—" : stateText],
     ["端点", String(data.endpoint_host || "") || "—"],
-    ["模型", [String(data.checkpoint_id || model), served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],
+    ["模型", [model, served && served !== model ? `实答 ${served}` : ""].filter(Boolean).join(" · ") || "—"],
     ["调用", layer == null ? "—" : `${Number(data.calls) || 0} 次 · 失败 ${Number(data.failures) || 0} 次`],
     ["请求 ID", String(data.request_id || "") || "—"],
     ["置信度门槛", layer != null && Number.isFinite(Number(data.min_confidence)) ? String(data.min_confidence) : "—"],

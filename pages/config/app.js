@@ -3,27 +3,18 @@ import { friendlyError } from "./api.js";
 const PLUGIN = "astrbot_plugin_chat_dynamics";
 const REQUEST_TIMEOUT_MS = 8000;
 const CHAT_PROVIDER_KEYS = new Set([
-  "provider",
   "reply_provider",
-  "vibe_provider",
   "decision_provider",
   "topic_reranker_provider",
-  // The draft provider is a model choice like the others; without it here the
-  // field rendered as a free-text box while every sibling offered the list.
-  "annotation_draft_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 const ROUTE_KEYS = new Set([
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
-  "decision_mode", "decision_learning_mode", "decision_learning_student_backend",
-  "decision_backend", "kev_base_url", "kev_checkpoint_id", "reply_provider",
-  "topic_reranker_enabled", "vibe_llm_enabled",
-]);
+  "decision_provider", "reply_provider",
+  "topic_reranker_enabled", ]);
 const BASE_BASIC_KEYS = new Set([
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
-  "decision_mode", "decision_backend", "decision_learning_mode",
-  "decision_learning_student_backend", "kev_base_url", "kev_checkpoint_id",
-  "kev_timeout", "reply_provider", "reply_timeout", "bot_names",
+  "reply_probability_threshold", "reply_provider", "reply_timeout", "bot_names",
 ]);
 const BASIC_HINTS = {
   enable: "关闭后，本插件不会处理群聊消息。",
@@ -31,27 +22,18 @@ const BASIC_HINTS = {
   takeover_all: "选择指定群或全部群。排除名单始终优先。",
   takeover_groups: "仅在“指定群”模式生效；多个群号用逗号或换行分隔。",
   exclude_groups: "这里的群始终不接管，即使选择全部群。",
-  bot_names: "只有希望通过昵称点名时才需要填写；直接 @ 无需设置。",
-  decision_mode: "Kev 独占决策需要选择“人设与模型决策”。",
-  decision_backend: "选择 Kev 后，整轮决策由独立决策模型完成；服务失败时保持沉默。",
-  decision_learning_mode: "Kev 独占决策需要“实际接管”。",
-  decision_learning_student_backend: "Kev 独占决策需要学生后端也设为 Kev。",
-  kev_base_url: "填写 AstrBot 容器可访问的 Kev 服务地址。",
-  kev_checkpoint_id: "锁定发布版检查点；与服务返回的 ID 不一致时拒绝采用。",
-  kev_timeout: "单次 Kev 请求最长等待时间；超时后本轮保持沉默。",
+  bot_names: "@机器人必须回复，无需填写昵称；引用机器人或叫这里的名字，交给 Jev 确认是在对机器人说话即可接话。",
+  decision_provider: "选择在 AstrBot 模型服务中添加并启用的 Jev / System One 模型。地址和密钥沿用该模型服务。",
+  jev_timeout: "引用或昵称唤醒仍需 Jev 确认对象；超时继续旁听。@机器人直接回复，不等待 Jev。",
+  jev_min_confidence: "普通群聊门槛 0.3–0.95；引用或昵称唤醒另用较低的对象判断门槛 0.35。",
+  reply_probability_threshold: "填 0–100；例如 60 表示普通群聊开口概率达到 60% 才回复。@不受这个门槛限制；引用或昵称唤醒只需确认接话对象是机器人。",
   reply_provider: "只生成回复正文，不决定是否开口。留空则使用 AstrBot 默认回复模型。",
-  reply_timeout: "回复正文生成超时，与 Kev 决策超时分别计算。",
+  reply_timeout: "回复正文生成超时，与决策超时分别计算；@机器人生成失败或超时后会补一条简短回应。",
 };
 const OPTION_LABELS = {
-  decision_mode: { legacy: "规则判断（兼容）", persona_model: "人设与模型决策" },
-  decision_backend: { kev: "Kev 决策模型", model: "聊天模型（旧配置；请切换）", jev: "Jev 决策模型", laya: "Laya 决策模型" },
-  decision_learning_mode: { off: "关闭", collect: "教师采集（兼容）", shadow: "旁路观察（兼容）", active: "实际接管" },
-  decision_learning_student_backend: { kev: "Kev", agentjev: "AgentJev（兼容）", laya: "Laya（兼容）" },
-  agentjev_input_format: { legacy: "旧格式", cmdcode_full_input_soft_v1: "Command Code 完整输入" },
-  // Keep the wording identical to the schema hint and to 今日读空气/分寸台/控制台.
+  // Keep participation labels identical to the control panel.
   presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
   pipeline_mode: { filter: "过滤（默认，不影响其它插件）", exclusive: "独占（会吞掉后续插件）" },
-  learning_policy_mode: { off: "关闭（默认，不读取学习层）", shadow: "观察（只对比不应用）", active: "应用（需通过三项检查）" },
 };
 
 const CONFIG_GROUPS = [
@@ -64,7 +46,6 @@ const CONFIG_GROUPS = [
       "enable",
       "shadow_mode",
       "pipeline_mode",
-      "ambient_intervention",
       "takeover_all",
       "takeover_groups",
       "exclude_groups",
@@ -74,18 +55,14 @@ const CONFIG_GROUPS = [
   },
   {
     "id": "decision",
-    "title": "决策模型 Kev",
-    "blurb": "决定是否开口、动作、目标和回复长度；服务失败时保持沉默",
+    "title": "决策模型",
+    "blurb": "决定是否开口、动作、目标和回复长度；故障处理见上方路径预览",
     "open": true,
     "keys": [
-      "decision_mode",
-      "decision_backend",
-      "decision_learning_mode",
-      "decision_learning_student_backend",
-      "kev_base_url",
-      "kev_checkpoint_id",
-      "kev_timeout",
-      "kev_internal_hosts",
+      "decision_provider",
+      "jev_timeout",
+      "jev_min_confidence",
+      "reply_probability_threshold",
       "decision_timeout"
     ]
   },
@@ -97,20 +74,7 @@ const CONFIG_GROUPS = [
     "keys": [
       "reply_provider",
       "reply_timeout",
-      "tool_agent_timeout",
-      "provider"
-    ]
-  },
-  {
-    "id": "collection",
-    "title": "决策记录",
-    "blurb": "选择哪些会话留存样本，以及保留期限",
-    "open": false,
-    "keys": [
-      "decision_learning_sessions",
-      "decision_learning_retention_days",
-      "decision_learning_sample_rate",
-      "decision_learning_labels_per_hour"
+      "tool_agent_timeout"
     ]
   },
   {
@@ -204,23 +168,9 @@ const CONFIG_GROUPS = [
     "blurb": "低频氛围校准仅在规则模式启用；人设模式使用本地遥测",
     "open": false,
     "keys": [
-      "vibe_llm_enabled",
       "telemetrics_window_seconds",
       "fast_banter_enter_mpm",
       "chill_fade_enter_mpm"
-    ]
-  },
-  {
-    "id": "wts",
-    "title": "发言意愿权重",
-    "blurb": "调整话题、专业性、问题价值、参与度与疲劳的影响",
-    "open": false,
-    "keys": [
-      "wts_topic_weight",
-      "wts_professionalism_weight",
-      "wts_question_weight",
-      "wts_participation_weight",
-      "wts_fatigue_weight"
     ]
   },
   {
@@ -246,7 +196,6 @@ const CONFIG_GROUPS = [
       "max_fragment_chars",
       "inter_burst_interval",
       "pace_align_enabled",
-      "casual_emoji_enabled",
       "strip_markdown_in_banter"
     ]
   },
@@ -284,58 +233,6 @@ const CONFIG_GROUPS = [
     ]
   },
   {
-    "id": "learning",
-    "title": "发布策略联动",
-    "blurb": "读取 Dynamics Learning 的已发布策略；与上方决策学习模式独立",
-    "open": false,
-    "keys": [
-      "learning_policy_mode",
-      "learning_policy_source_id",
-      "learning_policy_expected_policy_id",
-      "learning_policy_expected_dataset_fingerprint",
-      "learning_policy_refresh_seconds"
-    ]
-  },
-  {
-    "id": "drafting",
-    "title": "离线预标注",
-    "blurb": "人工审批用的标注草稿；与在线决策无关",
-    "open": false,
-    "keys": [
-      "annotation_draft_enabled",
-      "annotation_draft_auto_enabled",
-      "annotation_draft_interval_minutes",
-      "annotation_draft_provider",
-      "annotation_draft_limit",
-      "annotation_draft_timeout"
-    ]
-  },
-  {
-    "id": "compatibility",
-    "title": "旧后端兼容设置",
-    "blurb": "仅供已有配置迁移与故障排查；Kev 独占模式不使用",
-    "open": false,
-    "keys": [
-      "agentjev_all_tasks_active",
-      "agentjev_all_tasks_shadow",
-      "agentjev_active_checkpoint_sha256",
-      "agentjev_input_format",
-      "agentjev_base_url",
-      "agentjev_internal_hosts",
-      "agentjev_timeout",
-      "kev_canary_percent",
-      "decision_learning_jev_fallback",
-      "decision_provider",
-      "vibe_provider",
-      "vibe_backend",
-      "laya_base_url",
-      "laya_timeout",
-      "laya_min_confidence",
-      "laya_max_uncertainty",
-      "laya_internal_hosts"
-    ]
-  },
-  {
     "id": "console",
     "title": "面板隐私",
     "blurb": "控制面板是否显示消息正文",
@@ -350,9 +247,7 @@ const SPAN2_KEYS = new Set([
   "takeover_groups",
   "exclude_groups",
   "bot_names",
-  "provider",
-  "agentjev_active_checkpoint_sha256",
-]);
+  ]);
 
 const els = {
   pageTitle: document.getElementById("pageTitle"),
@@ -396,7 +291,7 @@ async function wirePageNav(currentPage) {
 
 
 let configState = { schema: {}, stored: {}, effective: {}, mismatches: [] };
-let providerOptions = { chat: [], embedding: [] };
+let providerOptions = { chat: [], systemone: [], embedding: [], routerReady: false, loaded: false };
 let configDirty = false;
 let configBusy = false;
 let navigationApproved = false;
@@ -432,40 +327,20 @@ function routeInfo() {
   const groups = whitelist.filter(id => !excluded.has(id));
   const enabled = Boolean(value("enable"));
   const takeoverAll = Boolean(value("takeover_all"));
-  const persona = value("decision_mode") === "persona_model";
-  const backend = value("decision_backend");
-  const learningMode = value("decision_learning_mode");
-  const student = value("decision_learning_student_backend");
-  const modelOnly = persona && backend === "kev" && learningMode === "active" && student === "kev";
-  const kevUrl = String(value("kev_base_url") || "").trim();
-  const checkpoint = String(value("kev_checkpoint_id") || "").trim();
   const observing = Boolean(value("shadow_mode"));
+  const providerId = String(value("decision_provider") || "");
+  const jevProvider = providerOptions.systemone.find(row => row.id === providerId);
   const issues = [];
   if (takeoverAll && whitelist.length) issues.push({key: "takeover_groups", kind: "未使用", text: "已选择全部群聊，白名单不会缩小生效范围；排除名单仍有效。"});
-  if (!modelOnly)
-    issues.push({key: !persona ? "decision_mode" : backend !== "kev" ? "decision_backend" :
-      learningMode !== "active" ? "decision_learning_mode" : "decision_learning_student_backend",
-      kind: "未启用 Kev 独占", text: "主回合还未由 Kev 完整接管。依次选择人设与模型决策、Kev 后端、实际接管和 Kev 学生模型。"});
-  if (modelOnly && !kevUrl)
-    issues.push({key: "kev_base_url", kind: "服务地址缺失", text: "Kev 服务地址为空，模型请求无法发出，本轮会保持沉默。"});
-  if (modelOnly && !checkpoint)
-    issues.push({key: "kev_checkpoint_id", kind: "检查点未锁定", text: "填写已核对的发布版检查点 ID；身份不匹配时会保持沉默。"});
-  if (!modelOnly && Boolean(value("topic_reranker_enabled")))
-    issues.push({key: "topic_reranker_enabled", kind: "额外模型调用", text: "LLM 话题重排已开启。若只允许 Kev 做在线判断，请关闭它。"});
-  if (!modelOnly && Boolean(value("vibe_llm_enabled")))
-    issues.push({key: "vibe_llm_enabled", kind: "额外模型调用", text: "LLM 氛围校准已开启。若只允许 Kev 做在线判断，请关闭它。"});
-  if (observing)
-    issues.push({key: "shadow_mode", kind: "不会发送", text: "插件总观察模式已开启，判断结果只记录，不发送插件回复。"});
-  if (learningMode !== "off" && !listSetting(value("decision_learning_sessions")).length)
-    issues.push({key: "decision_learning_sessions", kind: "不留样本", text: "未指定采集会话；在线决策仍运行，但不会保存逐题样本。"});
-  return {value, excluded, whitelist, groups, enabled, takeoverAll, persona, learningMode,
-    student, backend, modelOnly, kevUrl, checkpoint, observing, issues};
+  if (!providerId || (providerOptions.loaded && !jevProvider)) issues.push({key: "decision_provider", kind: "决策模型未就绪", text: "请选择已启用的 Jev / System One 模型。"});
+  if (providerOptions.loaded && !providerOptions.routerReady) issues.push({key: "decision_provider", kind: "模型连接未就绪", text: "内置 Jev 模型连接尚未就绪，请重新加载 Chat Dynamics。"});
+  if (!providerOptions.loaded) issues.push({key: "decision_provider", kind: "列表读取失败", text: "已保存的选择会保留，请刷新模型列表后核对。"});
+  if (observing) issues.push({key: "shadow_mode", kind: "不会发送", text: "观察模式只记录判断，不发送插件回复。"});
+  return {value, excluded, whitelist, groups, enabled, takeoverAll, observing, providerId, jevProvider, issues};
 }
 
-function basicKeysForRoute(route) {
-  const keys = new Set(BASE_BASIC_KEYS);
-  if (route.learningMode !== "off") keys.add("decision_learning_sessions");
-  return keys;
+function basicKeysForRoute() {
+  return new Set([...BASE_BASIC_KEYS, "decision_provider", "jev_timeout", "jev_min_confidence"]);
 }
 
 function filterConfigFields() {
@@ -531,21 +406,11 @@ function updateScopeStatus() {
       ? `保存后立即影响${route.takeoverAll ? "全部未排除群" : `${groups.length} 个指定群`}；保存前的修改不会生效。`
       : "保存后仍不会接管群聊，直到启用插件并选择生效范围。"
     : "修改设置后，保存会立即应用到当前生效的群聊。";
-  const backendName = OPTION_LABELS.decision_backend[route.backend] || route.backend || "未选择";
-  const decisionTitle = route.modelOnly ? "Kev 独占决策" : route.persona ? backendName : "本地规则判断";
-  const decisionText = route.modelOnly
-    ? "整轮问题由 Kev 决策模型回答；旧教师、LLM 话题重排和 LLM 氛围校准在此路径中停用。"
-    : route.persona ? "当前仍在兼容决策路径。若要求只有 Kev 判断，请核对下方四项模型设置。"
-      : "当前由本地规则处理主回合；下方 Kev 设置不会接管主回合。";
-  const modelTitle = route.modelOnly ? "失败即静默" : "检查实际回退路径";
-  const modelText = route.modelOnly
-    ? "Kev 超时、缺题或检查点不符时，本轮保持沉默。回复模型只在决策通过后生成正文。"
-    : "兼容路径可能使用旧模型或教师回退；回复正文仍由独立的回复 Provider 生成。";
-  els.decisionOverview.dataset.route = route.modelOnly ? "kev" : "default";
-  els.configDecisionHeadline.textContent = decisionTitle;
-  els.configDecisionStatus.textContent = decisionText;
-  els.configModelHeadline.textContent = modelTitle;
-  els.configModelStatus.textContent = modelText;
+  els.decisionOverview.dataset.route = "jev";
+  els.configDecisionHeadline.textContent = `Jev · ${route.jevProvider?.model || "未选择有效模型"}`;
+  els.configDecisionStatus.textContent = "使用所选模型服务中的地址、密钥和模型 ID 完成结构化决策。";
+  els.configModelHeadline.textContent = "@必回，引用 / 昵称先确认对象";
+  els.configModelStatus.textContent = "@机器人直接回复；正文生成失败或超时会补简短回应。引用机器人、昵称或唤醒名由 Jev 确认对象是机器人即可接话，判断超时或不明确则继续旁听。";
   els.configStartTitle.textContent = configDirty ? "保存后路径预览" : "当前运行路径";
   els.configOverviewState.textContent = configDirty ? "尚未保存" : configState.mismatches.length ? "已保存未应用" : "已应用";
   els.configOverviewState.dataset.state = configDirty ? "draft" : configState.mismatches.length ? "pending" : "applied";
@@ -560,19 +425,12 @@ function updateScopeStatus() {
 function updateFieldContexts(route) {
   const contexts = {
     takeover_groups: route.takeoverAll ? "当前选择全部群，此列表不会限制范围" : "仅这些群会被接管",
-    kev_base_url: route.modelOnly ? "当前在线决策服务" : "仅在 Kev 独占路径使用",
-    kev_checkpoint_id: route.modelOnly ? "每次预测前核对服务检查点 ID" : "仅在 Kev 独占路径使用",
     reply_provider: "仅生成回复正文，不决定是否开口",
-    decision_provider: route.modelOnly ? "Kev 独占路径不使用" : "兼容路径可能使用",
-    topic_reranker_enabled: route.modelOnly ? "只允许 Kev 判断时应关闭" : "",
-    vibe_llm_enabled: route.modelOnly ? "只允许 Kev 判断时应关闭" : "",
-    learning_policy_mode: "发布策略联动独立于决策模型设置",
+    decision_provider: "地址和密钥在 AstrBot 模型服务中维护",
   };
   els.configForm.querySelectorAll("[data-context-key]").forEach(node => {
-    const message = contexts[node.dataset.contextKey] || "";
-    node.textContent = message;
-    node.hidden = !message;
-    node.closest(".config-field")?.classList.toggle("context-inactive", message.includes("不使用") || message.includes("不会限制") || message.includes("仅在"));
+    node.textContent = contexts[node.dataset.contextKey] || "";
+    node.hidden = !node.textContent;
   });
 }
 
@@ -666,6 +524,8 @@ function setConfigBusy(busy) {
   els.configForm.querySelectorAll("[data-config-key]").forEach(input => { input.disabled = configBusy; });
   els.btnConfigReload.disabled = configBusy;
   els.btnConfigApply.disabled = configBusy;
+  document.getElementById("btnRefreshModels").disabled = configBusy;
+  document.getElementById("btnUseJev").disabled = configBusy;
   setConfigDirty(configDirty);
 }
 
@@ -690,7 +550,46 @@ function isProviderField(key, schema) {
 
 function providerListForKey(key) {
   if (EMBEDDING_PROVIDER_KEYS.has(key)) return providerOptions.embedding || [];
-  return providerOptions.chat || [];
+  if (key === "decision_provider") return providerOptions.systemone;
+  return providerOptions.chat.filter(row => !row.systemone);
+}
+
+function refreshProviderSelects() {
+  els.configForm.querySelectorAll("select[data-config-key]").forEach(input => {
+    if (!CHAT_PROVIDER_KEYS.has(input.dataset.configKey) && !EMBEDDING_PROVIDER_KEYS.has(input.dataset.configKey)) return;
+    const select = renderProviderSelect(input.dataset.configKey, input.value);
+    const template = document.createElement("template");
+    template.innerHTML = select;
+    input.innerHTML = template.content.firstElementChild.innerHTML;
+  });
+  const count = providerOptions.systemone.length;
+  document.getElementById("jevConnectionStatus").textContent = !providerOptions.loaded
+    ? "模型列表暂时不可用；已保存的模型选择仍会保留。"
+    : !count ? "尚无可选的 Jev 决策模型。请到模型服务添加并启用模型，再刷新。"
+    : `已找到 ${count} 个 Jev / System One 模型${providerOptions.routerReady ? "，内置连接已就绪。" : "；内置连接尚未就绪，请重新加载 Chat Dynamics。"}`;
+}
+
+function prepareJevSelection() {
+  if (configBusy) return;
+  focusConfigField("decision_provider");
+  setConfigNote("请选择 Jev 决策模型，核对群聊范围后保存。");
+}
+
+async function refreshModelList() {
+  if (configBusy) return;
+  setConfigBusy(true);
+  try {
+    await loadProviders();
+    refreshProviderSelects();
+    updateScopeStatus();
+    setConfigNote("模型列表已刷新；未保存的设置已保留。");
+  } catch (_) {
+    refreshProviderSelects();
+    updateScopeStatus();
+    setConfigNote("模型列表读取失败；已保留当前选择和未保存的设置，请稍后重试。", true);
+  } finally {
+    setConfigBusy(false);
+  }
 }
 
 function configFieldValue(key) {
@@ -777,7 +676,8 @@ function renderProviderSelect(key, value) {
   const options = providerListForKey(key);
   const current = String(value ?? "");
   const seen = new Set();
-  const parts = [`<option value="">（空 / 沿用默认）</option>`];
+  const empty = key === "decision_provider" ? "请选择 Jev / System One 模型" : "（空 / 沿用默认）";
+  const parts = [`<option value="">${empty}</option>`];
   for (const row of options) {
     const id = String((row && row.id) || "");
     if (!id || seen.has(id)) continue;
@@ -789,7 +689,7 @@ function renderProviderSelect(key, value) {
   }
   if (current && !seen.has(current)) {
     parts.push(
-      `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}（未在列表中）</option>`,
+      `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}（未加载或类型不匹配）</option>`,
     );
   }
   return `<select data-config-key="${escapeHtml(key)}">${parts.join("")}</select>`;
@@ -816,7 +716,6 @@ function renderField(key, mismatchSet) {
     control = renderProviderSelect(key, value);
   } else if (type === "string" && Array.isArray(schema.options) && schema.options.length) {
     control = `<select data-config-key="${escapeHtml(key)}">${schema.options
-      .filter((opt) => key !== "decision_backend" || opt !== "model" || String(value) === "model")
       .map(
         (opt) =>
           `<option value="${escapeHtml(opt)}" ${String(value) === String(opt) ? "selected" : ""}>${escapeHtml(OPTION_LABELS[key]?.[opt] || opt)}</option>`,
@@ -842,7 +741,7 @@ function renderField(key, mismatchSet) {
     <span class="config-key">${escapeHtml(key)}</span>
     ${control}
     <span class="config-context" data-context-key="${escapeHtml(key)}" hidden></span>
-    <span class="config-effective">生效：${effectiveText}${configState.learning_policy_overridden?.includes(key) ? ` · 学习策略覆盖（${escapeHtml(configState.learning_policy?.policy_id || configState.learning_policy?.source_id || "当前策略")}），保存基础值后仍可能被覆盖` : ""}</span>
+    <span class="config-effective">生效：${effectiveText}</span>
     ${hint ? `<span class="config-hint config-detail-hint">${escapeHtml(hint)}</span>` : ""}
     ${BASIC_HINTS[key] ? `<span class="config-hint config-basic-hint">${escapeHtml(BASIC_HINTS[key])}</span>` : ""}
   </label>`;
@@ -884,8 +783,6 @@ function renderConfigForm(panel) {
     stored: panel && panel.stored ? panel.stored : {},
     effective: panel && panel.effective ? panel.effective : {},
     mismatches: Array.isArray(panel && panel.mismatches) ? panel.mismatches : [],
-    learning_policy: panel?.learning_policy || {},
-    learning_policy_overridden: Array.isArray(panel?.learning_policy_overridden) ? panel.learning_policy_overridden : [],
     warnings: Array.isArray(panel?.warnings) ? panel.warnings : [],
   };
   if (els.configWarnings) {
@@ -949,6 +846,7 @@ function renderConfigForm(panel) {
     });
   });
   filterConfigFields();
+  refreshProviderSelects();
   els.configForm.querySelectorAll("[data-config-key]").forEach((input) => {
     const clearFieldError = () => {
       if (!input.hasAttribute("aria-invalid")) return;
@@ -970,10 +868,13 @@ async function loadProviders() {
     const data = await apiGet("providers");
     providerOptions = {
       chat: Array.isArray(data && data.chat) ? data.chat : [],
+      systemone: Array.isArray(data?.systemone) ? data.systemone : (data?.chat || []).filter(row => row.systemone),
       embedding: Array.isArray(data && data.embedding) ? data.embedding : [],
+      routerReady: data?.systemone_router_ready === true,
+      loaded: true,
     };
   } catch (_err) {
-    providerOptions = { chat: [], embedding: [] };
+    providerOptions = { ...providerOptions, loaded: false };
     throw _err;
   }
 }
@@ -989,7 +890,7 @@ async function loadConfigPanel() {
     const embN = providerOptions.embedding.length;
     setConfigNote(providers.status === "rejected"
       ? "配置已读取，模型列表暂时不可用；已保存的模型选择仍会保留。"
-      : `已读取 · ${chatN} 个聊天模型 · ${embN} 个向量模型（均可选）`);
+      : `已读取 · ${chatN - providerOptions.systemone.length} 个聊天模型 · ${providerOptions.systemone.length} 个 Jev 决策模型 · ${embN} 个向量模型`);
   } catch (err) {
     setConfigNote(friendlyError(err, "读取配置失败，请稍后重试。"), true);
   } finally {
@@ -1015,6 +916,11 @@ function focusConfigField(key) {
 
 async function saveConfigPanel() {
   if (!els.configForm || configBusy) return;
+  const route = routeInfo();
+  if (!route.providerId || (providerOptions.loaded && (!route.jevProvider || !providerOptions.routerReady))) {
+    setConfigNote("Jev 设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。", true);
+    return;
+  }
   let updates;
   try {
     updates = collectConfigUpdates();
@@ -1055,6 +961,8 @@ async function applyConfigPanel() {
 }
 
 async function boot() {
+  document.getElementById("btnUseJev").addEventListener("click", prepareJevSelection);
+  document.getElementById("btnRefreshModels").addEventListener("click", refreshModelList);
   els.configConflictList.addEventListener("click", event => {
     const button = event.target.closest("[data-focus-key]");
     if (button) focusConfigField(button.dataset.focusKey);
@@ -1097,7 +1005,7 @@ async function boot() {
   await wirePageNav("config");
   els.pageDesc.textContent = t(
     "pages.config.desc",
-    "核对生效群聊、Kev 决策和回复生成，再保存到运行时。",
+    "选择生效群聊、决策模型和回复模型，核对后保存。",
   );
   if (bridge && typeof bridge.ready === "function") {
     try {

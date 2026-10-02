@@ -162,7 +162,7 @@ async def test_real_sdk_plugin_contract_smoke():
     )
 
     await plugin.initialize()
-    assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes if "/learning/" not in route} == {
+    assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes if "/decision/" not in route} == {
         "overview",
         "sessions",
         "session",
@@ -178,13 +178,9 @@ async def test_real_sdk_plugin_contract_smoke():
         "providers",
         "replay",
         "topic_annotations",
-        "annotation_draft",
-        "annotation_drafts",
     }
-    assert {route.split("/learning/", 1)[1] for route, *_ in context.routes if "/learning/" in route} == {
-        "stats", "jobs/create", "jobs/status", "jobs/cancel", "models/evaluate",
-        "models/promote", "models/rollback", "models/rollout", "models/compare_jev", "models/compare_teacher", "samples/export", "samples/delete",
-    }
+    assert not any("/learning/" in route for route, *_ in context.routes)
+    assert {route.split("/decision/", 1)[1] for route, *_ in context.routes if "/decision/" in route} == {"status", "history"}
     overview = await _overview_payload(plugin)
     assert overview["ok"] is True
     assert overview["status"] == "ok"
@@ -218,7 +214,8 @@ async def test_real_sdk_plugin_contract_smoke():
     await plugin.terminate()
     assert plugin.debounce._is_closed is True
     assert not plugin._background_tasks
-    assert not plugin._vibe_llm_tasks
+    assert not hasattr(plugin, "_vibe_llm_tasks")
+    assert plugin.jev._closed is True
     assert not plugin._sessions
 
 

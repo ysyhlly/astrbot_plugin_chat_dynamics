@@ -10,6 +10,9 @@ from astrbot_plugin_chat_dynamics.core.persona_trace import stage_trace
 from astrbot_plugin_chat_dynamics.core.turn_decision import TurnDecision, TurnContext, PersonaSnapshot
 from .test_persona_model import model_plugin as _model_plugin, flush, drain
 from .test_plugin_lifecycle import MockEvent
+from .test_jev_decision_layer import jev_plugin as _jev_plugin
+
+jev_plugin = _jev_plugin
 
 model_plugin = _model_plugin
 
@@ -127,19 +130,19 @@ async def test_send_failure_keeps_any_success_terminal(model_plugin, first_succe
 
 
 @pytest.mark.asyncio
-async def test_invalid_model_fallback_is_technical_not_persona_silence(model_plugin):
-    p, bridge = model_plugin
-    async def invalid(**kwargs):
-        return SimpleNamespace(completion_text="not json")
-    p.context.llm_generate = invalid
+async def test_unavailable_jev_keeps_ordinary_fallback_reason(jev_plugin):
+    p, bridge = jev_plugin
+    p.jev.payload = None
     event = MockEvent("今天晚上吃什么", message_id="fallback-outcome", is_at_or_wake_command=False)
     try:
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
         node = p._sessions[event.unified_msg_origin].dag.get_node("fallback-outcome")
-        assert node.metadata["outcome"]["final_outcome"] == "generation_failed"
-        assert node.metadata["outcome"]["suppression_reason"] == "decision_invalid_or_failed"
+        assert node.metadata["outcome"]["final_outcome"] == "suppressed"
+        assert node.metadata["outcome"]["suppression_reason"] == "jev_unavailable"
+        assert p._sessions[event.unified_msg_origin].model_diagnostic["reason_code"] == "jev_unavailable"
+        assert not p.decision_calls
         assert not bridge.requests
     finally:
         await p.terminate()

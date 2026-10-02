@@ -189,16 +189,8 @@ def jev_snapshot(plugin: Any) -> Dict[str, Any]:
     return _layer_snapshot(plugin, "jev")
 
 
-def laya_snapshot(plugin: Any) -> Dict[str, Any]:
-    """The self-hosted Laya decision layer's own status."""
-    return _layer_snapshot(plugin, "laya")
 
 
-def kev_snapshot(plugin: Any) -> Dict[str, Any]:
-    """The selected Kev checkpoint and its live service status."""
-    data = _layer_snapshot(plugin, "kev")
-    data.pop("min_confidence", None)
-    return data
 
 
 def companion_snapshot(plugin: Any) -> Dict[str, Any]:
@@ -279,23 +271,14 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "pipeline_mode": str(getattr(plugin, "pipeline_mode", "filter") or "filter"),
         "decision_mode": getattr(plugin, "decision_mode", "legacy"),
         "persona_fallback": getattr(plugin, "_persona_fallback", ""),
-        "requested_decision_mode": getattr(plugin, "config", {}).get("decision_mode", "legacy"),
+        "requested_decision_mode": "persona_model",
         "agent_bridge": getattr(getattr(getattr(plugin, "persona_engine", None), "bridge", None), "diagnostic", "not_checked"),
-        "inactive_options": (["ambient_intervention", "vibe_llm_enabled", "vibe_provider", "WTS weights", "casual_emoji_enabled"]
-                             if getattr(plugin, "decision_mode", "legacy") == "persona_model" else []),
         "ambient_intervention": bool(getattr(plugin, "ambient_intervention", False)),
         "takeover_all": bool(plugin.takeover_all),
         "takeover_groups": sorted(plugin.takeover_groups),
         "exclude_groups": sorted(plugin.exclude_groups),
         "bot_names": list(plugin.bot_names),
-        "provider": plugin.provider_id,
         "reply_provider": str(getattr(plugin, "reply_provider_id", "") or ""),
-        "vibe_provider": str(getattr(plugin, "vibe_provider_id", "") or ""),
-        "provider_compatibility": {
-            "legacy_configured": bool(getattr(plugin, "provider_id", "")),
-            "reply_configured": bool(getattr(plugin, "reply_provider_id", "")),
-            "vibe_configured": bool(getattr(plugin, "vibe_provider_id", "")),
-        },
         "provider_resolution": {
             "reply": (
                 plugin.llm.configured_provider("reply")
@@ -303,21 +286,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
                 else str(getattr(plugin, "reply_provider_id", "") or getattr(plugin, "provider_id", "") or "")
             )
             or "current_umo",
-            "vibe": (
-                plugin.llm.configured_provider("vibe")
-                if hasattr(getattr(plugin, "llm", None), "configured_provider")
-                else str(getattr(plugin, "vibe_provider_id", "") or getattr(plugin, "provider_id", "") or "")
-            )
-            or "current_umo",
-            "decision": (
-                str(getattr(getattr(plugin, "_runtime_config", None), "decision_provider_id", "") or "")
-                or (
-                    plugin.llm.configured_provider("reply")
-                    if hasattr(getattr(plugin, "llm", None), "configured_provider")
-                    else str(getattr(plugin, "reply_provider_id", "") or getattr(plugin, "provider_id", "") or "")
-                )
-                or "current_umo"
-            ),
+            "decision": str(getattr(getattr(plugin, "_runtime_config", None), "decision_provider_id", "") or "missing"),
         },
         "vibe_llm_enabled": bool(getattr(plugin, "vibe_llm_enabled", True)),
         "shadow_mode": bool(getattr(plugin, "shadow_mode", False)),
@@ -353,8 +322,6 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         },
         "selflearning": companion_snapshot(plugin),
         "jev": jev_snapshot(plugin),
-        "laya": laya_snapshot(plugin),
-        "kev": kev_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
             "mood_memory": bool(getattr(plugin, "mood_memory_enabled", False)),

@@ -10,6 +10,12 @@ export function mountWorkspace() {
     });
     if (focus) tab.focus();
   }
+  try {
+    const next = localStorage.getItem("cd_console_next_view");
+    localStorage.removeItem("cd_console_next_view");
+    const tab = tabs.find(item => item.dataset.view === next);
+    if (tab) activate(tab);
+  } catch {}
   tabs.forEach((tab, index) => {
     tab.addEventListener("click", () => activate(tab));
     tab.addEventListener("keydown", event => {
