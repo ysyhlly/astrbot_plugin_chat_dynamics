@@ -230,6 +230,8 @@ class SessionRuntime:
     followup_delivery_sequence: int = 0
     model_queue: Deque[Any] = field(default_factory=deque)
     model_admission: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(9), repr=False)
+    # Requests waiting for admission already belong to their owner's revision.
+    model_waiting: Dict[object, Any] = field(default_factory=dict, repr=False)
     active_model_turn: Any = None
     user_revisions: Dict[str, int] = field(default_factory=dict)
     interaction_state: str = "observing"

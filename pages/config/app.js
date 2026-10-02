@@ -63,7 +63,8 @@ const CONFIG_GROUPS = [
       "jev_timeout",
       "jev_min_confidence",
       "reply_probability_threshold",
-      "decision_timeout"
+      "decision_timeout",
+      "decision_prompt"
     ]
   },
   {
@@ -74,7 +75,8 @@ const CONFIG_GROUPS = [
     "keys": [
       "reply_provider",
       "reply_timeout",
-      "tool_agent_timeout"
+      "tool_agent_timeout",
+      "reply_prompt"
     ]
   },
   {
@@ -702,7 +704,7 @@ function renderField(key, mismatchSet) {
   const hint = schema.hint || "";
   const eff = configState.effective[key];
   const mismatched = mismatchSet.has(key) ? " mismatched" : "";
-  const span = SPAN2_KEYS.has(key) || type === "list" ? " span-2" : "";
+  const span = SPAN2_KEYS.has(key) || type === "list" || schema.editor === "textarea" ? " span-2" : "";
   const value = configFieldValue(key);
   let control = "";
   if (key === "takeover_all" && type === "bool") {
@@ -721,6 +723,8 @@ function renderField(key, mismatchSet) {
           `<option value="${escapeHtml(opt)}" ${String(value) === String(opt) ? "selected" : ""}>${escapeHtml(OPTION_LABELS[key]?.[opt] || opt)}</option>`,
       )
       .join("")}</select>`;
+  } else if (type === "string" && schema.editor === "textarea") {
+    control = `<textarea data-config-key="${escapeHtml(key)}" rows="6" maxlength="4000" placeholder="留空使用默认提示词">${escapeHtml(value)}</textarea>`;
   } else if (type === "list") {
     control = `<textarea data-config-key="${escapeHtml(key)}" rows="2" placeholder="逗号或换行分隔">${escapeHtml(value)}</textarea>`;
   } else if (type === "int" || type === "float") {

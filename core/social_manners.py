@@ -58,6 +58,7 @@ class SocialMannersGate:
         explicit: bool = False,
         occasion_kind: str = "neutral",
         presence_knob: str = "sensible",
+        public_topic: bool = False,
         social_manners_enabled: bool = True,
         relay_baton_enabled: bool = True,
         private_field_enabled: bool = True,
@@ -90,10 +91,17 @@ class SocialMannersGate:
         if occasion_kind == "conflict":
             return self._deny(session_id, stamp, "conflict_silence", "冲突场合，先安静不插话")
 
-        if relay_baton_enabled and self._relay_baton_active(recent_nodes, bot_id=bot_id, user_id=user_id):
+        # A confident public-topic decision in lively mode can override the
+        # two-speaker heuristics. Keep an explicit human recipient's exchange.
+        latest = recent_nodes[-1] if recent_nodes else None
+        human_recipient = latest is not None and any(
+            recipient != bot_id for recipient in self._node_mentions(latest)
+        )
+        open_discussion = presence_knob == "lively" and public_topic and not human_recipient
+        if not open_discussion and relay_baton_enabled and self._relay_baton_active(recent_nodes, bot_id=bot_id, user_id=user_id):
             return self._deny(session_id, stamp, "relay_baton", "两人正在互回，先靠边不插中间")
 
-        if private_field_enabled and self._private_field_active(
+        if not open_discussion and private_field_enabled and self._private_field_active(
             recent_nodes, bot_id=bot_id, user_id=user_id, text=text, occasion_kind=occasion_kind
         ):
             return self._deny(session_id, stamp, "private_field", "像是两人私场，不硬插")

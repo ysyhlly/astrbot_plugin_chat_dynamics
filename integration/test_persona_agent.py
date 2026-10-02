@@ -148,6 +148,24 @@ async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(h
 
 
 @pytest.mark.asyncio
+async def test_real_builder_forwards_custom_reply_guidance_with_persona(host_fixture):
+    from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, TurnDecision, reply_prompt
+
+    ctx, event, calls = host_fixture
+    bridge = AstrBotAgentBridge(ctx)
+    turn = TurnContext(event.unified_msg_origin, "u", "今天聊做饭", (MessageSnapshot("m", "u", ""),),
+                       (), 0, 0, 0, False, wake_kind="none")
+    decision = TurnDecision("reply", "casual", ("m",), "加入公开话题", "brief", "jev_open_group_topic")
+    prompt = reply_prompt(turn, decision, reply_guidance="先分享做饭经验\n不要机械追问")
+    await bridge.generate(event, (event,), prompt, await bridge.snapshot(event), "provider")
+    messages = [m if isinstance(m, dict) else m.model_dump() for m in calls[0]["contexts"]]
+    assert "克制但可靠" in messages[0]["content"]
+    assert "Follow reply_guidance" in messages[0]["content"]
+    assert any("先分享做饭经验" in str(m["content"]) for m in messages)
+    assert not event.sent and not ctx.saved
+
+
+@pytest.mark.asyncio
 async def test_failed_model_chain_is_a_failure_not_a_persona_reply(host_fixture):
     """A 4.22+ runner reports "all chat models failed" as a response, not an exception."""
     from astrbot_plugin_chat_dynamics.core.llm_adapter import LLMErrorResponse

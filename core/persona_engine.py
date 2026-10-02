@@ -432,9 +432,13 @@ class PersonaEngine:
             return
         fallback = runtime.model_admission.locked()
         # Backpressure is outside state_lock. No dropped explicit request and no unbounded model tasks.
-        await runtime.model_admission.acquire()
+        token = object()
+        runtime.model_waiting[token] = item
+        admitted = False
         queued = False
         try:
+            await runtime.model_admission.acquire()
+            admitted = True
             async with runtime.state_lock:
                 if not self.valid(runtime, item):
                     return
@@ -443,16 +447,17 @@ class PersonaEngine:
                 if runtime.generation_task is None or runtime.generation_task.done():
                     runtime.generation_task = self.plugin._create_background_task(self.run(runtime))
         finally:
-            if not queued:
+            runtime.model_waiting.pop(token, None)
+            if admitted and not queued:
                 runtime.model_admission.release()
 
     def has_pending_explicit_request(self, runtime, user_id: str, *, mandatory_only: bool = False) -> bool:
-        """Ordinary chatter must not cancel an admitted, unanswered wake request.
+        """Ordinary chatter must not cancel a pending, unanswered wake request.
 
         A pending @ also survives a newer wake. Stop/reset still advance the
         owner revision. This check grants no wake status to the incoming message.
         """
-        pending = (runtime.active_model_turn, *runtime.model_queue)
+        pending = (runtime.active_model_turn, *runtime.model_queue, *runtime.model_waiting.values())
         return any(
             item is not None and item.context.author == user_id
             and item.context.explicit and self.valid(runtime, item)
@@ -552,6 +557,7 @@ class PersonaEngine:
                     observations=item.observations,
                     presence=p._runtime_config.presence_knob,
                     persona_prompt=getattr(persona, "prompt", ""),
+                    decision_prompt=p._runtime_config.decision_prompt,
                 ),
                 questions=build_questions(turn),
                 timeout=timeout,
@@ -762,6 +768,7 @@ class PersonaEngine:
                         quoted_bot=bool(turn.explicit),
                         group_memory=getattr(p, "group_memory", None),
                         committed_reply=decision.action != "ignore",
+                        public_topic=decision.reason_code == "jev_open_group_topic",
                     )
                     runtime.last_occasion = gate.skin.as_dict()
                     runtime.last_manners = gate.manners.as_dict()
@@ -871,7 +878,7 @@ class PersonaEngine:
                     "length_hint": decision.length,
                     "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
                     "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
-                }),
+                }, reply_guidance=p._runtime_config.reply_prompt),
                 persona,
                 provider,
                 execution_log=runtime.tool_executions,

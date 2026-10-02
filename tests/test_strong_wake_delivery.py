@@ -4,6 +4,8 @@ from dataclasses import replace
 
 import pytest
 
+from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
+from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext
 from .test_jev_decision_layer import answers, jev_plugin as _jev_plugin
 from .test_persona_model import drain, flush
 from .test_plugin_lifecycle import At, MockEvent, Reply
@@ -155,4 +157,125 @@ async def test_queued_explicit_request_survives_its_authors_chatter(jev_plugin):
         assert head.replies_sent and queued.replies_sent and not chatter.replies_sent
     finally:
         release.set()
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['at', 'quote_bot'])
+@pytest.mark.parametrize('ending', ['success', 'new_request', 'stop', 'reset', 'cancel', 'unload'])
+async def test_waiting_wake_survives_chatter_but_respects_cancellation(jev_plugin, kind, ending):
+    p, bridge = jev_plugin
+    entered, release, waiting_entered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def block_head():
+        if len(bridge.requests) == 1:
+            entered.set()
+            await release.wait()
+
+    bridge.before_reply = block_head
+    head = MockEvent('另一人的请求', sender_id='head-user', message_id='head', components=[At('bot_42')])
+    waiting = quoted_event(kind, message_id='waiting')
+    chatter = quoted_event('quote_peer', message_id='chatter')
+    waiters = []
+    terminated = False
+    try:
+        await p.on_group_message(head)
+        await flush(p, head)
+        await asyncio.wait_for(entered.wait(), 2)
+        runtime = p._sessions[head.unified_msg_origin]
+        # Saturate the normal nine permits: one active request and eight queued requests.
+        for index in range(8):
+            queued = MockEvent('请回复这个请求', sender_id=f'queued-user-{index}',
+                               message_id=f'queued-{index}', components=[At('bot_42')])
+            await p.on_group_message(queued)
+            await flush(p, queued)
+        assert runtime.model_admission.locked()
+        acquire = runtime.model_admission.acquire
+
+        async def observe_acquire():
+            if runtime.model_admission.locked():
+                waiting_entered.set()
+            return await acquire()
+
+        runtime.model_admission.acquire = observe_acquire
+        await p.on_group_message(waiting)
+        task = asyncio.create_task(flush(p, waiting))
+        waiters.append(task)
+        await asyncio.wait_for(waiting_entered.wait(), 2)
+        assert not task.done()
+        revision = runtime.user_revisions[waiting.sender_id]
+        p.jev.payload = low_confidence_answers()
+        await p.on_group_message(chatter)
+        assert runtime.user_revisions[waiting.sender_id] == revision
+
+        newer = None
+        if ending == 'new_request':
+            newer = quoted_event(kind, message_id='newer')
+            waiting_entered.clear()
+            await p.on_group_message(newer)
+            waiters.append(asyncio.create_task(flush(p, newer)))
+            await asyncio.wait_for(waiting_entered.wait(), 2)
+        elif ending == 'stop':
+            await p.cmd_dynamics_stop(MockEvent('/dynamics_stop', message_id='stop', is_admin_user=False))
+        elif ending == 'reset':
+            await p._reset_session_state_async(runtime.session_key)
+        elif ending == 'cancel':
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif ending == 'unload':
+            await p.terminate()
+            terminated = True
+        p.jev.payload = answers()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*waiters, return_exceptions=True), 3)
+        await drain(p)
+
+        expected_reply = ending == 'success' or (ending == 'new_request' and kind == 'at')
+        assert bool(waiting.replies_sent) == expected_reply
+        assert not chatter.replies_sent
+        if newer is not None:
+            assert newer.replies_sent
+        assert not p.persona_engine.has_pending_explicit_request(runtime, waiting.sender_id)
+        assert not runtime.model_waiting
+        assert not runtime.model_queue
+        assert runtime.model_admission._value == 9
+    finally:
+        release.set()
+        for task in waiters:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+        if not terminated:
+            await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_queue_commit_releases_acquired_admission(jev_plugin):
+    p, _bridge = jev_plugin
+    event = quoted_event('at')
+    runtime = p._get_or_create_runtime(event.unified_msg_origin, group_id=event.group_id,
+                                       umo=event.unified_msg_origin, bot_id=event.self_id)
+    turn = TurnContext(runtime.session_key, event.sender_id, event.message_str,
+                       (MessageSnapshot(event.message_id, event.sender_id, event.message_str),), (),
+                       runtime.epoch, 0, p.time_service.time(), explicit=True, wake_kind='at')
+    item = ModelTurn(turn, (event,), {}, False)
+    task = None
+    try:
+        async with runtime.state_lock:
+            task = asyncio.create_task(p.persona_engine.submit(runtime, item))
+            await asyncio.sleep(0)
+            assert runtime.model_admission._value == 8
+            assert p.persona_engine.has_pending_explicit_request(runtime, event.sender_id)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert not runtime.model_queue
+        assert not runtime.model_waiting
+        assert runtime.model_admission._value == 9
+        assert not p.persona_engine.has_pending_explicit_request(runtime, event.sender_id)
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await p.terminate()

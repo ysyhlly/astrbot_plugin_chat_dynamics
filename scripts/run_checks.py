@@ -10,9 +10,9 @@ import sys
 
 BACKEND = [
     "test_builtin_systemone", "test_wake_policy", "test_strong_wake_delivery",
-    "test_jev_decision", "test_jev_decision_layer", "test_member_stop",
+    "test_jev_decision", "test_jev_decision_layer", "test_participation_prompts", "test_member_stop",
     "test_turn_evidence_contract", "test_platform_bridge", "test_systemone_settings",
-    "test_simplified_decision", "test_reply_probability_threshold", "test_config_concurrency",
+    "test_simplified_decision", "test_reply_probability_threshold", "test_config_concurrency", "test_config_fallback",
     "test_ai_review_removed", "test_topic_annotations", "test_snapshot_producers",
     "test_panel_persistence_lifecycle", "test_native_delivery_guard", "test_runtime_persistence",
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",

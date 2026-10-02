@@ -11,7 +11,8 @@ def participation_policy(presence: str = "sensible") -> dict:
         "sensible": "Prefer observing; join when directly addressed, naturally continuing, or clearly helpful.",
         "lively": (
             "Actively look for a relevant, brief contribution to open group discussion: answer public "
-            "questions, share a useful detail, or acknowledge a shared experience. An @ or identified "
+            "questions, share an opinion, experience, useful detail or fitting joke. The topic need "
+            "not concern this participant. Two humans taking turns does not alone make a topic private. An @ or identified "
             "recipient is not required for public discussion. Do not wait for a long silence. "
             "Avoid empty filler, repeated reactions, interrupting explicit human-to-human exchanges, "
             "private boundaries, conflict, or requests to stop. Choose ignore when nothing useful fits."

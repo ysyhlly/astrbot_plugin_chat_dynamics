@@ -582,7 +582,9 @@ class ChatDynamicsPlugin(Star):
             self._registry.bind_semantic_match(self.embeddings.match)
         self._runtime_config = cfg
         self._config_source_snapshot = source
-        if not (source.get("decision_mode") == "persona_model" and cfg.decision_mode == "legacy"):
+        # Current configs always request persona mode; preserve its diagnostic
+        # while the bridge is degraded, even without the retired stored key.
+        if cfg.decision_mode != "legacy":
             self._persona_fallback = ""
 
     # ---- Dynamics Learning policy consumer ------------------------------

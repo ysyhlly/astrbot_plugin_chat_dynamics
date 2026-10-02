@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple
 
+from .prompt_policy import DEFAULT_DECISION_PROMPT, DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS
+
 
 PIPELINE_FILTER = "filter"
 PIPELINE_EXCLUSIVE = "exclusive"
@@ -81,6 +83,8 @@ class RuntimeConfig:
     reply_timeout: float = 60.0
     tool_agent_timeout: float = 120.0
     presence_knob: str = "sensible"
+    decision_prompt: str = DEFAULT_DECISION_PROMPT
+    reply_prompt: str = DEFAULT_REPLY_PROMPT
     social_manners_enabled: bool = True
     relay_baton_enabled: bool = True
     private_field_enabled: bool = True
@@ -225,6 +229,18 @@ def _presence_knob(value: Any, warnings: List[str]) -> str:
     return raw
 
 
+def _prompt(raw: Any, key: str, default: str, warnings: List[str]) -> str:
+    value = _get(raw, key, default)
+    if not isinstance(value, str):
+        warnings.append(f"{key} must be text; using default")
+        return default
+    value = value.strip() or default
+    if len(value) > MAX_PROMPT_CHARS:
+        warnings.append(f"{key} exceeds {MAX_PROMPT_CHARS} characters; truncating")
+        value = value[:MAX_PROMPT_CHARS]
+    return value
+
+
 def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     """Parse user configuration without allowing invalid values into the pipeline."""
     warnings: List[str] = []
@@ -359,6 +375,8 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         embedding_cache_size=_integer(raw, "embedding_cache_size", 512, 64, 4096, warnings),
         embedding_cache_ttl_seconds=_integer(raw, "embedding_cache_ttl_seconds", 1800, 0, 7200, warnings),
         presence_knob=_presence_knob(_get(raw, "presence_knob", "sensible"), warnings),
+        decision_prompt=_prompt(raw, "decision_prompt", DEFAULT_DECISION_PROMPT, warnings),
+        reply_prompt=_prompt(raw, "reply_prompt", DEFAULT_REPLY_PROMPT, warnings),
         social_manners_enabled=_bool(_get(raw, "social_manners_enabled", True), True),
         relay_baton_enabled=_bool(_get(raw, "relay_baton_enabled", True), True),
         private_field_enabled=_bool(_get(raw, "private_field_enabled", True), True),

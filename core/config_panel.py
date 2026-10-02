@@ -8,6 +8,7 @@ import math
 import re
 from astrbot.api import logger
 from .config import PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
+from .prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS
 
 _PRESETS = {
     "observe": {
@@ -105,6 +106,8 @@ class ConfigPanel:
             "topic_reranker_provider": cfg.topic_reranker_provider,
             "topic_reranker_timeout": cfg.topic_reranker_timeout,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
+            "decision_prompt": cfg.decision_prompt,
+            "reply_prompt": cfg.reply_prompt,
             "reply_probability_threshold": getattr(cfg, "reply_probability_threshold", 70.0),
             "decision_timeout": getattr(cfg, "decision_timeout", 8.0),
             "jev_timeout": getattr(cfg, "jev_timeout", 6.0),
@@ -203,6 +206,8 @@ class ConfigPanel:
             elif key in {"takeover_groups", "exclude_groups"} and isinstance(value, (str, list, tuple, set, frozenset)):
                 source = value.split(",") if isinstance(value, str) else value
                 value = sorted({str(item).strip() for item in source if str(item).strip()})
+            elif key in PROMPT_DEFAULTS and isinstance(value, str):
+                value = value.strip() or PROMPT_DEFAULTS[key]
             if value != eff:
                 mismatches.append(key)
         return {
@@ -215,6 +220,12 @@ class ConfigPanel:
 
 
     def _normalize_config_update_value(self, key: str, value: Any, field_schema: dict[str, Any]) -> Any:
+        if key in PROMPT_DEFAULTS:
+            if not isinstance(value, str):
+                raise ValueError(f"{key}：提示词必须是文本")
+            if len(value.strip()) > MAX_PROMPT_CHARS:
+                raise ValueError(f"{key}：提示词最多 {MAX_PROMPT_CHARS} 字符")
+            return value
         field_type = str((field_schema or {}).get("type") or "string")
         if field_type == "bool":
             if isinstance(value, bool):

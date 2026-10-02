@@ -82,3 +82,46 @@ def test_missing_router_blocks_save_and_keeps_draft(browser, page_server):
         assert "尚未就绪" in page.locator('#configNote').inner_text()
         assert page.evaluate("window.__savedConfig === undefined")
         assert page.locator('[data-config-key="decision_provider"]').input_value() == 'zen/jev'
+
+
+@pytest.mark.parametrize("width,theme", [(1366, "day"), (390, "night")])
+def test_multiline_participation_prompts_edit_save_and_restore(browser, page_server, width, theme):
+    with browser.new_context(viewport={"width": width, "height": 940}) as context:
+        native_models(context, theme)
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(f"{page_server}/config/index.html?ui={theme}")
+        page.wait_for_load_state("networkidle")
+        page.locator('[data-config-key="takeover_groups"]').fill("123")
+        page.locator('[data-config-key="decision_provider"]').select_option('zen/jev')
+        custom = {"decision_prompt": "主动聊游戏\n话题不用与自己有关", "reply_prompt": "先接住话题\n用简短自然的语气 <ok>"}
+        for key, value in custom.items():
+            page.locator('#configSearch').fill(key)
+            field = page.locator(f'[data-config-key="{key}"]')
+            assert field.is_visible() and field.evaluate('node => node.tagName') == 'TEXTAREA'
+            assert field.get_attribute('maxlength') == '4000'
+            assert "\n" in field.input_value()
+            field.fill(value)
+        page.locator('#configSearch').fill('')
+        page.locator('#btnBasicConfig').click()
+        page.locator('#btnRefreshModels').click()
+        page.wait_for_function("document.querySelector('#configNote').textContent.includes('已刷新')")
+        for key, value in custom.items():
+            assert page.locator(f'[data-config-key="{key}"]').input_value() == value
+        page.locator('#btnConfigSave').click()
+        page.wait_for_function("window.__savedConfig?.decision_prompt?.includes('主动聊游戏')")
+        for key, value in custom.items():
+            assert page.evaluate('(key) => window.__stored[key]', key) == value
+            assert page.locator(f'[data-config-key="{key}"]').input_value() == value
+        page.locator('#btnAdvancedConfig').click()
+        page.locator('details[data-group-id="providers"]').evaluate('node => node.open = true')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        (ROOT / "output").mkdir(exist_ok=True)
+        page.screenshot(path=str(ROOT / "output" / f"settings-prompts-{width}-{theme}.png"), full_page=True)
+        for key in custom:
+            page.locator('#configSearch').fill(key)
+            page.locator(f'[data-config-key="{key}"]').fill('')
+        page.locator('#btnConfigSave').click()
+        page.wait_for_function("window.__savedConfig?.decision_prompt === '' && window.__savedConfig?.reply_prompt === ''")
+        assert not errors

@@ -31,6 +31,7 @@ import json
 from typing import Any, Mapping
 
 from .presence_policy import participation_policy
+from .prompt_policy import DEFAULT_DECISION_PROMPT, MAX_PROMPT_CHARS
 from .turn_decision import TurnContext, TurnDecision
 
 ACTIONS = ("ignore", "acknowledge", "clarify", "reply", "close")
@@ -134,6 +135,7 @@ def build_state(
     observations: Mapping[str, Any] | None = None,
     presence: str = "sensible",
     persona_prompt: str = "",
+    decision_prompt: str = DEFAULT_DECISION_PROMPT,
     max_chars: int = MAX_TOTAL_STATE_CHARS,
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
@@ -141,6 +143,7 @@ def build_state(
         "persona": str(persona_prompt or "").strip()[:MAX_PERSONA_CHARS],
         "previous_state": str(previous_state or "observing")[:32],
         "participation_policy": participation_policy(presence),
+        "decision_prompt": str(decision_prompt or DEFAULT_DECISION_PROMPT).strip()[:MAX_PROMPT_CHARS],
         "observations": dict(observations or {}),
         "conversation": turn.payload(),
     }
@@ -179,6 +182,10 @@ def _shrink(state: dict, max_chars: int) -> dict:
         state["observations"] = {}
     if _size(state) > max_chars:
         state["persona"] = ""
+    if _size(state) > max_chars:
+        guidance = str(state.get("decision_prompt") or "")
+        overflow = _size(state) - max_chars
+        state["decision_prompt"] = guidance[:max(0, len(guidance) - overflow)]
     return state
 
 
@@ -196,12 +203,16 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "instructions": {
                 "question": (
                     "Should this participant speak in this turn, given `persona`, "
-                    "`participation_policy`, `previous_state`, `observations` and `conversation`?"
+                    "`participation_policy`, `decision_prompt`, `previous_state`, `observations` and `conversation`?"
                 ),
                 "focus": (
                     "Judge whether speaking now is useful and appropriate, not whether the "
                     "content is interesting. Being addressed or continuing a live exchange is "
-                    "usually yes; an exchange between other people, private matters, conflict, "
+                    "usually yes. Follow decision_prompt and the presence mode: in lively mode, "
+                    "actively join public topics with a natural opinion, experience, suggestion or joke, "
+                    "even when the topic is unrelated to this participant and nobody called it. "
+                    "Two people taking turns or quoting each other does not alone make a topic private. "
+                    "A request explicitly reserved for another person, private matters, conflict, "
                     "or a request to stop is no. conversation.wake_kind distinguishes a real @ "
                     "from a quote/name wake candidate. For a quote/name wake, identifying this "
                     "participant as the actual addressee is enough; topic value is not required."
