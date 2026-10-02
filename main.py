@@ -39,6 +39,7 @@ from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
 from .core.thread_router import ThreadRouter, build_contextual_query
 from .core.topic_reranker import TopicReranker
+from .core.topic_batch import TopicBatcher
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
 from .core.turn_latency import start_turn, record_stage
@@ -271,6 +272,7 @@ class ChatDynamicsPlugin(Star):
             max_turn_chars=_MAX_TURN_CHARS,
         )
         self.thread_router = ThreadRouter(
+            reopen_archived_topics=False,
             topic_window_seconds=runtime_config.topic_window_seconds,
             topic_join_threshold=runtime_config.topic_join_threshold,
             topic_commit_threshold=runtime_config.topic_commit_threshold,
@@ -367,6 +369,7 @@ class ChatDynamicsPlugin(Star):
         self._vibe_msg_counts: dict[str, int] = {}
         self._embedding_tasks_by_session: dict[str, Set[asyncio.Task]] = {}
         self._hook_tasks_by_session: dict[str, Set[asyncio.Task]] = {}
+        self.topic_batches = TopicBatcher(self)
         self._background_tasks: Set[asyncio.Task] = set()
         self._shutting_down: bool = False
         self._in_flight: Set[str] = set()
@@ -582,7 +585,12 @@ class ChatDynamicsPlugin(Star):
                 cache_ttl=float(cfg.embedding_cache_ttl_seconds),
             )
             self._registry.bind_semantic_match(self.embeddings.match)
+        old_cfg = self._runtime_config
         self._runtime_config = cfg
+        batch_keys = ("enabled", "topic_reranker_enabled", "conversation_router_enabled", "topic_batch_interval",
+                      "topic_reranker_provider", "reply_provider_id", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups")
+        if any(getattr(old_cfg, key, None) != getattr(cfg, key, None) for key in batch_keys):
+            self.topic_batches.reconfigure()
         self._config_source_snapshot = source
         # Current configs always request persona mode; preserve its diagnostic
         # while the bridge is degraded, even without the retired stored key.
@@ -2083,7 +2091,7 @@ class ChatDynamicsPlugin(Star):
         )
 
     async def _enrich_turn(self, turn: _PreparedTurn) -> None:
-        return await _turn_pipeline._enrich_turn(self, turn)
+        return await _turn_pipeline._enrich_turn(self, turn, allow_llm=False)
 
     async def _enrich_topic_background(self, turn: _PreparedTurn) -> None:
         return await _turn_pipeline._enrich_topic_background(self, turn)
@@ -2472,7 +2480,12 @@ class ChatDynamicsPlugin(Star):
         self._mark_panel_runtime_dirty()
         if not getattr(self._runtime_config, "conversation_router_enabled", True):
             return None
-        return self.thread_router.route(runtime, node, bot_names=self.bot_names)
+        result = self.thread_router.route(runtime, node, bot_names=self.bot_names)
+        if (runtime.bot_id in node.mentioned_users and node.user_id != runtime.bot_id
+                and result.topic_id in runtime.routing_state.topics):
+            topic = runtime.routing_state.topics[result.topic_id]
+            topic.human_updated_at = max(topic.human_updated_at, node.timestamp)
+        return result
 
     def _observe_routed_bot(self, runtime, node):
         self._mark_panel_runtime_dirty()
@@ -2705,6 +2718,12 @@ class ChatDynamicsPlugin(Star):
     def _prune_idle_sessions(self, now: float) -> None:
         self._prune_native_contexts()
         self.arbiter.prune_cooling(current_time=now)
+        topics_changed = False
+        for runtime in self._sessions.values():
+            if not runtime.state_lock.locked():
+                topics_changed = runtime.routing_state.expire_topics(runtime.dag, now) or topics_changed
+        if topics_changed:
+            self._mark_panel_runtime_dirty()
         debounce_activity, debounce_active = self.debounce.session_activity_snapshot()
         active_telemetry_sessions = set(self._in_flight)
         for session_id, runtime in self._sessions.items():
@@ -2767,6 +2786,10 @@ class ChatDynamicsPlugin(Star):
                     self._drop_session(session_id, debounce_active=False)
                 continue
             if (now - last) >= _SESSION_IDLE_SECONDS:
+                # Keep bounded archived labels available to replay for their
+                # existing one-day TTL, including a completely quiet group.
+                if runtime is not None and (runtime.routing_state.topics or runtime.routing_state.archive.entries):
+                    continue
                 self._drop_session(session_id, debounce_active=False)
         self._last_idle_sweep_at = now
 
@@ -3355,6 +3378,10 @@ class ChatDynamicsPlugin(Star):
             if self._sessions.get(session_key) is not runtime:
                 return
             runtime.user_revisions[user_id] = runtime.user_revisions.get(user_id, 0) + 1
+            runtime.topic_stop_revisions[user_id] = runtime.topic_stop_revisions.get(user_id, 0) + 1
+            for mid, (node, _) in list(runtime.topic_batch_pending.items()):
+                if node.user_id == user_id:
+                    runtime.topic_batch_pending.pop(mid, None)
             # ``discard`` only invokes slot cancellation and never waits for
             # an on_flush callback, so it is safe under the runtime lock and
             # gives concurrent ingress a state barrier.

@@ -211,6 +211,12 @@ function renderRail(data, discardConfirmed = false) {
   blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
   const allBlocks = blocks;
   const query = document.getElementById("topicSearch").value.trim().toLocaleLowerCase();
+  document.getElementById("archivedTopicsPanel").classList.toggle("hidden", !archivedTopics.length);
+  document.getElementById("archivedTopicCount").textContent = archivedTopics.length;
+  const history = archivedTopics.filter(topic => !query || (topic.topic_title || "").toLocaleLowerCase().includes(query));
+  document.getElementById("archivedTopicList").innerHTML = history.length
+    ? history.map(topic => `<li><strong>${escapeHtml(topic.topic_title || "历史话题")}</strong>${!selectedUmo && topic.session_id ? ` <small>会话 ${escapeHtml(redactId(topic.session_id))}</small>` : ""}</li>`).join("")
+    : "<li>没有符合筛选条件的历史话题。</li>";
   const decision = document.getElementById("decisionFilter").value;
   const speaks = block => (block.events || []).some(event => event.action === "speak");
   const events = allBlocks.flatMap(block => block.events || []);
@@ -223,7 +229,7 @@ function renderRail(data, discardConfirmed = false) {
       ? "已形成的话题会先显示，归纳完成后自动更新小标题。归纳失败或关闭时，可在详情查看状态。"
       : "";
   blocks = allBlocks.filter(block => (!query || (block.topic_title || "").toLocaleLowerCase().includes(query)) && (decision === "all" || (decision === "speak" ? speaks(block) : !speaks(block))));
-  els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : "目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。";
+  els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : archivedTopics.length ? "当前没有活跃话题，已归档话题可在下方查看。" : "目前没有形成话题，留白是正常状态。出现新的讨论后会显示话题。";
   const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
   document.getElementById("unassignedNote").textContent = unassigned
     ? `最近保留的消息中有 ${unassigned} 条尚未形成话题，留白展示。零散聊天、图片和表情包不会自动合成一个话题。`

@@ -14,6 +14,9 @@ from .semantics import semantic_match
 from .topic_archive import TopicArchive
 from .presence_policy import MAX_AMBIENT_OPENINGS
 
+TOPIC_IDLE_SECONDS = 3600.0
+MAX_ACTIVE_TOPICS = 80
+
 
 @dataclass
 class TopicState:
@@ -29,6 +32,8 @@ class TopicState:
     title_in_flight: bool = False
     title_failures: int = 0
     title_retry_at: float = 0.0
+    label_requested: bool = False
+    human_updated_at: float = 0.0
     created_at: float = 0.0
     exemplar_messages: list[tuple[str, float]] = field(default_factory=list)
     centroid_vector: Optional[list[float]] = None
@@ -110,25 +115,28 @@ class RoutingState:
                 node = dag.get_node(mid)
                 if node is not None:
                     node.metadata.setdefault("routing", {})["topic_status"] = "unknown"
+        self.expire_topics(dag, now)
+        for topic in self.topics.values():
+            # The short scoring window and DAG eviction do not retire an active
+            # label: Jev can still match its cached summary during the next hour.
+            topic.message_ids = [mid for mid in topic.message_ids if mid in dag.nodes]
+
+    def expire_topics(self, dag: Any, now: float) -> bool:
+        expired = False
+        excess = set(t.topic_id for t in sorted(self.topics.values(), key=lambda t: t.updated_at, reverse=True)[MAX_ACTIVE_TOPICS:])
         for key, topic in list(self.topics.items()):
-            if not any(mid in allowed for mid in topic.message_ids) or now - topic.updated_at > window_seconds:
-                self.archive.archive(topic, dag, now)
-            topic.message_ids = [mid for mid in topic.message_ids if mid in allowed]
-            if not topic.message_ids or (now - topic.updated_at > window_seconds):
-                del self.topics[key]
-                if self.last_topic_id == key:
-                    self.last_topic_id = None
-                if self.last_bot_topic_id == key:
-                    self.last_bot_topic_id = None
+            if key not in excess and now - (topic.human_updated_at or topic.updated_at) <= TOPIC_IDLE_SECONDS:
                 continue
-            topic.participants = {
-                dag.nodes[mid].user_id for mid in topic.message_ids if mid in dag.nodes
-            }
-            if topic.message_ids:
-                topic.updated_at = max(
-                    dag.nodes[mid].timestamp for mid in topic.message_ids if mid in dag.nodes
-                )
+            self.archive.archive(topic, dag, now)
+            del self.topics[key]
+            if self.last_topic_id == key:
+                self.last_topic_id = None
+            if self.last_bot_topic_id == key:
+                self.last_bot_topic_id = None
+            expired = True
+        previous_archives = set(self.archive.entries)
         self.archive.prune(now)
+        return expired or previous_archives != set(self.archive.entries)
 
 
 @dataclass
@@ -248,6 +256,10 @@ class SessionRuntime:
     last_delay_scale: float = 1.0
     last_rhythm_action: str = ""
     routing_state: RoutingState = field(default_factory=RoutingState)
+    topic_batch_pending: Dict[str, Any] = field(default_factory=dict, repr=False)
+    topic_batch_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    topic_batch_due: float = 0.0
+    topic_stop_revisions: Dict[str, int] = field(default_factory=dict, repr=False)
 
     @property
     def active_dialogue(self) -> Optional[ActiveDialogue]:
@@ -448,6 +460,11 @@ class SessionRuntime:
         self.pending_hover = self.pending_hovers[-1] if self.pending_hovers else None
 
     def reset_conversation_state(self) -> None:
+        if self.topic_batch_task is not None:
+            self.topic_batch_task.cancel()
+        self.topic_batch_task = None
+        self.topic_batch_pending.clear()
+        self.topic_stop_revisions.clear()
         self.routing_state.clear()
         self.clear_model_queue()
         self.user_revisions.clear()

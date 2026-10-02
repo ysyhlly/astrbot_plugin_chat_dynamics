@@ -12,6 +12,7 @@ ROUTING_CODES = frozenset({
     "active_interlocutor_followup", "topic_boundary", "topic_profile",
     "topic_reply_continuation", "topic_reply_evidence", "topic_ambiguous",
     "topic_not_formed", "topic_burst_confirmed", "topic_reopen", "topic_llm_rerank",
+    "topic_jev_new", "topic_jev_match",
     "topic_backfill", "pending_followup", "parent_override", "parent_topic_override", "selected_score",
     "semantic", "topic_affinity", "qa_fit", "temporal", "turn_proximity",
     "participant", "centroid", "exemplar", "recent", "lineage", "recency", "lexical",
@@ -19,7 +20,7 @@ ROUTING_CODES = frozenset({
     "dialogue_competitor_factor", "dialogue_continuity_score",
 })
 ROUTING_SOURCES = frozenset({"topic_resolver", "parent_retriever", "recipient_resolver", "routing",
-                             "dialogue_continuity"})
+                             "dialogue_continuity", "jev"})
 # Dialogue continuity components are numeric evidence, not boolean codes: keep the
 # raw value recorded when a later stage rebuilds the ledger.
 DIALOGUE_FACTORS = frozenset({
@@ -92,7 +93,7 @@ def routing_ledger(routing):
     # A later topic decision supersedes the old candidate's factor breakdown.
     codes = routing.get("evidence", ())
     codes = [c for c in codes if isinstance(c, str)] if isinstance(codes, (list, tuple)) else []
-    if set(codes) & {"topic_llm_rerank", "topic_burst_confirmed", "topic_backfill", "pending_followup", "topic_reopen", "parent_topic_override"}:
+    if set(codes) & {"topic_llm_rerank", "topic_jev_new", "topic_jev_match", "topic_burst_confirmed", "topic_backfill", "pending_followup", "topic_reopen", "parent_topic_override"}:
         entries = [e for e in entries if not (e["domain"] == "topic" and e["code"] in factors)]
     for domain, field in (("topic", "topic_confidence"), ("parent", "parent_confidence"), ("recipient", "addressee_confidence")):
         entries.append(dict(domain=domain, code="selected_score", source="routing", raw_value=routing.get(field, 0.0)))
@@ -100,7 +101,7 @@ def routing_ledger(routing):
         if code not in ROUTING_CODES:
             continue
         domain = "topic" if code.startswith("topic_") or code == "pending_followup" else "recipient"
-        source = "topic_resolver" if domain == "topic" else "recipient_resolver"
+        source = "jev" if code.startswith("topic_jev_") else "topic_resolver" if domain == "topic" else "recipient_resolver"
         entries.append(dict(domain=domain, code=code, source=source, raw_value=1.0))
         if code in {"explicit_reply", "inferred_reply"}:
             entries.append(dict(domain="parent", code=code, source="routing", raw_value=1.0))

@@ -82,13 +82,13 @@ const CONFIG_GROUPS = [
   {
     "id": "routing",
     "title": "话题识别与归属",
-    "blurb": "话题识别、模型复判、上下文窗口与父消息判断",
+    "blurb": "Jev 匹配现有话题，新话题标签累计生成，一小时无人讨论后归档",
     "open": true,
     "keys": [
       "conversation_router_enabled",
       "topic_reranker_enabled",
       "topic_reranker_provider",
-      "topic_reranker_timeout",
+      "topic_batch_interval",
       "topic_title_timeout",
       "topic_window_seconds",
       "replay_message_limit",

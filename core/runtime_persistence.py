@@ -55,7 +55,7 @@ RUNTIME_FIELDS = ('last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
                   'vibe_message_count', 'turn_sequence', 'model_diagnostic')
 TOPIC_FIELDS = ('topic_id', 'message_ids', 'participants', 'updated_at', 'label',
-                'generated_title', 'title_attempted', 'created_at', 'exemplar_messages',
+                'generated_title', 'title_attempted', 'label_requested', 'human_updated_at', 'created_at', 'exemplar_messages',
                 'centroid_vector', 'recent_message_ids', 'keywords', 'centroid_space',
                 'summary_excerpts')
 NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
@@ -354,7 +354,11 @@ def restore_runtime_state(plugin, payload) -> None:
                 topic = TopicState(row['topic_id'][:1024])
                 for name in TOPIC_FIELDS[1:]:
                     value = row.get(name)
-                    if name in ('updated_at', 'created_at'):
+                    if name in ('updated_at', 'created_at', 'human_updated_at'):
+                        if name == 'human_updated_at' and name not in row:
+                            continue
+                        if name == 'human_updated_at' and not _number(value):
+                            continue
                         setattr(topic, name, _number(value) + shift)
                     elif name in ('participants', 'keywords'):
                         setattr(topic, name, set(_strings(value)))

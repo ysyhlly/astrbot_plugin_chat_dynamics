@@ -318,22 +318,30 @@
     "hint": "结合活跃话题、候选父消息和对话对象判断自然续聊，区分谈论机器人与向机器人提问。"
   },
   "topic_reranker_enabled": {
-    "description": "启用话题 LLM 聚合辅助",
+    "description": "启用新话题标签生成",
     "type": "bool",
     "default": true,
-    "hint": "对模糊归属和拟新建话题调用模型，识别同一讨论的回答、补充和子问题；失败保留本地判断。"
+    "hint": "归属由 Jev 在参与判断中完成。普通模型仅为新增或首次确认的话题生成标签，多个标签累计合并调用，已有标签复用。"
   },
   "topic_reranker_provider": {
-    "description": "话题复判模型",
+    "description": "话题标签模型",
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "选择普通聊天模型归纳和复判话题；留空沿用回复模型，回复模型也为空时使用当前会话模型。"
+    "hint": "仅用于生成新话题的标签；留空沿用回复模型，回复模型也为空时使用当前会话模型。归属使用 Jev。"
+  },
+  "topic_batch_interval": {
+    "description": "新话题标签累计间隔（秒）",
+    "type": "float",
+    "default": 30.0,
+    "slider": {"min": 5, "max": 300, "step": 5},
+    "hint": "默认按群累计 30 秒后合并生成新话题标签；无新话题时不调用。已有话题匹配由 Jev 即时完成，标签生成不阻塞回复。话题一小时无人继续讨论则移出活跃列表并归档。"
   },
   "topic_reranker_timeout": {
     "description": "话题复判超时（秒）",
     "type": "float",
     "default": 3.0,
+    "invisible": true,
     "slider": {
       "min": 0.1,
       "max": 10,
@@ -349,7 +357,7 @@
       "max": 30,
       "step": 1
     },
-    "hint": "后台归纳话题的小标题，不阻塞接话。与话题复判超时分别配置，观察模式也可以归纳。"
+    "hint": "普通模型生成新话题标签的超时，不阻塞回复。观察模式也可以生成标签。"
   },
   "routing_neural_timeout": {
     "description": "模糊消息向量等待上限（秒）",

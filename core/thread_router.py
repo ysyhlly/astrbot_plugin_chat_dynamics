@@ -269,8 +269,10 @@ class ThreadRouter:
         topic_commit_threshold: float = 0.0,
         topic_ambiguity_threshold: float = 0.0,
         topic_margin_threshold: float = TOPIC_MARGIN_THRESHOLD,
+        reopen_archived_topics: bool = True,
     ):
         self.require_intense_dialogue = require_intense_dialogue
+        self.reopen_archived_topics = reopen_archived_topics
         if topic_resolver is None:
             self.topic_resolver = TopicResolver()
             self.configure_topics(
@@ -334,7 +336,8 @@ class ThreadRouter:
         node.metadata.pop("_topic_score_evidence", None)
         node.metadata.pop("_parent_score_evidence", None)
         previous_routing = node.metadata.get("routing", {})
-        if (any(ev in previous_routing.get("evidence", []) for ev in ("topic_llm_rerank", "topic_burst_confirmed"))
+        if (any(ev in previous_routing.get("evidence", []) for ev in (
+                "topic_llm_rerank", "topic_burst_confirmed", "topic_jev_new", "topic_jev_match"))
                 and previous_routing.get("topic_id") in state.topics):
             return RoutingInference(**{key: value for key, value in previous_routing.items()
                                        if key in RoutingInference.__dataclass_fields__})
@@ -426,7 +429,7 @@ class ThreadRouter:
         result.topic_ambiguous = is_ambiguous
         result.topic_candidates = list(ranked_topics[:3])
         result.topic_candidate_evidence = node.metadata.pop("_topic_candidate_evidence", {}) or {}
-        if (formation_allowed and topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
+        if (self.reopen_archived_topics and formation_allowed and topic_id == node.msg_id and not is_ambiguous and "topic_boundary" not in topic_evidence
                 and (not ranked_topics or ranked_topics[0][0] < self.topic_resolver.ambiguity_threshold)):
             archived = state.archive.retrieve(node, dag)
             if archived is not None:
@@ -552,6 +555,12 @@ class ThreadRouter:
             state.pending_assignments.pop(node.msg_id, None)
             self._remember(state, node, result.topic_id, dag=dag)
             state.last_topic_id = result.topic_id
+        if result.topic_id in state.topics and node.user_id != getattr(runtime, "bot_id", ""):
+            topic = state.topics[result.topic_id]
+            if not topic.human_updated_at:
+                prior_humans = [dag.nodes[mid].timestamp for mid in topic.message_ids if mid in dag.nodes
+                                and mid != node.msg_id and dag.nodes[mid].user_id != getattr(runtime, "bot_id", "")]
+                topic.human_updated_at = max(prior_humans or [node.timestamp])
         result.addressee_ambiguous = result.addressee_confidence < 0.72
         result.ambiguous = result.topic_ambiguous or result.addressee_ambiguous
         result.parent_ambiguous = not bool(result.parent_message_id)

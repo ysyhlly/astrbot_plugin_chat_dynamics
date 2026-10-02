@@ -5,6 +5,9 @@
   margin-top: 12px;
 }
 
+.archive-topics { display: grid; gap: 10px; padding-left: 20px; overflow-wrap: anywhere; }
+.archive-topics small { color: var(--muted); }
+
 .replay-legend {
   display: flex;
   flex-wrap: wrap;

@@ -267,22 +267,27 @@ async def test_rechecking_anonymous_fragments_preserves_their_node_identity(comp
 
 
 @pytest.mark.asyncio
-async def test_slow_topic_reranking_does_not_delay_jev_or_the_reply(completion_plugin):
+async def test_slow_topic_batch_does_not_delay_jev_or_the_reply(completion_plugin):
     p = completion_plugin
     await p.save_config_values({"topic_reranker_enabled": True, "presence_knob": "lively"})
     p.jev.payload = answers(reason="open_group_topic")
     entered, release = asyncio.Event(), asyncio.Event()
-    async def rerank(*args, **kwargs):
+    async def batch(*args, **kwargs):
         entered.set()
         await release.wait()
-    p.thread_router.rerank_pending = rerank
+    p.topic_batches.process = batch
     event = MockEvent("最近显卡风扇噪声太大，大家有什么办法", message_id="m")
     try:
         await p.on_group_message(event)
-        await p.time_service.advance(0.25)
-        await asyncio.wait_for(entered.wait(), 1)
-        await drain(p)
+        await tick(p)
         assert len(p.jev.calls) == len(event.replies_sent) == 1
+        assert not entered.is_set()
+        await p.time_service.advance(30)
+        await asyncio.wait_for(entered.wait(), 1)
+        followup = MockEvent("你能具体解释一下调整风扇的办法吗", message_id="next", is_at_or_wake_command=True)
+        await p.on_group_message(followup)
+        await tick(p)
+        assert len(p.jev.calls) == 2 and len(followup.replies_sent) == 1
         assert not release.is_set()
     finally:
         release.set()

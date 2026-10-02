@@ -9,6 +9,7 @@ from astrbot_plugin_chat_dynamics.core.agent_bridge import AstrBotAgentBridge
 from astrbot_plugin_chat_dynamics.core.dashboard import replay_topic_blocks, scene_replay_snapshot
 from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG
 from astrbot_plugin_chat_dynamics.core.session_runtime import RoutingState, TopicState
+from astrbot_plugin_chat_dynamics.core.time_service import VirtualClock
 from .test_jev_decision_layer import JevDouble, answers
 from .test_persona_model import BridgeDouble, drain, flush
 from .test_plugin_lifecycle import MockEvent, Reply, _plugin
@@ -19,19 +20,22 @@ from .test_router_enrichment_concurrency import setup as router_setup
 @pytest.mark.asyncio
 async def test_title_survives_another_member_message_without_sending(monkeypatch, shadow):
     monkeypatch.setattr(AstrBotAgentBridge, "check", lambda self: True)
-    p = _plugin({"daily_rhythm_enabled": False, "base_thinking_delay": 0, "shadow_mode": shadow})
+    p = _plugin({"daily_rhythm_enabled": False, "base_thinking_delay": 0, "shadow_mode": shadow,
+                 "topic_batch_interval": 5}, clock=VirtualClock(100))
     p.persona_engine.bridge = BridgeDouble()
-    p.jev = JevDouble(answers(action="ignore", reason="low_value_chatter"))
+    p.jev = JevDouble(answers(action="ignore", reason="low_value_chatter",
+                             topic={"type": "choice", "choice": "NEW", "confidence": .9}))
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
 
     async def model(**kwargs):
         data = json.loads(kwargs["prompt"])
-        if "messages" in data:
+        if "topics" in data:
             calls.append(data)
             entered.set()
             await release.wait()
-            return SimpleNamespace(completion_text='{"title":"显卡风扇散热"}')
+            return SimpleNamespace(completion_text=json.dumps({"titles": {
+                tid: "显卡风扇散热" for tid, topic in data["topics"].items() if topic["needs_title"]}}))
         return SimpleNamespace(completion_text="UNKNOWN")
 
     p.context.llm_generate = model
@@ -41,6 +45,7 @@ async def test_title_survives_another_member_message_without_sending(monkeypatch
         events = []
         for i, text in enumerate(texts):
             if i == 4:
+                await p.time_service.advance(5)
                 await asyncio.wait_for(entered.wait(), 1)
                 before = scene_replay_snapshot(p)["topic_blocks"]
                 assert len(before) == 1 and before[0]["title_status"] == "generating"
@@ -50,8 +55,13 @@ async def test_title_survives_another_member_message_without_sending(monkeypatch
             await p.on_group_message(event)
             await flush(p, event)
             await drain(p)
+            p.jev.payload["topic"] = {"type": "choice", "choice": "topic_0", "confidence": .9}
         release.set()
-        await asyncio.wait_for(asyncio.gather(*list(p._background_tasks)), 2)
+        # The fifth message owns a later window; waiting for all background
+        # timers here would require another clock advance.
+        await drain(p)
+        for _ in range(40):
+            await asyncio.sleep(0)
         data = scene_replay_snapshot(p)
         assert len(data["topic_blocks"]) == 1 and not data["empty"]
         block = data["topic_blocks"][0]

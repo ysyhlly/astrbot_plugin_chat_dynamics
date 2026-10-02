@@ -27,14 +27,15 @@ class NativeEvent(MockEvent):
 
 
 async def _drain(plugin) -> None:
-    """Wait for plugin-owned tasks without assuming a particular task count."""
+    """Wait for replies and cleanup, excluding future topic window timers."""
     for _ in range(100):
-        pending = [task for task in list(plugin._background_tasks) if not task.done()]
+        topic_tasks = {rt.topic_batch_task for rt in plugin._sessions.values()}
+        pending = [task for task in list(plugin._background_tasks) if not task.done() and task not in topic_tasks]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
             continue
         await asyncio.sleep(0)
-        if not any(not task.done() for task in plugin._background_tasks):
+        if not any(not task.done() and task not in topic_tasks for task in plugin._background_tasks):
             return
 
 

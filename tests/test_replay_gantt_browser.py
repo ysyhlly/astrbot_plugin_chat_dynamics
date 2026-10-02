@@ -27,7 +27,8 @@ def live_replay(context, theme="day"):
         if (window.__replayFailed) throw new Error('offline');
         const stage = window.__replayStage;
         const data = {sessions:[],empty:true,topic_content_redacted:true,topic_titles_redacted:false,
-          topic_blocks: stage ? [{session_id:'room',topic_id:'topic',topic_status:'committed',
+          archived_topics: stage === 3 ? [{session_id:'room',topic_id:'topic',topic_title:'显卡风扇散热'}] : [],
+          topic_blocks: stage ? [{session_id:'room',topic_id:'topic',topic_status:stage === 3 ? 'archived' : 'committed',
             topic_title:stage === 1 ? '话题 1' : '显卡风扇散热',title_status:stage === 1 ? 'generating' : 'ready',
             message_count:4,start_ts:1700000000,end_ts:1700000020,events:[],
             messages:[{msg_id:'m',topic_id:'topic',text:'消息内容已隐藏',confidence:.8}]}] : []};
@@ -76,6 +77,25 @@ def test_background_replay_refresh_keeps_topics_on_network_failure(browser, page
         page.wait_for_function("document.querySelector('#linkLabel').textContent.includes('offline')")
         assert page.locator('.replay-block').count() == 1
         assert page.locator('#summaryTopics').inner_text() == '1'
+
+
+@pytest.mark.parametrize("width,theme", [(1366, "day"), (390, "night")])
+def test_archived_labels_leave_active_timeline_and_remain_visible_in_history(browser, page_server, width, theme):
+    with browser.new_context(viewport={"width": width, "height": 940}) as context:
+        live_replay(context, theme)
+        context.add_init_script('window.__replayStage = 2')
+        page = context.new_page()
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("typeof window.__refreshReplay === 'function'")
+        assert page.locator('.replay-block').count() == 1
+        page.evaluate('window.__replayStage = 3; window.__refreshReplay()')
+        page.wait_for_function("document.querySelector('#summaryTopics').textContent === '0'")
+        assert page.locator('.replay-block').count() == 0
+        assert page.locator('#archivedTopicsPanel').is_visible()
+        page.locator('#archivedTopicsPanel summary').click()
+        assert '显卡风扇散热' in page.locator('#archivedTopicList').inner_text()
+        assert '不再参与活跃话题匹配' in page.locator('#archivedTopicsPanel').inner_text()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
 
 
 def test_automatic_refresh_does_not_close_details_or_discard_annotations(browser, page_server):

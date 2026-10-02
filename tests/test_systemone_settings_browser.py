@@ -84,6 +84,25 @@ def test_missing_router_blocks_save_and_keeps_draft(browser, page_server):
         assert page.locator('[data-config-key="decision_provider"]').input_value() == 'zen/jev'
 
 
+def test_topic_batch_interval_is_editable_and_saved(browser, page_server):
+    with browser.new_context() as context:
+        native_models(context)
+        page = context.new_page()
+        page.goto(f"{page_server}/config/index.html")
+        page.wait_for_load_state("networkidle")
+        page.locator('[data-config-key="takeover_groups"]').fill("123")
+        page.locator('[data-config-key="decision_provider"]').select_option('zen/jev')
+        page.locator('#configSearch').fill('topic_batch_interval')
+        field = page.locator('[data-config-key="topic_batch_interval"]')
+        assert field.is_visible() and float(field.input_value()) == 30
+        assert field.get_attribute('min') == '5' and field.get_attribute('max') == '300'
+        field.fill('60')
+        page.locator('#btnConfigSave').click()
+        page.wait_for_function("window.__savedConfig?.topic_batch_interval === 60")
+        assert page.evaluate("window.__stored.topic_batch_interval") == 60
+        assert float(field.input_value()) == 60
+
+
 @pytest.mark.parametrize("width,theme", [(1366, "day"), (390, "night")])
 def test_multiline_participation_prompts_edit_save_and_restore(browser, page_server, width, theme):
     with browser.new_context(viewport={"width": width, "height": 940}) as context:

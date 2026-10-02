@@ -330,7 +330,7 @@ def _prepared_turn_current(host, turn: _PreparedTurn) -> bool:
 
 
 
-async def _enrich_turn(host, turn: _PreparedTurn) -> None:
+async def _enrich_turn(host, turn: _PreparedTurn, *, allow_llm: bool = True) -> None:
     if turn.explicit_platform:
         return
     # Reuse the largest configured stage allowance as the entire enrichment
@@ -365,7 +365,7 @@ async def _enrich_turn(host, turn: _PreparedTurn) -> None:
             query = build_contextual_query(turn.node, turn.dag)
             if host.embeddings.cached(query) is not None:
                 host._route_message(turn.runtime, turn.node)
-        reranker = host._topic_reranker()
+        reranker = host._topic_reranker() if allow_llm else None
     if reranker is not None:
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
@@ -396,34 +396,14 @@ async def _enrich_topic_background(host, turn: _PreparedTurn) -> None:
     """Optional display enrichment never delays a reply or outlives reset."""
     host._track_hook_task(turn.result.session_id)
     runtime = turn.runtime
-    if host.debounce.semantic and not turn.explicit_platform:
-        await _enrich_turn(host, turn)
     async with runtime.state_lock:
         if (host._shutting_down or host._sessions.get(turn.result.session_id) is not runtime
                 or runtime.epoch != turn.epoch or runtime.dag is not turn.dag
                 or turn.dag.get_node(turn.node.msg_id) is not turn.node):
             return
-        reranker = host._topic_reranker()
-    if reranker is not None:
-        if turn.explicit_platform and runtime.user_revisions.get(str(turn.result.user_id or ''), 0) == turn.owner_revision:
-            await host.thread_router.rerank_pending(runtime, turn.node, reranker,
-                is_current=lambda: not host._shutting_down and runtime.epoch == turn.epoch
-                and runtime.user_revisions.get(str(turn.result.user_id or ''), 0) == turn.owner_revision)
-    async with runtime.state_lock:
-        if (host._shutting_down or runtime.epoch != turn.epoch
-                or host._sessions.get(turn.result.session_id) is not runtime
-                or runtime.dag is not turn.dag
-                or turn.dag.get_node(turn.node.msg_id) is not turn.node):
-            return
-        # A title belongs to the topic, not the request revision of one member.
-        title_reranker = host._topic_reranker(for_display=True)
-        config_id = host._turn_config_identity()
-    if title_reranker is not None:
-        await host.thread_router.title_topic(runtime, turn.node, title_reranker,
-            is_current=lambda: not host._shutting_down and runtime.epoch == turn.epoch
-            and host._sessions.get(turn.result.session_id) is runtime
-            and host._turn_config_identity() == config_id)
-        host._mark_panel_runtime_dirty()
+        host.topic_batches.enqueue(runtime, turn.turn_nodes or (turn.node,))
+    if host.debounce.semantic and not turn.explicit_platform:
+        await _enrich_turn(host, turn, allow_llm=False)
 
 
 def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:

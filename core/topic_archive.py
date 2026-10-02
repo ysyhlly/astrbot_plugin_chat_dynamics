@@ -64,17 +64,19 @@ class TopicArchive:
 
     def archive(self, topic: Any, dag: Any, now: float) -> ArchivedTopic | None:
         self.prune(now)
-        texts = [dag.nodes[mid].text for mid in topic.message_ids if mid in dag.nodes]
+        nodes = getattr(dag, "nodes", {})
+        texts = [nodes[mid].text for mid in topic.message_ids if mid in nodes]
         # These cached exemplars survive eviction of the original DAG nodes.
         texts.extend(getattr(topic, "summary_excerpts", ()))
         texts = list(dict.fromkeys(text.strip()[:320] for text in texts
                                    if self._substantive(text.strip()))) [-4:]
         updated_at = float(topic.updated_at)
-        if not texts or not topic.topic_id or not 0 <= now - updated_at <= self.ttl_seconds:
+        title = getattr(topic, "generated_title", "")
+        if not (texts or title) or not topic.topic_id or not 0 <= now - updated_at <= self.ttl_seconds:
             return None
         entry = ArchivedTopic(topic.topic_id, "\n".join(texts), tuple(texts),
                               frozenset(sorted(topic.participants)[:32]), updated_at, now,
-                              getattr(topic, "generated_title", ""))
+                              title)
         self.entries[entry.topic_id] = entry
         self.prune(now)
         return self.entries.get(entry.topic_id)

@@ -22,6 +22,7 @@ from .turn_decision import (
     MessageSnapshot, TurnContext, TurnDecision, reply_prompt,
 )
 from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
+from .topic_jev import build_topic_task, apply_topic_answer
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -579,6 +580,13 @@ class PersonaEngine:
                                 utterance_age_seconds=max(0.0, now - turn.started_at),
                                 completion_waited=item.debounce_result.was_extended)
         async with self.slots:
+            topics, topic_questions, topic_mapping = {}, {}, None
+            config_id = p._turn_config_identity()
+            if runtime is not None and p._runtime_config.conversation_router_enabled:
+                async with runtime.state_lock:
+                    if self.valid(runtime, item) and p._sessions.get(runtime.session_key) is runtime:
+                        runtime.routing_state.expire_topics(runtime.dag, p.time_service.time())
+                        topics, topic_questions, topic_mapping = build_topic_task(runtime, turn, p.time_service.time())
             answers = await client.evaluate(
                 state=build_state(
                     turn,
@@ -587,8 +595,9 @@ class PersonaEngine:
                     presence=p._runtime_config.presence_knob,
                     persona_prompt=getattr(persona, "prompt", ""),
                     decision_prompt=p._runtime_config.decision_prompt,
+                    active_topics=topics,
                 ),
-                questions=build_questions(turn),
+                questions={**build_questions(turn), **topic_questions},
                 timeout=timeout,
             )
         if not answers:
@@ -597,13 +606,21 @@ class PersonaEngine:
         if runtime is not None:
             runtime.jev_decision = describe_answers(answers)
         p._metric(prefix + "decision")
-        return decision_from_answers(
+        decision = decision_from_answers(
             turn,
             answers,
             min_confidence=floor,
             join_floor=getattr(p._runtime_config, "reply_probability_threshold", 70.0) / 100.0,
             prefix=prefix,
         )
+        if topic_mapping is not None and decision.reason_code != "jev_waiting_for_completion":
+            async with runtime.state_lock:
+                if (self.valid(runtime, item) and p._sessions.get(runtime.session_key) is runtime
+                        and config_id == p._turn_config_identity()):
+                    if apply_topic_answer(runtime, turn, answers.get("topic"), topic_mapping, p.time_service.time()):
+                        p.topic_batches.enqueue(runtime, topic_mapping["nodes"])
+                        p._mark_panel_runtime_dirty()
+        return decision
 
     async def run(self, runtime) -> None:
         p = self.plugin

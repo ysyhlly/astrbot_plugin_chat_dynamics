@@ -19,6 +19,23 @@ def plugin(now):
         _shadow_decisions=deque(maxlen=50), _umo_by_session={}, _vibe_msg_counts={}, _last_bot_nodes={})
 
 
+def test_topic_label_and_human_idle_clock_survive_restart(monkeypatch):
+    monkeypatch.setattr(codec.time, 'time', lambda: 1000)
+    source = plugin(100)
+    runtime = source._registry.get_or_create('room')
+    runtime.routing_state.topics['topic'] = TopicState('topic', generated_title='显卡散热',
+        label_requested=True, updated_at=96, human_updated_at=95, summary_excerpts=['显卡散热方案'])
+    target = plugin(1000)
+    restore_runtime_state(target, export_runtime_state(source))
+    rt = target._registry.get('room')
+    topic = rt.routing_state.topics['topic']
+    assert topic.generated_title == '显卡散热' and topic.label_requested
+    assert 1000 - topic.human_updated_at == 5
+    assert not rt.routing_state.expire_topics(rt.dag, 4595)
+    assert rt.routing_state.expire_topics(rt.dag, 4596)
+    assert rt.routing_state.archive.entries['topic'].title == '显卡散热'
+
+
 @pytest.mark.parametrize('kind', ['reply', 'mention', 'fragment', 'inferred_reply', 'semantic'])
 def test_edge_contract_roundtrip(kind, monkeypatch):
     monkeypatch.setattr(codec.time, 'time', lambda: 1000)

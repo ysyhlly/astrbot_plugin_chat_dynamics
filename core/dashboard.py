@@ -696,7 +696,8 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             key = (sid, topic)
             runtime = getattr(plugin, "_sessions", {}).get(sid)
             topic_state = getattr(getattr(runtime, "routing_state", None), "topics", {}).get(topic)
-            generated_title = getattr(topic_state, "generated_title", "") or node.metadata.get("topic_title", "")
+            archived = getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).get(topic)
+            generated_title = getattr(topic_state, "generated_title", "") or getattr(archived, "title", "") or node.metadata.get("topic_title", "")
             if key not in groups:
                 title_status = "hidden" if not show_titles else (
                     "ready" if generated_title else
@@ -707,7 +708,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
                     "topic_title": _truncate(generated_title or node.text, 36) if show_titles and (generated_title or show_content and node.text) else f"话题 {len(groups) + 1}",
-                    "topic_status": "committed", "title_status": title_status,
+                    "topic_status": "archived" if archived else "committed", "title_status": title_status,
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "messages": [], "message_count": 0, "count": 0,
                 }

@@ -138,6 +138,7 @@ def build_state(
     persona_prompt: str = "",
     decision_prompt: str = DEFAULT_DECISION_PROMPT,
     max_chars: int = MAX_TOTAL_STATE_CHARS,
+    active_topics: Mapping[str, Any] | None = None,
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
     state = {
@@ -149,6 +150,8 @@ def build_state(
         "observations": dict(observations or {}),
         "conversation": turn.payload(),
     }
+    if active_topics is not None:
+        state["active_topics"] = dict(active_topics)
     return _shrink(state, max_chars)
 
 
@@ -470,7 +473,7 @@ def describe_answers(answers: Mapping[str, Any]) -> dict:
     were incomplete and nothing was accepted from them.
     """
     described: dict[str, Any] = {}
-    for key in ("completion", "join", "action", "state", "length", "reason", "target", "recipient"):
+    for key in ("completion", "join", "action", "state", "length", "reason", "target", "recipient", "topic"):
         answer = answers.get(key)
         if not isinstance(answer, Mapping):
             continue
