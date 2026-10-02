@@ -67,6 +67,8 @@ class TopicResolver:
         topic.message_ids.append(node.msg_id)
         if topic.generated_title:
             node.metadata["topic_title"] = topic.generated_title
+        else:
+            node.metadata.pop("topic_title", None)
         topic.participants.add(node.user_id)
         topic.updated_at = max(topic.updated_at, node.timestamp)
         if not topic.created_at:

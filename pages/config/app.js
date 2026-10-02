@@ -89,6 +89,7 @@ const CONFIG_GROUPS = [
       "topic_reranker_enabled",
       "topic_reranker_provider",
       "topic_reranker_timeout",
+      "topic_title_timeout",
       "topic_window_seconds",
       "replay_message_limit",
       "topic_join_threshold",
@@ -237,10 +238,11 @@ const CONFIG_GROUPS = [
   {
     "id": "console",
     "title": "面板隐私",
-    "blurb": "控制面板是否显示消息正文",
+    "blurb": "分别控制话题小标题和消息正文的显示",
     "open": false,
     "keys": [
-      "console_show_message_content"
+      "console_show_message_content",
+      "replay_show_topic_titles"
     ]
   }
 ];

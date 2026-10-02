@@ -735,7 +735,7 @@ class ThreadRouter:
                 return
             topic.title_attempted = True
             topic.title_in_flight = True
-            revision, epoch = getattr(runtime, "revision", None), getattr(runtime, "epoch", None)
+            epoch = getattr(runtime, "epoch", None)
         title = ""
         failed = False
         try:
@@ -752,7 +752,6 @@ class ThreadRouter:
                     topic.title_retry_at = time.monotonic() + min(300.0, 30.0 * 2 ** (topic.title_failures - 1))
                 if (title and runtime.routing_state is state and runtime.dag is dag
                         and (is_current is None or is_current())
-                        and getattr(runtime, "revision", None) == revision
                         and getattr(runtime, "epoch", None) == epoch
                         and state.topics.get(topic_id) is topic
                         and dag.get_node(node.msg_id) is node

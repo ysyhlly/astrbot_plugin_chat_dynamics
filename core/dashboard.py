@@ -678,6 +678,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     session_nodes: Dict[str, list] = {}
     message_limit = _replay_message_limit(plugin)
     show_content = bool(getattr(plugin, "console_show_message_content", False))
+    show_titles = bool(getattr(plugin, "replay_show_topic_titles", True))
     clock = getattr(plugin, "time_service", None)
     # DAG nodes use monotonic time; social/rhythm decisions use wall time.
     # Convert only at the presentation boundary, never mutate runtime nodes.
@@ -693,14 +694,27 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             if not topic:
                 continue
             key = (sid, topic)
+            runtime = getattr(plugin, "_sessions", {}).get(sid)
+            topic_state = getattr(getattr(runtime, "routing_state", None), "topics", {}).get(topic)
+            generated_title = getattr(topic_state, "generated_title", "") or node.metadata.get("topic_title", "")
             if key not in groups:
+                title_status = "hidden" if not show_titles else (
+                    "ready" if generated_title else
+                    "generating" if getattr(topic_state, "title_in_flight", False) else
+                    "failed" if getattr(topic_state, "title_failures", 0) else
+                    "disabled" if not getattr(getattr(plugin, "_runtime_config", None), "topic_reranker_enabled", True) else
+                    "pending")
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
-                    "topic_title": _truncate(node.metadata.get("topic_title") or node.text, 36) if show_content and node.text else f"话题 {len(groups) + 1}",
+                    "topic_title": _truncate(generated_title or node.text, 36) if show_titles and (generated_title or show_content and node.text) else f"话题 {len(groups) + 1}",
+                    "topic_status": "committed", "title_status": title_status,
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "messages": [], "message_count": 0, "count": 0,
                 }
             group = groups[key]
+            if show_titles and generated_title:
+                group["topic_title"] = _truncate(generated_title, 36)
+                group["title_status"] = "ready"
             group["end_ts"] = max(group["end_ts"], node.timestamp + wall_offset)
             group["message_count"] += 1
             routing = node.metadata.get("routing", {})
@@ -805,25 +819,28 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         for sid, dag in getattr(plugin, "dags", {}).items() if not selected or sid == selected
         for node in sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-message_limit:]
     ]
+    topic_blocks = replay_topic_blocks(plugin, ordered[-64:], selected)
+    show_titles = bool(getattr(plugin, "replay_show_topic_titles", True))
     return {
         "session_key": selected,
         "presence_knob": str(getattr(plugin, "presence_knob", "sensible") or "sensible"),
         "events": ordered[-64:],
         "blocks": merge_replay_blocks(ordered[-64:]),
-        "topic_blocks": replay_topic_blocks(plugin, ordered[-64:], selected),
+        "topic_blocks": topic_blocks,
         "message_limit": message_limit,
         "retained_message_count": len(retained_nodes),
         "unassigned_message_count": sum(not _replay_node_topic(node) for node in retained_nodes),
         "archived_topics": [
             {"session_id": sid, "topic_id": topic.topic_id,
-             "topic_title": _truncate(getattr(topic, "title", "") or topic.summary, 36) if getattr(plugin, "console_show_message_content", False) else "历史话题"}
+             "topic_title": _truncate(getattr(topic, "title", "") or (topic.summary if getattr(plugin, "console_show_message_content", False) else ""), 36) if show_titles and (getattr(topic, "title", "") or getattr(plugin, "console_show_message_content", False)) else "历史话题"}
             for sid, runtime in getattr(plugin, "_sessions", {}).items() if not selected or sid == selected
             for topic in getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).values()
         ],
         "topic_content_redacted": not bool(getattr(plugin, "console_show_message_content", False)),
+        "topic_titles_redacted": not show_titles,
         "speak_count": speak,
         "silent_count": silent,
         "sessions": sessions,
-        "empty": not bool(ordered),
+        "empty": not bool(ordered or topic_blocks),
         "content_redacted": True,
     }

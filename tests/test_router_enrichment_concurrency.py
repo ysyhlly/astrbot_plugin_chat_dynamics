@@ -108,6 +108,22 @@ async def test_title_failure_retries_after_backoff_and_deduplicates_inflight(mon
 
 
 @pytest.mark.asyncio
+async def test_topic_title_survives_a_new_turn_revision():
+    rt, router, first, _ = setup()
+    started, release = asyncio.Event(), asyncio.Event()
+    async def title(**kwargs):
+        started.set()
+        await release.wait()
+        return "显卡驱动"
+    task = asyncio.create_task(router.title_topic(rt, first, SimpleNamespace(title=title)))
+    await asyncio.wait_for(started.wait(), 1)
+    rt.revision += 1
+    release.set()
+    await task
+    assert rt.routing_state.topics["first"].generated_title == "显卡驱动"
+
+
+@pytest.mark.asyncio
 async def test_cancelled_title_clears_inflight_and_cannot_write_after_reset():
     rt, router, node, _ = setup()
     topic = rt.routing_state.topics["first"]

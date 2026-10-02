@@ -188,6 +188,7 @@ _DIRECT_RUNTIME_ATTRS = (
     "vibe_llm_enabled",
     "shadow_mode",
     "console_show_message_content",
+    "replay_show_topic_titles",
     "presence_knob",
     "social_manners_enabled",
     "relay_baton_enabled",
@@ -240,7 +241,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.15.0",
+    "v1.15.1",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -2067,14 +2068,14 @@ class ChatDynamicsPlugin(Star):
         from .core.routing_contract import ROUTING_WEIGHTS_VERSION
         return ROUTING_WEIGHTS_VERSION
 
-    def _topic_reranker(self) -> TopicReranker | None:
+    def _topic_reranker(self, *, for_display: bool = False) -> TopicReranker | None:
         cfg = self._runtime_config
-        if (not cfg.topic_reranker_enabled or self.shadow_mode
+        if (not cfg.topic_reranker_enabled or (self.shadow_mode and not for_display)
                 or not cfg.conversation_router_enabled):
             return None
         return TopicReranker(
-            LLMAdapter(self.context, configured_provider_id=cfg.topic_reranker_provider),
-            enabled=True, timeout_seconds=cfg.topic_reranker_timeout,
+            LLMAdapter(self.context, configured_provider_id=cfg.topic_reranker_provider or cfg.reply_provider_id),
+            enabled=True, timeout_seconds=cfg.topic_title_timeout if for_display else cfg.topic_reranker_timeout,
         )
 
     async def _enrich_turn(self, turn: _PreparedTurn) -> None:

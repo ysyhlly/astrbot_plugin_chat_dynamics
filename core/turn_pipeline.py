@@ -394,25 +394,28 @@ async def _enrich_topic_background(host, turn: _PreparedTurn) -> None:
     async with runtime.state_lock:
         if (host._shutting_down or host._sessions.get(turn.result.session_id) is not runtime
                 or runtime.epoch != turn.epoch or runtime.dag is not turn.dag
-                or runtime.user_revisions.get(str(turn.result.user_id or ''), 0) != turn.owner_revision
                 or turn.dag.get_node(turn.node.msg_id) is not turn.node):
             return
         reranker = host._topic_reranker()
     if reranker is not None:
-        if turn.explicit_platform:
+        if turn.explicit_platform and runtime.user_revisions.get(str(turn.result.user_id or ''), 0) == turn.owner_revision:
             await host.thread_router.rerank_pending(runtime, turn.node, reranker,
                 is_current=lambda: not host._shutting_down and runtime.epoch == turn.epoch
                 and runtime.user_revisions.get(str(turn.result.user_id or ''), 0) == turn.owner_revision)
-        async with runtime.state_lock:
-            if (host._shutting_down or runtime.epoch != turn.epoch
-                    or runtime.user_revisions.get(str(turn.result.user_id or ''), 0) != turn.owner_revision
-                    or host._sessions.get(turn.result.session_id) is not runtime
-                    or runtime.dag is not turn.dag
-                    or turn.dag.get_node(turn.node.msg_id) is not turn.node):
-                return
-        await host.thread_router.title_topic(runtime, turn.node, reranker,
+    async with runtime.state_lock:
+        if (host._shutting_down or runtime.epoch != turn.epoch
+                or host._sessions.get(turn.result.session_id) is not runtime
+                or runtime.dag is not turn.dag
+                or turn.dag.get_node(turn.node.msg_id) is not turn.node):
+            return
+        # A title belongs to the topic, not the request revision of one member.
+        title_reranker = host._topic_reranker(for_display=True)
+        config_id = host._turn_config_identity()
+    if title_reranker is not None:
+        await host.thread_router.title_topic(runtime, turn.node, title_reranker,
             is_current=lambda: not host._shutting_down and runtime.epoch == turn.epoch
-            and runtime.user_revisions.get(str(turn.result.user_id or ''), 0) == turn.owner_revision)
+            and host._sessions.get(turn.result.session_id) is runtime
+            and host._turn_config_identity() == config_id)
         host._mark_panel_runtime_dirty()
 
 

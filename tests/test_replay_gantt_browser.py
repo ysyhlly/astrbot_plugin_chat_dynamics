@@ -8,6 +8,104 @@ page_server = theme_browser.page_server
 setup = theme_browser.setup
 
 
+def live_replay(context, theme="day"):
+    setup(context, {"ui": theme})
+    context.add_init_script("""(() => {
+      const interval = window.setInterval, get = window.AstrBotPluginPage.apiGet;
+      window.setInterval = (callback, delay, ...args) => {
+        if (delay === 5000) { window.__refreshReplay = callback; return 999; }
+        return interval(callback, delay, ...args);
+      };
+      window.__replayCalls = 0;
+      window.__replayStage = 0;
+      window.AstrBotPluginPage.apiGet = async (endpoint, params) => {
+        if (endpoint === 'topic_annotations') return {ok:true,data:{records:[],
+          metrics:{total:0,error_counts:{},sample_note:'仅统计人工标注样本，不代表真实准确率'},
+          recipient_metrics:{total:0}}};
+        if (endpoint !== 'replay') return get(endpoint, params);
+        window.__replayCalls++;
+        if (window.__replayFailed) throw new Error('offline');
+        const stage = window.__replayStage;
+        const data = {sessions:[],empty:true,topic_content_redacted:true,topic_titles_redacted:false,
+          topic_blocks: stage ? [{session_id:'room',topic_id:'topic',topic_status:'committed',
+            topic_title:stage === 1 ? '话题 1' : '显卡风扇散热',title_status:stage === 1 ? 'generating' : 'ready',
+            message_count:4,start_ts:1700000000,end_ts:1700000020,events:[],
+            messages:[{msg_id:'m',topic_id:'topic',text:'消息内容已隐藏',confidence:.8}]}] : []};
+        if (window.__holdReplay) await new Promise(resolve => window.__releaseReplay = resolve);
+        return {ok:true,data};
+      };
+    })();""")
+
+
+@pytest.mark.parametrize("width,theme", [(1366, "day"), (390, "night")])
+def test_new_topics_and_completed_titles_appear_without_manual_refresh(browser, page_server, width, theme, tmp_path):
+    with browser.new_context(viewport={"width": width, "height": 940}) as context:
+        live_replay(context, theme)
+        page = context.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("typeof window.__refreshReplay === 'function'")
+        assert page.locator('#summaryTopics').inner_text() == '0'
+        page.evaluate('window.__replayStage = 1; window.__refreshReplay()')
+        page.wait_for_function("document.querySelector('#summaryTopics').textContent === '1'")
+        assert page.locator('.replay-block').count() == 1
+        assert '正在归纳标题' in page.locator('.gantt-label').inner_text()
+        assert page.locator('#railEmpty').is_hidden()
+        page.evaluate('window.__replayStage = 2; window.__refreshReplay()')
+        page.wait_for_function("document.querySelector('.gantt-label').textContent.includes('显卡风扇散热')")
+        assert '正在归纳标题' not in page.locator('.gantt-label').inner_text()
+        page.locator('.replay-block').click()
+        assert page.locator('#detailTitle').inner_text() == '显卡风扇散热'
+        assert '消息内容已隐藏' in page.locator('#annotationMessages').inner_text()
+        page.wait_for_function("document.querySelector('#annotationMetrics').textContent.includes('已标注 0 条')")
+        assert page.locator('#annotationStatus').inner_text() == ''
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        page.screenshot(path=str(tmp_path / f'topic-titles-{width}-{theme}.png'), full_page=True)
+        assert not errors
+
+
+def test_background_replay_refresh_keeps_topics_on_network_failure(browser, page_server):
+    with browser.new_context() as context:
+        live_replay(context)
+        context.add_init_script('window.__replayStage = 2')
+        page = context.new_page()
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("typeof window.__refreshReplay === 'function'")
+        page.evaluate('window.__replayFailed = true; window.__refreshReplay()')
+        page.wait_for_function("document.querySelector('#linkLabel').textContent.includes('offline')")
+        assert page.locator('.replay-block').count() == 1
+        assert page.locator('#summaryTopics').inner_text() == '1'
+
+
+def test_automatic_refresh_does_not_close_details_or_discard_annotations(browser, page_server):
+    with browser.new_context() as context:
+        live_replay(context)
+        context.add_init_script('window.__replayStage = 2')
+        page = context.new_page()
+        page.goto(f"{page_server}/replay/index.html")
+        page.wait_for_function("typeof window.__refreshReplay === 'function'")
+        page.locator('.replay-block').click()
+        count = page.evaluate('window.__replayCalls')
+        page.evaluate('window.__refreshReplay()')
+        assert page.evaluate('window.__replayCalls') == count
+        assert page.locator('#detailDialog').is_visible()
+        page.locator('#btnCloseDetail').click()
+        page.evaluate('window.__holdReplay = true; window.__refreshReplay()')
+        page.wait_for_function("typeof window.__releaseReplay === 'function'")
+        page.locator('.replay-block').click()
+        page.locator('[data-target]').select_option('NEW')
+        page.evaluate('window.__releaseReplay()')
+        assert page.locator('#detailDialog').is_visible()
+        assert page.locator('[data-target]').input_value() == 'NEW'
+        # Dirty rows also block a new fetch even if the dialog is closed.
+        page.locator('#detailDialog').evaluate('node => node.close()')
+        count = page.evaluate('window.__replayCalls')
+        page.evaluate('window.__refreshReplay()')
+        assert page.evaluate('window.__replayCalls') == count
+        assert page.locator('[data-target]').input_value() == 'NEW'
+
+
 @pytest.mark.parametrize("theme", ["day", "night"])
 def test_replay_gantt_details(browser, page_server, theme, tmp_path):
     with browser.new_context(viewport={"width": 1366, "height": 1000}) as context:

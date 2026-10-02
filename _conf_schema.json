@@ -272,6 +272,12 @@
     "default": false,
     "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
   },
+  "replay_show_topic_titles": {
+    "description": "回放显示话题小标题",
+    "type": "bool",
+    "default": true,
+    "hint": "默认展示模型归纳的简短话题标题，与消息正文开关独立；关闭后用话题编号代替。正文仍由“控制台显示消息正文”控制。"
+  },
   "telemetrics_window_seconds": {
     "description": "遥测滑动窗口 (秒)",
     "type": "float",
@@ -322,7 +328,7 @@
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "选择模型提供商；留空使用当前会话模型。"
+    "hint": "选择普通聊天模型归纳和复判话题；留空沿用回复模型，回复模型也为空时使用当前会话模型。"
   },
   "topic_reranker_timeout": {
     "description": "话题复判超时（秒）",
@@ -333,6 +339,17 @@
       "max": 10,
       "step": 0.1
     }
+  },
+  "topic_title_timeout": {
+    "description": "话题小标题归纳超时（秒）",
+    "type": "float",
+    "default": 10.0,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "hint": "后台归纳话题的小标题，不阻塞接话。与话题复判超时分别配置，观察模式也可以归纳。"
   },
   "routing_neural_timeout": {
     "description": "模糊消息向量等待上限（秒）",

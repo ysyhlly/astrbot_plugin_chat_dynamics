@@ -105,6 +105,8 @@ class ConfigPanel:
             "topic_reranker_enabled": cfg.topic_reranker_enabled,
             "topic_reranker_provider": cfg.topic_reranker_provider,
             "topic_reranker_timeout": cfg.topic_reranker_timeout,
+            "topic_title_timeout": cfg.topic_title_timeout,
+            "replay_show_topic_titles": cfg.replay_show_topic_titles,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
             "decision_prompt": cfg.decision_prompt,
             "reply_prompt": cfg.reply_prompt,

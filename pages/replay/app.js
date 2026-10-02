@@ -49,7 +49,9 @@ let replayData = null;
 let archivedTopics = [];
 let selectedIndex = -1;
 let refreshRevision = 0;
+let pendingRefreshes = 0;
 const TOPIC_COLORS = ["speak", "media", "rhythm", "arbiter", "proactive", "manners"];
+const TITLE_STATUS = { pending: "标题待归纳", generating: "正在归纳标题", failed: "标题归纳暂不可用", disabled: "标题归纳已关闭" };
 const annotationMessages = document.getElementById("annotationMessages");
 const annotationStatus = document.getElementById("annotationStatus");
 const annotationMetrics = document.getElementById("annotationMetrics");
@@ -192,6 +194,7 @@ function selectBlock(index, discardConfirmed = false) {
   const speak = (block.events || []).filter(event => event.action === "speak").length;
   els.blockDetail.textContent = `开口 ${speak} 次 · 安静 ${(block.events || []).length - speak} 次`;
   els.blockMeta.textContent = `${formatTs(block.start_ts)} — ${formatTs(block.end_ts)} · ${block.message_count || 0} 条消息`;
+  if (TITLE_STATUS[block.title_status]) els.blockMeta.textContent += ` · ${TITLE_STATUS[block.title_status]}`;
   const events = Array.isArray(block.events) && block.events.length ? block.events : [];
   els.blockEvents.innerHTML = events.map(event => `<li><time>${escapeHtml(formatTs(event.ts))}</time><div><strong>${escapeHtml(event.reason_zh || "未记录具体原因")}</strong><span>${escapeHtml([event.action === "speak" ? "开口" : "安静", LANE_ZH[event.lane] || "", event.association || "", event.session_id ? `会话 ${redactId(event.session_id)}` : "", event.reason_code || ""].filter(Boolean).join(" · "))}</span></div></li>`).join("");
   if (!speak) {
@@ -214,6 +217,11 @@ function renderRail(data, discardConfirmed = false) {
   document.getElementById("summaryTopics").textContent = allBlocks.length;
   document.getElementById("summaryMessages").textContent = allBlocks.reduce((sum, block) => sum + (Number(block.message_count) || 0), 0);
   document.getElementById("summaryDecisions").textContent = `${events.filter(event => event.action === "speak").length} / ${events.filter(event => event.action !== "speak").length}`;
+  document.getElementById("topicTitleNote").textContent = data.topic_titles_redacted
+    ? "话题小标题已隐藏，可在插件参数配置中开启“回放显示话题小标题”。"
+    : allBlocks.some(block => block.title_status && block.title_status !== "ready")
+      ? "已形成的话题会先显示，归纳完成后自动更新小标题。归纳失败或关闭时，可在详情查看状态。"
+      : "";
   blocks = allBlocks.filter(block => (!query || (block.topic_title || "").toLocaleLowerCase().includes(query)) && (decision === "all" || (decision === "speak" ? speaks(block) : !speaks(block))));
   els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : "目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。";
   const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
@@ -243,19 +251,23 @@ function renderRail(data, discardConfirmed = false) {
     const width = Math.max(0.5, Math.min(100 - left, (timestamp(block.end_ts) - timestamp(block.start_ts)) / span * 100));
     const title = block.topic_title || "未关联主题";
     const label = escapeHtml(title);
+    const titleState = TITLE_STATUS[block.title_status];
     const session = !selectedUmo && block.session_id ? `<small>会话 ${escapeHtml(redactId(block.session_id))}</small>` : "";
-    return `<div class="gantt-label lane-${lane}"><span>${label}${session}</span></div><div class="gantt-track"><button type="button" class="replay-block lane-${lane}" data-index="${index}" style="left:min(${left}%, calc(100% - 84px));width:clamp(84px, ${width}%, 100%)" title="${label}" aria-label="${escapeHtml(`${title} · ${formatTs(block.start_ts)} · 查看详情`)}" aria-haspopup="dialog" aria-pressed="false"><span class="scene-reason">${label}</span></button></div>`;
+    return `<div class="gantt-label lane-${lane}"><span>${label}${titleState ? `<small>${escapeHtml(titleState)}</small>` : ""}${session}</span></div><div class="gantt-track"><button type="button" class="replay-block lane-${lane}" data-index="${index}" style="left:min(${left}%, calc(100% - 84px));width:clamp(84px, ${width}%, 100%)" title="${label}" aria-label="${escapeHtml(`${title} · ${formatTs(block.start_ts)} · 查看详情`)}" aria-haspopup="dialog" aria-pressed="false"><span class="scene-reason">${label}</span></button></div>`;
   }).join("")}</div>`;
   selectBlock(-1, true);
 
 }
 
-async function refresh() {
+async function refresh({ automatic = false } = {}) {
+  if (automatic && (document.hidden || pendingRefreshes || els.detailDialog.open || dirtyAnnotationCount())) return;
   const revision = ++refreshRevision;
+  pendingRefreshes += 1;
   try {
     const params = selectedUmo ? { umo: selectedUmo } : {};
     const data = await apiGet("replay", params);
     if (revision !== refreshRevision) return;
+    if (automatic && (els.detailDialog.open || dirtyAnnotationCount())) return;
     if (!confirmDiscardAnnotations()) return;
     online = true;
     setLink(els, true, "已连接");
@@ -269,6 +281,7 @@ async function refresh() {
     if (revision !== refreshRevision) return;
     online = false;
     setLink(els, false, friendlyError(err, "离线"));
+    if (automatic) return;
     if (dirtyAnnotationCount()) return;
     els.replayRail.innerHTML = "";
     blocks = [];
@@ -279,6 +292,8 @@ async function refresh() {
     els.railCounts.textContent = "主题 —";
     els.railEmpty.classList.remove("hidden");
     els.blockDetail.textContent = "回放暂时不可用，请稍后刷新。";
+  } finally {
+    pendingRefreshes -= 1;
   }
 }
 
@@ -380,6 +395,8 @@ async function boot() {
   });
   els.btnRefresh.addEventListener("click", () => void refresh());
   await refresh();
+  const refreshTimer = setInterval(() => void refresh({ automatic: true }), 5000);
+  window.addEventListener("pagehide", () => clearInterval(refreshTimer), { once: true });
 }
 
 boot();

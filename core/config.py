@@ -63,6 +63,8 @@ class RuntimeConfig:
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
     topic_reranker_timeout: float = 3.0
+    topic_title_timeout: float = 10.0
+    replay_show_topic_titles: bool = True
     routing_neural_timeout: float = 0.5
     topic_window_seconds: float = 300.0
     replay_message_limit: int = 500
@@ -343,6 +345,8 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         topic_reranker_enabled=_bool(_get(raw, "topic_reranker_enabled", True), True),
         topic_reranker_provider=str(_get(raw, "topic_reranker_provider", "") or "").strip(),
         topic_reranker_timeout=_number(raw, "topic_reranker_timeout", 3.0, lambda value: 0.1 <= value <= 10, warnings),
+        topic_title_timeout=_number(raw, "topic_title_timeout", 10.0, lambda value: 1 <= value <= 30, warnings),
+        replay_show_topic_titles=_bool(_get(raw, "replay_show_topic_titles", True), True),
         routing_neural_timeout=_number(raw, "routing_neural_timeout", 0.5, lambda value: 0 <= value <= 2, warnings),
         replay_message_limit=_integer(raw, "replay_message_limit", 500, 80, 500, warnings),
         topic_window_seconds=_number(

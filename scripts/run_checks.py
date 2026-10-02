@@ -14,11 +14,13 @@ BACKEND = [
     "test_turn_evidence_contract", "test_platform_bridge", "test_systemone_settings",
     "test_simplified_decision", "test_reply_probability_threshold", "test_config_concurrency", "test_config_fallback",
     "test_ai_review_removed", "test_topic_annotations", "test_snapshot_producers",
+    "test_topic_display", "test_topic_reranker", "test_topic_formation",
+    "test_router_enrichment_concurrency", "test_replay_decision_trace",
     "test_panel_persistence_lifecycle", "test_native_delivery_guard", "test_runtime_persistence",
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",
     "test_decision_gate_clock", "test_release_contract",
 ]
-BROWSER = ["test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser"]
+BROWSER = ["test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser"]
 
 
 def main():
