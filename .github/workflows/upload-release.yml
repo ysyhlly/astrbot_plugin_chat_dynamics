@@ -1,0 +1,80 @@
+name: Upload release package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag, for example v1.15.3
+        required: true
+        type: string
+      commit:
+        description: Full commit SHA already validated by Tests
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upload-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ inputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate draft and tested source
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish > release.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$RELEASE_COMMIT&per_page=100" > runs.json
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from scripts.check_release import plugin_version
+
+          tag, commit = os.environ["RELEASE_TAG"], os.environ["RELEASE_COMMIT"]
+          assert re.fullmatch(r"v\d+\.\d+\.\d+", tag), "Invalid release tag"
+          assert re.fullmatch(r"[0-9a-f]{40}", commit), "A full commit SHA is required"
+          assert plugin_version(Path.cwd()) == tag, "Source version differs from release tag"
+          release = json.loads(Path("release.json").read_text())
+          assert release["isDraft"], "Only draft release assets may be uploaded"
+          assert release["targetCommitish"] == commit, "Draft targets a different commit"
+          runs = json.loads(Path("runs.json").read_text())["workflow_runs"]
+          assert any(run["path"] == ".github/workflows/tests.yml"
+                     and run["head_sha"] == commit and run["conclusion"] == "success"
+                     for run in runs), "Tests have not passed for the requested commit"
+          PY
+      - run: python scripts/check_release.py
+      - run: python scripts/build_release.py
+      - name: Upload runtime package and verification files
+        run: |
+          for suffix in '' '.manifest.json' '.sha256'; do
+            gh release upload "$RELEASE_TAG" "dist/astrbot_plugin_chat_dynamics-$RELEASE_TAG.zip$suffix" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          done
+      - name: Verify uploaded bytes
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir downloaded
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          for asset in Path("dist").iterdir():
+              uploaded = Path("downloaded") / asset.name
+              assert uploaded.read_bytes() == asset.read_bytes(), f"Upload differs: {asset.name}"
+              print(f"{asset.name}: {hashlib.sha256(asset.read_bytes()).hexdigest()}")
+          PY
