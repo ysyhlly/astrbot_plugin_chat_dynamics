@@ -789,13 +789,11 @@ function renderRoom(
     // backend and shows how sure it was instead of implying every decision is a
     // chat completion.
     const evidence = decision.jev || {};
-    const weakest = Number(evidence.confidence);
-    // The acceptance floor is compared against the weakest required answer, so
-    // that is what the trace shows; the action's own confidence is the fallback
-    // for evidence recorded before the weakest was part of it.
-    const confidence = Number.isFinite(weakest) ? weakest : Number(evidence.action?.confidence);
+    // Read the action itself so older weakest-answer summaries cannot make a
+    // confident participation decision look uncertain.
+    const confidence = typeof evidence.action?.confidence === "number" ? evidence.action.confidence : NaN;
     const layer = decision.backend === "jev"
-      ? ` · Jev 决策${Number.isFinite(confidence) ? ` 置信 ${confidence.toFixed(2)}` : ""}`
+      ? ` · Jev 决策${Number.isFinite(confidence) ? ` 动作置信 ${confidence.toFixed(2)}` : ""}`
       : "";
     els.traceMeta.textContent = `人设状态 ${decision.state || detail.interaction_state} · ${decision.action || "等待决策"} · ${decision.reason_code || ""} · ${decision.latency_ms || 0}ms · 排队 ${detail.model_queue_depth || 0}${decision.shadow ? " · 仅观察" : ""}${layer}`;
     els.traceMeta.title = `回应消息：${(decision.target_message_ids || []).join("、")}`;
@@ -1233,4 +1231,3 @@ async function loadNotebookLite() {
     updateManagementControls();
   }
 }
-

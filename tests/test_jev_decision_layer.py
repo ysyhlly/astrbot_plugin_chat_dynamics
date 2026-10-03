@@ -153,14 +153,41 @@ async def test_an_unavailable_decision_layer_does_not_admit_a_soft_wake(jev_plug
 async def test_soft_wake_depends_on_recipient_not_action_confidence(jev_plugin):
     p, bridge = jev_plugin
     weak = answers()
-    weak["action"] = {"type": "choice", "choice": "reply", "confidence": 0.2, "probabilities": {}}
+    weak.update(action={"type": "choice", "choice": "clarify", "confidence": 0.2},
+                state={"type": "choice", "choice": "playful", "confidence": 0.2},
+                length={"type": "choice", "choice": "detailed", "confidence": 0.2},
+                reason={"type": "choice", "choice": "boundary_or_sensitive", "confidence": 0.2})
     p.jev.payload = weak
     try:
         event = MockEvent("帮我看下这个报错", message_id="m1", is_at_or_wake_command=True)
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        assert bridge.requests[0][0]["response_plan"]["reason_code"] == "jev_wake_addressed"
+        plan = bridge.requests[0][0]["response_plan"]
+        assert (plan["action"], plan["state"], plan["length"], plan["reason_code"]) == (
+            "reply", "focused", "brief", "jev_wake_addressed")
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_ambient_decision_defaults_uncertain_style_and_records_action_confidence(jev_plugin):
+    p, bridge = jev_plugin
+    p.jev.payload = answers(state="playful", length="detailed")
+    for key in ("state", "length", "reason"):
+        p.jev.payload[key]["confidence"] = 0.2
+    try:
+        event = MockEvent("有人知道这个报错怎么处理吗", message_id="m1")
+        runtime = p._get_or_create_runtime(event.unified_msg_origin, group_id=event.group_id,
+                                         umo=event.unified_msg_origin, bot_id=event.self_id)
+        turn = TurnContext(runtime.session_key, event.sender_id, event.message_str,
+                           (MessageSnapshot("m1", event.sender_id, ""),), (), 0, 0, 0.0, False)
+        item = ModelTurn(turn, (), {}, False)
+        decision = await p.persona_engine.decide(item, bridge.persona, "observing", runtime=runtime)
+        assert (decision.action, decision.state, decision.length, decision.reason_code) == (
+            "reply", "focused", "brief", "jev_action_accepted")
+        assert runtime.jev_decision["confidence"] == pytest.approx(0.9)
+        assert runtime.jev_decision["length"]["confidence"] == pytest.approx(0.2)
     finally:
         await p.terminate()
 

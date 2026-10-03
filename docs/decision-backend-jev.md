@@ -14,21 +14,25 @@
 
 ## 一次调用回答什么
 
-`POST {base}/v1/systemone`，请求携带 `model`、`state` 与 `questions`，一次回答五到六个相互独立的问题：
+`POST {base}/v1/systemone`，请求携带 `model`、`state` 与 `questions`，同次请求回答完整性、参与和回复样式的问题，按需追加对象、目标和话题判断：
 
 | 问题 | 类型 | 选项（封闭词表） |
 | --- | --- | --- |
+| `completion` 是否说完 | choice | `complete` / `wait` |
 | `join` 是否开口 | noul | 一个概率值（无置信度） |
 | `action` 怎么回 | choice | `ignore` / `acknowledge` / `clarify` / `reply` / `close` |
 | `state` 什么状态 | choice | `observing` / `casual` / `focused` / `supportive` / `playful` / `disengaging` |
 | `length` 多长 | choice | `brief` / `normal` / `detailed` |
 | `reason` 为什么 | choice | `addressed_request` / `addressed_question` / `ongoing_thread` / `open_group_topic` / `social_signal` / `other_recipient` / `boundary_or_sensitive` / `low_value_chatter` |
 | `target` 回哪条 | choice | 本轮消息 ID（多于一条候选时才问） |
+| `recipient` 实际对象 | choice | `bot` / `other` / `unclear`（引用或昵称唤醒时才问） |
 
-两条性质是承重的：
+参与与回复样式分别处理：
 
 - **词表是封闭的。** 每个问题只提供插件自己的选项，远程答案无法引入未知的动作、状态、长短或理由；答案按发出的选项键定位，不从散文里解析。回复目标只接受本轮消息——背景消息 ID 等于回答了一个从未问过的问题，此时改用本轮消息本身。
-- **低于门槛什么都不用。** 「方式、状态、长短、理由」四项置信度取最小值，与 `jev_min_confidence` 比较；低于门槛或无法精确映射时，运行本地保守计划：明确请求才回应，环境闲聊继续旁听。理由码带 `jev_` 前缀进入轨迹：`jev_<reason>`、`jev_join_declined`、`jev_low_confidence`、`jev_invalid_answer`、`jev_unavailable`。
+- **普通群聊用动作与参与概率决定是否接话。** 动作置信度与 `jev_min_confidence` 比较，非忽略动作还需通过参与概率门槛；状态、长短和理由的低置信度不否决回复。它们低于同一门槛时分别采用默认状态（回复为 `focused`，收尾为 `disengaging`，旁听为 `observing`）、简短长度和不附加理由的行动目标。理由不确定时记录 `jev_action_accepted`，避免把一个不可靠的分类当作事实。
+- **唤醒规则独立。** 真实 @机器人不调用 Jev；引用或昵称唤醒只需实际对象为机器人且对象置信度至少 0.35。获准唤醒后，低置信度动作默认回复，较弱的样式判断同样采用默认值。确认未说完且置信度达标时，仍先等待后续碎发。
+- **判断题明确边界。** 任务请求与信息提问分别归类；解决任务和情绪支持按当前主要目的选择；确认、澄清、实质回复和收尾分别给出适用条件。当前消息及账号、引用关系先于人设出现在输入中，背景消息只作上下文，不能成为新的请求。
 
 指令与判据用英语书写（模型自述最强语种），被判断的会话状态原样保留、不翻译；只有交给回复 Agent 的回应目标是中文，与插件其它回应计划一致。
 
@@ -48,9 +52,9 @@
 
 ## 证据与观测
 
-- 每轮的类型化答案存进 `SessionRuntime.jev_decision`（含四项最弱置信度 `confidence`），随 `model_diagnostic["jev"]` 进入决策诊断；切回聊天模型后端时该字段清空，不留过期证据。
+- 每轮的类型化答案存进 `SessionRuntime.jev_decision`（`confidence` 为动作置信度，各项原始置信度分别保留），随 `model_diagnostic["jev"]` 进入决策诊断。
 - 指标：`jev_decision`（咨询到决策）、`jev_unavailable`（无可用答案、回落本地计划）。
-- 控制台：会话轨迹标注「Jev 决策 置信 x.xx」，互联诊断的「决策层」卡片显示端点、模型与实答模型、调用/失败次数、请求 ID 与置信度门槛。
+- 控制台：会话轨迹标注「Jev 决策 动作置信 x.xx」，直接读取动作字段，兼容旧记录的最弱项汇总值；互联诊断的「决策层」卡片显示模型、调用/失败次数、耗时与置信度门槛。
 
 ## 配置
 
@@ -61,4 +65,4 @@
 | `jev_model` | `jev-latest` | Jev 模型 ID |
 | `jev_api_key_env` | `TYPESAFE_API_KEY` | 存放密钥的环境变量名（不是密钥本身） |
 | `jev_timeout` | `6.0` | 单次决策调用超时秒数（1~30） |
-| `jev_min_confidence` | `0.6` | 置信度门槛（0.3~0.95），低于它不用这次判断 |
+| `jev_min_confidence` | `0.6` | 动作采用门槛（0.3~0.95）；状态、长短和理由低于它时使用默认值 |

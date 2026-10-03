@@ -133,13 +133,46 @@ def test_join_above_the_floor_leaves_the_action_alone():
     assert decision.action == "reply"
 
 
-@pytest.mark.parametrize("weak", ["action", "state", "length", "reason"])
-def test_confidence_below_the_floor_is_not_a_decision(weak):
+def test_action_confidence_below_the_floor_is_not_a_decision():
     context = turn("m1")
-    payload = answers(**{weak: choice(answers()[weak]["choice"], 0.4)})
+    payload = answers(action=choice("reply", 0.4))
     decision = decision_from_answers(context, payload, min_confidence=0.6)
     assert decision == TurnDecision.fallback(context, "jev_low_confidence")
     assert decision.action == "reply"  # explicit turns still get the local plan
+
+
+@pytest.mark.parametrize("weak,value,expected", [
+    ("state", "supportive", ("focused", "brief", "jev_addressed_question")),
+    ("length", "detailed", ("focused", "brief", "jev_addressed_question")),
+    ("reason", "addressed_request", ("focused", "brief", "jev_action_accepted")),
+])
+def test_uncertain_presentation_uses_defaults_without_vetoing_participation(weak, value, expected):
+    context = turn("m1", explicit=False)
+    decision = decision_from_answers(context, answers(**{weak: choice(value, 0.4)}))
+    assert decision.action == "reply"
+    assert (decision.state, decision.length, decision.reason_code) == expected
+    if weak == "reason":
+        assert decision.response_goal == "针对目标消息给出实质回复，不展开无关内容。"
+
+
+def test_all_uncertain_presentation_answers_cannot_bypass_the_join_floor():
+    context = turn("m1", explicit=False)
+    payload = answers(state=choice("playful", 0.2), length=choice("detailed", 0.2),
+                      reason=choice("open_group_topic", 0.2))
+    admitted = decision_from_answers(context, payload)
+    assert (admitted.action, admitted.state, admitted.length, admitted.reason_code) == (
+        "reply", "focused", "brief", "jev_action_accepted")
+    payload["join"] = {"type": "noul", "noul": 0.2}
+    refused = decision_from_answers(context, payload)
+    assert (refused.action, refused.state, refused.reason_code) == ("ignore", "observing", "jev_join_declined")
+
+
+def test_confidence_at_the_floor_keeps_the_selected_presentation():
+    context = turn("m1", explicit=False)
+    decision = decision_from_answers(context, answers(action=choice("reply", 0.6),
+        state=choice("supportive", 0.6), length=choice("normal", 0.6), reason=choice("ongoing_thread", 0.6)))
+    assert (decision.action, decision.state, decision.length, decision.reason_code) == (
+        "reply", "supportive", "normal", "jev_ongoing_thread")
 
 
 def test_low_confidence_ambient_stays_silent():
@@ -167,6 +200,7 @@ def test_the_floor_is_configurable():
     answers(length=choice("epic")),
     answers(reason=choice("because")),
     answers(action={"type": "noul", "noul": 0.9}),
+    answers(length={"type": "choice", "choice": "brief"}),
     answers(**{"join": {"type": "noul", "noul": 1.5}}),
 ])
 def test_unmappable_answers_are_refused_rather_than_approximated(payload):
@@ -182,12 +216,14 @@ def test_every_reason_code_matches_the_trace_contract():
         assert re.fullmatch(r"[a-z][a-z0-9_]{0,47}", code), code
 
 
-def test_evidence_is_serializable_and_reports_the_weakest_confidence():
+def test_evidence_reports_action_confidence_and_keeps_presentation_uncertainty():
     payload = answers()
     described = describe_answers(payload)
     assert described["action"] == {"type": "choice", "choice": "reply", "confidence": 0.88}
     assert described["join"] == {"type": "noul", "noul": 0.82}
-    assert described["confidence"] == pytest.approx(0.7)
-    assert decision_confidence(payload) == pytest.approx(0.7)
+    assert described["confidence"] == pytest.approx(0.88)
+    assert described["length"]["confidence"] == pytest.approx(0.7)
+    assert decision_confidence(payload) == pytest.approx(0.88)
     json.dumps(described)
-    assert decision_confidence({"action": choice("reply")}) == 0.0
+    assert decision_confidence({"action": choice("reply")}) == pytest.approx(0.9)
+    assert decision_confidence({"action": {"type": "choice", "choice": "reply"}}) == 0.0

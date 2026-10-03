@@ -61,34 +61,34 @@ WAKE_RECIPIENT_FLOOR = 0.35
 JOIN_FLOOR = 0.7
 
 ACTION_CRITERIA = {
-    "ignore": "Stay out of it: nothing here needs this participant, or joining would cut into someone else's exchange",
-    "acknowledge": "A short acknowledgement only: one line or a reaction, with no new content",
-    "clarify": "One clarifying question: the target or the intent is not yet clear enough to answer",
-    "reply": "A real reply: respond to the target message with substance",
-    "close": "Wind the exchange down: a brief closing line that asks nothing new",
+    "ignore": "No response: nothing needs this participant, the message is for someone else, or speaking would intrude",
+    "acknowledge": "Only confirm receipt or return a greeting/reaction; no answer, advice or follow-up question is needed (e.g. 'thanks')",
+    "clarify": "Ask one necessary question because a missing fact prevents a useful answer (e.g. 'which error?' when no error is provided)",
+    "reply": "Give an answer, useful information, advice or emotional support; prefer this over acknowledge when new content is needed",
+    "close": "Explicitly end or decline an exchange (e.g. 'let us stop here'); unlike acknowledge, this ends further participation",
 }
 STATE_CRITERIA = {
-    "observing": "Watching: stay in the background this turn and open no new topic",
-    "casual": "Casual: relaxed small talk among the group",
-    "focused": "Focused: the answer has to be accurate and on point",
-    "supportive": "Supportive: someone's feeling has to be acknowledged first",
-    "playful": "Playful: riffing and joking is welcome",
-    "disengaging": "Disengaging: do not continue this exchange afterwards",
+    "observing": "No response is planned; only watch this turn",
+    "casual": "Ordinary greeting or relaxed small talk, with no task, distress or explicit joke",
+    "focused": "The primary goal is solving a task or answering a factual question, even if the speaker is frustrated (e.g. fixing an error)",
+    "supportive": "The primary goal is comfort or listening to feelings, rather than solving a task (e.g. 'I feel lonely; please listen')",
+    "playful": "The primary goal is an explicit joke or playful exchange, rather than a factual answer or emotional support",
+    "disengaging": "A closing or refusal is planned; do not continue the exchange afterwards",
 }
 LENGTH_CRITERIA = {
-    "brief": "Very short: a few characters or one sentence; follow reply_length guidance when supplied",
-    "normal": "Normal: one to three sentences, concise but complete",
-    "detailed": "Expanded: it takes points or explanation to be clear",
+    "brief": "One sentence or less is enough, such as a greeting, acknowledgement or simple answer",
+    "normal": "Two or three concise sentences are needed; one sentence would omit useful content",
+    "detailed": "Multiple steps, a list or a longer explanation is necessary; two or three sentences would be insufficient",
 }
 REASON_CRITERIA = {
-    "addressed_request": "Someone named this participant or asked it to do something",
-    "addressed_question": "Someone asked this participant a direct question",
-    "ongoing_thread": "Continuing the same exchange this participant already took part in",
-    "open_group_topic": "An open group discussion where this participant has something relevant and useful to add",
-    "social_signal": "A poke or a reaction: a social signal, not a content request",
-    "other_recipient": "The message is plainly aimed at someone else",
-    "boundary_or_sensitive": "Privacy, conflict, or a request to stop: keep a distance",
-    "low_value_chatter": "Chatter or fragments with nothing this participant needs to join",
+    "addressed_request": "The speaker asks this participant to perform a task (e.g. 'help me fix this error'); naming it alone is insufficient",
+    "addressed_question": "The speaker directly asks this participant for information (e.g. 'what does this error mean?'); use addressed_request for a task",
+    "ongoing_thread": "A continuation of this participant's existing exchange, with no new direct task or information question",
+    "open_group_topic": "A public topic this participant can naturally contribute to, without a direct request or an existing exchange with it",
+    "social_signal": "Only a greeting, thanks, poke or reaction; no task or information question",
+    "other_recipient": "The speaker explicitly addresses someone else; discussing this participant does not address it",
+    "boundary_or_sensitive": "Privacy, conflict or an explicit stop request requires restraint; this takes precedence over other reasons",
+    "low_value_chatter": "No direct request, ongoing exchange, useful public contribution or social signal remains",
 }
 _ACTION_GOALS = {
     "reply": "针对目标消息给出实质回复，不展开无关内容。",
@@ -142,13 +142,13 @@ def build_state(
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
     state = {
-        "persona": str(persona_prompt or "").strip()[:MAX_PERSONA_CHARS],
-        "previous_state": str(previous_state or "observing")[:32],
+        "conversation": turn.payload(),
+        "identity_policy": IDENTITY_INSTRUCTIONS,
         "participation_policy": participation_policy(presence),
         "decision_prompt": str(decision_prompt or DEFAULT_DECISION_PROMPT).strip()[:MAX_PROMPT_CHARS],
-        "identity_policy": IDENTITY_INSTRUCTIONS,
+        "previous_state": str(previous_state or "observing")[:32],
         "observations": dict(observations or {}),
-        "conversation": turn.payload(),
+        "persona": str(persona_prompt or "").strip()[:MAX_PERSONA_CHARS],
     }
     if active_topics is not None:
         state["active_topics"] = dict(active_topics)
@@ -290,8 +290,14 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
         "action": {
             "type": "choice",
             "instructions": {
-                "question": "If this participant does take part, how should it respond?",
-                "focus": "Pick the most restrained form that still fits; pick ignore when nothing should be answered.",
+                "question": "What single response action fits the current speaker's message?",
+                "focus": (
+                    "Read conversation.text as the current message; messages supply its authors, "
+                    "mentions and quote relationships. Background supplies context, not a new request. "
+                    "First decide whether any response is appropriate. If yes, choose close for an "
+                    "ending/refusal, clarify for a missing fact that blocks answering, reply when "
+                    "new content is needed, or acknowledge when only a greeting or confirmation is needed."
+                ),
             },
             "criteria": ACTION_CRITERIA,
         },
@@ -299,7 +305,11 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "type": "choice",
             "instructions": {
                 "question": "Which interaction state is this participant in after this turn?",
-                "focus": "The state describes the overall mood and engagement, which is a separate question from reply length.",
+                "focus": (
+                    "Choose the primary purpose of this turn, not every mood that could apply. "
+                    "A request for a solution is focused; a request for comfort is supportive. "
+                    "Background mood and persona do not override the speaker's current purpose."
+                ),
             },
             "criteria": STATE_CRITERIA,
         },
@@ -315,7 +325,12 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "type": "choice",
             "instructions": {
                 "question": "Which category best describes the main reason for this decision?",
-                "focus": "This is a diagnostic category, not an explanation: choose the closest one.",
+                "focus": (
+                    "Choose one category for the current message. When several apply, use this "
+                    "priority: boundary_or_sensitive, other_recipient, addressed_request or "
+                    "addressed_question (task versus information), social_signal, ongoing_thread, "
+                    "open_group_topic, low_value_chatter. A name or quote alone is not a direct request."
+                ),
             },
             "criteria": REASON_CRITERIA,
         },
@@ -389,6 +404,23 @@ def _goal(action: str, reason: str) -> str:
     return (_ACTION_GOALS.get(action, _ACTION_GOALS["ignore"]) + _REASON_GOALS.get(reason, ""))[:600]
 
 
+def _reply_style(
+    action: str,
+    state: tuple[str, float] | None,
+    length: tuple[str, float] | None,
+    reason: tuple[str, float] | None,
+    floor: float,
+) -> tuple[str, str, str]:
+    """Uncertain presentation must not veto an admitted response."""
+    default_state = {"ignore": "observing", "close": "disengaging"}.get(action, "focused")
+    chosen_state = state[0] if state is not None and state[1] >= floor else default_state
+    if action == "ignore" or chosen_state == "observing":
+        chosen_state = default_state
+    chosen_length = length[0] if length is not None and length[1] >= floor else "brief"
+    chosen_reason = reason[0] if reason is not None and reason[1] >= floor else ""
+    return chosen_state, chosen_length, chosen_reason
+
+
 def decision_from_answers(
     turn: TurnContext,
     answers: Mapping[str, Any],
@@ -399,9 +431,9 @@ def decision_from_answers(
 ) -> TurnDecision:
     """Map validated System One answers onto the plugin's own decision contract.
 
-    Anything that cannot be mapped exactly — a missing answer, an option outside the
-    vocabulary, a confidence below the floor — returns the local conservative plan
-    with a `<prefix>` reason instead of an approximation of the model's intent.
+    Invalid answers or an uncertain action return the local conservative plan.
+    A valid, uncertain state/length/reason uses neutral presentation defaults;
+    only the action confidence and join probability admit an ambient response.
 
     `prefix` identifies the source of the diagnostic reason in a decision trace.
     """
@@ -423,14 +455,16 @@ def decision_from_answers(
         state = _choice(answers, "state", STATES)
         length = _choice(answers, "length", LENGTHS)
         reason = _choice(answers, "reason", REASONS)
-        chosen = action[0] if action is not None and action[0] != "ignore" else "reply"
-        if reason is not None and reason[0] == "boundary_or_sensitive" and chosen == "reply":
+        chosen = action[0] if action is not None and action[1] >= min_confidence and action[0] != "ignore" else "reply"
+        chosen_state, chosen_length, chosen_reason = _reply_style(chosen, state, length, reason, min_confidence)
+        if chosen_reason == "boundary_or_sensitive" and chosen == "reply":
             chosen = "close"
+            chosen_state = "disengaging"
         return TurnDecision(
-            chosen, state[0] if state is not None and state[0] != "observing" else "focused",
+            chosen, chosen_state,
             _targets(turn, answers, needed=True),
-            _goal(chosen, reason[0] if reason is not None else "addressed_request"),
-            length[0] if length is not None else "brief", prefix + "wake_addressed",
+            _goal(chosen, chosen_reason),
+            chosen_length, prefix + "wake_addressed",
         )
     action = _choice(answers, "action", ACTIONS)
     state = _choice(answers, "state", STATES)
@@ -439,11 +473,13 @@ def decision_from_answers(
     if action is None or state is None or length is None or reason is None:
         return TurnDecision.fallback(turn, prefix + "invalid_answer")
     floor = float(min_confidence)
-    if min(action[1], state[1], length[1], reason[1]) < floor:
+    if action[1] < floor:
         return TurnDecision.fallback(turn, prefix + "low_confidence")
-    chosen, reason_code = action[0], prefix + reason[0]
+    chosen = action[0]
+    chosen_state, chosen_length, chosen_reason = _reply_style(chosen, state, length, reason, floor)
+    reason_code = prefix + (chosen_reason or "action_accepted")
     explicit_wake = bool(turn.explicit and turn.wake_kind == "legacy"
-                         and reason[0] != "boundary_or_sensitive")
+                         and chosen_reason != "boundary_or_sensitive")
     if chosen == "ignore" and explicit_wake:
         return TurnDecision.fallback(turn, prefix + "explicit_wake")
     join = answers.get("join")
@@ -457,10 +493,10 @@ def decision_from_answers(
                 chosen, reason_code = "ignore", prefix + "join_declined"
     return TurnDecision(
         chosen,
-        state[0],
+        "observing" if chosen == "ignore" else chosen_state,
         _targets(turn, answers, needed=chosen != "ignore"),
-        _goal(chosen, reason[0]),
-        length[0],
+        _goal(chosen, chosen_reason),
+        chosen_length,
         reason_code,
     )
 
@@ -468,9 +504,8 @@ def decision_from_answers(
 def describe_answers(answers: Mapping[str, Any]) -> dict:
     """Compact, serializable evidence for diagnostics and the console panel.
 
-    The `confidence` entry is the weakest confidence among the required answers,
-    which is what the acceptance floor is compared against; 0.0 means the answers
-    were incomplete and nothing was accepted from them.
+    `confidence` reports the action's confidence, which gates ambient responses.
+    Each presentation answer retains its own confidence for diagnosis.
     """
     described: dict[str, Any] = {}
     for key in ("completion", "join", "action", "state", "length", "reason", "target", "recipient", "topic"):
@@ -493,12 +528,6 @@ def describe_answers(answers: Mapping[str, Any]) -> dict:
 
 
 def decision_confidence(answers: Mapping[str, Any]) -> float:
-    """The weakest confidence among the required answers; 0.0 when incomplete."""
-    values = []
-    for key in ("action", "state", "length", "reason"):
-        answer = answers.get(key)
-        confidence = answer.get("confidence") if isinstance(answer, Mapping) else None
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            return 0.0
-        values.append(float(confidence))
-    return min(values) if values else 0.0
+    """Action confidence; 0.0 when that answer is invalid or unavailable."""
+    action = _choice(answers, "action", ACTIONS)
+    return action[1] if action is not None else 0.0

@@ -1,6 +1,41 @@
 """Native status, read-only exports and the single participation control entry."""
+import json
+
 import pytest
 from .test_ui_theme_browser import browser as browser, page_server as page_server, setup
+
+
+@pytest.mark.parametrize("action_confidence", [0.93, None])
+def test_console_reports_action_confidence_instead_of_old_style_summary(browser, page_server, action_confidence):
+    with browser.new_context() as context:
+        setup(context, {})
+        context.add_init_script("window.__actionConfidence = " + json.dumps(action_confidence))
+        context.add_init_script("""(() => {
+          const api=window.AstrBotPluginPage, get=api.apiGet;
+          const session={session_key:'mock:GroupMessage:g1',session_id:'g1',group_id:'g1',
+            takeover:true,dag_nodes:1,pending:0,mode:'neutral',mpm:0};
+          api.apiGet=async (name,params) => {
+            const result=await get(name,params);
+            if(name==='overview') result.data.sessions=[session];
+            if(name==='session') result.data={...session,decision_mode:'persona_model',
+              interaction_state:'focused',model_decision:{backend:'jev',action:'reply',state:'focused',
+                reason_code:'jev_action_accepted',target_message_ids:['m1'],
+                jev:{confidence:0.15,action:{type:'choice',choice:'reply',confidence:window.__actionConfidence},
+                  length:{type:'choice',choice:'detailed',confidence:0.15}}}};
+            return result;
+          };
+        })();""")
+        page = context.new_page()
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(f"{page_server}/console/index.html")
+        page.locator('#tab-sessions').click()
+        page.locator('#traceMeta').filter(has_text='jev_action_accepted').wait_for()
+        trace = page.locator('#traceMeta').inner_text()
+        assert 'Jev 决策' in trace
+        assert ('动作置信 0.93' in trace) is (action_confidence is not None)
+        assert '置信 0.15' not in trace and '置信 0.00' not in trace
+        assert not errors
 
 
 @pytest.mark.parametrize("width,theme", [(1366, "day"), (390, "night")])
