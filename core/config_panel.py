@@ -8,7 +8,7 @@ import math
 import re
 from astrbot.api import logger
 from .config import PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
-from .prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS
+from .prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS, resolve_prompt_default
 
 _PRESETS = {
     "observe": {
@@ -141,7 +141,7 @@ class ConfigPanel:
             "deep_cooling_minutes": getattr(cfg, "deep_cooling_minutes", 15.0),
             "chars_per_second": getattr(cfg, "chars_per_second", 25.0),
             "base_thinking_delay": getattr(cfg, "base_thinking_delay", 0.0),
-            "max_fragments": getattr(cfg, "max_fragments", 3),
+            "max_fragments": getattr(cfg, "max_fragments", 10),
             "max_fragment_chars": getattr(cfg, "max_fragment_chars", 120),
             "inter_burst_interval": getattr(cfg, "inter_burst_interval", 1.2),
             "strip_markdown_in_banter": bool(getattr(cfg, "strip_markdown_in_banter", True)),
@@ -211,7 +211,7 @@ class ConfigPanel:
                 source = value.split(",") if isinstance(value, str) else value
                 value = sorted({str(item).strip() for item in source if str(item).strip()})
             elif key in PROMPT_DEFAULTS and isinstance(value, str):
-                value = value.strip() or PROMPT_DEFAULTS[key]
+                value = resolve_prompt_default(key, value)
             if value != eff:
                 mismatches.append(key)
         return {

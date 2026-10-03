@@ -4,7 +4,7 @@ Validates:
 1. Removal of robotic assistant sign-offs and boilerplate clichés.
 2. Markdown format degradation into casual text in fast banter mode.
 3. Code block preservation in serious inquiry mode.
-4. Message fragmentation into 2-3 bursts under FAST_BANTER.
+4. Message fragmentation into up to 10 bursts under FAST_BANTER.
 5. Cohesive non-fragmented delivery under SERIOUS_INQUIRY.
 6. Typing latency calculations proportional to text length and thinking pause.
 """
@@ -32,7 +32,7 @@ def pacer(style_shaper):
     return PacingShaper(style_shaper=style_shaper)
 
 
-def test_unpunctuated_long_text_is_split_into_at_most_three_bursts(pacer):
+def test_unpunctuated_long_text_respects_soft_fragment_size(pacer):
     fragments = pacer.shape_and_fragment(
         "长" * 250,
         mode=GroupChatMode.FAST_BANTER,
@@ -45,13 +45,23 @@ def test_unpunctuated_long_text_is_split_into_at_most_three_bursts(pacer):
 
 
 @pytest.mark.parametrize("separator", ["，", "；", ",", ";"])
-@pytest.mark.parametrize("max_fragments", [1, 2, 3])
+@pytest.mark.parametrize("max_fragments", [1, 2, 3, 10])
 def test_fragmentation_preserves_clause_punctuation(pacer, separator, max_fragments):
     text = separator.join(["这是一段需要完整保留的文字"] * 6)
     fragments = pacer.shape_and_fragment(
         text, GroupChatMode.CHILL_FADE, max_fragments=max_fragments,
     )
     assert 1 <= len(fragments) <= max_fragments
+    assert "".join(fragments) == text
+
+
+@pytest.mark.parametrize("max_fragments", [10, 11])
+def test_long_unpunctuated_reply_uses_ten_bursts_without_losing_text(pacer, max_fragments):
+    text = "长" * 1201
+    fragments = pacer.shape_and_fragment(
+        text, GroupChatMode.FAST_BANTER, max_fragments=max_fragments,
+    )
+    assert len(fragments) == 10
     assert "".join(fragments) == text
 
 

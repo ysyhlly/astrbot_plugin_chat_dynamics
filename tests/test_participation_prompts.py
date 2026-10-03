@@ -7,7 +7,7 @@ import pytest
 
 from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
 from astrbot_plugin_chat_dynamics.core.jev_decision import build_state
-from astrbot_plugin_chat_dynamics.core.prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS
+from astrbot_plugin_chat_dynamics.core.prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS, PROMPT_DEFAULT_HISTORY
 from astrbot_plugin_chat_dynamics.core.social_manners import SocialMannersGate
 from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext
 from .test_jev_decision_layer import answers, jev_plugin as jev_plugin
@@ -123,6 +123,34 @@ async def test_custom_prompts_apply_to_next_turn_and_empty_restores_defaults(jev
         await flush(p, event)
         await drain(p)
         assert bridge.requests[-1][0]["reply_guidance"] == PROMPT_DEFAULTS["reply_prompt"]
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.parametrize("previous", PROMPT_DEFAULT_HISTORY["reply_prompt"])
+@pytest.mark.asyncio
+async def test_saved_reply_defaults_upgrade_in_panel_and_next_reply_without_overwriting_custom_text(jev_plugin, previous):
+    p, bridge = jev_plugin
+    try:
+        panel = await p.save_config_values({"reply_prompt": previous})
+        assert p.config["reply_prompt"] == previous
+        assert panel["effective"]["reply_prompt"] == PROMPT_DEFAULTS["reply_prompt"]
+        assert "reply_prompt" not in panel["mismatches"]
+        event = MockEvent("帮我简单解释一下", message_id="upgraded-default", components=[At("bot_42")])
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert bridge.requests[-1][0]["reply_guidance"] == PROMPT_DEFAULTS["reply_prompt"]
+
+        custom = previous + "\n只讨论游戏，详细攻略可展开。"
+        panel = await p.save_config_values({"reply_prompt": custom})
+        assert panel["effective"]["reply_prompt"] == custom
+        assert "reply_prompt" not in panel["mismatches"]
+        event = MockEvent("继续解释", message_id="custom-preserved", components=[At("bot_42")])
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert bridge.requests[-1][0]["reply_guidance"] == custom
     finally:
         await p.terminate()
 

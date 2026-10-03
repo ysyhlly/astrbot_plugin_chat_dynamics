@@ -35,6 +35,9 @@ from .member_identity import IDENTITY_INSTRUCTIONS
 from .prompt_policy import DEFAULT_DECISION_PROMPT, MAX_PROMPT_CHARS
 from .turn_decision import TurnContext, TurnDecision, clip_conversation_text
 from .context_retrieval import ContextEvidence, clip_text as _clip_text
+from .integrations.affection import AFFECTION_INSTRUCTIONS, normalize_affection
+from .decision_persona import MAX_PERSONA_CHARS as MAX_PERSONA_CHARS, decision_persona_summary
+from .reply_length import REPLY_LENGTH_POLICY
 
 ACTIONS = ("ignore", "acknowledge", "clarify", "reply", "close")
 STATES = ("observing", "casual", "focused", "supportive", "playful", "disengaging")
@@ -53,7 +56,6 @@ REASONS = (
 )
 REASON_PREFIX = "jev_"
 MAX_TARGET_OPTIONS = 8
-MAX_PERSONA_CHARS = 1200
 MAX_TOTAL_STATE_CHARS = 12000
 MAX_TOTAL_REQUEST_CHARS = 18000
 _ESSENTIAL_OBSERVATIONS = frozenset({"completion_waited", "utterance_pause_seconds",
@@ -85,11 +87,7 @@ STATE_CRITERIA = {
     "playful": "An explicit joke or playful exchange",
     "disengaging": "Closing or refusal; end participation in this exchange",
 }
-LENGTH_CRITERIA = {
-    "brief": "One sentence or less suffices: greeting, confirmation or simple answer",
-    "normal": "Two or three concise sentences; one would omit useful content",
-    "detailed": "Steps, a list or explanation requiring more than three short sentences",
-}
+LENGTH_CRITERIA = REPLY_LENGTH_POLICY.criteria
 REASON_CRITERIA = {
     "addressed_request": "Direct task request to this participant; naming it alone is insufficient",
     "addressed_question": "Direct information question to this participant; use addressed_request for tasks",
@@ -150,6 +148,7 @@ def build_state(
     decision_prompt: str = DEFAULT_DECISION_PROMPT,
     max_chars: int = MAX_TOTAL_STATE_CHARS,
     active_topics: Mapping[str, Any] | None = None,
+    affection: Mapping[str, Any] | None = None,
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
     state = {
@@ -159,11 +158,15 @@ def build_state(
         "decision_prompt": str(decision_prompt or DEFAULT_DECISION_PROMPT).strip()[:MAX_PROMPT_CHARS],
         "previous_state": str(previous_state or "observing")[:32],
         "observations": dict(observations or {}),
-        "persona": str(persona_prompt or "").strip()[:MAX_PERSONA_CHARS],
+        "persona": decision_persona_summary(str(persona_prompt or "")),
     }
     if active_topics is not None:
         state["active_topics"] = dict(active_topics)
-    return _shrink(state, max_chars)
+    relationship = normalize_affection(affection, user_id=turn.author)
+    if relationship is not None:
+        state["affection"] = relationship
+        state["affection_policy"] = AFFECTION_INSTRUCTIONS
+    return _shrink(_compact_state(state), max_chars)
 
 
 
@@ -192,7 +195,8 @@ _RELATION_FIELDS = frozenset({
     "recipient_ids", "basis", "certainty", "mentioned_user_ids", "quoted_message_id", "quoted_author_id",
     "subject_user_ids", "subject_is_bot", "bot_is_addressee", "intent", "topic_id", "topic_confidence",
     "topic_ambiguous", "parent_message_id", "parent_confidence", "addressee_confidence", "addressee_ambiguous",
-    "routing_evidence",
+    "routing_evidence", "evidence_message_id", "bot_addressee_confidence", "routing_ambiguous",
+    "scenes", "emotions",
 })
 
 
@@ -200,25 +204,31 @@ def _compact_semantics(message: dict) -> None:
     semantics = message.get("semantics")
     if not isinstance(semantics, dict):
         return
+    # False ambiguity flags and zero confidence are evidence, not empty values.
     compact = {key: value for key, value in semantics.items() if key in _RELATION_FIELDS
-               and value and value != "unknown"}
-    if compact.get("parent_message_id") == compact.get("quoted_message_id"):
-        compact.pop("parent_message_id", None)
-        compact.pop("parent_confidence", None)
-    if compact.get("certainty") == "explicit":
-        compact.pop("addressee_confidence", None)
+               and value != "unknown"}
+    if compact.get("parent_message_id") and compact.get("parent_message_id") == compact.get("quoted_message_id"):
+        compact.pop("parent_message_id")
+    if compact.get("evidence_message_id") in {compact.get("parent_message_id"), compact.get("quoted_message_id")}:
+        compact.pop("evidence_message_id", None)
+    if ("topic_ambiguous" in compact and "addressee_ambiguous" in compact
+            and compact.get("routing_ambiguous") == (compact["topic_ambiguous"] or compact["addressee_ambiguous"])):
+        compact.pop("routing_ambiguous", None)
     message["semantics"] = compact
+    if message.get("reply_to") and message.get("reply_to") == compact.get("quoted_message_id"):
+        message.pop("reply_to")
 
 
 def _compact_fragments(conversation: dict) -> None:
     """Preserve every current ID and quote account; share repeated identities."""
     for message in list(conversation.get("messages") or ())[:-1]:
-        if message.get("author") == conversation.get("author"):
+        if message.get("author_identity") == conversation.get("speaker_identity"):
             message.pop("author_identity", None)
         quoted = message.get("quoted_author_identity")
         if isinstance(quoted, dict) and quoted.get("user_id"):
-            conversation.setdefault("quoted_identities", {})[quoted["user_id"]] = quoted
-            message.pop("quoted_author_identity", None)
+            shared = conversation.setdefault("quoted_identities", {})
+            if shared.setdefault(quoted["user_id"], quoted) == quoted:
+                message.pop("quoted_author_identity", None)
         _compact_semantics(message)
     messages = list(conversation.get("messages") or ())
     if len(messages) < 4:
@@ -244,6 +254,62 @@ def _compact_fragments(conversation: dict) -> None:
                     semantic.pop(key)
     if not defaults:
         conversation.pop("fragment_defaults")
+
+
+def _clean_fields(value):
+    """Remove empty containers/text, keeping false and numeric zero unchanged."""
+    if isinstance(value, dict):
+        cleaned = {key: _clean_fields(item) for key, item in value.items()}
+        return {key: item for key, item in cleaned.items()
+                if item is not None and item != "" and item != {} and item != [] and item != ()}
+    if isinstance(value, (list, tuple)):
+        # Lists such as [message_id, text] and text spans have positional meaning.
+        items = [_clean_fields(item) for item in value]
+        return tuple(items) if isinstance(value, tuple) else items
+    return value
+
+
+def _compact_state(state: dict) -> dict:
+    """Lossless field cleanup on every request, before applying text budgets."""
+    conversation = state["conversation"]
+    _compact_fragments(conversation)
+    known = [conversation.get("speaker_identity"), conversation.get("bot_identity")]
+    known.extend(m.get("author_identity") for m in conversation.get("messages", ()))
+    background = conversation.get("background", ())
+    by_account: dict[str, list[dict]] = {}
+    for message in background:
+        identity = message.get("author_identity")
+        if isinstance(identity, dict) and identity.get("user_id") and identity not in known:
+            by_account.setdefault(identity["user_id"], []).append(identity)
+    shared = {uid: identities[0] for uid, identities in by_account.items()
+              if len(identities) > 1 and all(i == identities[0] for i in identities)}
+    if shared:
+        conversation["member_identities"] = shared
+    for message in background:
+        _compact_semantics(message)
+        identity = message.get("author_identity")
+        if identity in known or (isinstance(identity, dict) and identity == shared.get(identity.get("user_id"))):
+            message.pop("author_identity", None)
+    for message in conversation.get("messages", ()):
+        _compact_semantics(message)
+    has_topics = "active_topics" in state
+    state = _clean_fields(state)
+    # Stable public containers; an empty background/topic list is a real result.
+    state["conversation"].setdefault("messages", [])
+    state["conversation"].setdefault("background", [])
+    state.setdefault("observations", {})
+    state.setdefault("persona", "")
+    if has_topics:
+        state.setdefault("active_topics", {})
+    return state
+
+
+def _drop_optional_topic(topics: dict) -> bool:
+    for key in reversed(topics):
+        if not topics[key].get("required"):
+            topics.pop(key)
+            return True
+    return False
 
 
 def _background_priority(message: dict) -> int:
@@ -272,6 +338,12 @@ def _shrink(state: dict, max_chars: int) -> dict:
     if _size(state) <= max_chars:
         return state
 
+    # Optional social preferences must not crowd out the current request or its evidence.
+    state.pop("affection", None)
+    state.pop("affection_policy", None)
+    if _size(state) <= max_chars:
+        return state
+
     # Reserve space for the current request and real quotes before removing them.
     # Keep operator guidance intact whenever the remaining context can fit.
     state["observations"] = {key: value for key, value in state.get("observations", {}).items()
@@ -280,7 +352,8 @@ def _shrink(state: dict, max_chars: int) -> dict:
     if "active_topics" in state:
         state["active_topics"] = topics
         while topics and _size(topics) > max_chars // 4:
-            topics.pop(next(reversed(topics)))
+            if not _drop_optional_topic(topics):
+                break
     if _size(state) <= max_chars:
         return state
     state["persona"] = _clip_text(str(state.get("persona") or ""), min(400, max_chars // 20))
@@ -299,7 +372,8 @@ def _shrink(state: dict, max_chars: int) -> dict:
     # Topic descriptions are ordered by query relevance. Keep state, question
     # choices and the acceptance mapping aligned in the caller after this cut.
     while topics and _size(state) > max_chars:
-        topics.pop(next(reversed(topics)))
+        if not _drop_optional_topic(topics):
+            break
     if _size(state) > max_chars:
         for message in background:
             message["text"] = _clip_text(str(message.get("text") or ""), 120)
@@ -332,7 +406,7 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
     calibrated yes/no (a Noul), `action`, `state`, `length` and
     `reason` are Choices over the plugin's own vocabulary, and `target` is a Choice
     over this turn's message IDs when more than one candidate exists. Soft wakes
-    also ask who the actual recipient is.
+    ask who the actual recipient is instead of the unused join probability.
     """
     questions: dict[str, dict] = {
         "completion": {
@@ -360,7 +434,8 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
                     "`participation_policy`, `decision_prompt`, `previous_state`, `observations` and `conversation`?"
                 ),
                 "focus": (
-                    "Follow the current participation_policy and operator decision_prompt. Judge useful, "
+                    "Follow the current participation_policy and operator decision_prompt. "
+                    "When supplied, consider affection only under affection_policy. Judge useful, "
                     "appropriate participation, not interest alone. Addressed turns and live exchanges "
                     "usually warrant speaking; dialogue supplies prior replies and pending questions, "
                     "never proof of the current recipient. Explicit other recipients, privacy, conflict "
@@ -379,6 +454,7 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
                 "question": "What single response action fits the current speaker's message?",
                 "focus": (
                     "Use current text and attribution. Background is context, never the request. "
+                    "Respect persona boundaries, participation_policy and operator decision_prompt. "
                     "Decide whether a response is appropriate before selecting its purpose."
                 ),
             },
@@ -398,7 +474,7 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "type": "choice",
             "instructions": {
                 "question": "How long should the reply be?",
-                "focus": "Group chat defaults to short; expand only when explaining or listing is required.",
+                "focus": REPLY_LENGTH_POLICY.decision_focus,
             },
             "criteria": LENGTH_CRITERIA,
         },
@@ -417,6 +493,7 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
         },
     }
     if turn.soft_wake:
+        questions.pop("join")
         questions["recipient"] = {
             "type": "choice",
             "instructions": {

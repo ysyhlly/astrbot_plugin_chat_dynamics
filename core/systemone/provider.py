@@ -16,6 +16,7 @@ from astrbot.core.provider.register import (
 
 from .client import (
     SystemOneError,
+    SystemOneHTTPClient,
     endpoint_url,
     parse_models,
     request_json,
@@ -51,6 +52,11 @@ class SystemOneProvider(Provider):
         if not math.isfinite(timeout) or not 0 < timeout <= 300:
             raise SystemOneError("超时应为 0～300 秒之间的有限数值。")
         self.timeout = timeout
+        self._http = SystemOneHTTPClient()
+
+    async def terminate(self):
+        # AstrBot calls this on reload/unload and for temporary catalog providers.
+        await self._http.close()
 
     def get_current_key(self):
         key = self._key or ""
@@ -85,6 +91,7 @@ class SystemOneProvider(Provider):
             key=self.get_current_key(),
             headers=self.request_headers,
             timeout=self.timeout,
+            client=self._http,
         )
         models = parse_models(payload)
         if zen:
@@ -144,6 +151,7 @@ class SystemOneProvider(Provider):
             timeout=limit,
             payload=payload,
             max_body=256 * 1024,
+            client=self._http,
         )
         return validate_answers(envelope, questions)
 

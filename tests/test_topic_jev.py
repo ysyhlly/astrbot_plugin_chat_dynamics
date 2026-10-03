@@ -248,7 +248,7 @@ async def test_late_jev_topic_opinion_cannot_write_after_invalidation(batch_plug
         await p.terminate()
 
 
-def test_all_active_labels_are_offered_with_bounded_excerpts_and_future_topics_excluded():
+def test_relevant_topic_shortlist_keeps_excerpts_and_excludes_future_topics():
     from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG
     from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRuntime
     from astrbot_plugin_chat_dynamics.core.turn_decision import TurnContext, MessageSnapshot
@@ -262,7 +262,7 @@ def test_all_active_labels_are_offered_with_bounded_excerpts_and_future_topics_e
     rt.routing_state.topics["future"] = replace(old, topic_id="future", created_at=1001, updated_at=1001)
     turn = TurnContext("r", "u", node.text, (MessageSnapshot("current", "u", ""),), (), 0, 0, 1000, False)
     descriptions, questions, mapping = build_topic_task(rt, turn, 1000)
-    assert len(descriptions) == 13 and "topic" in questions
+    assert len(descriptions) == 8 and "topic" in questions
     assert sum(bool(d["excerpt"]) for d in descriptions.values()) == 8
     assert old in mapping["topics"].values()
     assert rt.routing_state.topics["future"] not in mapping["topics"].values()
@@ -282,10 +282,10 @@ def test_full_active_label_state_fits_jev_budget_without_erasing_current_utteran
     turn = TurnContext("r", "u", node.text, (MessageSnapshot("current", "u", ""),), (), 0, 0, 1000, False)
     descriptions, questions, mapping = build_topic_task(rt, turn, 1000)
     state = build_state(turn, active_topics=descriptions, persona_prompt="人设" * 600)
-    assert len(descriptions) == 80
+    assert len(descriptions) == 8
     assert 0 < len(state["active_topics"]) < 80
     assert list(state["active_topics"]) == list(descriptions)[:len(state["active_topics"])]
-    assert len(questions["topic"]["criteria"]) == 82
+    assert len(questions["topic"]["criteria"]) == 10
     questions, mapping = align_topic_task(state, questions, mapping)
     assert set(questions["topic"]["criteria"]) == set(state["active_topics"]) | {"NEW", "KEEP"}
     assert set(mapping["topics"]) == set(state["active_topics"])

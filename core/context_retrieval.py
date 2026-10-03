@@ -77,7 +77,8 @@ def _confidence(value: Any) -> float:
     return float(value) if 0 <= value <= 1 else 0.0
 
 
-def _topic(node: Any) -> tuple[str, float]:
+def confirmed_topic(node: Any) -> tuple[str, float]:
+    """Return only an unambiguous topic above its recorded acceptance threshold."""
     routing = _routing(node)
     confidence = _confidence(routing.get("topic_confidence"))
     threshold = _confidence(routing.get("topic_threshold", .58)) or .58
@@ -139,8 +140,8 @@ def _parents(node: Any, dag: Any) -> tuple[tuple[Any, ContextEvidence], ...]:
                     or (routing.get("parent_message_id") and routing["parent_message_id"] != parent_id)
                     or ("parent_confidence" in routing and _confidence(routing["parent_confidence"]) < threshold)):
                 continue
-            topic, _ = _topic(node)
-            parent_topic, _ = _topic(parent)
+            topic, _ = confirmed_topic(node)
+            parent_topic, _ = confirmed_topic(parent)
             if topic and parent_topic and topic != parent_topic:
                 continue
             reasons = tuple(str(code) for code in routing.get("evidence", ()) if code)
@@ -165,7 +166,7 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
     positions = {node.msg_id: index for index, node in enumerate(ordered)}
     boundary = max(positions.get(mid, -1) for mid in current_ids)
     selected: dict[str, BackgroundSelection] = {}
-    current_topics = {topic for node in current_nodes if (topic := _topic(node)[0])}
+    current_topics = {topic for node in current_nodes if (topic := confirmed_topic(node)[0])}
     topic_anchor_ids = set(current_ids)
 
     def remember(node: Any, evidence: ContextEvidence, priority: int | None = None) -> bool:
@@ -224,7 +225,7 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
     topics = {}
     recipients = {}
     for node in anchors:
-        topic, confidence = _topic(node)
+        topic, confidence = confirmed_topic(node)
         if topic and (topic not in topics or confidence > topics[topic][1]):
             topics[topic] = (node.msg_id, confidence)
     for node in current_nodes:
@@ -242,7 +243,7 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
         candidate_topic = node_topic_id(node)
         if topics and candidate_topic and candidate_topic not in topics:
             continue
-        topic, confidence = _topic(node)
+        topic, confidence = confirmed_topic(node)
         ids, recipient_confidence = _recipients(node, dag)
         # A known participant can also speak to someone outside this exchange.
         # A shared bot recipient only connects supplements with a confirmed topic.

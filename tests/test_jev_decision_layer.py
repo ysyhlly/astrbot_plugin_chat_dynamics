@@ -90,7 +90,8 @@ async def test_jev_decides_the_turn_and_the_model_decision_is_not_asked(jev_plug
         assert not p.decision_calls, "the model decision path must not run behind a Jev backend"
         assert len(p.jev.calls) == 1
         call = p.jev.calls[0]
-        assert set(call["questions"]) >= {"join", "action", "state", "length", "reason"}
+        assert set(call["questions"]) >= {"recipient", "action", "state", "length", "reason"}
+        assert "join" not in call["questions"]
         assert set(call["questions"]["action"]["criteria"]) == set(ACTIONS)
         assert set(call["questions"]["state"]["criteria"]) == set(STATES)
         assert set(call["questions"]["reason"]["criteria"]) == set(REASONS)

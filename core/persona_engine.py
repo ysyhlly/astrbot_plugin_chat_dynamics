@@ -99,7 +99,7 @@ def _platform_reply_id(runtime: Any, item: ModelTurn, message_id: str) -> str | 
     return None
 
 
-def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any, *, max_fragments: int = 3) -> list[Any]:
+def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any, *, max_fragments: int = 10) -> list[Any]:
     """Queue tool/media chains, then text fragments that are not the same payload.
 
     A tool-direct chain that already equals the model transcript must not be
@@ -619,6 +619,16 @@ class PersonaEngine:
                                 pending_input=bool(item.debounce_result.metadata.get("pending_input")),
                                 completion_waited=item.debounce_result.was_extended)
         async with self.slots:
+            affection = None
+            integrations = getattr(p, "integrations", None)
+            read_affection = getattr(integrations, "affection_for_decision", None)
+            if runtime is not None and callable(read_affection):
+                try:
+                    affection = await read_affection(group_id=str(runtime.group_id), user_id=turn.author)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
             topics, topic_questions, topic_mapping = {}, {}, None
             config_id = p._turn_config_identity()
             if runtime is not None and p._runtime_config.conversation_router_enabled:
@@ -635,6 +645,7 @@ class PersonaEngine:
                     persona_prompt=getattr(persona, "prompt", ""),
                     decision_prompt=p._runtime_config.decision_prompt,
                     active_topics=topics,
+                    affection=affection,
                 )
                 topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
                 questions = {**build_questions(turn), **topic_questions}

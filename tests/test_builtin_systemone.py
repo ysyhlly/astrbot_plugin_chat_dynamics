@@ -73,10 +73,12 @@ class ParseTests(unittest.TestCase):
 class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.requests = []
+        self.transports = []
         self.mode = "ok"
         self.entered, self.release = asyncio.Event(), asyncio.Event()
 
         async def handler(request):
+            self.transports.append(request.transport)
             body = await request.json() if request.method == "POST" else None
             self.requests.append((request.method, request.path, request.headers.get("Authorization"), body))
             if self.mode == "error":
@@ -142,6 +144,7 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.release.set()
+        await self.provider.terminate()
         await self.runner.cleanup()
 
     async def test_native_model_list_service_endpoint_auth_and_dropdown(self):
@@ -170,8 +173,53 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_custom_catalog_path_remains_configurable(self):
         provider = SystemOneProvider({**self.source, "models_path": "/v1/systemone"}, {})
-        self.assertEqual(await provider.get_models(), ["jev-latest", "custom-model"])
-        self.assertEqual(self.requests[-1][1], "/api/v1/systemone")
+        try:
+            self.assertEqual(await provider.get_models(), ["jev-latest", "custom-model"])
+            self.assertEqual(self.requests[-1][1], "/api/v1/systemone")
+        finally:
+            await provider.terminate()
+
+    async def test_pool_reuses_connection_and_reads_credentials_and_timeouts_per_request(self):
+        await self.provider.get_models()
+        session = self.provider._http._session
+        self.provider.set_key("updated-key")
+        await self.provider.systemone_evaluate(state="synthetic", questions=QUESTIONS, timeout=2)
+        self.assertIs(self.transports[0], self.transports[1])
+        self.assertIs(session, self.provider._http._session)
+        self.assertEqual([r[2] for r in self.requests], ["Bearer dummy-key", "Bearer updated-key"])
+        self.mode = "delay"
+        with self.assertRaises(SystemOneError) as caught:
+            await self.provider.systemone_evaluate(state="synthetic", questions=QUESTIONS, timeout=.05)
+        self.assertEqual(caught.exception.code, "timeout")
+        self.release.set()
+        self.mode = "ok"
+        self.assertEqual(await self.provider.systemone_evaluate(state="synthetic", questions=QUESTIONS), ANSWERS)
+        self.assertIs(session, self.provider._http._session)
+
+    async def test_terminate_closes_pool_and_does_not_reopen_it(self):
+        await self.provider.get_models()
+        session = self.provider._http._session
+        await self.provider.terminate()
+        await self.provider.terminate()
+        self.assertTrue(session.closed)
+        before = len(self.requests)
+        with self.assertRaises(SystemOneError) as caught:
+            await self.provider.get_models()
+        self.assertEqual(caught.exception.code, "provider_closed")
+        self.assertEqual(len(self.requests), before)
+
+    async def test_cancelling_one_pooled_request_keeps_other_requests_usable(self):
+        self.mode = "delay"
+        task = asyncio.create_task(self.provider.systemone_evaluate(state="synthetic", questions=QUESTIONS))
+        await asyncio.wait_for(self.entered.wait(), timeout=2)
+        # A concurrent catalog request shares the pool, not the response handle.
+        self.assertEqual(await self.provider.get_models(), ["jev-latest", "custom-model"])
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.release.set()
+        self.mode = "ok"
+        self.assertEqual(await self.provider.systemone_evaluate(state="synthetic", questions=QUESTIONS), ANSWERS)
 
     async def test_selected_provider_decision_uses_native_key_address_and_model(self):
         await self.plugin.refresh_providers()

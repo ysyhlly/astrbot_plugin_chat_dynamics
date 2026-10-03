@@ -152,8 +152,28 @@ def validate_answers(envelope, questions):
     return answers
 
 
+class SystemOneHTTPClient:
+    """One lazy connection pool per native Provider, with no shared credentials."""
+
+    def __init__(self):
+        self._session = None
+        self._closed = False
+
+    def session(self):
+        if self._closed:
+            raise SystemOneError("System One 模型服务已关闭。", code="provider_closed")
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(trust_env=False, cookie_jar=aiohttp.DummyCookieJar())
+        return self._session
+
+    async def close(self):
+        self._closed = True
+        if self._session is not None:
+            await self._session.close()
+
+
 async def request_json(
-    method, url, *, key, headers, timeout, payload=None, max_body=1024 * 1024
+    method, url, *, key, headers, timeout, payload=None, max_body=1024 * 1024, client=None
 ):
     parts = urlsplit(url)
     if (
@@ -166,28 +186,28 @@ async def request_json(
     if key:
         request_headers["Authorization"] = "Bearer " + key
     request_headers.setdefault("Accept", "application/json")
+    owned = client is None
+    client = client or SystemOneHTTPClient()
     try:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=timeout), trust_env=False
-        ) as session:
-            async with session.request(
-                method,
-                url,
-                headers=request_headers,
-                json=payload,
-                allow_redirects=False,
-            ) as response:
-                if response.status != 200:
-                    raise SystemOneError(
-                        f"System One 请求失败（HTTP {response.status}）。", code=f"http_{response.status}"
-                    )
-                chunks, size = [], 0
-                async for chunk in response.content.iter_chunked(16384):
-                    size += len(chunk)
-                    if size > max_body:
-                        raise SystemOneError("System One 响应过大。")
-                    chunks.append(chunk)
-                return json.loads(b"".join(chunks))
+        async with client.session().request(
+            method,
+            url,
+            headers=request_headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=False,
+        ) as response:
+            if response.status != 200:
+                raise SystemOneError(
+                    f"System One 请求失败（HTTP {response.status}）。", code=f"http_{response.status}"
+                )
+            chunks, size = [], 0
+            async for chunk in response.content.iter_chunked(16384):
+                size += len(chunk)
+                if size > max_body:
+                    raise SystemOneError("System One 响应过大。")
+                chunks.append(chunk)
+            return json.loads(b"".join(chunks))
     except SystemOneError:
         raise
     except asyncio.TimeoutError:
@@ -196,3 +216,6 @@ async def request_json(
         raise SystemOneError("System One 连接失败。", code="transport_error") from None
     except (ValueError, UnicodeError, RecursionError):
         raise SystemOneError("System One 未返回有效 JSON。", code="invalid_json") from None
+    finally:
+        if owned:
+            await client.close()

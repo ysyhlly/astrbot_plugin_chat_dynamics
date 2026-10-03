@@ -58,11 +58,11 @@ class PacingShaper:
         return PacingShaper.limit_fragments(paragraphs)
 
     @staticmethod
-    def limit_fragments(parts: List[str], max_fragments: int = 3) -> List[str]:
+    def limit_fragments(parts: List[str], max_fragments: int = 10) -> List[str]:
         """Merge an excess tail; a sending limit must never truncate generated prose."""
         if max_fragments < 1:
             raise ValueError("max_fragments must be at least 1")
-        limit = min(max_fragments, 3)
+        limit = min(max_fragments, 10)
         if len(parts) <= limit:
             return list(parts)
         return [*parts[:limit - 1], "\n\n".join(parts[limit - 1:])]
@@ -94,17 +94,17 @@ class PacingShaper:
         self,
         text: str,
         mode: GroupChatMode,
-        max_fragments: int = 3,
+        max_fragments: int = 10,
         min_fragment_chars: int = 15,
         max_fragment_chars: int = 120,
         trigger_text: str = "",
     ) -> List[str]:
-        """Formats and splits output into 1-3 conversational bursts appropriate for mode.
+        """Formats and splits output into 1-10 conversational bursts appropriate for mode.
 
         Args:
             text: Raw LLM output string.
             mode: Current group vibe mode.
-            max_fragments: Maximum fragments to return (default 3).
+            max_fragments: Maximum fragments to return (default 10).
             min_fragment_chars: Threshold below which fragments are not split further.
 
         Returns:
@@ -114,7 +114,7 @@ class PacingShaper:
             raise ValueError("max_fragments must be at least 1")
         if max_fragment_chars < min_fragment_chars:
             raise ValueError("max_fragment_chars must be at least min_fragment_chars")
-        max_fragments = min(max_fragments, 3)
+        max_fragments = min(max_fragments, 10)
 
         # Explicit paragraph breaks take priority over legacy sentence/size shaping.
         # In particular, keep an action and the dialogue below it in one message.
@@ -143,13 +143,13 @@ class PacingShaper:
         if mode == GroupChatMode.SERIOUS_INQUIRY and len(adapted_text) <= max_fragment_chars * 2:
             return finalize([adapted_text])
 
-        # 3. If in FAST_BANTER (or CHILL_FADE), fragment long texts into 2-3 short bursts
+        # 3. If in FAST_BANTER (or CHILL_FADE), fragment long texts into short bursts.
         if len(adapted_text) < 35:
             return finalize([adapted_text])
 
         # The configured size is a soft per-message target.  For unusually
         # large replies it grows just enough to preserve all content in at
-        # most three bursts instead of truncating the answer.
+        # most the configured number of bursts instead of truncating the answer.
         target_chars = max(max_fragment_chars, math.ceil(len(adapted_text) / max_fragments))
 
         # Split on sentence boundaries, newlines, or transitional conjunctions

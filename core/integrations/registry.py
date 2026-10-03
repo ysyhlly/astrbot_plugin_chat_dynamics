@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from .capabilities import Capability, provider_kind
+from .affection import SelfLearningAffectionReader, affection_database
 from .legacy.selflearning_legacy import SelfLearningBridge as LegacySelfLearningBridge
 from .legacy.selflearning_legacy import SelfLearningStatus
 from .livingmemory import discover_livingmemory
@@ -41,8 +42,12 @@ class CapabilityRegistry:
                 legacy = any(provider["capabilities"].values())
                 entries.append(Capability("selflearning.legacy_python", name, legacy,
                     legacy and provider["ready"], False, "standby" if legacy else "not_detected"))
+                affection = affection_database(plugin) is not None
+                entries.append(Capability("selflearning.affection", name, affection,
+                    affection and provider["ready"], affection and provider["ready"],
+                    "decision_read_only" if affection else "not_detected", "database_facade"))
         for kind, keys in {
-            "selflearning": ("native_hook", "legacy_python"),
+            "selflearning": ("native_hook", "legacy_python", "affection"),
             "livingmemory": ("native_recall", "search", "public_api", "embedding_api"),
         }.items():
             for key in keys:
@@ -77,6 +82,7 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         self._hub_url = hub_url
         self.hub = SelfLearningHubClient(hub_url if enabled else "", os.environ.get(hub_key_env, ""))
         self.embedding_id = ""
+        self.affection = SelfLearningAffectionReader()
         super().__init__(context, enabled=enabled)
 
     def _find_plugins(self):
@@ -92,6 +98,7 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         return result
 
     def configure(self, *, enabled, context=None, hub_url=None, hub_key_env=None, embedding_id=None):
+        generation = self._generation
         if hub_key_env is not None:
             self.hub_key_env = hub_key_env
         if hub_url is not None:
@@ -102,6 +109,8 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         if embedding_id is not None:
             self.embedding_id = embedding_id
         super().configure(enabled=enabled, context=context)
+        if generation != self._generation:
+            self.affection.invalidate()
 
     async def discover(self):
         self.refresh()
@@ -122,6 +131,26 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         """Compatibility entrypoint: normal requests never duplicate companion context."""
         return {}
 
+    async def affection_for_decision(self, *, group_id: str, user_id: str) -> dict | None:
+        """Jev bypasses request hooks; read only the current speaker's existing score."""
+        if not self.enabled or not group_id or not user_id:
+            return None
+        self.refresh()
+        generation = self._generation
+        for provider in tuple(self._providers):
+            plugin = provider["plugin"]
+            if (provider_kind(provider["name"]) != "selflearning" or not provider["ready"]
+                    or affection_database(plugin) is None):
+                continue
+            data = await self.affection.read(plugin, group_id=group_id, user_id=user_id)
+            self.refresh()
+            if (not self.enabled or generation != self._generation
+                    or not any(p["plugin"] is plugin and p["ready"] for p in self._providers)):
+                self.affection.invalidate()
+                return None
+            return data
+        return None
+
     async def context_for_request(self, *, event, query: str, native_hooks: bool) -> dict:
         if native_hooks or not self.enabled or event is None:
             return {}
@@ -136,5 +165,6 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         return data
 
     async def close(self):
+        await self.affection.close()
         await super().close()
         await self.hub.close()

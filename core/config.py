@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple
 
-from .prompt_policy import DEFAULT_DECISION_PROMPT, DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS, PREVIOUS_PROMPT_DEFAULTS
+from .prompt_policy import DEFAULT_DECISION_PROMPT, DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS, resolve_prompt_default
 
 
 PIPELINE_FILTER = "filter"
@@ -238,9 +238,7 @@ def _prompt(raw: Any, key: str, default: str, warnings: List[str]) -> str:
     if not isinstance(value, str):
         warnings.append(f"{key} must be text; using default")
         return default
-    value = value.strip() or default
-    if value == PREVIOUS_PROMPT_DEFAULTS.get(key):
-        value = default
+    value = resolve_prompt_default(key, value)
     if len(value) > MAX_PROMPT_CHARS:
         warnings.append(f"{key} exceeds {MAX_PROMPT_CHARS} characters; truncating")
         value = value[:MAX_PROMPT_CHARS]
@@ -332,7 +330,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         ),
         chars_per_second=_number(raw, "chars_per_second", 25.0, lambda value: 1 <= value <= 100, warnings),
         base_thinking_delay=_number(raw, "base_thinking_delay", 0.0, lambda value: 0 <= value <= 10, warnings),
-        max_fragments=_integer(raw, "max_fragments", 3, 1, 3, warnings),
+        max_fragments=_integer(raw, "max_fragments", 10, 1, 10, warnings),
         max_fragment_chars=_integer(raw, "max_fragment_chars", 120, 40, 500, warnings),
         inter_burst_interval=_number(raw, "inter_burst_interval", 1.2, lambda value: 0.6 <= value <= 3, warnings),
         casual_emoji_enabled=False,

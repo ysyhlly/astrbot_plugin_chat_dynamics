@@ -44,7 +44,7 @@ def test_invalid_numeric_values_fall_back_to_safe_defaults():
         }
     )
     assert cfg.chars_per_second == 25.0
-    assert cfg.max_fragments == 3
+    assert cfg.max_fragments == 10
     assert cfg.max_fragment_chars == 120
     assert cfg.inter_burst_interval == 1.2
     assert cfg.deep_cooling_minutes == 15.0
@@ -76,7 +76,7 @@ def test_infinite_and_negative_values_fall_back():
     assert cfg.chars_per_second == 25.0
     assert cfg.base_thinking_delay == 0.0
     assert cfg.debounce_base_cooldown == 0.25
-    assert cfg.max_fragments == 3
+    assert cfg.max_fragments == 10
     assert warnings
 
 
@@ -99,7 +99,7 @@ def test_values_above_schema_limits_fall_back_to_defaults():
     assert cfg.deep_cooling_minutes == 15.0
     assert cfg.chars_per_second == 25.0
     assert cfg.base_thinking_delay == 0.0
-    assert cfg.max_fragments == 3
+    assert cfg.max_fragments == 10
     assert len(warnings) == 7
 
 
@@ -112,7 +112,7 @@ def test_schema_boundary_values_are_accepted():
             "deep_cooling_minutes": 180,
             "chars_per_second": 100,
             "base_thinking_delay": 10,
-            "max_fragments": 3,
+            "max_fragments": 10,
         }
     )
 
@@ -122,13 +122,13 @@ def test_schema_boundary_values_are_accepted():
     assert cfg.deep_cooling_minutes == 180
     assert cfg.chars_per_second == 100
     assert cfg.base_thinking_delay == 10
-    assert cfg.max_fragments == 3
+    assert cfg.max_fragments == 10
     assert warnings == ()
 
 
 def test_fractional_fragment_count_is_rejected_instead_of_truncated():
     cfg, warnings = parse_runtime_config({"max_fragments": 2.9})
-    assert cfg.max_fragments == 3
+    assert cfg.max_fragments == 10
     assert any("max_fragments" in warning for warning in warnings)
 
 

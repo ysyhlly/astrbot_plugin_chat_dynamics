@@ -8,13 +8,14 @@ from typing import Any
 
 from .evidence import routing_ledger
 from .routing_contract import commit_topic_evidence
-from .session_runtime import TOPIC_IDLE_SECONDS, MAX_ACTIVE_TOPICS
+from .session_runtime import TOPIC_IDLE_SECONDS
+from .context_retrieval import confirmed_topic
 from .topic_formation import topic_text, can_start_topic
 from .topic_identity import node_topic_id
 from .topic_resolution import TopicResolver
 from .semantics import lexical_tokens
 
-MAX_EXCERPT_TOPICS = 8
+MAX_TOPIC_CANDIDATES = 8
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class TopicCandidateSnapshot:
     keywords: frozenset[str]
     updated_at: float
     topic: Any = field(compare=False, repr=False)
+    required: bool = False
 
 
 def capture_topic_candidates(runtime, turn):
@@ -40,6 +42,12 @@ def capture_topic_candidates(runtime, turn):
     visible_ids = frozenset(mid for mid, position in positions.items()
                             if position <= boundary and dag.nodes[mid].timestamp <= cutoff
                             and (turn.visible_node_ids is None or mid in turn.visible_node_ids))
+    quoted_ids = {m.reply_to for m in turn.messages if m.reply_to}
+    quoted_ids.update(m.semantics.quoted_message_id for m in turn.messages
+                      if m.semantics and m.semantics.quoted_message_id)
+    confirmed = {confirmed_topic(n)[0] for n in nodes} - {""}
+    if turn.wake_kind == "supplement" and turn.dialogue is not None and not turn.dialogue.closed:
+        confirmed.add(turn.dialogue.topic_id)
     candidates = []
     for topic in state.topics.values():
         if topic.created_at > cutoff:
@@ -61,9 +69,11 @@ def capture_topic_candidates(runtime, turn):
             # timestamp. Derive its replacement solely from visible evidence.
             label = excerpts[-1][:48] if excerpts else ""
         excerpt = (excerpts[-1] if prior else "\n".join(excerpts))[:180]
+        visible_members = {n.msg_id for n in prior} | {mid for mid in topic.message_ids if mid not in dag.nodes}
+        required = topic.topic_id in confirmed or bool(quoted_ids & visible_members)
         candidates.append(TopicCandidateSnapshot(topic.topic_id, label, excerpt,
                           frozenset(lexical_tokens(label + " " + " ".join(excerpts))),
-                          max((n.timestamp for n in prior), default=topic.updated_at), topic))
+                          max((n.timestamp for n in prior), default=topic.updated_at), topic, required))
     return tuple(candidates)
 
 
@@ -78,19 +88,22 @@ def build_topic_task(runtime, turn, now):
         candidates = capture_topic_candidates(runtime, turn)
     query = lexical_tokens(turn.text)
     choices, descriptions = {}, {}
-    for candidate in sorted(candidates, key=lambda c: (len(query & c.keywords), c.updated_at), reverse=True):
+    for candidate in sorted(candidates, key=lambda c: (c.required, len(query & c.keywords), c.updated_at), reverse=True):
         topic = candidate.topic
         if (state.topics.get(candidate.topic_id) is not topic
                 or not 0 <= now - (topic.human_updated_at or topic.updated_at) <= TOPIC_IDLE_SECONDS):
             continue
+        # All required candidates sort first; they may exceed the ordinary cap.
+        if len(choices) >= MAX_TOPIC_CANDIDATES and not candidate.required:
+            break
         key = f"topic_{len(choices)}"
         choices[key] = topic
         descriptions[key] = {
             "label": candidate.label,
-            "excerpt": candidate.excerpt if len(choices) <= MAX_EXCERPT_TOPICS else "",
+            "excerpt": candidate.excerpt,
         }
-        if len(choices) >= MAX_ACTIVE_TOPICS:
-            break
+        if candidate.required:
+            descriptions[key]["required"] = True
     question = {"type": "choice", "instructions": (
         "Which active topic does the current utterance continue? Choose an offered topic for the same "
         "ongoing discussion or task, including answers, elaborations and related subquestions. "

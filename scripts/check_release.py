@@ -15,8 +15,10 @@ from typing import Iterable
 
 try:
     from .sync_page_assets import check_page_assets
+    from .sync_prompt_defaults import check_prompt_defaults
 except ImportError:  # direct ``python scripts/check_release.py`` execution
     from sync_page_assets import check_page_assets
+    from sync_prompt_defaults import check_prompt_defaults
 
 
 _VERSION_RE = re.compile(r"^\s*version\s*:\s*['\"]?([^'\"\s]+)", re.MULTILINE)
@@ -76,6 +78,7 @@ def _check_schema(root: Path) -> list[str]:
     retired = {"decision_backend", "decision_mode", "vibe_provider", "vibe_llm_enabled", "learning_policy_mode", "decision_learning_mode"}
     if retired.intersection(schema):
         errors.append("retired runtime configuration must not be exposed")
+    errors.extend(check_prompt_defaults(root, schema))
     return errors
 
 

@@ -178,8 +178,8 @@ async def test_plain_at_name_is_not_an_authoritative_account(jev_plugin):
         await flush(p, raw)
         await drain(p)
         message = p.jev.calls[-1]["state"]["conversation"]["messages"][0]
-        assert message["semantics"]["mentioned_user_ids"] == ()
-        assert message["semantics"]["basis"] != "mention"
+        assert not message["semantics"].get("mentioned_user_ids")
+        assert message["semantics"].get("basis") != "mention"
         assert p._sessions[raw.unified_msg_origin].dag.nodes[raw.message_id].metadata["actual_mentions"] == []
     finally:
         await p.terminate()

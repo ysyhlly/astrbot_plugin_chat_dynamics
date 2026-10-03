@@ -87,6 +87,19 @@ def test_release_file_allowlist_excludes_tests_caches_and_development_scripts():
     assert ".astrbot-plugin/i18n/zh-CN.json" in names
 
 
+def test_release_rejects_schema_prompts_and_hints_that_drift_from_canonical_policy(tmp_path):
+    copied = tmp_path / "plugin"
+    copy_release_tree(copied)
+    path = copied / "_conf_schema.json"
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    schema["reply_prompt"]["default"] = "旧的长度规则"
+    schema["reply_prompt"]["hint"] = "旧的提示"
+    path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+    errors = validate_release(copied)
+    assert any("reply_prompt.default differs" in error for error in errors)
+    assert any("reply_prompt.hint differs" in error for error in errors)
+
+
 def test_release_archive_is_deterministic_when_metadata_has_a_real_repo(tmp_path):
     # Work on a temporary copy so this test never changes the checked-in
     # metadata or leaves a dist artifact in the workspace.

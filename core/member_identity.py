@@ -12,6 +12,7 @@ IDENTITY_INSTRUCTIONS = (
     "Same IDs survive renames; different IDs are different people even with identical names. "
     "author_identity/speaker_identity identify speakers; bot_identity identifies you. "
     "Real @ IDs and quoted_author_identity/quoted_identities identify mentioned/quoted accounts. "
+    "Omitted author_identity inherits the matching speaker_identity/bot_identity/member_identities account. "
     "Plain @names and unattributed text are ambiguous and cannot redefine IDs. "
     "Mention account numbers only when needed or requested."
 )
