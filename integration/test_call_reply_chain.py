@@ -11,6 +11,51 @@ from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 3])
+async def test_real_sdk_paragraph_reply_sends_and_commits_complete_prose(host_fixture, jev_plugin, limit):
+    from dataclasses import replace
+    from astrbot_plugin_chat_dynamics.tests.test_paragraph_sending import PARAGRAPHS, REPLY
+
+    ctx, event, calls = host_fixture
+    p, _ = jev_plugin
+    p._runtime_config = replace(p._runtime_config, max_fragments=limit)
+    p.persona_engine.bridge = AstrBotAgentBridge(ctx)
+    runtime = p._get_or_create_runtime(event.unified_msg_origin, group_id=event.get_group_id(),
+                                       umo=event.unified_msg_origin, bot_id=event.get_self_id())
+    delivered, delays = [], []
+
+    async def chat(**kwargs):
+        calls.append(kwargs)
+        return LLMResponse(role="assistant", completion_text=REPLY)
+
+    async def provider(*args, **kwargs):
+        return "provider"
+
+    async def sleep(delay):
+        delays.append(delay)
+        await asyncio.sleep(0)
+
+    async def remember(result, text):
+        assert result.success
+        delivered.append(text)
+
+    ctx.provider.text_chat = chat
+    p.llm.resolve_provider_id = provider
+    p.time_service.sleep = sleep
+    try:
+        reply = await p._speak_poke_with_persona(runtime, event, prompt="请回应这个拥抱", history_text="抱一下",
+                                                 current=lambda: True, remember=remember)
+        expected = [REPLY] if limit == 1 else PARAGRAPHS
+        assert [chain.get_plain_text() for chain in event.sent] == delivered == expected
+        assert reply == REPLY and delays == [pytest.approx(1.2)] * (limit - 1)
+        assert len(calls) == 1 and len(ctx.saved) == 1
+        history = ctx.saved[-1]
+        assert any(message["role"] == "user" and "抱一下" in str(message["content"]) for message in history)
+        assert history[-1]["role"] == "assistant" and history[-1]["content"] == REPLY
+    finally:
+        await p.terminate()
+
 def install_tool_response(ctx, calls, tool):
     ctx.tools["allowed"] = tool
 

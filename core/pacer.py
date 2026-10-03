@@ -41,27 +41,31 @@ class PacingShaper:
     """Orchestrates message fragmentation, pacing delays, and stylistic adaptation."""
 
     @staticmethod
+    def _preserve_structure(text: str) -> bool:
+        return (any(token in text for token in ("`", "$", "http://", "https://"))
+                or re.search(r"(?m)^\s*(?:[-*+] |\d+[.)] |\|)", text) is not None)
+
+    @staticmethod
     def persona_fragments(text: str) -> List[str]:
-        """Keep generated content intact; only split large prose at paragraph boundaries."""
+        """Send natural prose paragraphs separately without rewriting their content."""
         text = (text or "").strip()
         if not text:
             return []
-        if len(text) <= 1200 or any(token in text for token in ("`", "$", "http://", "https://")):
+        if PacingShaper._preserve_structure(text):
             return [text]
-        if re.search(r"(?m)^\s*(?:[-*+] |\d+[.)] |\|)", text):
-            return [text]
-        paragraphs = text.split("\n\n")
-        parts = []
-        current = ""
-        for paragraph in paragraphs:
-            if current and len(current) + len(paragraph) > 1200 and len(parts) < 2:
-                parts.append(current)
-                current = paragraph
-            else:
-                current += ("\n\n" if current else "") + paragraph
-        if current:
-            parts.append(current)
-        return parts
+        paragraphs = [part.strip() for part in re.split(r"\r?\n(?:[^\S\r\n]*\r?\n)+", text)
+                      if part.strip()]
+        return PacingShaper.limit_fragments(paragraphs)
+
+    @staticmethod
+    def limit_fragments(parts: List[str], max_fragments: int = 3) -> List[str]:
+        """Merge an excess tail; a sending limit must never truncate generated prose."""
+        if max_fragments < 1:
+            raise ValueError("max_fragments must be at least 1")
+        limit = min(max_fragments, 3)
+        if len(parts) <= limit:
+            return list(parts)
+        return [*parts[:limit - 1], "\n\n".join(parts[limit - 1:])]
 
     def __init__(
         self,
@@ -111,6 +115,12 @@ class PacingShaper:
         if max_fragment_chars < min_fragment_chars:
             raise ValueError("max_fragment_chars must be at least min_fragment_chars")
         max_fragments = min(max_fragments, 3)
+
+        # Explicit paragraph breaks take priority over legacy sentence/size shaping.
+        # In particular, keep an action and the dialogue below it in one message.
+        paragraphs = self.persona_fragments(text)
+        if len(paragraphs) > 1 or self._preserve_structure(text or ""):
+            return self.limit_fragments(paragraphs, max_fragments)
 
         # 1. Apply style shaping & strip robotic signoffs
         adapted_text = self.style_shaper.adapt_style(text, mode)

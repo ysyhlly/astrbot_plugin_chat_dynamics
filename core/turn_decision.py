@@ -453,7 +453,10 @@ For an open_group_topic plan, join the public discussion naturally; do not prete
 Write the actual reply only. Follow specific reply-length guidance in response_goal before the generic length label:
 tiny means only a few characters, short means one sentence, and medium means one to three sentences.
 Without specific guidance, brief means compact and normal means concise but complete;
-detailed is for requests that need explanation. Prefer one cohesive message. Respect delivery_constraints:
+detailed is for requests that need explanation. Use a blank line between natural conversational beats
+when needed; each paragraph is sent as a separate message, up to the configured segment limit.
+Keep an action and its immediately following dialogue in the same paragraph. Do not force a segment
+count or add segment labels. Respect delivery_constraints:
 a brief wake or wind-down response does not resume sustained availability; do not prolong it with new questions.
 Do not mechanically repeat sleep words. If responding to a poke, give one brief response consistent with
 the current persona; do not assume speech, physical contact, actions, a playful tone or intimacy.

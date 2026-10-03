@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from .agent_bridge import AstrBotAgentBridge, PersonaChanged
-from .pacer import is_rhythm_short_act, scale_delay
+from .pacer import PacingShaper, is_rhythm_short_act, scale_delay
 from .topic_identity import confirmed_topic_id
 from .active_dialogue import dialogue_for_node
 from .dialogue_context import capture_dialogue
@@ -99,30 +99,31 @@ def _platform_reply_id(runtime: Any, item: ModelTurn, message_id: str) -> str | 
     return None
 
 
-def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any) -> list[Any]:
+def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any, *, max_fragments: int = 3) -> list[Any]:
     """Queue tool/media chains, then text fragments that are not the same payload.
 
     A tool-direct chain that already equals the model transcript must not be
     sent again as a prose fragment.
     """
     fragments: list[Any] = []
-    seen: set[str] = set()
+    chain_texts: set[str] = set()
     for chain in chains or ():
         fragments.append(chain)
         plain = chain_plain_text(chain).strip()
         if plain:
-            seen.add(plain)
-    parts = [] if (text or "").strip() in seen else (
+            chain_texts.add(plain)
+    parts = [] if (text or "").strip() in chain_texts else (
         pacer.persona_fragments(text or "") if pacer is not None else ([text] if text else []))
+    prose = []
     for part in parts:
         if not part:
             continue
         plain = part.strip() if isinstance(part, str) else chain_plain_text(part).strip()
-        if plain and plain in seen:
+        if plain and plain in chain_texts:
             continue
-        fragments.append(part)
-        if plain:
-            seen.add(plain)
+        # Repeated prose paragraphs can be deliberate; deduplicate only media/tool captions.
+        prose.append(part)
+    fragments.extend(PacingShaper.limit_fragments(prose, max_fragments))
     return fragments
 
 
@@ -1049,15 +1050,13 @@ class PersonaEngine:
                 return
             if not self.valid(runtime, item):
                 return
-            fragments = delivery_fragments(output.chains, output.text, p.pacer)
+            rhythm_action = str(getattr(getattr(gate, "rhythm", None), "action", "")
+                                or getattr(runtime, "last_rhythm_action", ""))
+            max_fragments = 1 if is_rhythm_short_act(rhythm_action) else p._runtime_config.max_fragments
+            fragments = delivery_fragments(output.chains, output.text, p.pacer,
+                                           max_fragments=max_fragments)
             if not fragments:
                 record_outcome(runtime, item, outcomes.mark_generation_failed, "empty_reply")
-            rhythm_action = ""
-            if gate is not None and gate.rhythm is not None:
-                rhythm_action = gate.rhythm.action
-            rhythm_action = rhythm_action or getattr(runtime, "last_rhythm_action", "")
-            if is_rhythm_short_act(rhythm_action):
-                fragments = fragments[:1]
             delivered = []
             target_id = decision.target_message_ids[0]
             dag_parent_id = target_id if _dag_node(runtime, target_id) is not None else None

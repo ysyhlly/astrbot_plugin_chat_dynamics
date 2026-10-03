@@ -242,7 +242,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.15.3",
+    "v1.15.4",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -1975,8 +1975,14 @@ class ChatDynamicsPlugin(Star):
             if (effective.persona_id, effective.prompt) != (persona.persona_id, persona.prompt):
                 return ""
             try:
-                for fragment in delivery_fragments(output.chains, output.text, self.pacer):
+                fragments = delivery_fragments(output.chains, output.text, self.pacer,
+                                               max_fragments=self._runtime_config.max_fragments)
+                for index, fragment in enumerate(fragments):
                     if not current():
+                        break
+                    if index:
+                        await self.time_service.sleep(min(1.5, self.pacer.inter_burst_interval))
+                    if not current() or not await bridge.current(raw_event, effective):
                         break
                     async with runtime.send_lock:
                         if not current():
