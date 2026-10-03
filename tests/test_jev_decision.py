@@ -6,7 +6,7 @@ from dataclasses import asdict
 import pytest
 
 from astrbot_plugin_chat_dynamics.core.jev_decision import (
-    ACTIONS, LENGTHS, REASONS, REASON_PREFIX, STATES, build_questions, build_state,
+    ACTIONS, LENGTHS, REASONS, REASON_PREFIX, STATES, StateBudgetExceeded, build_questions, build_state,
     decision_confidence, decision_from_answers, describe_answers, target_options,
 )
 from astrbot_plugin_chat_dynamics.core.turn_decision import (
@@ -56,8 +56,9 @@ def test_a_single_message_turn_asks_no_target_question():
 def test_target_options_stay_bounded_and_ordered():
     turn_context = turn(*[f"m{index}" for index in range(12)])
     options = target_options(turn_context, limit=3)
-    assert list(options) == ["m0", "m1", "m2"]
-    assert "sent by user" in options["m0"]
+    assert list(options) == ["m9", "m10", "m11"]
+    assert "sent by user" in options["m9"]
+    assert options["m11"] == "the newest message, sent by user"
 
 
 def test_state_is_bounded_before_it_is_sent():
@@ -81,6 +82,23 @@ def test_unbounded_state_keeps_what_matters():
     state = build_state(context, observations={"x": "y"}, persona_prompt="人设")
     assert state["persona"] == "人设" and state["observations"] == {"x": "y"}
     assert state["conversation"]["text"] == "只有一句话"
+
+
+@pytest.mark.parametrize("count", [1, 24, 32])
+def test_many_topics_and_fragments_keep_current_text_and_fit_the_hard_budget(count):
+    context = turn(*[f"m{i}" for i in range(count)], text="当前问题必须保留")
+    topics = {f"topic_{i}": {"label": "l" * 48, "excerpt": "e" * 180 if i < 8 else ""} for i in range(80)}
+    before = json.dumps(topics)
+    state = build_state(context, active_topics=topics)
+    assert len(json.dumps(state, ensure_ascii=False)) <= 12000
+    assert state["conversation"]["text"] == context.text
+    assert [m["message_id"] for m in state["conversation"]["messages"]] == [m.message_id for m in context.messages]
+    assert json.dumps(topics) == before
+
+
+def test_impossible_state_budget_rejects_instead_of_dropping_identity_or_returning_oversize():
+    with pytest.raises(StateBudgetExceeded, match="state_budget_exceeded"):
+        build_state(turn("m1", text="当前请求"), max_chars=100)
 
 
 def test_answers_become_the_plugin_decision_contract():

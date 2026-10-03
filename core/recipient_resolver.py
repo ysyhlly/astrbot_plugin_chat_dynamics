@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 from .bot_identity import BotIdentityMatcher
-from .active_dialogue import active_dialogue
+from .active_dialogue import dialogue_for_node
 from .dialogue_continuity import evaluate as evaluate_continuity
 from .graph import ConversationNode
 from .topic_identity import node_topic_id
@@ -70,8 +70,10 @@ class RecipientResolver:
     ) -> Tuple[List[str], float, bool, float, List[str], bool, List[str], Optional[Tuple[str, float, str]]]:
         """Resolves addressees and subject references based on the 6-tier precedence hierarchy."""
         bot_id = getattr(runtime, "bot_id", "")
-        last_bot = getattr(runtime, "last_bot_node", None)
-        dialogue = active_dialogue(runtime)
+        known_topic = topic_id if (topic_id != node.msg_id and ranked_topics
+                                  and ranked_topics[0][0] >= 0.58) else ""
+        dialogue = dialogue_for_node(runtime, node, topic_id=known_topic, window=120)
+        last_bot = dag.get_node(dialogue.last_bot_message_id) if dialogue is not None else None
         names = [str(n) for n in bot_names if str(n)]
         addressee_ids: List[str] = []
         addressee_confidence: float = 0.0

@@ -5,12 +5,62 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from .message_semantics import MessageSemantics
 from .member_identity import IDENTITY_INSTRUCTIONS, member_identity
 from .vision_context import MAIN_VISION_HINT
 from .presence_policy import participation_policy
 from .prompt_policy import DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS
+from .context_retrieval import ContextEvidence, CONTEXT_INSTRUCTIONS, clip_text
+
+if TYPE_CHECKING:
+    from .topic_jev import TopicCandidateSnapshot
+    from .dialogue_context import DialogueSnapshot
+
+
+def _visible_segments(source: str, visible: str) -> list[tuple[int, int, int]]:
+    """Map retained head/tail characters; never guess a transformed text span."""
+    if source == visible:
+        return [(0, len(visible), 0)]
+    for marker in ("\n[...]\n", "\n[内容已截断]\n"):
+        budget = len(visible) - len(marker)
+        if budget < 0:
+            continue
+        head, tail = budget // 2, budget - budget // 2
+        if visible == source[:head] + marker + (source[-tail:] if tail else ""):
+            return [(0, head, 0), (len(source) - tail, len(source), head + len(marker))]
+    if source.startswith(visible):
+        return [(0, len(visible), 0)]
+    return []
+
+
+def _map_spans(spans, segments) -> list[list[int]]:
+    return [[offset + max(start, left) - left, offset + min(end, right) - left]
+            for start, end in spans for left, right, offset in segments
+            if max(start, left) < min(end, right)]
+
+
+def clip_conversation_text(conversation: dict, limit: int) -> None:
+    """Keep fragment attribution aligned whenever the decision budget clips text."""
+    text = str(conversation.get("text") or "")
+    clipped = clip_text(text, limit)
+    if clipped == text:
+        return
+    if limit <= len("\n[...]\n"):
+        segments = [(len(text) - len(clipped), len(text), 0)]
+    else:
+        budget = limit - len("\n[...]\n")
+        head, tail = budget // 2, budget - budget // 2
+        segments = [(0, head, 0), (len(text) - tail, len(text), head + len("\n[...]\n"))]
+    for message in conversation.get("messages", ()):
+        old = message.pop("text_spans", [])
+        mapped = _map_spans(old, segments)
+        if mapped:
+            message["text_spans"] = mapped
+        elif old:
+            message["text_excerpt"] = clip_text("".join(text[start:end] for start, end in old), 64)
+    conversation["text"] = clipped
+    conversation["truncated"] = True
 
 
 @dataclass(frozen=True)
@@ -27,6 +77,7 @@ class MessageSnapshot:
     author_name: str = ""
     platform: str = ""
     quoted_author_name: str = ""
+    context_evidence: tuple[ContextEvidence, ...] = ()
 
     def payload(self, *, learning: bool = False) -> dict:
         data = asdict(self)
@@ -42,6 +93,12 @@ class MessageSnapshot:
         else:
             data.pop("timestamp")
             data.pop("mentioned_users")
+            # Lexical features belong to routing/learning, not to the model's
+            # attribution context; they can duplicate arbitrarily long text.
+            if isinstance(data.get("semantics"), dict):
+                data["semantics"].pop("features", None)
+            if not data["context_evidence"]:
+                data.pop("context_evidence")
         return data
 
 
@@ -69,6 +126,10 @@ class TurnContext:
     source_truncated: bool | None = None
     wake_kind: str = "legacy"
     bot_id: str = ""
+    visible_node_ids: frozenset[str] | None = None
+    topic_candidates: tuple[TopicCandidateSnapshot, ...] | None = None
+    snapshot_at: float | None = None
+    dialogue: DialogueSnapshot | None = None
 
     @property
     def speaker_identity(self) -> dict:
@@ -104,14 +165,38 @@ class TurnContext:
 
     def payload(self) -> dict:
         # Current text appears exactly once; individual fragments only carry provenance.
-        return {
+        timestamps = [m.timestamp for m in self.messages if m.timestamp is not None]
+        cutoff = self.snapshot_at if self.snapshot_at is not None else (max(timestamps) if timestamps else None)
+
+        def attributed(message):
+            data = message.payload()
+            if cutoff is not None and message.timestamp is not None:
+                data["age_seconds"] = max(0.0, cutoff - message.timestamp)
+            return data
+
+        messages = [{k: v for k, v in attributed(m).items() if k != "text"} for m in self.messages]
+        parts = [(m.source_text if m.source_text is not None else m.text).strip() for m in self.messages]
+        segments = _visible_segments("\n".join(parts), self.text) if all(parts) else []
+        offset = 0
+        for message, part in zip(messages, parts):
+            spans = _map_spans([(offset, offset + len(part))], segments)
+            if spans:
+                message["text_spans"] = spans
+            elif part:
+                message["text_excerpt"] = clip_text(part, 64)
+            offset += len(part) + 1
+        data = {
             "author": self.author, "text": self.text, "explicit": self.explicit, "truncated": self.truncated,
             "speaker_identity": self.speaker_identity,
             "bot_identity": member_identity(self.bot_id, platform=str(self.speaker_identity.get("platform", ""))),
             "wake_kind": self.wake_kind, "reply_required": self.mandatory_reply,
-            "messages": [{k: v for k, v in m.payload().items() if k != "text"} for m in self.messages],
-            "background": [m.payload() for m in self.background],
+            "messages": messages,
+            "background": [attributed(m) for m in self.background],
+            "context_policy": CONTEXT_INSTRUCTIONS,
         }
+        if self.dialogue is not None:
+            data["dialogue"] = self.dialogue.payload()
+        return data
 
     def learning_payload(self) -> dict:
         """Preserve source fragments independently of the consolidated turn text."""

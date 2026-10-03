@@ -98,6 +98,13 @@ class RoutedSystemOneClient:
         self._last_identity = identity
         started = time.perf_counter()
         try:
+            from ..jev_decision import MAX_TOTAL_REQUEST_CHARS, request_size
+            # The decision builder reserves 256 model characters. A provider
+            # may use a longer ID, so check its actual name before any HTTP IO.
+            model = str(provider.get_model() or "")
+            size = request_size(state, questions, model=model)
+            if size > MAX_TOTAL_REQUEST_CHARS:
+                raise SystemOneError("System One 请求超出决策预算。", code="request_budget_exceeded")
             answers = await provider.systemone_evaluate(
                 state=state, questions=questions, timeout=timeout
             )

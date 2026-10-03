@@ -90,10 +90,13 @@ def test_both_model_prompts_include_attribution():
     semantics = describe_message(node, dag, "bot")
     snapshot = MessageSnapshot("m", "alice", "", semantics=semantics)
     turn = TurnContext("session", "alice", "你好", (snapshot,), (snapshot,), 0, 0, 1, True)
+    attribution = json.loads(json.dumps(asdict(semantics)))
+    attribution.pop("features")
     for prompt in (decision_prompt(turn, "observing", {}), reply_prompt(turn, TurnDecision.fallback(turn, "test"))):
         data = json.loads(prompt)["conversation"]
         for key in ("messages", "background"):
-            assert data[key][0]["semantics"] == json.loads(json.dumps(asdict(semantics)))
+            assert data[key][0]["semantics"] == attribution
+    assert turn.learning_payload()["messages"][0]["semantics"]["features"] is not None
 
 
 def test_merged_mentions_do_not_change_fragment_attribution():

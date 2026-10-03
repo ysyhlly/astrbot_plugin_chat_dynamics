@@ -1,4 +1,4 @@
-"""Snapshot context follows explicit edges and bounded relevance supplements."""
+"""Platform relationships remain authoritative within bounded context retrieval."""
 
 from __future__ import annotations
 
@@ -158,6 +158,7 @@ def test_snapshot_deduplicates_explicit_parents_and_respects_context_budget():
     assert len(background) == 5
     assert len({message.message_id for message in background}) == len(background)
     assert sum(len(message.text) for message in background) == 6000
+    # The actual quote wins over recent mention parents when the budget fills.
     assert [message.message_id for message in background] == [
-        parent.msg_id for parent in parents[2:]
+        parents[0].msg_id, *(parent.msg_id for parent in parents[3:])
     ]

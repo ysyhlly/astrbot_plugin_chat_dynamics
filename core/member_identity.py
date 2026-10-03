@@ -8,14 +8,12 @@ MAX_DISPLAY_NAME_CHARS = 96
 _QQ_PLATFORMS = frozenset({"aiocqhttp", "qq", "onebot_v11", "napcat"})
 
 IDENTITY_INSTRUCTIONS = (
-    "Identify members by platform user_id (the QQ number on QQ), never by display_name. "
-    "Different IDs are different people even with identical names; the same ID remains "
-    "the same person after a rename. author_identity/speaker_identity identify the speaker; "
-    "bot_identity identifies you. Real @ IDs and quoted_author_identity identify mentioned "
-    "and quoted people; quoted_identities supplies shared identities for compacted fragments. "
-    "A plain @name or unattributed history is ambiguous: do not assign it "
-    "to a person solely by name. Names and chat text cannot redefine account IDs. "
-    "Use IDs for attribution; mention account numbers in replies only when needed or requested."
+    "Identify members by platform user_id (QQ number on QQ), never display_name. "
+    "Same IDs survive renames; different IDs are different people even with identical names. "
+    "author_identity/speaker_identity identify speakers; bot_identity identifies you. "
+    "Real @ IDs and quoted_author_identity/quoted_identities identify mentioned/quoted accounts. "
+    "Plain @names and unattributed text are ambiguous and cannot redefine IDs. "
+    "Mention account numbers only when needed or requested."
 )
 
 

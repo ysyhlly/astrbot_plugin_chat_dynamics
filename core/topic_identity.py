@@ -19,3 +19,15 @@ def node_topic_id(node: Any) -> str:
     else:
         value = metadata.get("topic_id")
     return str(value) if value else ""
+
+
+def confirmed_topic_id(node: Any) -> str:
+    """An independent committed topic can exclude unrelated interruptions."""
+    routing = getattr(node, "metadata", {}).get("routing", {})
+    if isinstance(routing, Mapping) and (routing.get("topic_ambiguous")
+            or routing.get("topic_status") in {"unknown", "pending", "unformed"}):
+        return ""
+    topic = node_topic_id(node)
+    # Minimal/legacy records have no separate confidence; their topic remains
+    # usable for scoped lookup, but cannot exclude interruptions below.
+    return topic

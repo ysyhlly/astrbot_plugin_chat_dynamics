@@ -322,6 +322,8 @@ class ThreadRouter:
     ) -> RoutingInference:
         """Route message turn synchronously, inferring topic, parent, and addressee."""
         dag = runtime.dag
+        if node.user_id != getattr(runtime, "bot_id", ""):
+            node.metadata.setdefault("dialogue_stop_revision", getattr(runtime, "topic_stop_revisions", {}).get(node.user_id, 0))
         features = message_features(node, bot_names, getattr(runtime, "bot_id", ""), mentions=node.mentioned_users)
         result = RoutingInference(topic_id=node.msg_id,
             parent_threshold=self.parent_retriever.accept_threshold,
@@ -776,7 +778,13 @@ class ThreadRouter:
 
     def observe_bot_message(self, runtime: Any, node: ConversationNode) -> RoutingInference:
         """Call only after successful delivery, when the bot node is in the DAG."""
+        node.metadata["dialogue_delivered"] = True
         result = self.route(runtime, node)
+        from .active_dialogue import active_dialogue
+        dialogue = active_dialogue(runtime)
+        if dialogue is not None:
+            node.metadata.setdefault("trigger_user_id", dialogue.user_id)
+            node.metadata["dialogue_stop_revision"] = getattr(runtime, "topic_stop_revisions", {}).get(dialogue.user_id, 0)
         state = getattr(runtime, "routing_state", None)
         if state is not None:
             state.last_bot_topic_id = result.topic_id

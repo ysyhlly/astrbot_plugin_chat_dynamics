@@ -241,6 +241,8 @@ class SessionRuntime:
     # Requests waiting for admission already belong to their owner's revision.
     model_waiting: Dict[object, Any] = field(default_factory=dict, repr=False)
     active_model_turn: Any = None
+    # Each cancellable call has a member owner; the group worker stays alive on stop.
+    owned_turn_tasks: Dict[asyncio.Task, str] = field(default_factory=dict, repr=False)
     user_revisions: Dict[str, int] = field(default_factory=dict)
     interaction_state: str = "observing"
     model_diagnostic: Dict[str, Any] = field(default_factory=dict)
@@ -278,6 +280,11 @@ class SessionRuntime:
         while self.model_queue:
             self.model_queue.popleft()
             self.model_admission.release()
+
+    def cancel_owned_turns(self, user_id: str | None = None) -> None:
+        for task, owner in tuple(self.owned_turn_tasks.items()):
+            if (user_id is None or owner == user_id) and not task.done():
+                task.cancel()
 
     @staticmethod
     def _model_turn_owner(item: Any) -> str:

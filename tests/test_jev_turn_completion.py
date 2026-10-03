@@ -137,6 +137,7 @@ async def test_unfinished_wait_is_cancelled_by_lifecycle_changes(completion_plug
 @pytest.mark.asyncio
 async def test_wait_has_a_total_deadline_and_does_not_repeatedly_call_jev_after_expiry(completion_plugin):
     p = completion_plugin
+    p.debounce.pending_input_timeout = 4
     p.jev.payload = answers(completion={"type": "choice", "choice": "wait", "confidence": 0.9})
     event = MockEvent("先等等，我还有后半句", is_at_or_wake_command=True)
     try:
@@ -148,7 +149,7 @@ async def test_wait_has_a_total_deadline_and_does_not_repeatedly_call_jev_after_
         assert not p.debounce.is_active(event.unified_msg_origin, event.sender_id)
         count = len(p.jev.calls)
         await tick(p, 10)
-        assert len(p.jev.calls) == count and count <= 5
+        assert len(p.jev.calls) == count == 1
         assert not event.replies_sent and not p.persona_engine.bridge.requests
     finally:
         await p.terminate()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import hashlib
 import inspect
 import json
@@ -32,14 +33,14 @@ def _reasoning_parts(content: Any) -> list[dict]:
     return kept
 
 
-def history_with_delivered_reply(history: list[dict], delivered: str) -> list[dict]:
+def history_with_delivered_reply(history: list[dict], delivered: str, *, turn_start: int | None = None) -> list[dict]:
     """Drop unsent assistant prose and keep the reasoning items the next call replays.
 
     A tool-call turn stores reasoning on that assistant message, beside the calls.
     The final visible reply keeps only the reasoning from the last non-tool draft.
     """
     history = copy.deepcopy(history)
-    new_start = next(
+    new_start = turn_start if turn_start is not None else next(
         (i + 1 for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"),
         len(history),
     )
@@ -97,6 +98,40 @@ class ExecutionHooks:
         await self.delegate.on_tool_end(run_context, tool, tool_args, tool_result)
 
 
+class OwnedToolExecutor:
+    """Track SDK executor tasks that may otherwise outlive a cancelled runner."""
+
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.tasks: set[asyncio.Task] = set()
+
+    def __getattr__(self, name):
+        return getattr(self.delegate, name)
+
+    async def execute(self, *args, **kwargs):
+        results = self.delegate.execute(*args, **kwargs)
+        try:
+            while True:
+                task = asyncio.current_task()
+                self.tasks.add(task)
+                try:
+                    result = await anext(results)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    self.tasks.discard(task)
+                yield result
+        finally:
+            await results.aclose()
+
+    async def cancel(self):
+        tasks = [task for task in self.tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @dataclass
 class AgentOutput:
     text: str
@@ -105,6 +140,8 @@ class AgentOutput:
     history: list[dict]
     tool_count: int = 0
     chains: list[Any] = field(default_factory=list)
+    # Index immediately after the actual request, before tools can inject users.
+    turn_start: int | None = None
 
 
 class AstrBotAgentBridge:
@@ -215,8 +252,8 @@ class AstrBotAgentBridge:
         agent_event.continue_event()
         captured_chains = []
 
-        async def capture_send(chain):
-            captured_chains.append(chain)
+        async def capture_send(message):
+            captured_chains.append(message)
 
         agent_event.send = capture_send
         # AstrMessageEvent stores per-event requests and flags in _extras.
@@ -232,6 +269,7 @@ class AstrBotAgentBridge:
             raise AgentBridgeUnavailable("main_agent_build_failed")
         req, runner = result.provider_request, result.agent_runner
         reset = result.reset_coro
+        owned_executor = None
         try:
             # The builder may create the first conversation. Accept that creation only, never a persona switch.
             effective = await self.snapshot(event)
@@ -262,6 +300,12 @@ class AstrBotAgentBridge:
             base_history = str(req.conversation.history)
             await reset
             reset = None
+            request_user = next((message for message in reversed(runner.run_context.messages)
+                                 if message.role == "user"), None)
+            if request_user is None:
+                raise AgentBridgeUnavailable("request_history_boundary_missing")
+            owned_executor = OwnedToolExecutor(runner.tool_executor)
+            runner.tool_executor = owned_executor
             if execution_log is not None:
                 runner.agent_hooks = ExecutionHooks(runner.agent_hooks, execution_log)
             max_steps = self.context.get_config(umo=event.unified_msg_origin).get("provider_settings", {}).get("max_agent_step", 30)
@@ -283,9 +327,12 @@ class AstrBotAgentBridge:
                 # The host reports "all chat models failed" as an ordinary final
                 # response. That text is a diagnostic, not a reply to speak in a group.
                 raise LLMErrorResponse("main agent returned a host error response")
-            if getattr(response, "result_chain", None) and not getattr(response, "completion_text", ""):
-                captured_chains.append(response.result_chain)
+            final_chain = getattr(response, "result_chain", None)
+            if final_chain and (not getattr(response, "completion_text", "") or any(
+                    type(part).__name__.lower() not in {"plain", "text"} for part in final_chain.chain)):
+                captured_chains.append(final_chain)
             history = []
+            turn_start = None
             for message in runner.run_context.messages:
                 if message.role == "system" or getattr(message, "_no_save", False):
                     continue
@@ -295,21 +342,30 @@ class AstrBotAgentBridge:
                     # content parts. model_dump() alone loses that private flag.
                     saved["content"] = [part.model_dump() for part in message.content
                                         if not getattr(part, "_no_save", False)]
-                history.append(saved)
-            if history_text is not None:
-                for message in reversed(history):
-                    if message.get("role") == "user":
-                        content = message.get("content")
+                if message is request_user:
+                    turn_start = len(history) + 1
+                    if history_text is not None:
+                        content = saved.get("content")
                         if isinstance(content, list):
-                            # Preserve media; replace internal plans/context with attributed user text.
-                            message["content"] = [{"type": "text", "text": history_text}] + [
+                            # Tool image review messages must keep their own label and media.
+                            saved["content"] = [{"type": "text", "text": history_text}] + [
                                 part for part in content if part.get("type") != "text"]
                         else:
-                            message["content"] = history_text
-                        break
+                            saved["content"] = history_text
+                history.append(saved)
+            if turn_start is None:
+                # A host extension removed the request: never guess another user's boundary.
+                raise AgentBridgeUnavailable("request_history_boundary_lost")
             return AgentOutput(str(getattr(response, "completion_text", "") or ""),
                                str(req.conversation.cid), base_history, history,
-                               sum(bool(m.get("tool_calls")) for m in history), captured_chains)
+                               sum(bool(m.get("tool_calls")) for m in history), captured_chains, turn_start)
+        except asyncio.CancelledError:
+            request_stop = getattr(runner, "request_stop", None)
+            if callable(request_stop):
+                request_stop()
+            if owned_executor is not None:
+                await owned_executor.cancel()
+            raise
         finally:
             if reset is not None:
                 reset.close()
@@ -322,6 +378,6 @@ class AstrBotAgentBridge:
         conv = await mgr.get_conversation(event.unified_msg_origin, output.conversation_id)
         if not conv or str(conv.history) != output.base_history:
             return False
-        history = history_with_delivered_reply(output.history, delivered)
+        history = history_with_delivered_reply(output.history, delivered, turn_start=output.turn_start)
         await mgr.update_conversation(event.unified_msg_origin, output.conversation_id, history=history)
         return True

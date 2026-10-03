@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, field
 import math
+from typing import Any
 
 from .evidence import routing_ledger
 from .routing_contract import commit_topic_evidence
@@ -15,36 +17,77 @@ from .semantics import lexical_tokens
 MAX_EXCERPT_TOPICS = 8
 
 
+@dataclass(frozen=True)
+class TopicCandidateSnapshot:
+    topic_id: str
+    label: str
+    excerpt: str
+    keywords: frozenset[str]
+    updated_at: float
+    topic: Any = field(compare=False, repr=False)
+
+
+def capture_topic_candidates(runtime, turn):
+    """Freeze visible labels and excerpts under state_lock before queueing."""
+    dag, state = runtime.dag, runtime.routing_state
+    nodes = tuple(dag.get_node(m.message_id) for m in turn.messages)
+    if not nodes or any(n is None for n in nodes):
+        return ()
+    current_ids = {n.msg_id for n in nodes}
+    cutoff = max(n.timestamp for n in nodes)
+    positions = {n.msg_id: i for i, n in enumerate(dag.get_recent_nodes(0))}
+    boundary = max(positions.get(mid, -1) for mid in current_ids)
+    visible_ids = frozenset(mid for mid, position in positions.items()
+                            if position <= boundary and dag.nodes[mid].timestamp <= cutoff
+                            and (turn.visible_node_ids is None or mid in turn.visible_node_ids))
+    candidates = []
+    for topic in state.topics.values():
+        if topic.created_at > cutoff:
+            continue
+        prior = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes
+                 and mid not in current_ids and dag.nodes[mid].timestamp <= cutoff
+                 and positions.get(mid, boundary + 1) <= boundary
+                 and mid in visible_ids]
+        # A cached, evicted topic can stay active. A topic consisting only of
+        # current/invisible live messages cannot supply an earlier description.
+        if not prior and (topic.updated_at > cutoff or any(mid in dag.nodes for mid in topic.message_ids)):
+            continue
+        prior.sort(key=lambda n: (n.timestamp, positions[n.msg_id]))
+        excerpts = [topic_text(n)[:180] for n in prior[-3:]] if prior else list(topic.summary_excerpts)
+        label = (topic.generated_title or topic.label)[:48]
+        if (topic.updated_at > cutoff
+                or any(mid in dag.nodes and mid not in visible_ids for mid in topic.message_ids)):
+            # A live title can incorporate excluded sources even at an equal
+            # timestamp. Derive its replacement solely from visible evidence.
+            label = excerpts[-1][:48] if excerpts else ""
+        excerpt = (excerpts[-1] if prior else "\n".join(excerpts))[:180]
+        candidates.append(TopicCandidateSnapshot(topic.topic_id, label, excerpt,
+                          frozenset(lexical_tokens(label + " " + " ".join(excerpts))),
+                          max((n.timestamp for n in prior), default=topic.updated_at), topic))
+    return tuple(candidates)
+
+
 def build_topic_task(runtime, turn, now):
-    """Caller owns state_lock; preserve a closed, immutable commit mapping."""
+    """Caller owns state_lock; use the turn's frozen descriptions and fresh commit guards."""
     dag, state = runtime.dag, runtime.routing_state
     nodes = tuple(dag.get_node(m.message_id) for m in turn.messages)
     if not nodes or any(n is None for n in nodes):
         return {}, {}, None
-    current_ids = {n.msg_id for n in nodes}
-    choices, descriptions = {}, {}
-    cutoff = max(n.timestamp for n in nodes)
+    candidates = turn.topic_candidates
+    if candidates is None:
+        candidates = capture_topic_candidates(runtime, turn)
     query = lexical_tokens(turn.text)
-    def priority(topic):
-        words = lexical_tokens(topic.generated_title + " " + topic.label + " " + " ".join(topic.summary_excerpts))
-        return len(query & words), topic.updated_at
-    for topic in sorted(state.topics.values(), key=priority, reverse=True):
-        if topic.created_at > cutoff:
-            continue
-        if not 0 <= now - (topic.human_updated_at or topic.updated_at) <= TOPIC_IDLE_SECONDS:
-            continue
-        prior = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes
-                 and mid not in current_ids and dag.nodes[mid].timestamp <= cutoff]
-        if not prior and topic.message_ids and all(mid in current_ids for mid in topic.message_ids):
-            continue
-        if not prior and topic.updated_at > cutoff:
+    choices, descriptions = {}, {}
+    for candidate in sorted(candidates, key=lambda c: (len(query & c.keywords), c.updated_at), reverse=True):
+        topic = candidate.topic
+        if (state.topics.get(candidate.topic_id) is not topic
+                or not 0 <= now - (topic.human_updated_at or topic.updated_at) <= TOPIC_IDLE_SECONDS):
             continue
         key = f"topic_{len(choices)}"
         choices[key] = topic
         descriptions[key] = {
-            "label": (topic.generated_title or topic.label)[:48],
-            "excerpt": (topic_text(prior[-1]) if prior else "\n".join(topic.summary_excerpts))[:180]
-                       if len(choices) <= MAX_EXCERPT_TOPICS else "",
+            "label": candidate.label,
+            "excerpt": candidate.excerpt if len(choices) <= MAX_EXCERPT_TOPICS else "",
         }
         if len(choices) >= MAX_ACTIVE_TOPICS:
             break
@@ -61,6 +104,19 @@ def build_topic_task(runtime, turn, now):
     mapping = {"dag": dag, "state": state, "nodes": nodes, "topics": choices,
                "routing": tuple(deepcopy(n.metadata.get("routing", {})) for n in nodes)}
     return descriptions, {"topic": question}, mapping
+
+
+def align_topic_task(state, questions, mapping):
+    """Offer and accept only the topic descriptions retained in the bounded state."""
+    if mapping is None:
+        return questions, mapping
+    offered = set(state.get("active_topics", {}))
+    question = questions["topic"]
+    questions = {**questions, "topic": {**question, "criteria": {
+        key: value for key, value in question["criteria"].items() if key in {"NEW", "KEEP"} or key in offered
+    }}}
+    mapping = {**mapping, "topics": {key: value for key, value in mapping["topics"].items() if key in offered}}
+    return questions, mapping
 
 
 def apply_topic_answer(runtime, turn, answer, mapping, now):

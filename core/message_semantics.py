@@ -101,12 +101,14 @@ def describe_message(node, dag, bot_id: str = "", *, bot_names=()) -> MessageSem
     topic_id = node_topic_id(node)
     topic_conf = float(routing.get("topic_confidence", 0.0) or 0.0)
     parent_mid = str(
-        routing.get("parent_message_id")
+        node.reply_to_id
+        or routing.get("parent_message_id")
         or node.metadata.get("inferred_parent_id")
         or (evidence if basis in {"reply", "inferred_reply"} else "")
         or (node.reply_to_id or "")
     )
-    parent_conf = float(routing.get("parent_confidence", 1.0 if node.reply_to_id else 0.0) or 0.0)
+    parent_conf = (1.0 if node.reply_to_id else float(routing.get("parent_confidence",
+                    node.metadata.get("inferred_parent_confidence", 0.0)) or 0.0))
     addr_conf = float(routing.get("addressee_confidence", 1.0 if basis in {"mention", "reply"} else 0.0) or 0.0)
     subj_users = tuple(str(uid) for uid in routing.get("subject_user_ids", ()))
     subj_is_bot = bool(routing.get("subject_is_bot"))

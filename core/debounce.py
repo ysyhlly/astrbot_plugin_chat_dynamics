@@ -95,6 +95,8 @@ class _DebounceSlot:
         self.on_flush: Optional[Callable[[DebounceResult], Awaitable[None]]] = None
         self.pending_result: Optional[DebounceResult] = None
         self.semantic: bool = False
+        self.cap_started_at: float = 0.0
+        self.input_deadline: Optional[float] = None
 
     @property
     def is_empty(self) -> bool:
@@ -150,6 +152,7 @@ class DebounceBuffer:
         max_fragments: int = 32,
         max_turn_chars: int = 8000,
         semantic: bool = False,
+        pending_input_timeout: float = 60.0,
     ):
         """Initializes the DebounceBuffer.
 
@@ -169,6 +172,7 @@ class DebounceBuffer:
         self.max_fragments: int = max(1, int(max_fragments))
         self.max_turn_chars: int = max(256, int(max_turn_chars))
         self.semantic = semantic
+        self.pending_input_timeout = float(pending_input_timeout)
 
         if incompleteness_detector is not None:
             self.detector = incompleteness_detector
@@ -271,11 +275,16 @@ class DebounceBuffer:
             # answer, including a late answer from a soft wake.
             prior = slot.pending_result
             slot.pending_result = None
+            if (prior is not None and prior.metadata.get("awaiting_input")
+                    and now >= prior.metadata.get("input_deadline", now)):
+                prior.metadata["superseded"] = True
             if prior is not None and self.is_result_current(prior):
                 slot.items[:0] = prior.messages
                 slot.start_time = prior.start_time
                 slot.was_extended = prior.was_extended
                 slot.dropped_fragments = prior.metadata.get("dropped_fragments", 0)
+                slot.cap_started_at = now if prior.metadata.get("awaiting_input") else prior.metadata.get("cap_started_at", prior.start_time)
+                slot.input_deadline = prior.metadata.get("input_deadline")
                 prior.metadata["superseded"] = True
             slot.semantic = self.semantic and not immediate
 
@@ -284,6 +293,8 @@ class DebounceBuffer:
                 slot.start_time = now
                 slot.was_extended = False
                 slot.dropped_fragments = 0
+                slot.cap_started_at = now
+                slot.input_deadline = None
 
             # Bound the retained fragment itself as well as the consolidated
             # turn. This keeps a single oversized adapter payload from
@@ -303,7 +314,7 @@ class DebounceBuffer:
                 slot.was_extended = True
 
             # 4. Calculate elapsed time and hard cap boundaries
-            elapsed = now - slot.start_time
+            elapsed = now - slot.cap_started_at
             max_remaining = self.max_cap - elapsed
 
             # Boundary condition: Hard cap reached or exceeded -> immediate flush
@@ -421,6 +432,10 @@ class DebounceBuffer:
             "truncated": bool(slot.dropped_fragments) or len(consolidated_text) < sum(len(it.text) for it in items_to_flush),
             "dropped_fragments": slot.dropped_fragments,
             "semantic": slot.semantic,
+            "flushed_at": self.time_service.time(),
+            "cap_started_at": slot.cap_started_at,
+            "input_deadline": slot.input_deadline,
+            "pending_input": slot.input_deadline is not None,
         }
 
         result = DebounceResult(
@@ -442,10 +457,12 @@ class DebounceBuffer:
             return
         slot = self._slots.get((result.session_id, result.user_id))
         if slot is not None and slot.pending_result is result:
+            if result.metadata.get("awaiting_input") and self.is_result_current(result):
+                return
             slot.pending_result = None
 
-    async def defer_result(self, result: Optional[DebounceResult]) -> bool:
-        """Wait for the speaker's continuation after Jev explicitly says wait."""
+    async def defer_result(self, result: Optional[DebounceResult], *, on_expire=None) -> bool:
+        """Park judged fragments until new input; expiration never calls the model."""
         if result is None or self._is_closed or not self.is_result_current(result):
             return False
         slot = self._slots.get((result.session_id, result.user_id))
@@ -455,18 +472,35 @@ class DebounceBuffer:
             if (self._is_closed or not self.is_result_current(result)
                     or slot.pending_result is not result):
                 return False
-            remaining = self.max_cap - (self.time_service.time() - result.start_time)
-            slot.pending_result = None
+            deadline = result.metadata.get("input_deadline")
+            if deadline is None:
+                deadline = result.start_time + self.pending_input_timeout
+            remaining = deadline - self.time_service.time()
             if remaining <= 0:
+                slot.pending_result = None
                 return False
-            slot.items = list(result.messages)
-            slot.start_time = result.start_time
-            slot.was_extended = True
-            slot.dropped_fragments = result.metadata.get("dropped_fragments", 0)
+            result.metadata.update(awaiting_input=True, input_deadline=deadline, was_extended=True)
             slot.epoch += 1
-            slot.timer_task = self._create_task(self._timer_worker(
-                slot, slot.epoch, min(max(0.05, self.extended_cooldown), remaining)))
+            if slot.timer_task and not slot.timer_task.done():
+                slot.timer_task.cancel()
+            slot.timer_task = self._create_task(self._expire_input(slot, slot.epoch, result, remaining, on_expire))
         return True
+
+    async def _expire_input(self, slot, epoch, result, delay, callback) -> None:
+        try:
+            await self.time_service.sleep(delay)
+            async with slot.lock:
+                if (slot.epoch != epoch or slot.pending_result is not result
+                        or not self.is_result_current(result)):
+                    return
+                result.metadata.update(superseded=True, awaiting_input=False)
+                slot.pending_result = None
+                slot.timer_task = None
+                slot.input_deadline = None
+            if callback is not None:
+                await callback()
+        except asyncio.CancelledError:
+            return
 
     async def flush(
         self, session_id: Optional[str] = None, user_id: Optional[str] = None
@@ -604,6 +638,7 @@ class DebounceBuffer:
 
         if flush:
             await self.flush_all()
+            await self._discard_all()
             await self._cancel_and_wait_background()
             return
         await self._discard_all()

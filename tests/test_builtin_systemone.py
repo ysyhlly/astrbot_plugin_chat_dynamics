@@ -252,6 +252,23 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["questions"][name].get("criteria"), spec.get("criteria"))
         self.assertTrue(self.host.jev.snapshot()["available"])
 
+    async def test_request_budget_covers_state_questions_and_selected_model_before_http(self):
+        await self.plugin.refresh_providers()
+        for oversized_part in ("state", "questions", "model"):
+            with self.subTest(part=oversized_part):
+                self.provider.set_model("custom-model")
+                state = {"message": "synthetic state"}
+                questions = copy.deepcopy(QUESTIONS)
+                if oversized_part == "state":
+                    state["message"] = "x" * 18_000
+                elif oversized_part == "questions":
+                    questions["join"]["instructions"] = {"question": "x" * 18_000}
+                else:
+                    self.provider.set_model("x" * 18_000)
+                self.assertIsNone(await self.host.jev.evaluate(state=state, questions=questions))
+                self.assertEqual(self.host.jev.snapshot()["detail"], "request_budget_exceeded")
+                self.assertEqual(self.requests, [])
+
     async def test_router_distinguishes_timeout_from_http_failure(self):
         await self.plugin.refresh_providers()
         self.mode = "delay"

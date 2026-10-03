@@ -53,7 +53,7 @@ MAX_NODES = 500
 MAX_TOTAL_BYTES = 4 * 1024 * 1024
 RUNTIME_FIELDS = ('last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
-                  'vibe_message_count', 'turn_sequence', 'model_diagnostic')
+                  'vibe_message_count', 'turn_sequence', 'model_diagnostic', 'topic_stop_revisions')
 TOPIC_FIELDS = ('topic_id', 'message_ids', 'participants', 'updated_at', 'label',
                 'generated_title', 'title_attempted', 'label_requested', 'human_updated_at', 'created_at', 'exemplar_messages',
                 'centroid_vector', 'recent_message_ids', 'keywords', 'centroid_space',
@@ -83,7 +83,8 @@ _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
                        'inferred_parent_id', 'is_wake', 'trigger_user_id',
                        'quoted_author_id', 'quoted_author_name', 'topic_source_text',
                        'sender_name', 'sender_platform', 'actual_mentions',
-                       'platform_message_id')
+                       'platform_message_id', 'dialogue_delivered', 'dialogue_stop_revision',
+                       'dialogue_state', 'dialogue_action')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.
@@ -215,6 +216,10 @@ def export_runtime_state(plugin) -> dict:
                 saved['metadata'] = _json({k: v for k, v in node.metadata.items() if k in META_FIELDS})
                 item['nodes'].append(saved)
         item['last_bot_id'] = runtime.last_bot_node.msg_id if runtime.last_bot_node else None
+        owners = {n['user_id'] for n in item['nodes']}
+        owners.update(n['metadata']['trigger_user_id'] for n in item['nodes']
+                      if isinstance(n['metadata'].get('trigger_user_id'), str))
+        item['topic_stop_revisions'] = {uid: rev for uid, rev in runtime.topic_stop_revisions.items() if uid in owners}
         item['topics'] = [_fields(topic, TOPIC_FIELDS) for topic in list(runtime.routing_state.topics.values())[-80:]]
         item['archive'] = [_fields(topic, ('topic_id', 'summary', 'exemplars', 'participants', 'updated_at', 'archived_at', 'title'))
                            for topic in list(runtime.routing_state.archive.entries.values())[-32:]]
@@ -299,7 +304,11 @@ def restore_runtime_state(plugin, payload) -> None:
         for name in RUNTIME_FIELDS:
             value = item.get(name)
             default = getattr(runtime, name)
-            if isinstance(default, str) and isinstance(value, str):
+            if name == 'topic_stop_revisions' and isinstance(value, dict):
+                runtime.topic_stop_revisions = {uid[:1024]: rev for uid, rev in list(value.items())[:MAX_NODES]
+                    if isinstance(uid, str) and isinstance(rev, int) and not isinstance(rev, bool)
+                    and 0 <= rev <= 2 ** 53}
+            elif isinstance(default, str) and isinstance(value, str):
                 setattr(runtime, name, value[:16000])
             elif isinstance(default, dict) and isinstance(value, dict):
                 setattr(runtime, name, _json(value))

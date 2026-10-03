@@ -1,0 +1,64 @@
+[
+  {
+    "id": "question_constraint_and_unrelated_interruption",
+    "messages": [
+      {"id": "question", "author": "alice", "text": "怎么部署这个工具？", "time": 10, "routing": {"topic": "deployment"}},
+      {"id": "constraint", "author": "bob", "text": "服务器不能联网，只能离线安装", "time": 12, "routing": {"topic": "deployment"}},
+      {"id": "chatter", "author": "eve", "text": "今晚吃火锅", "time": 14, "routing": {"topic": "dinner"}},
+      {"id": "current", "author": "alice", "text": "那应该怎么准备安装包？", "time": 16, "routing": {"topic": "deployment"}}
+    ],
+    "current": "current", "expected_background": ["question", "constraint"]
+  },
+  {
+    "id": "accepted_inferred_reply_keeps_constraints",
+    "messages": [
+      {"id": "question", "author": "alice", "text": "帮我准备一封邀请邮件", "time": 10},
+      {"id": "constraint", "author": "bob", "text": "收件人只看中文，不超过一百字", "time": 12, "reply_to": "question"},
+      {"id": "chatter", "author": "eve", "text": "今天的球赛很精彩", "time": 14},
+      {"id": "current", "author": "carol", "text": "按这个要求写吧", "time": 16, "inferred_parent": "question", "parent_confidence": 0.91}
+    ],
+    "current": "current", "expected_background": ["question", "constraint"]
+  },
+  {
+    "id": "weak_inference_is_not_a_fact",
+    "messages": [
+      {"id": "unrelated", "author": "eve", "text": "另一件事的价格是多少？", "time": 10},
+      {"id": "current", "author": "alice", "text": "怎么做？", "time": 16, "inferred_parent": "unrelated", "parent_confidence": 0.3}
+    ],
+    "current": "current", "expected_background": []
+  },
+  {
+    "id": "human_recipient_history_without_topic",
+    "messages": [
+      {"id": "context", "author": "bob", "text": "我用的是 Linux，只能用 CPU", "time": 10},
+      {"id": "unrelated", "author": "eve", "text": "看我发的新照片", "time": 12},
+      {"id": "current", "author": "alice", "text": "这个安装方法你试过吗？", "time": 16, "routing": {"topic": "", "addressee_ids": ["bob"], "addressee_confidence": 0.9, "addressee_ambiguous": false}}
+    ],
+    "current": "current", "expected_background": ["context"]
+  },
+  {
+    "id": "same_speaker_new_topic_excludes_old_task",
+    "messages": [
+      {"id": "old-task", "author": "alice", "text": "帮我写邮件，不超过一百字", "time": 10, "routing": {"topic": "email"}},
+      {"id": "current", "author": "alice", "text": "换个话题，显卡怎么选？", "time": 16, "routing": {"topic": "hardware"}}
+    ],
+    "current": "current", "expected_background": []
+  },
+  {
+    "id": "same_topic_private_side_exchange_excluded",
+    "messages": [
+      {"id": "question", "author": "alice", "text": "工具怎么安装？", "time": 10, "routing": {"topic": "tools"}},
+      {"id": "private", "author": "eve", "text": "你的账号密码先私信我", "time": 12, "mentions": ["dave"], "routing": {"topic": "tools"}},
+      {"id": "current", "author": "alice", "text": "给个安装步骤", "time": 16, "routing": {"topic": "tools"}}
+    ],
+    "current": "current", "expected_background": ["question"]
+  },
+  {
+    "id": "stale_topic_supplements_are_excluded",
+    "messages": [
+      {"id": "stale", "author": "bob", "text": "早先的问题用旧版配置", "time": 10, "routing": {"topic": "deployment"}},
+      {"id": "current", "author": "alice", "text": "现在应该怎样配置？", "time": 300, "routing": {"topic": "deployment"}}
+    ],
+    "current": "current", "expected_background": []
+  }
+]

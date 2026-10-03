@@ -7,7 +7,7 @@ import pytest
 from astrbot_plugin_chat_dynamics.core.dashboard import scene_replay_snapshot
 from astrbot_plugin_chat_dynamics.core.session_runtime import TopicState
 from astrbot_plugin_chat_dynamics.core.topic_identity import node_topic_id
-from astrbot_plugin_chat_dynamics.core.topic_jev import build_topic_task
+from astrbot_plugin_chat_dynamics.core.topic_jev import align_topic_task, build_topic_task
 from astrbot_plugin_chat_dynamics.core.topic_resolution import TopicResolver
 from .test_jev_decision_layer import JevDouble, answers
 from .test_persona_model import drain, flush
@@ -280,10 +280,15 @@ def test_full_active_label_state_fits_jev_budget_without_erasing_current_utteran
         rt.routing_state.topics[str(i)] = TopicState(str(i), generated_title="主题标签" * 6,
             updated_at=900+i, created_at=900+i, summary_excerpts=["讨论细节" * 50])
     turn = TurnContext("r", "u", node.text, (MessageSnapshot("current", "u", ""),), (), 0, 0, 1000, False)
-    descriptions, questions, _ = build_topic_task(rt, turn, 1000)
+    descriptions, questions, mapping = build_topic_task(rt, turn, 1000)
     state = build_state(turn, active_topics=descriptions, persona_prompt="人设" * 600)
-    assert len(descriptions) == len(state["active_topics"]) == 80
+    assert len(descriptions) == 80
+    assert 0 < len(state["active_topics"]) < 80
+    assert list(state["active_topics"]) == list(descriptions)[:len(state["active_topics"])]
     assert len(questions["topic"]["criteria"]) == 82
+    questions, mapping = align_topic_task(state, questions, mapping)
+    assert set(questions["topic"]["criteria"]) == set(state["active_topics"]) | {"NEW", "KEEP"}
+    assert set(mapping["topics"]) == set(state["active_topics"])
     assert len(json.dumps(state, ensure_ascii=False)) <= 12000
     assert len(state["conversation"]["text"]) > 500
 

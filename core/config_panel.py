@@ -135,6 +135,7 @@ class ConfigPanel:
             "debounce_base_cooldown": getattr(cfg, "debounce_base_cooldown", 0.25),
             "debounce_extended_cooldown": getattr(cfg, "debounce_extended_cooldown", 1.0),
             "debounce_max_cap": getattr(cfg, "debounce_max_cap", 4.0),
+            "pending_input_timeout": cfg.pending_input_timeout,
             "strong_addressivity_threshold": getattr(cfg, "strong_addressivity_threshold", 0.7),
             "safe_hover_threshold": getattr(cfg, "safe_hover_threshold", 0.4),
             "deep_cooling_minutes": getattr(cfg, "deep_cooling_minutes", 15.0),

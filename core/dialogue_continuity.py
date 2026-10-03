@@ -6,16 +6,15 @@ intended-participant identity check. This module keeps the two structural gates
 and replaces the rest with named, tunable weights so the learning layer has
 dials to fit instead of constants to guess.
 
-Calibration (checked by tests/test_dialogue_continuity.py): with the default
-weights below the previous decisions are reproduced exactly. The old rule
+Calibration (checked by tests/test_dialogue_continuity.py): for unknown-topic
+interruptions the default weights reproduce the previous decisions. The old rule
 accepted iff the answer shape held, nothing intervened, and 0 < dt <= 60s; the
 default score accepts under the same conditions up to dt <= 60.27s, so the only
 difference is a 0.27 second sliver. Nothing here changes behaviour on its own.
 
-Deferred dial: "topic 是否保持" is not scored yet because accepting a dialogue
-answer forces the dialogue topic onto the node, so a node-level topic comparison
-is not an independent signal at this point in the pipeline. It becomes one once
-topic assignment precedes recipient resolution.
+Confirmed unrelated-topic interruptions are excluded before scoring. Ambiguous,
+weak and same-topic interruptions retain their penalties. The candidate's topic
+is not a weighted feature: accepting an answer can itself assign that topic.
 """
 from __future__ import annotations
 
@@ -25,6 +24,7 @@ from typing import Any, Sequence
 
 from .evidence import EvidenceEntry
 from .message_features import analyze_text
+from .topic_identity import confirmed_topic_id
 
 @dataclass(frozen=True)
 class DialogueWeights:
@@ -154,6 +154,12 @@ def evaluate(dialogue: Any, node: Any, recent_nodes: Sequence[Any] = (),
                 continue
             other_stamp = float(getattr(other, "timestamp", 0.0) or 0.0)
             if not updated_at < other_stamp <= stamp:
+                continue
+            routing = getattr(other, "metadata", {}).get("routing", {})
+            other_topic = confirmed_topic_id(other)
+            if (other_topic and getattr(dialogue, "topic_id", "")
+                    and other_topic != dialogue.topic_id
+                    and float(routing.get("topic_confidence", 0.0) or 0.0) >= 0.8):
                 continue
             total += 1
             if str(getattr(other, "user_id", "")) not in {str(getattr(node, "user_id", "")),

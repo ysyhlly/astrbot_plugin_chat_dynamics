@@ -179,12 +179,13 @@ const CONFIG_GROUPS = [
   {
     "id": "debounce",
     "title": "消息合并",
-    "blurb": "Jev 判断是否说完，只在未说完时继续等待补充",
+    "blurb": "Jev 判断是否说完，收到补充后重判，超时结束等待",
     "open": false,
     "keys": [
       "debounce_base_cooldown",
       "debounce_extended_cooldown",
-      "debounce_max_cap"
+      "debounce_max_cap",
+      "pending_input_timeout"
     ]
   },
   {

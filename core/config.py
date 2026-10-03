@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable, List, Tuple
 
-from .prompt_policy import DEFAULT_DECISION_PROMPT, DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS
+from .prompt_policy import DEFAULT_DECISION_PROMPT, DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS, PREVIOUS_PROMPT_DEFAULTS
 
 
 PIPELINE_FILTER = "filter"
@@ -33,6 +33,7 @@ class RuntimeConfig:
     debounce_base_cooldown: float
     debounce_extended_cooldown: float
     debounce_max_cap: float
+    pending_input_timeout: float
     strong_addressivity_threshold: float
     safe_hover_threshold: float
     deep_cooling_minutes: float
@@ -238,6 +239,8 @@ def _prompt(raw: Any, key: str, default: str, warnings: List[str]) -> str:
         warnings.append(f"{key} must be text; using default")
         return default
     value = value.strip() or default
+    if value == PREVIOUS_PROMPT_DEFAULTS.get(key):
+        value = default
     if len(value) > MAX_PROMPT_CHARS:
         warnings.append(f"{key} exceeds {MAX_PROMPT_CHARS} characters; truncating")
         value = value[:MAX_PROMPT_CHARS]
@@ -321,6 +324,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         debounce_base_cooldown=base,
         debounce_extended_cooldown=extended,
         debounce_max_cap=cap,
+        pending_input_timeout=_number(raw, "pending_input_timeout", 60.0, lambda value: 1 <= value <= 300, warnings),
         strong_addressivity_threshold=strong,
         safe_hover_threshold=hover,
         deep_cooling_minutes=_number(

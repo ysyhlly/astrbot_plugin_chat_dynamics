@@ -11,7 +11,9 @@ from typing import Any, Sequence
 
 from .agent_bridge import AstrBotAgentBridge, PersonaChanged
 from .pacer import is_rhythm_short_act, scale_delay
-from .topic_identity import node_topic_id
+from .topic_identity import confirmed_topic_id
+from .active_dialogue import dialogue_for_node
+from .dialogue_context import capture_dialogue
 from .platform_bridge import chain_plain_text
 from .message_semantics import describe_message
 from .member_identity import quoted_identity
@@ -21,13 +23,14 @@ from . import outcome_recorder as outcomes
 from .turn_decision import (
     MessageSnapshot, TurnContext, TurnDecision, reply_prompt,
 )
-from .jev_decision import build_questions, build_state, decision_from_answers, describe_answers
-from .topic_jev import build_topic_task, apply_topic_answer
+from .jev_decision import (StateBudgetExceeded, bound_request_state, build_questions, build_state,
+                           decision_from_answers, describe_answers)
+from .topic_jev import align_topic_task, build_topic_task, apply_topic_answer, capture_topic_candidates
+from .context_retrieval import clip_text, select_background
+from .routing_contract import commit_topic_evidence
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
-_EXPLICIT_PARENT_EDGE_KINDS = frozenset(("reply", "mention"))
-_MAX_EXPLICIT_PARENT_HOPS = 8
 _REQUEST_SUPPLEMENT_WINDOW = 120.0
 
 
@@ -41,6 +44,10 @@ class ModelTurn:
     platform_message_ids: frozenset[str] = frozenset()
     outcome_nodes: tuple[Any, ...] = ()
     debounce_result: Any = None
+
+    @property
+    def context_node_ids(self) -> frozenset[str] | None:
+        return self.context.visible_node_ids
 
 
 def _node_metadata(node: Any) -> dict:
@@ -105,7 +112,8 @@ def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any) -> list[Any
         plain = chain_plain_text(chain).strip()
         if plain:
             seen.add(plain)
-    parts = pacer.persona_fragments(text or "") if pacer is not None else ([text] if text else [])
+    parts = [] if (text or "").strip() in seen else (
+        pacer.persona_fragments(text or "") if pacer is not None else ([text] if text else []))
     for part in parts:
         if not part:
             continue
@@ -152,37 +160,33 @@ def turn_is_continuation(runtime: Any, turn: TurnContext, now: float) -> bool:
     if _routing_other(runtime, routing):
         return False
 
-    last_bot = getattr(runtime, "last_bot_node", None)
-    if last_bot is None:
-        return False
-
-    bot_topic = node_topic_id(last_bot)
     turn_node = _dag_node(runtime, turn.messages[-1].message_id) if turn.messages else None
-    current_topic = node_topic_id(turn_node)
+    dialogue = dialogue_for_node(runtime, turn_node, eligible_ids=turn.visible_node_ids, window=900)
+    if dialogue is None or dialogue.closed:
+        return False
+    bot_topic = dialogue.topic_id
+    current_topic = confirmed_topic_id(turn_node)
     same_topic = bool(current_topic and bot_topic and current_topic == bot_topic)
 
     reply_to = getattr(turn, "reply_to", None) or getattr(getattr(turn, "node", None), "reply_to_id", None)
     inferred_parent = routing.get("parent_message_id", "")
-    last_bot_id = getattr(last_bot, "msg_id", "")
+    bot_ids = set(dialogue.bot_message_ids)
     if not reply_to and turn_node:
         reply_to = getattr(turn_node, "reply_to_id", None)
 
     parent_continuity = bool(
-        last_bot_id and (
-            reply_to == last_bot_id
-            or inferred_parent == last_bot_id
-            or (turn_node and last_bot_id in getattr(turn_node, "parent_ids", ()))
-        )
+        reply_to in bot_ids or (inferred_parent in bot_ids
+                               and float(routing.get("parent_confidence", 0) or 0) >= .72)
     )
 
     coherent = same_topic or parent_continuity
-    last_interlocutor = getattr(runtime, "last_interlocutor", "")
-    last_model_send = getattr(runtime, "last_model_send", 0.0)
-
+    window = 120
+    if same_topic and float(routing.get("topic_confidence", 0) or 0) >= .8:
+        window = {"focused": 900, "supportive": 300}.get(dialogue.interaction_state, 120)
     return bool(
         coherent
-        and last_interlocutor == turn.author
-        and 0 <= now - last_model_send < 120
+        and dialogue.user_id == turn.author
+        and 0 <= now - dialogue.updated_at < window
     )
 
 
@@ -206,7 +210,7 @@ def is_request_supplement(
     if not callable(getter):
         return False
     try:
-        recent = getter(limit=12)
+        recent = getter(limit=0)
     except Exception:
         return False
     bot_id = str(getattr(runtime, "bot_id", "") or "")
@@ -216,11 +220,12 @@ def is_request_supplement(
     if _routing_other(runtime, current_routing):
         return False
     for node in recent:
-        candidate_routing = getattr(node, "metadata", {}).get("routing", {})
-        if (current_routing.get("topic_id") and candidate_routing.get("topic_id")
-                and current_routing["topic_id"] != candidate_routing["topic_id"]):
+        if (confirmed_topic_id(current) and confirmed_topic_id(node)
+                and confirmed_topic_id(current) != confirmed_topic_id(node)):
             continue
         if str(getattr(node, "user_id", "") or "") != uid:
+            continue
+        if node.metadata.get("dialogue_stop_revision", 0) != getattr(runtime, "topic_stop_revisions", {}).get(uid, 0):
             continue
         try:
             ts = float(getattr(node, "timestamp", 0) or 0)
@@ -246,45 +251,107 @@ def _identity_failure(runtime: Any, detail: str, **extra: Any) -> None:
     logger.warning("Persona turn identity mapping failed: %s", detail)
 
 
-def _explicit_parent_ids(node: Any) -> tuple[str, ...]:
-    """Return deterministic parent IDs for reply/mention edges only."""
-    parent_ids = getattr(node, "parent_ids", ()) or ()
-    edge_kinds = getattr(node, "edge_kinds", {}) or {}
-    kind_for = getattr(edge_kinds, "get", None)
-    if not callable(kind_for):
-        return ()
-
-    explicit_ids = []
-    for raw_parent_id in sorted(parent_ids, key=str):
-        parent_id = str(raw_parent_id or "")
-        if parent_id and kind_for(raw_parent_id) in _EXPLICIT_PARENT_EDGE_KINDS:
-            explicit_ids.append(parent_id)
-    return tuple(dict.fromkeys(explicit_ids))
-
-
-def _is_background_related(
-    node: Any,
-    *,
-    current_ids: frozenset[str],
-    selected_ids: frozenset[str],
-    author_id: str,
-    bot_id: str,
-) -> bool:
-    """Apply the bounded background relevance rules independently of identity mapping."""
-    message_id = str(getattr(node, "msg_id", "") or "")
-    if not message_id or message_id in current_ids:
-        return False
-    if message_id in selected_ids:
-        return True
-    if str(getattr(node, "user_id", "") or "") == author_id:
-        return True
-    reply_to_id = str(getattr(node, "reply_to_id", "") or "")
-    return bool(bot_id and str(getattr(node, "user_id", "") or "") == bot_id
-                and reply_to_id in selected_ids)
-
-
 def _quoted_author_name(node, dag) -> str:
     return str((quoted_identity(node, dag) or {}).get("display_name") or "")
+
+
+def _snapshot_background(runtime, nodes, *, eligible_ids=None, retained=()) -> tuple[MessageSnapshot, ...]:
+    dag = runtime.dag
+    original = {message.message_id: message for message in retained}
+    selections = {selection.node.msg_id: selection for selection in
+                  select_background(dag, nodes, bot_id=str(runtime.bot_id or ""), eligible_ids=eligible_ids)}
+    order = {n.msg_id: i for i, n in enumerate(dag.get_recent_nodes(limit=0))}
+    for index, message in enumerate(retained):
+        order.setdefault(message.message_id, index - len(retained))
+    proofs = {}
+    for mid in dict.fromkeys((*original, *selections)):
+        evidence = original[mid].context_evidence if mid in original else ()
+        if mid in selections:
+            evidence = (*evidence, *selections[mid].context_evidence)
+        proofs[mid] = tuple(sorted(dict.fromkeys(evidence), key=lambda p: (p.priority, -p.confidence)))[:3]
+
+    def priority(mid):
+        timestamp = original[mid].timestamp if mid in original else selections[mid].node.timestamp
+        return min((p.priority for p in proofs[mid]), default=7), -(timestamp or 0), -order[mid]
+
+    background = []
+    budget = 6000
+    for mid in sorted(proofs, key=priority):
+        if budget <= 0 or len(background) >= 15:
+            break
+        if mid in original:
+            text = clip_text(original[mid].text, min(1200, budget))
+            background.append(replace(original[mid], text=text, context_evidence=proofs[mid]))
+        else:
+            n = selections[mid].node
+            text = clip_text(n.text, min(1200, budget))
+            background.append(MessageSnapshot(n.msg_id, n.user_id, text, n.reply_to_id or "",
+                                              semantics=describe_message(n, dag, runtime.bot_id),
+                                              source_text=n.text, timestamp=n.timestamp,
+                                              mentioned_users=tuple(n.metadata.get("actual_mentions", n.mentioned_users)),
+                                              author_name=str(n.metadata.get("sender_name") or ""),
+                                              platform=str(n.metadata.get("sender_platform") or ""),
+                                              quoted_author_name=_quoted_author_name(n, dag),
+                                              context_evidence=proofs[mid]))
+        budget -= len(text)
+    background.sort(key=lambda m: (m.timestamp, order.get(m.message_id, 0)))
+    return tuple(background)
+
+
+def _refresh_topic_semantics(runtime, message, node):
+    if not _node_metadata(node).get("routing", {}).get("semantic_topic_decision"):
+        return message.semantics
+    latest = describe_message(node, runtime.dag, runtime.bot_id)
+    original = message.semantics
+    if original is None:
+        return latest
+    code = next((code for code in reversed(latest.routing_evidence)
+                 if code in {"topic_jev_new", "topic_jev_match"}), None)
+    evidence = commit_topic_evidence({"evidence": original.routing_evidence,
+                                     "topic_ambiguous": latest.topic_ambiguous}, code)
+    # Jev updates topic membership, not the original sender/mention/quote facts.
+    return replace(original, topic_id=latest.topic_id, topic_confidence=latest.topic_confidence,
+                   topic_ambiguous=latest.topic_ambiguous,
+                   routing_ambiguous=original.addressee_ambiguous or latest.topic_ambiguous,
+                   routing_evidence=tuple(evidence))
+
+
+def refresh_topic_context(runtime, item: ModelTurn) -> ModelTurn:
+    """Refresh confirmed topic evidence under state_lock, using the original watermark."""
+    turn = item.context
+    if item.context_node_ids is None:
+        return item
+    nodes = tuple(_dag_node(runtime, message.message_id) for message in turn.messages)
+    if any(node is None for node in nodes):
+        return item
+    if item.outcome_nodes and any(node is not original for node, original in zip(nodes, item.outcome_nodes)):
+        return item
+    messages = tuple(replace(message, semantics=_refresh_topic_semantics(runtime, message, node))
+                     for node, message in zip(nodes, turn.messages))
+    if messages == turn.messages:
+        return item
+    confirmed_topics = {message.semantics.topic_id for message in messages
+                        if message.semantics and message.semantics.topic_id
+                        and not message.semantics.topic_ambiguous
+                        and message.semantics.topic_confidence >= .8}
+    retained = tuple(message for message in turn.background
+                     if any(proof.priority == 0 for proof in message.context_evidence)
+                     or (message.semantics and message.semantics.topic_id in confirmed_topics
+                         and any(proof.relation == "same_topic" for proof in message.context_evidence)))
+    context = replace(turn, messages=messages,
+                      background=_snapshot_background(runtime, nodes, eligible_ids=item.context_node_ids,
+                                                      retained=retained))
+    # Reclassifying the topic may select another old exchange, but only sources
+    # visible to the original turn can enter its reply context.
+    dialogue = capture_dialogue(runtime, nodes[-1], item.context_node_ids,
+                                current_ids=tuple(m.message_id for m in messages))
+    if turn.dialogue is not None:
+        if dialogue is not None and dialogue.last_bot_message_id == turn.dialogue.last_bot_message_id:
+            dialogue = replace(turn.dialogue, topic_id=dialogue.topic_id)
+        elif dialogue is None and (not confirmed_topics or turn.dialogue.topic_id in confirmed_topics):
+            dialogue = turn.dialogue
+    context = replace(context, dialogue=dialogue)
+    return replace(item, context=context)
 
 
 def snapshot_turn(
@@ -302,8 +369,8 @@ def snapshot_turn(
 
     The caller owns fragment ordering.  This function only dereferences the
     supplied IDs and refuses to construct a partial context when the mapping
-    is incomplete or stale. Background relevance is selected separately using
-    explicit parent ancestry plus bounded same-user and bot-reply rules.
+    is incomplete or stale. History selection uses platform ancestry, accepted
+    inference, committed topics and bounded recipient/speaker supplements.
     """
     dag = getattr(runtime, "dag", None)
     if dag is None:
@@ -353,68 +420,31 @@ def snapshot_turn(
         platform=str(resolved.metadata.get("sender_platform") or ""),
         quoted_author_name=_quoted_author_name(resolved, dag),
     ) for parsed, resolved in zip(events, resolved_nodes))
-    current_ids = {m.message_id for m in messages}
-    # Follow only explicit DAG parent edges. In particular, mention parents
-    # are authoritative even when the platform event has no reply_to field;
-    # semantic edges and room-wide time heuristics do not belong in the parent
-    # chain. Background relevance below is a separate, bounded supplement.
-    selected = set(current_ids)
-    frontier = list(ids)
-    for _ in range(_MAX_EXPLICIT_PARENT_HOPS):
-        next_frontier = []
-        for child_id in frontier:
-            child = _dag_node(runtime, child_id)
-            if child is None:
-                continue
-            for parent_id in _explicit_parent_ids(child):
-                parent = _dag_node(runtime, parent_id)
-                if parent is None:
-                    continue
-                parent_message_id = str(getattr(parent, "msg_id", "") or "")
-                if not parent_message_id or parent_message_id in selected:
-                    continue
-                selected.add(parent_message_id)
-                next_frontier.append(parent_message_id)
-        if not next_frontier:
-            break
-        frontier = next_frontier
+    ordered = dag.get_recent_nodes(limit=0)
+    current_ids = set(ids)
+    boundary = max(i for i, n in enumerate(ordered) if n.msg_id in current_ids)
     cutoff = max(n.timestamp for n in resolved_nodes)
-    candidates = [n for n in runtime.dag.get_recent_nodes(limit=60) if n.timestamp <= cutoff]
-    background = []
-    budget = 6000
-    current_ids = frozenset(current_ids)
-    selected_ids = frozenset(selected)
-    for n in reversed(candidates):
-        if _is_background_related(
-                n,
-                current_ids=current_ids,
-                selected_ids=selected_ids,
-                author_id=str(getattr(result, "user_id", "") or ""),
-                bot_id=str(getattr(runtime, "bot_id", "") or ""),
-        ) and budget > 0:
-            text = n.text[:min(1200, budget)]
-            background.append(MessageSnapshot(n.msg_id, n.user_id, text, n.reply_to_id or "",
-                                              semantics=describe_message(n, dag, runtime.bot_id),
-                                              source_text=n.text, timestamp=n.timestamp,
-                                              mentioned_users=tuple(n.metadata.get("actual_mentions", n.mentioned_users)),
-                                              author_name=str(n.metadata.get("sender_name") or ""),
-                                              platform=str(n.metadata.get("sender_platform") or ""),
-                                              quoted_author_name=_quoted_author_name(n, dag)))
-            budget -= len(text)
-            if len(background) >= 15:
-                break
+    context_node_ids = frozenset(n.msg_id for i, n in enumerate(ordered)
+                                 if i <= boundary and n.timestamp <= cutoff)
+    background = _snapshot_background(runtime, resolved_nodes, eligible_ids=context_node_ids)
     turn = TurnContext(runtime.session_key, result.user_id, result.consolidated_text[:8000], messages,
-                       tuple(reversed(background)), runtime.epoch,
+                       tuple(background), runtime.epoch,
                        getattr(result.last_event, "_chat_dynamics_user_revision", runtime.user_revisions.get(result.user_id, 0)),
                        result.start_time, explicit, bool(result.metadata.get("truncated")) or len(result.consolidated_text) > 8000,
                        source_text=result.consolidated_text,
                        source_truncated=bool(result.metadata.get("truncated")), wake_kind=wake_kind,
-                       bot_id=str(runtime.bot_id or ""))
+                       bot_id=str(runtime.bot_id or ""), visible_node_ids=context_node_ids)
+    turn = replace(turn, snapshot_at=cutoff, dialogue=capture_dialogue(runtime, resolved_nodes[-1], context_node_ids,
+                                                                    current_ids=ids))
+    if getattr(runtime, "routing_state", None) is not None:
+        turn = replace(turn, topic_candidates=capture_topic_candidates(runtime, turn))
     platform_ids = frozenset(
         str(getattr(parsed, "message_id", "") or "")
         for parsed, resolved in zip(events, resolved_nodes)
         if getattr(parsed, "message_id", "") and resolved.msg_id == getattr(parsed, "message_id", "")
     )
+    observations = {**observations, "ambient_openings_used": sum(
+        0 <= cutoff - timestamp < 60 for timestamp in getattr(runtime, "ambient_openings", ()))}
     return ModelTurn(turn, tuple(result.raw_events), observations, shadow, platform_message_ids=platform_ids,
                      outcome_nodes=tuple(_dag_node(runtime, message.message_id) for message in turn.messages),
                      debounce_result=result if result.metadata.get("semantic") else None)
@@ -436,14 +466,16 @@ class PersonaEngine:
                 and runtime.user_revisions.get(turn.author, 0) == turn.revision
                 and (item.debounce_result is None or p.debounce.is_result_current(item.debounce_result))
                 and (turn.mandatory_reply or turn.soft_wake
-                     or not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time())))
+                     or not p.arbiter.is_in_deep_cooling(runtime.session_key, current_time=p.time_service.time())
+                     or turn_is_continuation(runtime, turn, p.time_service.time())))
 
     async def submit(self, runtime, item: ModelTurn) -> None:
         if not self.valid(runtime, item):
             self.plugin.debounce.finish_result(item.debounce_result)
             return
         now = self.plugin.time_service.time()
-        addressed = turn_is_addressed(runtime, item.context, now)
+        addressed = (turn_is_addressed(runtime, item.context, now)
+                     or turn_is_continuation(runtime, item.context, now))
         if runtime.model_admission.locked() and not addressed:
             self.diagnostic(runtime, "overload_ambient")
             self.plugin.debounce.finish_result(item.debounce_result)
@@ -544,7 +576,8 @@ class PersonaEngine:
             runtime.jev_decision = {}
         if turn.mandatory_reply:
             return TurnDecision.fallback(turn, "at_mandatory")
-        if item.fallback and not turn.soft_wake:
+        if item.fallback and not turn.soft_wake and not (
+                runtime is not None and turn_is_continuation(runtime, turn, p.time_service.time())):
             return TurnDecision.fallback(turn, "queue_overload")
         try:
             return await asyncio.wait_for(
@@ -574,10 +607,15 @@ class PersonaEngine:
         timeout = p._runtime_config.jev_timeout
         floor = p._runtime_config.jev_min_confidence
         observations = dict(item.observations)
+        if turn.dialogue is not None:
+            state = turn.dialogue.interaction_state
         if item.debounce_result is not None:
             now = p.time_service.time()
-            observations.update(utterance_pause_seconds=max(0.0, now - item.debounce_result.end_time),
-                                utterance_age_seconds=max(0.0, now - turn.started_at),
+            flushed_at = item.debounce_result.metadata.get("flushed_at", now)
+            observations.update(utterance_pause_seconds=max(0.0, flushed_at - item.debounce_result.end_time),
+                                utterance_age_seconds=max(0.0, flushed_at - turn.started_at),
+                                queue_delay_seconds=max(0.0, now - flushed_at),
+                                pending_input=bool(item.debounce_result.metadata.get("pending_input")),
                                 completion_waited=item.debounce_result.was_extended)
         async with self.slots:
             topics, topic_questions, topic_mapping = {}, {}, None
@@ -587,8 +625,8 @@ class PersonaEngine:
                     if self.valid(runtime, item) and p._sessions.get(runtime.session_key) is runtime:
                         runtime.routing_state.expire_topics(runtime.dag, p.time_service.time())
                         topics, topic_questions, topic_mapping = build_topic_task(runtime, turn, p.time_service.time())
-            answers = await client.evaluate(
-                state=build_state(
+            try:
+                bounded_state = build_state(
                     turn,
                     previous_state=state,
                     observations=observations,
@@ -596,8 +634,18 @@ class PersonaEngine:
                     persona_prompt=getattr(persona, "prompt", ""),
                     decision_prompt=p._runtime_config.decision_prompt,
                     active_topics=topics,
-                ),
-                questions={**build_questions(turn), **topic_questions},
+                )
+                topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
+                questions = {**build_questions(turn), **topic_questions}
+                bounded_state = bound_request_state(bounded_state, questions)
+                topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
+                questions = {**build_questions(turn), **topic_questions}
+            except StateBudgetExceeded:
+                p._metric(prefix + "state_budget_exceeded")
+                return TurnDecision.abstain(prefix + "state_budget_exceeded")
+            answers = await client.evaluate(
+                state=bounded_state,
+                questions=questions,
                 timeout=timeout,
             )
         if not answers:
@@ -622,6 +670,27 @@ class PersonaEngine:
                         p._mark_panel_runtime_dirty()
         return decision
 
+    async def run_owned(self, runtime, user_id: str, call, *, timeout: float):
+        """Cancel one member's call without tearing down the group's queue worker."""
+        child = self.plugin._create_background_task(call())
+        runtime.owned_turn_tasks[child] = user_id
+        try:
+            return await asyncio.wait_for(child, timeout=timeout)
+        finally:
+            runtime.owned_turn_tasks.pop(child, None)
+
+    def cancel_member(self, runtime, user_id: str) -> None:
+        # Finish trace facts before the command advances the owner's revision.
+        for item in (runtime.active_model_turn, *runtime.model_queue, *runtime.model_waiting.values()):
+            if item is not None and item.context.author == user_id:
+                record_outcome(runtime, item, outcomes.mark_suppressed, "member_stopped", stage="generation")
+        runtime.cancel_owned_turns(user_id)
+
+    async def generate(self, event, events, prompt, persona, provider, **kwargs):
+        """All owned native agents share the adapter's per-provider admission budget."""
+        return await self.plugin.llm.provider_budget.run(
+            provider, "reply", lambda: self.bridge.generate(event, events, prompt, persona, provider, **kwargs))
+
     async def run(self, runtime) -> None:
         p = self.plugin
         task = asyncio.current_task()
@@ -645,10 +714,12 @@ class PersonaEngine:
                         timeout = p._runtime_config.tool_agent_timeout
                         if item.context.mandatory_reply:
                             timeout = min(timeout, p._runtime_config.reply_timeout)
-                        await asyncio.wait_for(self.process(runtime, item), timeout=timeout)
+                        await self.run_owned(runtime, item.context.author,
+                                             lambda: self.process(runtime, item), timeout=timeout)
                 except asyncio.CancelledError:
                     item_cancelled = True
-                    raise
+                    if task.cancelling():
+                        raise
                 except asyncio.TimeoutError:
                     if self.valid(runtime, item):
                         record_outcome(runtime, item, outcomes.mark_generation_failed, "reply_timeout")
@@ -676,7 +747,7 @@ class PersonaEngine:
                             runtime.active_model_turn = None
                         runtime.model_admission.release()
         except asyncio.CancelledError:
-            # The worker is being torn down (reset, member stop, unload). Every
+            # The worker is being torn down (reset or unload). Every
             # turn still queued was queued with one admission permit held, and
             # nothing will ever pop it once this task is gone: releasing them
             # here keeps "queued turn == held permit" true by construction
@@ -727,7 +798,9 @@ class PersonaEngine:
         real_id = str(sent.message_id) if sent.message_id else None
         bot = runtime.dag.add_message(real_id or p._next_outgoing_id(), runtime.bot_id, text,
                                       timestamp=p.time_service.time(), reply_to_id=target,
-                                      metadata={"platform_message_id": real_id is not None})
+                                      metadata={"platform_message_id": real_id is not None,
+                                                "dialogue_delivered": True, "trigger_user_id": turn.author,
+                                                "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0)})
         p._observe_routed_bot(runtime, bot)
         runtime.last_bot_node = bot
         p._last_bot_nodes[runtime.session_key] = bot
@@ -738,12 +811,19 @@ class PersonaEngine:
 
     async def process(self, runtime, item: ModelTurn) -> None:
         p, turn = self.plugin, item.context
+        decision_turn = turn
         event = item.events[-1]
         started = p.time_service.time()
         persona = await self.bridge.snapshot(event)
         interaction_state = runtime.interaction_state
         decision = await self.decide(item, persona, interaction_state, runtime=runtime)
         proposed = decision
+        async with runtime.state_lock:
+            if not self.valid(runtime, item):
+                return
+            if decision.reason_code != "jev_waiting_for_completion":
+                item = refresh_topic_context(runtime, item)
+                turn = item.context
         projection = await self._project_persona(persona, turn)
         if not self.valid(runtime, item):
             return
@@ -759,10 +839,22 @@ class PersonaEngine:
                 return
             now = p.time_service.time()
             if decision.reason_code == "jev_waiting_for_completion":
-                deferred = await p.debounce.defer_result(item.debounce_result)
+                waiting_id = turn.messages[-1].message_id
+
+                async def expired():
+                    async with runtime.state_lock:
+                        if (p._sessions.get(runtime.session_key) is runtime and runtime.epoch == turn.epoch
+                                and runtime.user_revisions.get(turn.author, 0) == turn.revision
+                                and runtime.model_diagnostic.get("waiting_message_id") == waiting_id
+                                and runtime.model_diagnostic.get("waiting_user_id") == turn.author):
+                            self.diagnostic(runtime, "jev_incomplete_expired", action="ignore",
+                                            reason_zh="补充输入等待已结束")
+
+                deferred = await p.debounce.defer_result(item.debounce_result, on_expire=expired)
                 reason = decision.reason_code if deferred else "jev_incomplete_expired"
                 self.diagnostic(runtime, reason, action="wait" if deferred else "ignore",
                                 reason_zh="等待这句话的后续内容" if deferred else "未说完等待已结束",
+                                waiting_user_id=turn.author, waiting_message_id=waiting_id,
                                 shadow=item.shadow, jev=dict(runtime.jev_decision))
                 if item.shadow:
                     p._record_shadow_decision(turn.session_key, action="ignore", reason=reason,
@@ -883,7 +975,7 @@ class PersonaEngine:
                 if isinstance(trace, dict) and isinstance(trace.get("participation"), dict):
                     from .routing_trace import finalize_decision_trace, compact_trace_inputs
                     trace = stage_trace(trace, persona=persona, interaction_state=interaction_state,
-                                        presence=p._runtime_config.presence_knob, turn=turn,
+                                        presence=p._runtime_config.presence_knob, turn=decision_turn,
                                         proposed=proposed, final=decision, gate=gate,
                                         axes=projection)
                     node.metadata["decision_trace"] = finalize_decision_trace(
@@ -899,6 +991,7 @@ class PersonaEngine:
                             latency_ms=round((now - started) * 1000), shadow=item.shadow,
                             backend=str(getattr(p._runtime_config, "decision_backend", "model") or "model"),
                             wake_kind=turn.wake_kind, reply_required=turn.mandatory_reply,
+                            context_refreshed=turn is not decision_turn,
                             **({"jev": evidence} if evidence else {}))
             if item.shadow:
                 p._record_shadow_decision(
@@ -932,7 +1025,7 @@ class PersonaEngine:
                     return
             understand = bool(getattr(runtime, "request_media_understand", False))
             record_outcome(runtime, item, outcomes.mark_in_flight)
-            output = await self.bridge.generate(
+            output = await self.generate(
                 event,
                 item.events,
                 reply_prompt(turn, decision, delivery_constraints={
@@ -1000,7 +1093,11 @@ class PersonaEngine:
                     msg_id = real_message_id or p._next_outgoing_id()
                     bot = runtime.dag.add_message(msg_id=msg_id, user_id=runtime.bot_id, text=delivered_text,
                                                   timestamp=p.time_service.time(), reply_to_id=dag_parent_id,
-                                                  metadata={"platform_message_id": real_message_id is not None})
+                                                  metadata={"platform_message_id": real_message_id is not None,
+                                                            "dialogue_delivered": True, "trigger_user_id": turn.author,
+                                                            "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
+                                                            "dialogue_state": decision.state,
+                                                            "dialogue_action": decision.action})
                     bot.metadata["platform_message_id"] = real_message_id is not None
                     p._observe_routed_bot(runtime, bot)
                     p._schedule_neural_embed(runtime.session_key, bot)

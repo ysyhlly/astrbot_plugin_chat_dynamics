@@ -8,6 +8,7 @@ import pytest
 from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG
 from astrbot_plugin_chat_dynamics.core.persona_engine import _platform_reply_id, snapshot_turn
 from astrbot_plugin_chat_dynamics.core.platform_bridge import SendResult
+from .test_jev_decision_layer import JevDouble, answers
 from .test_persona_model import BridgeDouble
 from .test_plugin_lifecycle import MockEvent, _plugin
 
@@ -114,23 +115,15 @@ def test_platform_reply_requires_explicit_true_marker_for_history():
 @pytest.fixture
 def persona_plugin(monkeypatch):
     monkeypatch.setattr("astrbot_plugin_chat_dynamics.core.agent_bridge.AstrBotAgentBridge.check", lambda self: True)
-    plugin = _plugin({"decision_mode": "persona_model", "base_thinking_delay": 0})
+    plugin = _plugin({"decision_mode": "persona_model", "decision_backend": "jev",
+                      "base_thinking_delay": 0, "daily_rhythm_enabled": False})
     bridge = BridgeDouble()
     plugin.persona_engine.bridge = bridge
 
-    async def decide(**kwargs):
-        payload = kwargs["prompt"]
-        import json
+    plugin.jev = JevDouble(answers())
 
-        ids = json.loads(payload)["conversation"]["messages"]
-        return SimpleNamespace(completion_text=json.dumps({
-            "action": "reply",
-            "state": "focused",
-            "target_message_ids": [ids[0]["message_id"]],
-            "response_goal": "回应当前请求",
-            "length": "brief",
-            "reason_code": "relevant_request",
-        }, ensure_ascii=False))
+    async def decide(**kwargs):
+        raise AssertionError("Jev decisions must not fall back to the legacy LLM path")
 
     plugin.context.llm_generate = decide
     return plugin
@@ -177,6 +170,20 @@ async def test_persona_real_message_id_chains_platform_replies(persona_plugin):
         "source-real", "bot-real-1", "bot-real-2"
     ]
     await persona_plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_persona_unavailable_jev_never_generates_or_sends(persona_plugin):
+    persona_plugin.jev.payload = None
+    event = MockEvent("请求", message_id="source-real", is_at_or_wake_command=True)
+    try:
+        calls, runtime = await _run_persona(persona_plugin, event, ["must-not-send"], [])
+        assert not calls and not persona_plugin.persona_engine.bridge.requests
+        assert runtime.model_diagnostic["reason_code"] == "jev_unavailable"
+        assert runtime.last_bot_node is None
+        assert all(node.user_id != runtime.bot_id for node in runtime.dag.nodes.values())
+    finally:
+        await persona_plugin.terminate()
 
 
 @pytest.mark.asyncio

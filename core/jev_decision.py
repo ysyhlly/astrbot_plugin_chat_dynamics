@@ -33,7 +33,8 @@ from typing import Any, Mapping
 from .presence_policy import participation_policy
 from .member_identity import IDENTITY_INSTRUCTIONS
 from .prompt_policy import DEFAULT_DECISION_PROMPT, MAX_PROMPT_CHARS
-from .turn_decision import TurnContext, TurnDecision
+from .turn_decision import TurnContext, TurnDecision, clip_conversation_text
+from .context_retrieval import ContextEvidence, clip_text as _clip_text
 
 ACTIONS = ("ignore", "acknowledge", "clarify", "reply", "close")
 STATES = ("observing", "casual", "focused", "supportive", "playful", "disengaging")
@@ -54,6 +55,15 @@ REASON_PREFIX = "jev_"
 MAX_TARGET_OPTIONS = 8
 MAX_PERSONA_CHARS = 1200
 MAX_TOTAL_STATE_CHARS = 12000
+MAX_TOTAL_REQUEST_CHARS = 18000
+_ESSENTIAL_OBSERVATIONS = frozenset({"completion_waited", "utterance_pause_seconds",
+    "utterance_age_seconds", "queue_delay_seconds", "pending_input", "ambient_openings_used"})
+
+
+class StateBudgetExceeded(ValueError):
+    """Required identities, relationships and retained context cannot fit the budget."""
+
+
 DEFAULT_MIN_CONFIDENCE = 0.6
 WAKE_RECIPIENT_FLOOR = 0.35
 # Participation floor for the calibrated join answer: a non-ignore action
@@ -61,34 +71,34 @@ WAKE_RECIPIENT_FLOOR = 0.35
 JOIN_FLOOR = 0.7
 
 ACTION_CRITERIA = {
-    "ignore": "No response: nothing needs this participant, the message is for someone else, or speaking would intrude",
-    "acknowledge": "Only confirm receipt or return a greeting/reaction; no answer, advice or follow-up question is needed (e.g. 'thanks')",
-    "clarify": "Ask one necessary question because a missing fact prevents a useful answer (e.g. 'which error?' when no error is provided)",
-    "reply": "Give an answer, useful information, advice or emotional support; prefer this over acknowledge when new content is needed",
-    "close": "Explicitly end or decline an exchange (e.g. 'let us stop here'); unlike acknowledge, this ends further participation",
+    "ignore": "No response: another recipient, no useful contribution, or intrusion",
+    "acknowledge": "Greeting, reaction or receipt confirmation; no new content or follow-up needed",
+    "clarify": "Ask one necessary question: a missing fact blocks a useful answer",
+    "reply": "Answer, advice, useful information or emotional support; new content is needed",
+    "close": "Explicitly end or decline the exchange; do not continue afterwards",
 }
 STATE_CRITERIA = {
-    "observing": "No response is planned; only watch this turn",
-    "casual": "Ordinary greeting or relaxed small talk, with no task, distress or explicit joke",
-    "focused": "The primary goal is solving a task or answering a factual question, even if the speaker is frustrated (e.g. fixing an error)",
-    "supportive": "The primary goal is comfort or listening to feelings, rather than solving a task (e.g. 'I feel lonely; please listen')",
-    "playful": "The primary goal is an explicit joke or playful exchange, rather than a factual answer or emotional support",
-    "disengaging": "A closing or refusal is planned; do not continue the exchange afterwards",
+    "observing": "No response planned for this turn",
+    "casual": "Greeting or relaxed small talk; no task, distress or explicit joke",
+    "focused": "Solve a task or factual question, including frustrating errors",
+    "supportive": "Comfort or listen to feelings (e.g. loneliness); task solving is secondary",
+    "playful": "An explicit joke or playful exchange",
+    "disengaging": "Closing or refusal; end participation in this exchange",
 }
 LENGTH_CRITERIA = {
-    "brief": "One sentence or less is enough, such as a greeting, acknowledgement or simple answer",
-    "normal": "Two or three concise sentences are needed; one sentence would omit useful content",
-    "detailed": "Multiple steps, a list or a longer explanation is necessary; two or three sentences would be insufficient",
+    "brief": "One sentence or less suffices: greeting, confirmation or simple answer",
+    "normal": "Two or three concise sentences; one would omit useful content",
+    "detailed": "Steps, a list or explanation requiring more than three short sentences",
 }
 REASON_CRITERIA = {
-    "addressed_request": "The speaker asks this participant to perform a task (e.g. 'help me fix this error'); naming it alone is insufficient",
-    "addressed_question": "The speaker directly asks this participant for information (e.g. 'what does this error mean?'); use addressed_request for a task",
-    "ongoing_thread": "A continuation of this participant's existing exchange, with no new direct task or information question",
-    "open_group_topic": "A public topic this participant can naturally contribute to, without a direct request or an existing exchange with it",
-    "social_signal": "Only a greeting, thanks, poke or reaction; no task or information question",
-    "other_recipient": "The speaker explicitly addresses someone else; discussing this participant does not address it",
-    "boundary_or_sensitive": "Privacy, conflict or an explicit stop request requires restraint; this takes precedence over other reasons",
-    "low_value_chatter": "No direct request, ongoing exchange, useful public contribution or social signal remains",
+    "addressed_request": "Direct task request to this participant; naming it alone is insufficient",
+    "addressed_question": "Direct information question to this participant; use addressed_request for tasks",
+    "ongoing_thread": "Continue this participant's exchange without a new direct task or information question",
+    "open_group_topic": "Useful public contribution without direct address or existing exchange",
+    "social_signal": "Only greeting, thanks, poke or reaction; no content request",
+    "other_recipient": "Explicitly addresses someone else; discussing this participant does not address it",
+    "boundary_or_sensitive": "Privacy, conflict or an explicit stop calls for restraint",
+    "low_value_chatter": "No direct request, continuation, useful public contribution or social signal",
 }
 _ACTION_GOALS = {
     "reply": "针对目标消息给出实质回复，不展开无关内容。",
@@ -116,9 +126,10 @@ def target_options(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> dic
     options: dict[str, str] = {}
     messages = list(turn.messages or ())
     total = len(messages)
-    for index, message in enumerate(messages):
+    for index in range(total - 1, -1, -1):
         if len(options) >= max(1, limit):
             break
+        message = messages[index]
         message_id = str(getattr(message, "message_id", "") or "")
         if not message_id or message_id in options:
             continue
@@ -126,7 +137,7 @@ def target_options(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> dic
         position = "the newest message" if index == total - 1 else f"message {index + 1} of {total}"
         reply_to = ", itself a reply to an earlier message" if getattr(message, "reply_to", "") else ""
         options[message_id] = f"{position}, sent by {author}{reply_to}"
-    return options
+    return dict(reversed(tuple(options.items())))
 
 
 def build_state(
@@ -158,79 +169,159 @@ def build_state(
 
 
 def _size(state: dict) -> int:
-    try:
-        return len(json.dumps(state, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return 0
+    return len(json.dumps(state, ensure_ascii=False, allow_nan=False))
 
 
-def _clip_text(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    if limit <= 0:
-        return ""
-    marker = "\n[...]\n"
-    if limit <= len(marker):
-        return text[-limit:]
-    head = (limit - len(marker)) // 2
-    return text[:head] + marker + text[-(limit - head - len(marker)):]
+def request_size(state: dict, questions: dict, *, model: str | None = None) -> int:
+    """Match native instruction serialization and reserve 256 chars for the model ID."""
+    normalized = {key: {**spec, "instructions": json.dumps(spec["instructions"], ensure_ascii=False)
+                        if isinstance(spec.get("instructions"), dict) else spec.get("instructions")}
+                  for key, spec in questions.items()}
+    return _size({"model": "m" * 256 if model is None else model, "state": state, "questions": normalized})
+
+
+def bound_request_state(state: dict, questions: dict, *, max_chars=MAX_TOTAL_REQUEST_CHARS) -> dict:
+    overhead = request_size({}, questions) - 2
+    budget = min(MAX_TOTAL_STATE_CHARS, max_chars - overhead)
+    if budget <= 0:
+        raise StateBudgetExceeded("request_budget_exceeded")
+    return _shrink(state, budget)
+
+
+_RELATION_FIELDS = frozenset({
+    "recipient_ids", "basis", "certainty", "mentioned_user_ids", "quoted_message_id", "quoted_author_id",
+    "subject_user_ids", "subject_is_bot", "bot_is_addressee", "intent", "topic_id", "topic_confidence",
+    "topic_ambiguous", "parent_message_id", "parent_confidence", "addressee_confidence", "addressee_ambiguous",
+    "routing_evidence",
+})
+
+
+def _compact_semantics(message: dict) -> None:
+    semantics = message.get("semantics")
+    if not isinstance(semantics, dict):
+        return
+    compact = {key: value for key, value in semantics.items() if key in _RELATION_FIELDS
+               and value and value != "unknown"}
+    if compact.get("parent_message_id") == compact.get("quoted_message_id"):
+        compact.pop("parent_message_id", None)
+        compact.pop("parent_confidence", None)
+    if compact.get("certainty") == "explicit":
+        compact.pop("addressee_confidence", None)
+    message["semantics"] = compact
+
+
+def _compact_fragments(conversation: dict) -> None:
+    """Preserve every current ID and quote account; share repeated identities."""
+    for message in list(conversation.get("messages") or ())[:-1]:
+        if message.get("author") == conversation.get("author"):
+            message.pop("author_identity", None)
+        quoted = message.get("quoted_author_identity")
+        if isinstance(quoted, dict) and quoted.get("user_id"):
+            conversation.setdefault("quoted_identities", {})[quoted["user_id"]] = quoted
+            message.pop("quoted_author_identity", None)
+        _compact_semantics(message)
+    messages = list(conversation.get("messages") or ())
+    if len(messages) < 4:
+        return
+    # Share only values equal across every fragment. Keep the latest message
+    # explicit for consumers that read it directly; older values inherit defaults.
+    defaults = conversation.setdefault("fragment_defaults", {})
+    for key in ("age_seconds", "text_excerpt"):
+        if key in messages[-1] and all(m.get(key) == messages[-1][key] and key in m for m in messages):
+            defaults[key] = messages[-1][key]
+            for message in messages[:-1]:
+                message.pop(key)
+    semantics = [m.get("semantics") for m in messages]
+    if all(isinstance(s, dict) for s in semantics):
+        identity_fields = {"recipient_ids", "quoted_message_id", "quoted_author_id", "mentioned_user_ids",
+                           "subject_user_ids", "parent_message_id"}
+        common = {key: value for key, value in semantics[0].items()
+                  if key not in identity_fields and all(key in s and s[key] == value for s in semantics[1:])}
+        if common:
+            defaults["semantics"] = {**defaults.get("semantics", {}), **common}
+            for semantic in semantics[:-1]:
+                for key in common:
+                    semantic.pop(key)
+    if not defaults:
+        conversation.pop("fragment_defaults")
+
+
+def _background_priority(message: dict) -> int:
+    return min((ContextEvidence(str(proof.get("relation", "")), "", 0,
+                                tuple(proof.get("evidence") or ())).priority
+                for proof in message.get("context_evidence") or () if isinstance(proof, dict)), default=7)
+
+
+def _drop_weakest(background: list) -> None:
+    # Background is chronological: remove the oldest within the weakest tier.
+    index = max(range(len(background)), key=lambda i: (_background_priority(background[i]), -i))
+    background.pop(index)
 
 
 def _shrink(state: dict, max_chars: int) -> dict:
     """Drop the least load-bearing context first until the state fits its budget."""
     if max_chars <= 0 or _size(state) <= max_chars:
         return state
-    conversation = state.get("conversation")
-    if not isinstance(conversation, dict):
-        return state
+    conversation = state["conversation"]
     background = list(conversation.get("background") or ())
-    while background and _size(state) > max_chars:
-        background.pop(0)
-        conversation["background"] = background
+    conversation["background"] = background
+    for message in background:
+        message["text"] = _clip_text(str(message.get("text") or ""), 240)
+        _compact_semantics(message)
+    _compact_fragments(conversation)
+    if _size(state) <= max_chars:
+        return state
+
+    # Reserve space for the current request and real quotes before removing them.
+    # Keep operator guidance intact whenever the remaining context can fit.
+    state["observations"] = {key: value for key, value in state.get("observations", {}).items()
+                             if key in _ESSENTIAL_OBSERVATIONS}
+    topics = dict(state.get("active_topics") or {})
+    if "active_topics" in state:
+        state["active_topics"] = topics
+        while topics and _size(topics) > max_chars // 4:
+            topics.pop(next(reversed(topics)))
+    if _size(state) <= max_chars:
+        return state
+    state["persona"] = _clip_text(str(state.get("persona") or ""), min(400, max_chars // 20))
+    dialogue = conversation.get("dialogue")
+    if isinstance(dialogue, dict):
+        dialogue["last_bot_text"] = _clip_text(str(dialogue.get("last_bot_text") or ""), 240)
+        dialogue["user_updates"] = [(mid, _clip_text(text, 120))
+                                    for mid, text in dialogue.get("user_updates", ())]
     if _size(state) > max_chars:
-        for key in ("messages", "background"):
-            for message in conversation.get(key) or ():
-                if isinstance(message, dict) and len(str(message.get("text") or "")) > 240:
-                    message["text"] = str(message["text"])[:240]
+        clip_conversation_text(conversation, 4000)
+    # Keep at least the strongest credible background item, including an
+    # unquoted same-topic/recipient supplement. Same-author noise is expendable.
+    while (background and _size(state) > max_chars and any(_background_priority(m) > 0 for m in background)
+           and (len(background) > 1 or _background_priority(background[0]) >= 6)):
+        _drop_weakest(background)
+    # Topic descriptions are ordered by query relevance. Keep state, question
+    # choices and the acceptance mapping aligned in the caller after this cut.
+    while topics and _size(state) > max_chars:
+        topics.pop(next(reversed(topics)))
     if _size(state) > max_chars:
-        text = str(conversation.get("text") or "")
-        conversation["text"] = _clip_text(text, 4000)
-        conversation["truncated"] = bool(conversation.get("truncated") or len(text) > 4000)
-        conversation["background"] = list(conversation.get("background") or ())[-4:]
-    if _size(state) > max_chars:
-        # Consolidated text covers every fragment. Retain every message/account
-        # ID and explicit relationship, while compacting repeated local estimates.
-        for message in list(conversation.get("messages") or ())[:-1]:
-            if not isinstance(message, dict):
-                continue
-            if message.get("author") == conversation.get("author"):
-                message.pop("author_identity", None)
-            quoted = message.get("quoted_author_identity")
-            if isinstance(quoted, dict) and quoted.get("user_id"):
-                conversation.setdefault("quoted_identities", {})[quoted["user_id"]] = quoted
-                message.pop("quoted_author_identity")
-            semantics = message.get("semantics")
-            if isinstance(semantics, dict):
-                message["semantics"] = {
-                    key: value for key, value in semantics.items()
-                    if key in {"recipient_ids", "basis", "certainty", "mentioned_user_ids",
-                               "quoted_message_id", "quoted_author_id", "subject_user_ids",
-                               "subject_is_bot", "bot_is_addressee", "intent"}
-                    and value and value != "unknown"
-                }
-    if _size(state) > max_chars:
-        state["observations"] = {}
-    if _size(state) > max_chars:
-        state["persona"] = ""
-    if _size(state) > max_chars:
-        guidance = str(state.get("decision_prompt") or "")
+        for message in background:
+            message["text"] = _clip_text(str(message.get("text") or ""), 120)
+    while len(background) > 1 and _size(state) > max_chars:
+        _drop_weakest(background)
+
+    # Preserve a meaningful current utterance and every message/account ID. If
+    # those facts plus the strongest credible background cannot fit, deny the call.
+    text = str(conversation.get("text") or "")
+    minimum = min(len(text), 256)
+    while len(text) > minimum and _size(state) > max_chars:
         overflow = _size(state) - max_chars
-        state["decision_prompt"] = guidance[:max(0, len(guidance) - overflow)]
-    if _size(state) > max_chars:
-        text = str(conversation.get("text") or "")
+        clip_conversation_text(conversation, max(minimum, len(text) - overflow - 32))
+        text = conversation["text"]
+    guidance = str(state.get("decision_prompt") or "")
+    minimum_guidance = min(len(guidance), max(1, min(1500, max_chars // 8)))
+    while len(guidance) > minimum_guidance and _size(state) > max_chars:
         overflow = _size(state) - max_chars
-        conversation["text"] = _clip_text(text, max(0, len(text) - overflow - 32))
-        conversation["truncated"] = True
+        guidance = _clip_text(guidance, max(minimum_guidance, len(guidance) - overflow - 32))
+        state["decision_prompt"] = guidance
+    if _size(state) > max_chars:
+        raise StateBudgetExceeded("state_budget_exceeded")
     return state
 
 
@@ -249,12 +340,11 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "instructions": {
                 "question": "Has the current speaker finished this utterance so a response can begin now?",
                 "focus": (
-                    "Judge the meaning of conversation.text together with its fragments and context. "
-                    "A complete question, statement, greeting or short reaction is complete, even without "
-                    "final punctuation. A trailing comma or conjunction alone does not prove more is coming. "
-                    "Choose wait only for a genuinely unfinished thought, a promised continuation, "
-                    "or an explicit request to wait until the speaker finishes. "
-                    "Do not wait for a complete topic, for more people to talk, or just to be polite."
+                    "Read conversation.text and context. Complete questions, statements, greetings and "
+                    "short reactions need no final punctuation. A trailing comma alone does not imply "
+                    "continuation. Wait only for an unfinished thought, promised input or explicit wait "
+                    "request. Use observations for actual timing; queue delay is not speaker silence. "
+                    "Do not wait for more people or merely to be polite."
                 ),
             },
             "criteria": {
@@ -270,16 +360,12 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
                     "`participation_policy`, `decision_prompt`, `previous_state`, `observations` and `conversation`?"
                 ),
                 "focus": (
-                    "Judge whether speaking now is useful and appropriate, not whether the "
-                    "content is interesting. Being addressed or continuing a live exchange is "
-                    "usually yes. Follow decision_prompt and the presence mode: in lively mode, "
-                    "actively join public topics with a natural opinion, experience, suggestion or joke, "
-                    "even when the topic is unrelated to this participant and nobody called it. "
-                    "Two people taking turns or quoting each other does not alone make a topic private. "
-                    "A request explicitly reserved for another person, private matters, conflict, "
-                    "or a request to stop is no. conversation.wake_kind distinguishes a real @ "
-                    "from a quote/name wake candidate. For a quote/name wake, identifying this "
-                    "participant as the actual addressee is enough; topic value is not required."
+                    "Follow the current participation_policy and operator decision_prompt. Judge useful, "
+                    "appropriate participation, not interest alone. Addressed turns and live exchanges "
+                    "usually warrant speaking; dialogue supplies prior replies and pending questions, "
+                    "never proof of the current recipient. Explicit other recipients, privacy, conflict "
+                    "and stop requests take precedence. A quote/name wake needs an actual bot addressee, "
+                    "not topic value. Respect ambient openings used; continuing an exchange is not a new opening."
                 ),
             },
             "criteria": {
@@ -292,11 +378,8 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "instructions": {
                 "question": "What single response action fits the current speaker's message?",
                 "focus": (
-                    "Read conversation.text as the current message; messages supply its authors, "
-                    "mentions and quote relationships. Background supplies context, not a new request. "
-                    "First decide whether any response is appropriate. If yes, choose close for an "
-                    "ending/refusal, clarify for a missing fact that blocks answering, reply when "
-                    "new content is needed, or acknowledge when only a greeting or confirmation is needed."
+                    "Use current text and attribution. Background is context, never the request. "
+                    "Decide whether a response is appropriate before selecting its purpose."
                 ),
             },
             "criteria": ACTION_CRITERIA,
@@ -306,9 +389,7 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "instructions": {
                 "question": "Which interaction state is this participant in after this turn?",
                 "focus": (
-                    "Choose the primary purpose of this turn, not every mood that could apply. "
-                    "A request for a solution is focused; a request for comfort is supportive. "
-                    "Background mood and persona do not override the speaker's current purpose."
+                    "Choose the current turn's primary purpose. Background mood and persona do not override it."
                 ),
             },
             "criteria": STATE_CRITERIA,
@@ -362,8 +443,8 @@ def build_questions(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> di
             "instructions": {
                 "question": "Which message should the reply attach to?",
                 "focus": (
-                    "Usually the newest one; choose an earlier one only when that is the "
-                    "message actually being answered."
+                    "Use messages.text_spans or text_excerpt to identify each fragment. Usually attach "
+                    "to the newest message; select an earlier one only when its content is being answered."
                 ),
             },
             "criteria": options,
