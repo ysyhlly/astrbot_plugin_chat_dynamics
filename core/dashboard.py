@@ -147,7 +147,7 @@ def snapshot_session(plugin: Any, session_id: str, include_nodes: bool = False) 
                 "user_id": n.user_id if getattr(plugin, "console_show_message_content", False) else _mask_identifier(n.user_id),
                 "text": _truncate(n.text, 140) if getattr(plugin, "console_show_message_content", False) else "",
                 "timestamp": n.timestamp,
-                "is_bot": bool(bot_id) and n.user_id == bot_id,
+                "is_bot": bool(bot_id) and n.user_id == bot_id or n.metadata.get('sender_is_bot') is True,
                 "reply_to_id": n.reply_to_id,
                 "mentions": list(n.mentioned_users) if getattr(plugin, "console_show_message_content", False) else [],
                 "parent_ids": sorted(n.parent_ids),

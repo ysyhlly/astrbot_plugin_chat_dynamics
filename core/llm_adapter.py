@@ -359,7 +359,8 @@ class LLMAdapter:
             or ""
         ).strip()
         user_prompt = prompt if not vibe_hint else f"{prompt}\n\n({vibe_hint})"
-        image_urls, audio_urls = await collect_media_urls(event)
+        image_urls, audio_urls = (await collect_media_urls(event)
+                                 if getattr(event, "_chat_dynamics_media_understand", True) else ([], []))
         if image_urls:
             from .vision_context import MAIN_VISION_HINT
             user_prompt += "\n\n" + MAIN_VISION_HINT

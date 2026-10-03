@@ -269,5 +269,5 @@ class PacingShaper:
         delay = self.inter_burst_interval + length_adjustment + rate_adjustment
         if mode == GroupChatMode.FAST_BANTER:
             delay *= 0.85
-        bounded = round(max(0.6, min(2.0, delay)), 2)
+        bounded = round(max(0.6, min(max(2.0, self.inter_burst_interval), delay)), 2)
         return scale_delay(bounded, delay_scale)

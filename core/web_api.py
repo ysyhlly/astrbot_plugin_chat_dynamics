@@ -692,22 +692,7 @@ class ConsoleWebAPI:
             return _json_err("session_key required", 400)
         try:
             data = await self.topic_annotations.read(session)
-            if not getattr(self.plugin, "console_show_message_content", False):
-                from .routing_trace import redact_trace_identifiers
-
-                rows = []
-                for row in data["records"]:
-                    clean = {k: v for k, v in row.items() if k != "text"}
-                    # The stored trace carries message ids and participant ids;
-                    # /replay already redacts them under the same switch, so the
-                    # annotation endpoint must not be the leak in the pair.
-                    if isinstance(clean.get("decision_trace"), dict):
-                        clean["decision_trace"] = redact_trace_identifiers(clean["decision_trace"])
-                    for key in ("recipient_ids", "subject_ids"):
-                        if key in clean:
-                            clean[key] = []
-                    rows.append(clean)
-                data["records"] = rows
+            data['records'] = [self._annotation_record(row) for row in data['records']]
             return _json_ok(data)
         except Exception as exc:
             logger.error("[ChatDynamics] annotations read failed code=CD_ANNOTATIONS type=%s", type(exc).__name__)
@@ -723,12 +708,28 @@ class ConsoleWebAPI:
         if "__invalid_body__" in body:
             return _json_err(str(body["__invalid_body__"]), 400)
         try:
-            return _json_ok(await self.topic_annotations.save(body))
+            result = await self.topic_annotations.save(body)
+            result['record'] = self._annotation_record(result['record'])
+            return _json_ok(result)
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:
             logger.error("[ChatDynamics] annotation write failed code=CD_ANNOTATIONS type=%s", type(exc).__name__)
             return _json_err("annotation write failed", 503)
+
+    def _annotation_record(self, row):
+        if getattr(self.plugin, 'console_show_message_content', False):
+            return row
+        from .routing_trace import redact_trace_identifiers
+        clean = {key: value for key, value in row.items() if key != 'text'}
+        if isinstance(clean.get('decision_trace'), dict):
+            clean['decision_trace'] = redact_trace_identifiers(clean['decision_trace'])
+        clean['hidden_fields'] = []
+        for key in ('recipient_ids', 'subject_ids'):
+            if key in clean:
+                clean[key] = []
+                clean['hidden_fields'].append(key)
+        return clean
 
     async def notebook_get(self):
         if (limited := self._rate_limit("notebook_get", 60)) is not None:

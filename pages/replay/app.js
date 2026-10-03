@@ -105,11 +105,14 @@ function applyAnnotationData(data, block, prefill = false) {
   (block.messages || []).forEach((message, index) => {
     const row = annotationMessages.children[index];
     if (!row) return;
+    // Bind the token to the values loaded into this editor. Saving another
+    // row must not refresh this token while its editor still shows old data.
+    if (prefill) annotationBindings.get(row).expectedRevision = data.revisions?.[message.msg_id] || data.empty_revision;
     const record = (data.records || []).find(item => item.msg_id === message.msg_id);
     if (!record) return;
     const descriptions = Object.entries(RECIPIENT_BOOLS).filter(([key]) => typeof record[key] === "boolean").map(([key, label]) => `${label}：${record[key] ? "是" : "否"}`);
     for (const [key, label] of [["recipient_ids", "收件人"], ["subject_ids", "讨论对象"]]) {
-      if (Array.isArray(record[key])) descriptions.push(`${label}：${record[key].join(", ") || "无"}`);
+      if (Array.isArray(record[key])) descriptions.push(`${label}：${record.hidden_fields?.includes(key) ? "已隐藏" : record[key].join(", ") || "无"}`);
     }
     if (record.recipient_error_type) descriptions.push(RECIPIENT_ERRORS[record.recipient_error_type] || record.recipient_error_type);
     row.querySelector("[data-saved-annotation]").textContent = `已保存：话题 ${record.topic_reviewed === false ? "未审核" : record.expected_topic}${descriptions.length ? " · " + descriptions.join(" · ") : ""}`;
@@ -120,7 +123,10 @@ function applyAnnotationData(data, block, prefill = false) {
       if (record.error_type !== "correct") row.querySelector("[data-error]").value = record.error_type;
       row.querySelectorAll("[data-recipient]").forEach(input => {
         const value = record[input.dataset.recipient];
-        input.value = Array.isArray(value) ? value.length ? value.join(", ") : "[]" : value === undefined ? "" : String(value);
+        const hidden = record.hidden_fields?.includes(input.dataset.recipient);
+        input.disabled = Boolean(hidden);
+        if (hidden) input.placeholder = "已隐藏，保留原标注";
+        input.value = hidden ? "" : Array.isArray(value) ? value.length ? value.join(", ") : "[]" : value === undefined ? "" : String(value);
       });
     }
   });
@@ -129,7 +135,11 @@ function recipientValues(row) {
   const result = {};
   row.querySelectorAll("[data-recipient]").forEach(input => {
     const key = input.dataset.recipient, value = input.value.trim();
-    if (!value) return;
+    if (input.disabled || !input.dataset.edited) return;
+    if (!value) {
+      (result.clear_recipient_fields ||= []).push(key);
+      return;
+    }
     if (key.endsWith("_ids")) {
       const ids = value === "[]" ? [] : [...new Set(value.split(/[,，]/).map(id => id.trim()).filter(Boolean))];
       if (ids.length > 64 || ids.some(id => id.length > 256)) throw new Error("ID 最多 64 项，每项最多 256 字符。");
@@ -309,6 +319,7 @@ async function boot() {
   document.getElementById("topicSearch").addEventListener("input", () => { if (replayData) renderRail(replayData); });
   document.getElementById("decisionFilter").addEventListener("change", () => { if (replayData) renderRail(replayData); });
   const markDirty = event => {
+    if (event.target.matches('[data-recipient]')) event.target.dataset.edited = "true";
     const row = event.target.closest(".annotation-row");
     if (row) markAnnotationDirty(row);
   };
@@ -323,7 +334,8 @@ async function boot() {
     const button = event.target.closest("[data-annotate]");
     if (!button || button.disabled) return;
     const row = button.closest(".annotation-row");
-    const { block, message } = annotationBindings.get(row) || {};
+    const binding = annotationBindings.get(row) || {};
+    const { block, message } = binding;
     if (!message) return;
     const editVersion = row.dataset.editVersion;
     const expected = row.querySelector("[data-target]").value;
@@ -331,14 +343,20 @@ async function boot() {
     const revision = annotationRevision;
     button.disabled = true;
     try {
-      await apiPost("topic_annotations", { session_key: block.session_id, msg_id: message.msg_id, expected_topic: expected, error_type: error, ...recipientValues(row) });
+      if (!annotationData) throw new Error("请先等待标注加载完成。");
+      if (typeof binding.expectedRevision !== "string") throw new Error("标注版本未加载，请刷新后重新确认。");
+      const saved = await apiPost("topic_annotations", { session_key: block.session_id, msg_id: message.msg_id, expected_topic: expected, error_type: error, ...recipientValues(row), expected_revision: binding.expectedRevision });
       if (revision !== annotationRevision) return;
+      binding.expectedRevision = saved.revision;
       const data = await apiGet("topic_annotations", { session_key: block.session_id });
       if (revision !== annotationRevision) return;
       applyAnnotationData(data, block);
       // The reload above is async; clear the dirty mark first so the guard does
       // not fire on a block switch that happens right after a successful save.
-      if (row.dataset.editVersion === editVersion) delete row.dataset.dirty;
+      if (row.dataset.editVersion === editVersion) {
+        delete row.dataset.dirty;
+        row.querySelectorAll('[data-recipient]').forEach(input => delete input.dataset.edited);
+      }
       if (!row.querySelector("[data-saved-annotation]").textContent) {
         row.querySelector("[data-saved-annotation]").textContent = "已保存标注。";
       }

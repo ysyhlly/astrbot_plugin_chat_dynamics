@@ -111,7 +111,7 @@
     "description": "回复模型总超时秒数",
     "type": "float",
     "default": 60.0,
-    "hint": "范围 5～300 秒，包含 Provider 查找和完整模型请求；兼容旧版 Provider。@机器人超时后会补一条简短回应，避免一直无回复。"
+    "hint": "范围 5～300 秒，限制回复模型请求的累计用时，包含重试与备用模型；工具执行另受 Agent 总超时限制。@机器人超时后会补一条简短回应，避免一直无回复。"
   },
   "tool_agent_timeout": {
     "description": "原生 Agent 总超时秒数",

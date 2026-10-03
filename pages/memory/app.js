@@ -167,7 +167,7 @@ function renderList() {
         return `<article class="memory-card" data-id="${id}">
           <strong>${escapeHtml(softText(item.text))}</strong>
           <span class="meta">到期 ${escapeHtml(formatTs(item.due_at) || "—")}${
-            item.nudged ? " · 已提醒" : ""
+            item.nudged ? " · 已提醒" : ["sending", "uncertain"].includes(item.delivery_state) ? " · 送达待确认，不会自动重发" : ""
           }</span>
           ${forgetBlock('<button type="button" class="button button-quiet" data-act="done">标完成</button><button type="button" class="button button-quiet" data-act="forget">忘掉</button>')}
         </article>`;

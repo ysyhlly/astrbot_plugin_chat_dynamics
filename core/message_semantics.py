@@ -122,7 +122,8 @@ def describe_message(node, dag, bot_id: str = "", *, bot_names=()) -> MessageSem
     is_ambig = bool(routing.get("ambiguous", certainty not in {"explicit", "probable"}))
     rout_ev = tuple(str(item) for item in routing.get("evidence", ()))
 
-    return MessageSemantics(str(node.user_id), bool(bot_id and node.user_id == bot_id),
+    return MessageSemantics(str(node.user_id), bool(bot_id and node.user_id == bot_id
+                                                   or node.metadata.get('sender_is_bot') is True),
                             recipients, basis, certainty, evidence, mentions, scenes, emotions,
                             "question" if features.is_question else "unknown",
                             node.reply_to_id or "", quoted_author,

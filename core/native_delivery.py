@@ -625,10 +625,8 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
                 async with runtime.state_lock:
                     if (
                         host._shutting_down
-                        or runtime.active_followup_batches.get(delivery_token) is not batch
-                        or batch.invalidated
-                        or batch.delivery_token != delivery_token
                         or batch.epoch != runtime.epoch
+                        or host._sessions.get(session_key) is not runtime
                     ):
                         host._metric("followup_dropped")
                         return

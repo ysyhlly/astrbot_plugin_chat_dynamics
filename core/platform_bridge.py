@@ -100,6 +100,7 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
+    delivery_uncertain: bool = False
 
 
 def _safe_call(obj: Any, name: str, default: Any = None) -> Any:
@@ -657,7 +658,7 @@ async def send_plain(
         # Keep platform exception details out of logs; callers still receive
         # the original error text for programmatic diagnostics and tests.
         logger.error("[ChatDynamics] Failed to send fragment code=CD_SEND_FAILED type=%s", type(exc).__name__)
-        return SendResult(False, error=str(exc))
+        return SendResult(False, error=str(exc), delivery_uncertain=True)
 
     if result is False:
         return SendResult(False, error="platform rejected the message")

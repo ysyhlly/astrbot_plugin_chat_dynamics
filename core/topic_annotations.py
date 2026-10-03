@@ -118,7 +118,9 @@ class TopicAnnotations:
         recipient_counts = Counter(row["recipient_error_type"] for row in recipient_rows if "recipient_error_type" in row)
         assisted = sum(1 for row in rows if row.get("accepted_from") == "ai")
         # Labels are a selected sample, not an unbiased estimate of accuracy.
-        return {"records": rows, "metrics": {"total": len(topic_rows), "unreviewed": len(rows) - len(topic_rows), "ai_assisted": assisted,
+        return {"records": rows, "revisions": {row["msg_id"]: self.revision(row) for row in rows},
+                "empty_revision": self.revision(None),
+                "metrics": {"total": len(topic_rows), "unreviewed": len(rows) - len(topic_rows), "ai_assisted": assisted,
                 "error_counts": dict(counts),
                 "confusion": [{"predicted": a, "expected": b, "count": n} for (a, b), n in sorted(matrix.items())],
                 "sample_note": ("仅统计人工标注样本，不代表真实准确率"
@@ -133,8 +135,12 @@ class TopicAnnotations:
         """Write one human label for a message still available in replay."""
         if not isinstance(body, dict):
             raise ValueError("invalid annotation fields")
-        if not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision"}:
+        if not REQUIRED_FIELDS <= set(body) or set(body) - REQUIRED_FIELDS - RECIPIENT_FIELDS - {"expected_revision", 'clear_recipient_fields'}:
             raise ValueError("invalid annotation fields")
+        cleared = body.get('clear_recipient_fields', [])
+        if (not isinstance(cleared, list) or any(not isinstance(key, str) or key not in RECIPIENT_FIELDS for key in cleared)
+                or len(cleared) != len(set(cleared)) or any(key in body for key in cleared)):
+            raise ValueError('invalid cleared recipient fields')
         if any(not isinstance(v, str) or not v or len(v) > 256 for v in (body[key] for key in REQUIRED_FIELDS)):
             raise ValueError("invalid annotation value")
         for key in ("recipient_correct", "bot_targeted", "expected_reply"):
@@ -210,6 +216,14 @@ class TopicAnnotations:
             previous = next((row for row in rows if row["msg_id"] == mid), None)
             if "expected_revision" in body and body["expected_revision"] != self.revision(previous):
                 raise ValueError("标注已被其他页面修改，请刷新后重新确认")
+            if previous:
+                for key in RECIPIENT_FIELDS - set(cleared):
+                    if key in previous and (key not in body or (
+                            key.endswith('_ids') and body[key] == []
+                            and not getattr(self.plugin, 'console_show_message_content', False))):
+                        # Older editors submit redacted [] as a topic-only update.
+                        # Explicit clearing uses clear_recipient_fields instead.
+                        record[key] = deepcopy(previous[key])
             record["label_source"] = "human"
             if body["expected_topic"] in {"KEEP", "UNREVIEWED"}:
                 # Older learning consumers already treat an empty topic as absent
@@ -223,7 +237,7 @@ class TopicAnnotations:
             rows = [row for row in rows if row["msg_id"] != mid]
             rows.append(record)
             state["labels"] = rows[-2000:]
-            result = {"saved": True, "record": record}
+            result = {"saved": True, "record": record, "revision": self.revision(record)}
             state["projection_pending"] = True
             await self._index_session(session)
             await self.plugin.put_kv_data(self.state_key(session), state)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import time
 import uuid
@@ -138,6 +139,9 @@ class GroupMemoryNotebook:
             raise ValueError("title required")
         try:
             # A leap year allows recurring February 29 anniversaries.
+            if (isinstance(month, bool) or isinstance(day, bool)
+                    or not float(month).is_integer() or not float(day).is_integer()):
+                raise ValueError("month and day must be integers")
             date(2000, int(month), int(day))
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("invalid date") from exc
@@ -230,7 +234,7 @@ class GroupMemoryNotebook:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if row.get("expired") or row.get("nudged"):
+            if row.get("expired") or row.get("nudged") or row.get('delivery_state') in {'sending', 'uncertain', 'delivered'}:
                 # Expire old nudged items after they were shown once.
                 if row.get("nudged") and not row.get("expired"):
                     row["expired"] = True
@@ -254,6 +258,93 @@ class GroupMemoryNotebook:
             data["reminders"] = rows
             self._save(umo, data)
         return due
+
+    def known_sessions(self) -> List[str]:
+        """Recover owners after restart, including groups with no live runtime."""
+        owners = {str(data.get("umo")) for data in self._cache.values() if data.get("umo")}
+        for path in self.data_dir.glob("notebook_*.json"):
+            try:
+                if path.is_symlink():
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+                umo = data.get("umo") if isinstance(data, dict) else None
+                if isinstance(umo, str) and path == self._path(umo):
+                    owners.add(umo)
+            except (OSError, UnicodeError, ValueError):
+                logger.warning("notebook discovery skipped an unreadable record")
+        return sorted(owners)
+
+    def due_reminders(self, umo: str, *, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Read without consuming: successful platform delivery owns the ack."""
+        stamp = time.time() if now is None else float(now)
+        data = self._load(umo)
+        if not self.enabled or float(data.get("mute_until") or 0) > stamp:
+            return []
+        due = []
+        for row in data.get("reminders") or []:
+            if (not isinstance(row, dict) or row.get("nudged") or row.get("expired")
+                    or row.get('delivery_state') in {'sending', 'uncertain', 'delivered'}):
+                continue
+            raw = row.get("due_at")
+            try:
+                deadline = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not isinstance(raw, bool) and math.isfinite(deadline) and deadline <= stamp:
+                due.append(deepcopy(row))
+        return due
+
+    def begin_reminder_send(self, umo: str, item_id: str, *, now=None) -> bool:
+        """Publish an attempt before a platform can accept a one-shot reminder."""
+        if not any(row['id'] == item_id for row in self.due_reminders(umo, now=now)):
+            return False
+        data = self._load(umo)
+        for row in data.get('reminders') or []:
+            if isinstance(row, dict) and row.get('id') == item_id:
+                row.update(delivery_state='sending', attempt_at=time.time() if now is None else now)
+                self._save(umo, data)
+                return True
+        return False
+
+    def finish_reminder_attempt(self, umo: str, item_id: str, *, rejected=False) -> None:
+        data = self._load(umo)
+        for row in data.get('reminders') or []:
+            if isinstance(row, dict) and row.get('id') == item_id and row.get('delivery_state') == 'sending':
+                row['delivery_state'] = 'pending' if rejected else 'uncertain'
+                self._save(umo, data)
+                return
+
+    def mark_reminder_sent(self, umo: str, item_id: str, *, now=None) -> None:
+        data = self._load(umo)
+        for row in data.get("reminders") or []:
+            if isinstance(row, dict) and row.get("id") == item_id:
+                row.update(nudged=True, expired=True, delivery_state='delivered',
+                           sent_at=time.time() if now is None else now)
+                self._save(umo, data)
+                return
+
+    def reminder_context(self, umo: str, *, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Bounded notebook facts; reading them never consumes a reminder."""
+        stamp = time.time() if now is None else float(now)
+        data = self._load(umo)
+        if not self.enabled or float(data.get("mute_until") or 0) > stamp:
+            return []
+        rows = []
+        for row in data.get("reminders") or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                deadline = float(row.get("due_at"))
+                sent_at = float(row.get("sent_at") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            sent = bool(row.get("nudged"))
+            if (math.isfinite(deadline) and (not row.get("expired") and deadline <= stamp + 86400
+                    or sent and 0 <= stamp - sent_at < 86400)):
+                rows.append({"text": str(row.get("text") or "")[:80], "due_at": deadline,
+                             "status": "delivered" if sent else 'delivery_uncertain'
+                             if row.get('delivery_state') in {'sending', 'uncertain'} else "pending"})
+        return sorted(rows, key=lambda row: row["due_at"], reverse=True)[:5]
 
     # --- D3 slang trials ---------------------------------------------------
 

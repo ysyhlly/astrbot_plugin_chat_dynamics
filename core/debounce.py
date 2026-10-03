@@ -461,6 +461,19 @@ class DebounceBuffer:
                 return
             slot.pending_result = None
 
+    def release_result_media(self, result: Optional[DebounceResult]) -> None:
+        """Release after generation, not when the semantic gate releases a slot."""
+        if result is None:
+            return
+        generations_changed = (
+            int(result.metadata.get("buffer_generation", 0)) != self._session_generations.get(result.session_id, 0)
+            or int(result.metadata.get("buffer_user_generation", 0)) != self._user_generations.get(
+                (result.session_id, result.user_id), 0))
+        if generations_changed or (not result.metadata.get("superseded") and not result.metadata.get("awaiting_input")):
+            from .deferred_media import release_event_media
+            for event in result.raw_events:
+                release_event_media(event)
+
     async def defer_result(self, result: Optional[DebounceResult], *, on_expire=None) -> bool:
         """Park judged fragments until new input; expiration never calls the model."""
         if result is None or self._is_closed or not self.is_result_current(result):
@@ -499,6 +512,9 @@ class DebounceBuffer:
                 slot.input_deadline = None
             if callback is not None:
                 await callback()
+            from .deferred_media import release_event_media
+            for event in result.raw_events:
+                release_event_media(event)
         except asyncio.CancelledError:
             return
 
@@ -570,6 +586,24 @@ class DebounceBuffer:
             int(self._session_generations.get(session_id, 0)),
             int(self._user_generations.get((session_id, user_id), 0)),
         )
+
+    def invalidate_session(self, session_id: str) -> None:
+        """Invalidate synchronously while a new config is being applied.
+
+        Slot mutations contain no awaits; config changes and this operation
+        run on the same event loop. A scheduled discard could instead erase
+        the first message admitted under the new config.
+        """
+        self._session_generations[session_id] = self._session_generations.get(session_id, 0) + 1
+        self._generation_touched[session_id] = self.time_service.time()
+        for key, slot in list(self._slots.items()):
+            if key[0] != session_id:
+                continue
+            if slot.timer_task and not slot.timer_task.done():
+                slot.timer_task.cancel()
+            if slot.pending_result:
+                slot.pending_result.metadata["superseded"] = True
+            self._slots.pop(key, None)
 
     def is_result_current(self, result: DebounceResult) -> bool:
         """Return whether a flushed result predates the latest session reset."""

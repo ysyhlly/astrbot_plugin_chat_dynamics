@@ -84,6 +84,7 @@ _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
                        'quoted_author_id', 'quoted_author_name', 'topic_source_text',
                        'sender_name', 'sender_platform', 'actual_mentions',
                        'platform_message_id', 'dialogue_delivered', 'dialogue_stop_revision',
+                       'sender_is_bot', 'bot_identity_pending', 'reminder_id',
                        'dialogue_state', 'dialogue_action')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip

@@ -163,6 +163,11 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     is_wake = False
 
     runtime = host._sessions.get(session_id)
+    if runtime is not None and any(
+            getattr(raw, "_chat_dynamics_epoch", runtime.epoch) != runtime.epoch
+            for raw in result.raw_events):
+        host._metric("stale_turn_ignored")
+        return
     for raw in result.raw_events:
         parsed = parse_group_event(raw)
         if runtime is None:

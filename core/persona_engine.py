@@ -689,8 +689,15 @@ class PersonaEngine:
 
     async def generate(self, event, events, prompt, persona, provider, **kwargs):
         """All owned native agents share the adapter's per-provider admission budget."""
-        return await self.plugin.llm.provider_budget.run(
+        timeout = self.plugin._runtime_config.reply_timeout
+        if isinstance(self.bridge, AstrBotAgentBridge):
+            kwargs["reply_timeout"] = timeout
+            self.bridge.media_archive = self.plugin.media_archive
+            self.plugin.media_archive.touch(event.unified_msg_origin, persona.conversation_id)
+            self.plugin.media_archive.prune()
+        call = self.plugin.llm.provider_budget.run(
             provider, "reply", lambda: self.bridge.generate(event, events, prompt, persona, provider, **kwargs))
+        return await call if isinstance(self.bridge, AstrBotAgentBridge) else await asyncio.wait_for(call, timeout)
 
     async def run(self, runtime) -> None:
         p = self.plugin
@@ -713,8 +720,6 @@ class PersonaEngine:
                         # Final watchdog covers bridge/provider lookup, native
                         # generation and delivery, not only the decision model.
                         timeout = p._runtime_config.tool_agent_timeout
-                        if item.context.mandatory_reply:
-                            timeout = min(timeout, p._runtime_config.reply_timeout)
                         await self.run_owned(runtime, item.context.author,
                                              lambda: self.process(runtime, item), timeout=timeout)
                 except asyncio.CancelledError:
@@ -744,6 +749,11 @@ class PersonaEngine:
                         self.diagnostic(runtime, "at_fallback_send_failed", error_type=type(exc).__name__)
                     finally:
                         p.debounce.finish_result(item.debounce_result)
+                        p.debounce.release_result_media(item.debounce_result)
+                        if item.debounce_result is None:
+                            from .deferred_media import release_event_media
+                            for event in item.events:
+                                release_event_media(event)
                         if runtime.active_model_turn is item:
                             runtime.active_model_turn = None
                         runtime.model_admission.release()
@@ -1025,6 +1035,11 @@ class PersonaEngine:
                 ):
                     return
             understand = bool(getattr(runtime, "request_media_understand", False))
+            try:
+                reminder_context = p.group_memory.reminder_context(turn.session_key, now=p.time_service.wall_time())
+            except Exception as exc:
+                logger.warning("notebook context unavailable type=%s", type(exc).__name__)
+                reminder_context = []
             record_outcome(runtime, item, outcomes.mark_in_flight)
             output = await self.generate(
                 event,
@@ -1033,7 +1048,7 @@ class PersonaEngine:
                     "length_hint": decision.length,
                     "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
                     "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
-                }, reply_guidance=p._runtime_config.reply_prompt),
+                }, reply_guidance=p._runtime_config.reply_prompt, group_reminders=reminder_context),
                 persona,
                 provider,
                 execution_log=runtime.tool_executions,
@@ -1066,7 +1081,7 @@ class PersonaEngine:
                 delay_scale = float(gate.delay_scale or delay_scale)
             try:
                 for index, fragment in enumerate(fragments):
-                    delay = min(1.5, p.pacer.inter_burst_interval) if index else 0.0
+                    delay = p.pacer.inter_burst_interval if index else 0.0
                     delay = scale_delay(delay, delay_scale)
                     if delay:
                         await p.time_service.sleep(delay)

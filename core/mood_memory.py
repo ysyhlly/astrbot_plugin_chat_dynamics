@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -69,16 +70,16 @@ class MoodMemoryStore:
     def _load(self, umo: str) -> Dict[str, Any]:
         key = _safe_umo(umo)
         if key in self._cache:
-            return self._cache[key]
+            return deepcopy(self._cache[key])
         data: Dict[str, Any] = {"peers": {}, "forgotten": {}, "mute_until": 0.0}
         data.update(read_umo_json(self.data_dir, "mood", umo))
         self._cache_put(key, data)
-        return data
+        return deepcopy(data)
 
     def _save(self, umo: str, data: Dict[str, Any]) -> None:
+        data = deepcopy(data)
         data["umo"] = str(umo or "")
         key = _safe_umo(umo)
-        self._cache_put(key, data)
         path = self._path(umo)
         try:
             # Keep storage small: cap peers.
@@ -93,6 +94,8 @@ class MoodMemoryStore:
             atomic_write_json(path, data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mood save failed for one session type=%s", type(exc).__name__)
+            raise
+        self._cache_put(key, data)
 
     def mute_tonight(self, umo: str, *, hours: float = 10.0, now: Optional[float] = None) -> float:
         stamp = time.time() if now is None else float(now)

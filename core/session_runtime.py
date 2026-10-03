@@ -594,6 +594,10 @@ class SessionRegistry:
             runtime.umo = str(umo)
         if bot_id:
             runtime.bot_id = str(bot_id)
+            for node in runtime.dag.nodes.values():
+                if node.metadata.get('sender_is_bot') is True and node.metadata.get('bot_identity_pending') is True:
+                    node.user_id = runtime.bot_id
+                    node.metadata.pop('bot_identity_pending', None)
         self.group_keys.setdefault(runtime.group_id, set()).add(key)
         return runtime
 

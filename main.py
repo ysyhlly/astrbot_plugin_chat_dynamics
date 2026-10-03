@@ -35,6 +35,8 @@ from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .core.data_paths import resolve_data_root
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
+from .core.deferred_media import preserve_event_media, without_event_media
+from .core.media_archive import MediaArchive
 from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
 from .core.thread_router import ThreadRouter, build_contextual_query
@@ -47,6 +49,7 @@ from .core.config_panel import ConfigPanel, _PRESETS  # noqa: F401 (compatibilit
 from .core.llm_adapter import (LLMAdapter, LLMUnavailable, is_error_response, poke_hint_for, reply_system_prompt,
                                 system_prompt_for, vibe_hint_for)
 from .core.mood_memory import MoodMemoryStore
+from .core.reminder_delivery import ReminderDelivery
 from .core.native_delivery import NativeDeliveryGuard, _NativeEventContext, after_message_sent as _native_after_message_sent
 from .core import turn_pipeline as _turn_pipeline
 from .core.turn_pipeline import _PokeJob, _PreparedTurn
@@ -313,6 +316,7 @@ class ChatDynamicsPlugin(Star):
         self.arbiter.on_cooling_changed = self._schedule_persist_cooling
 
         data_root = resolve_data_root(_PluginPath(__file__).resolve().parent / "data" / "chat_dynamics")
+        self.media_archive = MediaArchive(data_root / "attachments")
         self.integrations = IntegrationRegistry(
             self.context, enabled=runtime_config.selflearning_integration,
             hub_url=runtime_config.selflearning_hub_url,
@@ -372,6 +376,8 @@ class ChatDynamicsPlugin(Star):
         self._hook_tasks_by_session: dict[str, Set[asyncio.Task]] = {}
         self.topic_batches = TopicBatcher(self)
         self._background_tasks: Set[asyncio.Task] = set()
+        self._media_leases: set = set()
+        self.reminders = ReminderDelivery(self)
         self._shutting_down: bool = False
         self._in_flight: Set[str] = set()
         self._session_sweep_task: Optional[asyncio.Task] = None
@@ -464,10 +470,17 @@ class ChatDynamicsPlugin(Star):
         previous_decision = getattr(self, "decision_mode", "legacy")
         old_cfg = getattr(self, "_runtime_config", None)
         self.decision_mode = cfg.decision_mode
+        reply_keys = ("reply_provider_id", "reply_prompt", "provider_id",
+                      "media_privacy_strict", "media_understand_reply_enabled",
+                      "media_image_gate_enabled", "media_voice_gate_enabled",
+                      "reply_timeout", "tool_agent_timeout")
         if (previous_decision != self.decision_mode or
-                (old_cfg is not None and old_cfg.decision_backend != cfg.decision_backend)) and hasattr(self, "_sessions"):
+                (old_cfg is not None and (old_cfg.decision_backend != cfg.decision_backend
+                    or any(getattr(old_cfg, key, None) != getattr(cfg, key, None)
+                           for key in reply_keys)))) and hasattr(self, "_sessions"):
             for session_id in list(self._sessions):
                 self._invalidate_pending_generation(session_id)
+                self.debounce.invalidate_session(session_id)
         for name in _DIRECT_RUNTIME_ATTRS:
             setattr(self, name, getattr(cfg, name))
         self.takeover_groups = set(cfg.takeover_groups)
@@ -492,6 +505,7 @@ class ChatDynamicsPlugin(Star):
                                             type(exc).__name__,
                                         )
                         self._invalidate_pending_generation(session_id)
+                        self.debounce.invalidate_session(session_id)
         if hasattr(self, "selflearning"):
             self.selflearning.configure(enabled=cfg.selflearning_integration, context=self.context,
                 hub_url=cfg.selflearning_hub_url, hub_key_env=cfg.selflearning_hub_key_env,
@@ -506,12 +520,15 @@ class ChatDynamicsPlugin(Star):
                 slang_enabled=cfg.slang_trial_enabled,
                 bridge=getattr(self, "selflearning", None),
             )
+            if not cfg.group_memory_enabled and hasattr(self, 'reminders'):
+                self.reminders.cancel()
         if cfg.shadow_mode and not previous_shadow and hasattr(self, "_sessions"):
             # Enabling observation mode at runtime must invalidate work that
             # could otherwise send after the new no-side-effect contract took
             # effect.
             for session_id in list(self._sessions):
                 self._invalidate_pending_generation(session_id)
+                self.debounce.invalidate_session(session_id)
                 self._cancel_embedding_tasks(session_id)
                 self._cancel_hook_tasks(session_id)
             self._metric("shadow_transition")
@@ -790,6 +807,8 @@ class ChatDynamicsPlugin(Star):
             # inside the accepted range.
             hours = self._notebook_number(payload, "hours", default=10.0, minimum=0.0, maximum=720.0)
             until = store.mute_tonight(umo, hours=hours)
+            if hours > 0:
+                self.reminders.cancel(umo)
             if mood is not None:
                 mood.mute_tonight(umo, hours=hours)
             return {"mute_until": until}
@@ -799,11 +818,15 @@ class ChatDynamicsPlugin(Star):
             ok = bool(mood and mood.forget(umo, peer, tag=tag))
             return {"forgotten": ok}
         if action == "add_anniversary":
+            month = self._notebook_number(payload, "month", default=0, minimum=1, maximum=12)
+            day = self._notebook_number(payload, "day", default=0, minimum=1, maximum=31)
+            if not month.is_integer() or not day.is_integer():
+                raise ValueError("month and day must be integers")
             item = store.add_anniversary(
                 umo,
                 title=self._bounded_text(payload.get("title") or "", 200),
-                month=int(self._notebook_number(payload, "month", default=0, minimum=1, maximum=12)),
-                day=int(self._notebook_number(payload, "day", default=0, minimum=1, maximum=31)),
+                month=int(month),
+                day=int(day),
                 note=self._bounded_text(payload.get("note") or "", 500),
             )
             return {"item": item}
@@ -818,9 +841,14 @@ class ChatDynamicsPlugin(Star):
                 due_at=self._notebook_number(payload, "due_at", minimum=0.0, maximum=253402300800.0),
                 created_by=str(payload.get("created_by") or "")[:128],
             )
+            self.reminders.start()
             return {"item": item}
-        if action == "remove_reminder":
-            return {"removed": store.remove_reminder(umo, str(payload.get("id") or "")[:128])}
+        if action in {'remove_reminder', 'mark_done', 'done_reminder'}:
+            item_id = str(payload.get('id') or '')[:128]
+            removed = store.remove_reminder(umo, item_id)
+            if removed:
+                self.reminders.cancel(umo, item_id)
+            return {'removed': removed}
         if action == "add_slang":
             item = store.add_slang_trial(
                 umo,
@@ -830,10 +858,8 @@ class ChatDynamicsPlugin(Star):
             return {"item": item}
         if action == "remove_slang":
             return {"removed": store.remove_slang(umo, str(payload.get("id") or "")[:128])}
-        if action in {"mark_done", "done_reminder"}:
-            return {"removed": store.remove_reminder(umo, str(payload.get("id") or ""))}
         if action == "due_reminders":
-            return {"items": store.pop_due_reminders(umo)}
+            return {"items": store.due_reminders(umo)}
         if action == "due_anniversaries":
             return {"items": store.due_anniversaries(umo)}
         raise ValueError(f"unknown notebook action: {action}")
@@ -1212,6 +1238,20 @@ class ChatDynamicsPlugin(Star):
         if self._persona_mode() or not self._is_filter_mode():
             return False
         explicit = self._looks_like_strong_address(parsed, runtime)
+        if parsed.has_media:
+            verdict = self.decision_gate.media.evaluate(
+                text=parsed.text or "", has_media=True,
+                media_component_types=parsed.media_component_types, outline=parsed.outline or "",
+                explicit=explicit, quoted_bot=self._wake_kind(parsed, runtime) == "quote",
+                media_privacy_strict=self._runtime_config.media_privacy_strict,
+                media_image_gate_enabled=self._runtime_config.media_image_gate_enabled,
+                media_voice_gate_enabled=self._runtime_config.media_voice_gate_enabled,
+                media_understand_reply_enabled=self._runtime_config.media_understand_reply_enabled,
+            )
+            runtime.last_media_gate = verdict.as_dict()
+            runtime.request_media_understand = verdict.request_understand
+            if not verdict.request_understand:
+                return False
         if explicit and has_understandable_media(parsed):
             # Keep the original event so the host can extract Image/Record.
             return True
@@ -1260,6 +1300,7 @@ class ChatDynamicsPlugin(Star):
                 self._session_sweep_task = self._create_background_task(self._session_sweeper())
             except RuntimeError:
                 self._session_sweep_task = None
+        self.reminders.start()
         logger.info(
             "[ChatDynamics] Ready. mode=%s takeover_all=%s group_count=%d exclude_count=%d",
             self.pipeline_mode,
@@ -1460,12 +1501,6 @@ class ChatDynamicsPlugin(Star):
         if self._runtime_persist_task is not None:
             await asyncio.gather(self._runtime_persist_task, return_exceptions=True)
             self._runtime_persist_task = None
-        companion_close = getattr(getattr(self, "selflearning", None), "close", None)
-        if callable(companion_close):
-            await companion_close()
-        jev_close = getattr(getattr(self, "jev", None), "close", None)
-        if callable(jev_close):
-            await jev_close()
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
             runtime.clear_active_followup_batches()
@@ -1514,6 +1549,20 @@ class ChatDynamicsPlugin(Star):
         self._embedding_tasks_by_session.clear()
         self._hook_tasks_by_session.clear()
         self._clear_all_native_contexts()
+        for lease in self._media_leases:
+            lease()
+        self._media_leases.clear()
+        # Host failures must not leave our generators, timers or tool calls alive.
+        close_error = None
+        for companion in (getattr(self, "selflearning", None), getattr(self, "jev", None)):
+            closer = getattr(companion, "close", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception as exc:
+                    close_error = close_error or exc
+        if close_error is not None:
+            raise close_error
 
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
@@ -1684,11 +1733,23 @@ class ChatDynamicsPlugin(Star):
                 if self._is_filter_mode() and not self.shadow_mode:
                     self._suppress_native_llm(event)
                 try:
+                    try:
+                        buffered_event = preserve_event_media(event, archive=self.media_archive,
+                                                               session=parsed.unified_msg_origin or session_key)
+                    except Exception as exc:
+                        logger.warning("attachment copy failed; using text fallback type=%s", type(exc).__name__)
+                        buffered_event = without_event_media(event)
+                        buffered_event.message_str = str(event.message_str or "") + "\n[附件暂时不可读取]"
+                        self._metric("media_copy_failed")
+                    self._media_leases = {lease for lease in self._media_leases if lease.alive}
+                    lease = getattr(buffered_event, "_chat_dynamics_media_cleanup", None)
+                    if lease is not None:
+                        self._media_leases.add(lease)
                     await self.debounce.ingest(
                         session_id=session_key,
                         user_id=parsed.sender_id,
                         text=bounded_text,
-                        event=event,
+                        event=buffered_event,
                         on_flush=self.on_turn_flushed,
                         defer_callback=True,
                         immediate=self._wake_kind(parsed, runtime) == "at",
@@ -1981,7 +2042,7 @@ class ChatDynamicsPlugin(Star):
                     if not current():
                         break
                     if index:
-                        await self.time_service.sleep(min(1.5, self.pacer.inter_burst_interval))
+                        await self.time_service.sleep(self.pacer.inter_burst_interval)
                     if not current() or not await bridge.current(raw_event, effective):
                         break
                     async with runtime.send_lock:
@@ -2079,18 +2140,20 @@ class ChatDynamicsPlugin(Star):
                 record_stage(prepared.node, 'decision', decision_started)
                 self._create_background_task(self._enrich_topic_background(prepared))
         if isinstance(model_turn, _PokeJob):
-            await self._deliver_poke_reply(
-                runtime,
-                model_turn.node,
-                model_turn.event,
-                model_turn.parsed,
-                now=model_turn.now,
-            )
+            try:
+                await self._deliver_poke_reply(
+                    runtime, model_turn.node, model_turn.event, model_turn.parsed,
+                    now=model_turn.now,
+                )
+            finally:
+                self.debounce.release_result_media(result)
             return
         if model_turn is not None:
             await self.persona_engine.submit(runtime, model_turn)
         else:
             self.debounce.finish_result(result)
+            if not (runtime.generation_task is not None and not runtime.generation_task.done()):
+                self.debounce.release_result_media(result)
 
     @staticmethod
     def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
@@ -2148,16 +2211,19 @@ class ChatDynamicsPlugin(Star):
                     runtime.latest_pending = None
                     runtime.generation_level = current.addressivity_level
                 mark_in_flight(current.node)
-                await self._dispatch_bot_response(
-                    runtime,
-                    current.node,
-                    current.vibe_mode,
-                    current.raw_event,
-                    current.revision,
-                    epoch=current.epoch,
-                    owner_user_id=current.owner_user_id,
-                    owner_revision=current.owner_revision,
-                )
+                try:
+                    await self._dispatch_bot_response(
+                        runtime,
+                        current.node,
+                        current.vibe_mode,
+                        current.raw_event,
+                        current.revision,
+                        epoch=current.epoch,
+                        owner_user_id=current.owner_user_id,
+                        owner_revision=current.owner_revision,
+                    )
+                finally:
+                    self.debounce.release_result_media(current.result)
                 # Still in flight after the dispatch returned means nothing was
                 # ever sent and nothing raised: the generator produced no usable
                 # reply. Naming that here beats leaving the turn marked as "never
@@ -2178,6 +2244,8 @@ class ChatDynamicsPlugin(Star):
             if node is not None:
                 mark_generation_failed(node, f"generation_error:{type(exc).__name__}")
         finally:
+            if current is not None:
+                self.debounce.release_result_media(current.result)
             # A reset/cool operation may have detached this task and allowed a
             # newer generation to start. Only the current owner may clear the
             # shared runtime fields used by that newer task.
@@ -2419,6 +2487,9 @@ class ChatDynamicsPlugin(Star):
         umo = getattr(raw_event, "unified_msg_origin", None) if raw_event is not None else None
         umo = umo or self._umo_by_session.get(session_id) or session_id
         hint = vibe_hint_for(vibe_mode)
+        runtime = self._sessions.get(session_id)
+        if runtime is not None and not getattr(runtime, "request_media_understand", False):
+            raw_event = without_event_media(raw_event)
         if is_poke_placeholder(text):
             hint = f"{hint} {poke_hint_for()}".strip()
         try:
@@ -2908,6 +2979,7 @@ class ChatDynamicsPlugin(Star):
         async with runtime.state_lock:
             task = runtime.generation_task
             self._invalidate_pending_generation(key)
+            await self.debounce.discard(key)
             hook_tasks = self._cancel_hook_tasks(key)
             now = self.time_service.time()
             self.arbiter.trigger_cooling(key, duration_seconds=minutes * 60.0, current_time=now)
@@ -3068,8 +3140,15 @@ class ChatDynamicsPlugin(Star):
         if not self._event_epoch_is_current(event, session_key):
             return
         from .core.vision_context import MAIN_VISION_HINT, refine_host_caption
-        if not self._persona_mode():
-            runtime_before = self._sessions.get(session_key)
+        runtime_before = self._sessions.get(session_key)
+        privacy_blocked = bool(runtime_before is not None and getattr(runtime_before, "last_media_gate", {}).get("privacy_hit"))
+        if privacy_blocked:
+            if (not getattr(event, "_chat_dynamics_owned_request", False)
+                    or getattr(request, "image_urls", None) or getattr(request, "audio_urls", None)):
+                event.stop_event()
+                self._suppress_native_llm(event)
+                return
+        if not self._persona_mode() and not privacy_blocked:
             revision_before = runtime_before.revision if runtime_before is not None else None
             self._track_hook_task(session_key)
             try:

@@ -283,34 +283,20 @@ class MediaAirGate:
         mm_flag = self._multimodal_available if multimodal_available is None else multimodal_available
         multimodal_degraded = mm_flag is False
 
-        # Gates disabled → pass-through (L1 off means do not silence for media reasons).
-        if has_image and not media_image_gate_enabled and has_voice and not media_voice_gate_enabled:
-            return MediaGateVerdict(
-                True, 1.0, "media_off", _REASON["media_off"],
-                labels=("gate_off",), has_image=has_image, has_voice=has_voice,
-                multimodal_degraded=multimodal_degraded,
-            )
-        if has_image and not media_image_gate_enabled and not has_voice:
-            return MediaGateVerdict(
-                True, 1.0, "media_off", _REASON["media_off"],
-                labels=("image_gate_off",), has_image=True,
-                multimodal_degraded=multimodal_degraded,
-            )
-        if has_voice and not media_voice_gate_enabled and not has_image:
-            return MediaGateVerdict(
-                True, 1.0, "media_off", _REASON["media_off"],
-                labels=("voice_gate_off",), has_voice=True,
-                multimodal_degraded=multimodal_degraded,
-            )
+        gate_off = bool((has_image or has_voice)
+                        and (not has_image or not media_image_gate_enabled)
+                        and (not has_voice or not media_voice_gate_enabled))
 
         labels: list[str] = []
         image_label = ""
         voice_label = ""
-        if has_image and media_image_gate_enabled:
-            image_label = classify_image_label(
+        if has_image:
+            classification = classify_image_label(
                 text=text, outline=outline, privacy_strict=media_privacy_strict
             )
-            labels.append(f"img:{image_label}")
+            image_label = classification if media_image_gate_enabled or classification == "private_or_id_sensitive" else ""
+            if image_label:
+                labels.append(f"img:{image_label}")
         if has_voice and media_voice_gate_enabled:
             voice_label = classify_voice_label(text=text, outline=outline)
             labels.append(f"voice:{voice_label}")
@@ -332,6 +318,18 @@ class MediaAirGate:
                 True, 0.35, "image_privacy_skip", _REASON["image_privacy_skip"],
                 labels=tuple(labels) + ("privacy_ack_only",),
                 request_understand=False, privacy_hit=True,
+                has_image=has_image, has_voice=has_voice,
+                multimodal_degraded=multimodal_degraded,
+            )
+
+        # Turning off L1 removes media silencing, but keeps the privacy
+        # restriction and authorization to understand explicit attachments.
+        if gate_off:
+            understand = bool((addressed or (media_understand_reply_enabled and _strong_look_listen(text)))
+                              and not multimodal_degraded)
+            return MediaGateVerdict(
+                True, 1.0, "media_off", _REASON["media_off"],
+                labels=tuple(labels) + ("gate_off",), request_understand=understand,
                 has_image=has_image, has_voice=has_voice,
                 multimodal_degraded=multimodal_degraded,
             )
