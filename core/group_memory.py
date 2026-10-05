@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import json
 import math
 import time
@@ -12,9 +11,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .persist import atomic_write_json, read_umo_json, safe_umo
+from astrbot.api import logger
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.group_memory")
+from .persist import atomic_write_json, read_umo_json, safe_umo
 
 _SENSITIVE = ("黄", "赌", "毒", "裸", "色情", "政治", "习近")
 

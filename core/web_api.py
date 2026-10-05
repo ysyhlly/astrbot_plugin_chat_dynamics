@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 import hashlib
 import json
 import math
 import inspect
 import time
 from typing import Any, Dict, Optional
+
+from astrbot.api import logger
 
 from .dashboard import (
     scene_replay_snapshot,
@@ -18,8 +19,6 @@ from .dashboard import (
 )
 from .web_compat import error_response, json_response, query_value, request, request_json
 from .topic_annotations import TopicAnnotations
-
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.web_api")
 
 PLUGIN_NAME = "astrbot_plugin_chat_dynamics"
 _MAX_BODY_BYTES = 64 * 1024

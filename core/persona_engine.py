@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
+
+from astrbot.api import logger
 
 from .agent_bridge import AstrBotAgentBridge, PersonaChanged
 from .pacer import PacingShaper, is_rhythm_short_act, scale_delay
@@ -28,8 +29,6 @@ from .jev_decision import (StateBudgetExceeded, bound_request_state, build_quest
 from .topic_jev import align_topic_task, build_topic_task, apply_topic_answer, capture_topic_candidates
 from .context_retrieval import clip_text, select_background
 from .routing_contract import commit_topic_evidence
-
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
 _REQUEST_SUPPLEMENT_WINDOW = 120.0
 

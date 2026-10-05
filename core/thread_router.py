@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence, Tuple
+
+from astrbot.api import logger
 
 from .recipient_resolver import RecipientResolver
 from .routing_contract import commit_topic_evidence
@@ -28,8 +29,6 @@ TOPIC_AMBIGUITY_THRESHOLD = 0.48
 TOPIC_MARGIN_THRESHOLD = 0.06
 PARENT_ACCEPT_THRESHOLD = 0.72
 PARENT_MARGIN_THRESHOLD = 0.08
-
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager

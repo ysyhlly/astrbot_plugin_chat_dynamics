@@ -8,15 +8,14 @@ turn consolidation, and graceful lifecycle shutdown.
 from __future__ import annotations
 
 import asyncio
-import logging
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+from astrbot.api import logger
+
 from .incompleteness import IncompletenessDetector
 from .time_service import SystemClock, TimeService
-
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.debounce")
 
 
 @dataclass

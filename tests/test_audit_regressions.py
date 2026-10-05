@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from astrbot.api import logger
+
 from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
 from astrbot_plugin_chat_dynamics.core.arbiter import ArbitrationResult
 from .test_plugin_lifecycle import MockContext
@@ -107,9 +109,10 @@ def test_gate_veto_priority_preserved(plugin, code, expected):
     assert result.extra_diagnostic == "preserved"
 
 
-def test_router_logs_no_content_or_identifiers_even_at_debug(caplog):
+def test_router_logs_no_content_or_identifiers_even_at_debug(caplog, astrbot_log_capture):
     runtime, router = setup()
-    with caplog.at_level(logging.DEBUG):
+    plugin_logger_name = astrbot_log_capture.name if astrbot_log_capture is not None else logger.name
+    with caplog.at_level(logging.DEBUG, logger="astrbot"), caplog.at_level(logging.DEBUG, logger=plugin_logger_name):
         add(runtime, router, "SECRET_MESSAGE_ID", "SECRET_USER_ID", "SECRET_CHAT_BODY", 1)
     records = [r for r in caplog.records if "[Router]" in r.getMessage()]
     assert records

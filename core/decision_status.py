@@ -5,14 +5,13 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
 import sqlite3
 import time
 from pathlib import Path
 
-from . import web_api as web
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from . import web_api as web
 
 
 def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_content=False):

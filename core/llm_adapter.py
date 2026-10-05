@@ -10,15 +10,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import logging
 import time
 from typing import Any
+
+from astrbot.api import logger
 
 from .platform_bridge import collect_media_urls
 from .provider_budget import context_budget
 from .vibe_analyzer import GroupChatMode
-
-logger = logging.getLogger(__name__)
 
 
 def _call_session_getter(getter: Any, umo: str) -> Any:

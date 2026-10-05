@@ -7,13 +7,12 @@ planner and not LLM-decided. Degrades quietly when group_memory is missing.
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.useful_proactive")
+from astrbot.api import logger as logger
 
 # --- reason codes (zh surface) -------------------------------------------------
 

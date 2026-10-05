@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+
+from astrbot.api import logger
 
 from .platform_bridge import send_plain
-
-logger = logging.getLogger(__name__)
 
 
 class ReminderDelivery:

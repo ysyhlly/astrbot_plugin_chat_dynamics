@@ -6,15 +6,14 @@ environment variables for adaptive generation and pacing strategies.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from enum import Enum
 import re
 from typing import Awaitable, Callable, Dict, Optional, Tuple
 
-from .telemetrics import RoomTelemetrics, TelemetricsTracker
+from astrbot.api import logger as logger
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.vibe")
+from .telemetrics import RoomTelemetrics, TelemetricsTracker
 
 
 class GroupChatMode(str, Enum):

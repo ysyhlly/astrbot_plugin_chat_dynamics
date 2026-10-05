@@ -11,6 +11,27 @@ from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
+def astrbot_log_capture(request):
+    """Capture the real SDK's isolated plugin logger for log assertions."""
+    if "caplog" not in request.fixturenames:
+        yield None
+        return
+    try:
+        from astrbot.core.log import LogManager
+    except ImportError:
+        yield None
+        return
+
+    caplog = request.getfixturevalue("caplog")
+    plugin_logger = LogManager.get_plugin_logger("astrbot_plugin_chat_dynamics")
+    plugin_logger.addHandler(caplog.handler)
+    try:
+        yield plugin_logger
+    finally:
+        plugin_logger.removeHandler(caplog.handler)
+
+
+@pytest.fixture(autouse=True)
 def isolated_host_request_hooks(monkeypatch):
     """Unit doubles have no running host registry; real dispatch is tested in integration/."""
     try:

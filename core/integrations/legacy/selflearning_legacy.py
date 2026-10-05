@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-import logging
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class SelfLearningStatus(str, Enum):

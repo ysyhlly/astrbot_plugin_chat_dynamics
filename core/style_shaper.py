@@ -6,14 +6,13 @@ into colloquial human chat styles appropriate for active group chat vibes.
 
 from __future__ import annotations
 
-import logging
 import re
 import uuid
 from typing import List
 
-from .vibe_analyzer import GroupChatMode
+from astrbot.api import logger as logger
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.style_shaper")
+from .vibe_analyzer import GroupChatMode
 
 # Cliché assistant endings to strictly strip from outputs
 ROBOTIC_SIGNOFFS = [

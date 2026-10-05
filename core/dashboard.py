@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
-
-from .routing_trace import build_routing_trace, redact_trace_identifiers, trace_with_updates
 from typing import Any, Dict, List, Optional, Set
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
+from astrbot.api import logger
+
+from .routing_trace import build_routing_trace, redact_trace_identifiers, trace_with_updates
 
 
 def _attr_int(obj: Any, key: str, default: int) -> int:

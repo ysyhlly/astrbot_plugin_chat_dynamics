@@ -7,7 +7,6 @@ before useful_proactive / quotas. Never replaces manners/media/deciding.
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 import time
 from dataclasses import dataclass
@@ -15,7 +14,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Sequence
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.daily_rhythm")
+from astrbot.api import logger as logger
 
 # --- states -------------------------------------------------------------------
 

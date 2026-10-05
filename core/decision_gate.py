@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
+
+from astrbot.api import logger
 
 from .media_gate import MediaAirGate, MediaGateVerdict
 from .occasion_skin import OccasionClassifier, OccasionSkin, apply_occasion_to_willingness, reason_to_zh
 from .social_manners import MannersVerdict, SocialMannersGate
 from .daily_rhythm import DailyRhythmGate, DailyRhythmVerdict, is_goodnight_text
 from .useful_proactive import UsefulProactiveGate, UsefulProactiveVerdict
-
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.decision_gate")
 
 @dataclass(frozen=True)
 class GateResult:

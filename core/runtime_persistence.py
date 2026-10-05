@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 import re
 import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
+
+from astrbot.api import logger
 
 from .graph import ConversationNode
 from .routing_contract import EDGE_KINDS
@@ -20,7 +21,6 @@ from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
 MAX_SESSIONS = 1000
-logger = logging.getLogger(__name__)
 
 # The host version the learning layer records, resolved from the same file the
 # plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the

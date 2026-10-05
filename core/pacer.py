@@ -6,16 +6,15 @@ human typing latencies (thinking pause + character counts) to eradicate instant 
 
 from __future__ import annotations
 
-import logging
 import math
 import re
 from typing import List, Optional
 
+from astrbot.api import logger as logger
+
 from .reactions import ReactionPolicy
 from .style_shaper import StyleShaper
 from .vibe_analyzer import GroupChatMode
-
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.pacer")
 
 
 _RHYTHM_SHORT_ACTS = frozenset({"wake_reply", "goodnight_reply", "morning_hi", "insomnia_line"})

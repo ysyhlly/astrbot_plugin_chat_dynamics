@@ -6,7 +6,6 @@ and extracts At / Reply / self_id from real AstrMessageEvent shapes.
 
 from __future__ import annotations
 
-import logging
 import hashlib
 import inspect
 import re
@@ -14,9 +13,9 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-from .member_identity import display_name
+from astrbot.api import logger
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.platform_bridge")
+from .member_identity import display_name
 
 
 def _session_label(session_id: Any) -> str:

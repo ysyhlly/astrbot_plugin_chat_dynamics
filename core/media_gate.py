@@ -6,12 +6,11 @@ Never writes media details into memory payloads returned here.
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.media_gate")
+from astrbot.api import logger
 
 # --- component / outline helpers -------------------------------------------------
 

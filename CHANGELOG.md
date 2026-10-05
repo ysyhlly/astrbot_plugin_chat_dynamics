@@ -2,6 +2,11 @@
 
 All notable changes to this plugin are recorded here.
 
+## v1.15.7 · AstrBot 统一日志合规修复（2026-10-05）
+
+- 全部运行模块统一从 `astrbot.api` 导入 `logger`，移除 Python 内置 `logging` 与独立 `getLogger()`，日志纳入 AstrBot 的级别控制、插件归属与统一输出格式。
+- 更新日志隐私回归测试，捕获真实 SDK 的独立插件日志并设置 DEBUG 级别；适配真实 SDK 的类型检查，保留现有日志级别、内容与业务行为。
+
 ## v1.15.6 · 精简回复与 Jev 决策输入（2026-10-04）
 
 - 回复长度默认优先 `brief` / `normal`，简单解释、短列表和少量步骤不再单独要求 `detailed`。`normal` 为 1～2 句或最多两项短列表，普通群聊 `detailed` 要求整轮正文不超过 120 字；明确完整代码、长文或指定更长篇幅可展开。长度由提示词控制，正文仍完整投递；旧默认提示词自动升级，自定义提示词保留。
