@@ -41,4 +41,3 @@ class MutationReceipt(TypedDict):
     shield_epoch: int
     active_rules: list[dict[str, Any]]
     effective: Policy
-
