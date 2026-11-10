@@ -195,6 +195,8 @@ def _router_addressee(turn: TurnContext, message: MessageSnapshot) -> tuple[dict
         return {"kind": "unclear"}, "none"
     certainty = str(getattr(semantics, "certainty", "") or "")
     source = "platform" if certainty == "explicit" else "router"
+    if source != "platform" and any(e.startswith("recipient_llm_") for e in getattr(semantics, "routing_evidence", ())):
+        source = "llm"
     if getattr(semantics, "bot_is_addressee", False) and not getattr(semantics, "addressee_ambiguous", False):
         return {"kind": "bot", "confidence": round(float(getattr(semantics, "bot_addressee_confidence", 0.0)
                                                          or 0.0), 3)}, source

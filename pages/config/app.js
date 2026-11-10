@@ -7,6 +7,7 @@ const CHAT_PROVIDER_KEYS = new Set([
   "reply_provider",
   "decision_provider",
   "topic_reranker_provider",
+  "discussion_llm_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 const RERANK_PROVIDER_KEYS = new Set(["discussion_reranker_provider"]);
@@ -43,6 +44,7 @@ const BASIC_HINTS = {
   narrative_outreach_enabled: "允许已启用叙事的会话接收有明确动机的主动联系；生活推进本身不会强制发言。可在记忆小本中单独暂停。",
 };
 const OPTION_LABELS = {
+  discussion_judgment_mode: { rerank: "规则＋原生重排序（默认）", llm: "LLM 判断对象与讨论" },
   // Keep participation labels identical to the control panel.
   presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
   pipeline_mode: { filter: "过滤（默认，不影响其它插件）", exclusive: "独占（会吞掉后续插件）" },
@@ -118,11 +120,14 @@ const CONFIG_GROUPS = [
   {
     "id": "routing",
     "title": "话题识别与归属",
-    "blurb": "规则识别对话对象，重排序判断讨论归属，LLM 独立归纳主题名称；低分先待定",
+    "blurb": "可切换规则＋重排序或 LLM 判断对象和讨论归属；LLM 独立归纳主题名称，低分先待定",
     "open": true,
     "keys": [
       "conversation_router_enabled",
       "rule_topic_routing_enabled",
+      "discussion_judgment_mode",
+      "discussion_llm_provider",
+      "discussion_llm_timeout",
       "discussion_reranker_provider",
       "discussion_rerank_threshold",
       "discussion_rerank_margin",

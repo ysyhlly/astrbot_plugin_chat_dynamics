@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "chat_dynamics": "v1.16.0",
+  "chat_dynamics": "v1.17.0",
   "partners": [
     {
       "id": "livingmemory",

@@ -4,12 +4,12 @@ short_desc: 让机器人跟上群聊节奏，接话有分寸。支持碎发聚�
 desc: |
   群间（Chat Dynamics）是 AstrBot 群聊互动插件。
   合并连续碎发，结合引用、@ 与上下文追踪话题，控制回应时机和回复节奏。
-  使用规则识别对话对象，原生重排序服务辅助多人讨论归属，允许同一人参与不同讨论。
+  可切换规则＋原生重排序或普通 LLM 判断对话对象和讨论归属，允许同一人参与不同讨论。
   使用 AstrBot 原生 Jev / System One 或 OpenAI Decisions 模型服务决策，再交给 AstrBot 主 Agent 回复。
   提供观察模式、会话控制台、冷却与重置，并支持媒体门闩、今日作息和可选记忆联动。
   按完整 UMO 隔离会话；需配置生效群，默认不处理任何群。
   观察模式仍会调用决策模型；旧学生训练与自动发布策略已移除。
-version: v1.16.0
+version: v1.17.0
 author: ysyhlly
 repo: "https://github.com/ysyhlly/astrbot_plugin_chat_dynamics"
 astrbot_version: ">=4.29.4,<5"

@@ -111,6 +111,9 @@ class ConfigPanel:
             "routing_neural_timeout": getattr(cfg, "routing_neural_timeout", 0.5),
             "topic_reranker_enabled": cfg.topic_reranker_enabled,
             "rule_topic_routing_enabled": cfg.rule_topic_routing_enabled,
+            "discussion_judgment_mode": cfg.discussion_judgment_mode,
+            "discussion_llm_provider": cfg.discussion_llm_provider,
+            "discussion_llm_timeout": cfg.discussion_llm_timeout,
             "discussion_reranker_provider": cfg.discussion_reranker_provider,
             "discussion_rerank_threshold": cfg.discussion_rerank_threshold,
             "discussion_rerank_margin": cfg.discussion_rerank_margin,
@@ -379,11 +382,13 @@ class ConfigPanel:
             provider = getter(updates['discussion_reranker_provider']) if callable(getter) else None
             if not callable(getattr(provider, 'rerank', None)):
                 raise ValueError('discussion_reranker_provider：请选择已加载的原生重排序模型服务。')
-        text_keys = {"reply_provider", "topic_reranker_provider"}
+        text_keys = {"reply_provider", "topic_reranker_provider", "discussion_llm_provider"}
         for key in text_keys.intersection(updates):
             provider = getter(updates[key]) if callable(getter) and updates[key] else None
             if is_decision_provider(provider):
                 raise ValueError(f"{key}：Jev / OpenAI Decisions 只用于决策，请选择普通聊天模型生成文字。")
+            if key == "discussion_llm_provider" and updates[key] and not callable(getattr(provider, "text_chat", None)):
+                raise ValueError("discussion_llm_provider：请选择已加载的普通聊天模型。")
         if "decision_provider" not in updates:
             return
         if not cfg.decision_provider_id:

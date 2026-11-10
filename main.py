@@ -49,6 +49,7 @@ from .core.thread_router import build_contextual_query
 from .core.rule_topic_router import RuleTopicRouter as ThreadRouter
 from .core.discussion_reranker import DiscussionReranker
 from .core.topic_reranker import TopicReranker
+from .core.discussion_llm import LLMDiscussionJudge
 from .core.topic_batch import TopicBatcher
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
@@ -317,7 +318,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.16.0",
+    "v1.17.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -349,6 +350,7 @@ class ChatDynamicsPlugin(Star):
         )
         self.thread_router = ThreadRouter(
             rule_enabled=runtime_config.rule_topic_routing_enabled,
+            judgment_mode=runtime_config.discussion_judgment_mode,
             reopen_archived_topics=False,
             topic_window_seconds=runtime_config.topic_window_seconds,
             topic_join_threshold=runtime_config.topic_join_threshold,
@@ -665,6 +667,7 @@ class ChatDynamicsPlugin(Star):
             cfg = self._prepare_config_candidate(cfg)
         self._apply_runtime_config(cfg, log_warnings=warnings, validated=validated_config is not None)
         self.thread_router.rule_enabled = cfg.rule_topic_routing_enabled
+        self.thread_router.judgment_mode = cfg.discussion_judgment_mode
         self.thread_router.configure_topics(
             window_seconds=cfg.topic_window_seconds, legacy_threshold=cfg.topic_join_threshold,
             commit_threshold=cfg.topic_commit_threshold, ambiguity_threshold=cfg.topic_ambiguity_threshold,
@@ -705,7 +708,8 @@ class ChatDynamicsPlugin(Star):
         old_cfg = self._runtime_config
         self._runtime_config = cfg
         batch_keys = ("enabled", "topic_reranker_enabled", "conversation_router_enabled", "topic_batch_interval",
-                      "rule_topic_routing_enabled", "discussion_reranker_provider", "discussion_rerank_threshold", "discussion_rerank_margin",
+                      "rule_topic_routing_enabled", "discussion_judgment_mode", "discussion_llm_provider", "discussion_llm_timeout",
+                      "discussion_reranker_provider", "discussion_rerank_threshold", "discussion_rerank_margin",
                       "topic_reranker_provider", "reply_provider_id", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups")
         if any(getattr(old_cfg, key, None) != getattr(cfg, key, None) for key in batch_keys):
             self.topic_batches.reconfigure()
@@ -2838,7 +2842,9 @@ class ChatDynamicsPlugin(Star):
                 record_stage(model_turn.node, 'prepare', prepare_started)
         if isinstance(model_turn, _PreparedTurn):
             prepared = model_turn
-            if not prepared.explicit_platform and not self.debounce.semantic:
+            if not prepared.explicit_platform and (not self.debounce.semantic or (
+                    self._runtime_config.rule_topic_routing_enabled
+                    and self._runtime_config.discussion_judgment_mode == "llm")):
                 await self._enrich_turn(prepared)
             async with runtime.state_lock:
                 if not self._prepared_turn_current(prepared):
@@ -2887,12 +2893,17 @@ class ChatDynamicsPlugin(Star):
         from .core.routing_contract import ROUTING_WEIGHTS_VERSION
         return ROUTING_WEIGHTS_VERSION
 
-    def _topic_reranker(self, *, for_display: bool = False) -> TopicReranker | DiscussionReranker | None:
+    def _topic_reranker(self, *, for_display: bool = False) -> TopicReranker | DiscussionReranker | LLMDiscussionJudge | None:
         cfg = self._runtime_config
         if (not cfg.topic_reranker_enabled or (self.shadow_mode and not for_display)
                 or not cfg.conversation_router_enabled):
             return None
         if cfg.rule_topic_routing_enabled and not for_display:
+            if cfg.discussion_judgment_mode == "llm":
+                return LLMDiscussionJudge(
+                    LLMAdapter(self.context, configured_provider_id=cfg.discussion_llm_provider or cfg.reply_provider_id),
+                    timeout=cfg.discussion_llm_timeout, threshold=cfg.discussion_rerank_threshold,
+                    margin=cfg.discussion_rerank_margin)
             return DiscussionReranker(self.context, cfg.discussion_reranker_provider,
                 timeout=cfg.topic_reranker_timeout, threshold=cfg.discussion_rerank_threshold,
                 margin=cfg.discussion_rerank_margin)

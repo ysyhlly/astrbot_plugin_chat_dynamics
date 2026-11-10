@@ -538,6 +538,18 @@ async def _enrich_turn(host, turn: _PreparedTurn, *, allow_llm: bool = True) -> 
     # allowance: serial stages do not each receive a new full deadline.
     cfg = host._runtime_config
     if getattr(cfg, 'rule_topic_routing_enabled', False):
+        if getattr(cfg, 'discussion_judgment_mode', 'rerank') == 'llm':
+            judge = host._topic_reranker()
+            if judge is not None and not turn.node.metadata.get('routing', {}).get('discussion_rank_attempted'):
+                config_id = host._turn_config_identity()
+                started = time.perf_counter()
+                try:
+                    await host.thread_router.rerank_pending(
+                        turn.runtime, turn.node, judge,
+                        is_current=lambda: (host._prepared_turn_current(turn)
+                                            and host._turn_config_identity() == config_id))
+                finally:
+                    record_stage(turn.node, 'discussion_llm', started)
         # Object rules and native discussion ranking do not consume embeddings.
         # Keep warmups alive for the independent addressivity/memory consumers.
         host._metric('routing_embedding_wait_skipped')
