@@ -203,7 +203,7 @@ def test_replay_unassigned_messages_remain_blank(browser, page_server, tmp_path)
         assert page.locator('.replay-block').count() == 0
         assert page.locator('#railEmpty').is_visible()
         assert '留白' in page.locator('#railEmpty').inner_text()
-        assert page.locator('#railCounts').inner_text() == '0 个主题场景'
+        assert page.locator('#railCounts').inner_text() == '0 个主题场景 · 0 组未归话题消息'
         assert not page.locator('#detailDialog').is_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path / 'replay-blank.png'))

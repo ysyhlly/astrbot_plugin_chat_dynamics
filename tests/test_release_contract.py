@@ -142,5 +142,8 @@ def test_release_archive_excludes_deployed_backups_and_editor_files(tmp_path):
     with zipfile.ZipFile(archive) as packaged:
         assert not set(unwanted).intersection(packaged.namelist())
         assert "core/agent_bridge.py" in packaged.namelist()
+        assert "reload_bootstrap.py" in packaged.namelist()
+        assert "pages/config/integration_status.js" in packaged.namelist()
+        assert "docs/integrations.md" in packaged.namelist()
     names = {item["path"] for item in json.loads(manifest.read_text(encoding="utf-8"))["files"]}
     assert not set(unwanted).intersection(names)

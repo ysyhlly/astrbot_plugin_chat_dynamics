@@ -181,7 +181,8 @@ def test_prompt_defaults_match_schema_and_runtime_and_bound_external_config():
     turn = TurnContext("room", "user", "正文" * 4000, (MessageSnapshot("m", "user", ""),), (), 0, 0, 0, False)
     state = build_state(turn, decision_prompt="自定义" * 2000)
     assert len(state["decision_prompt"]) == MAX_PROMPT_CHARS
-    assert len(json.dumps(state, ensure_ascii=False)) <= 12000
+    from astrbot_plugin_chat_dynamics.core.jev_decision import MAX_TOTAL_STATE_CHARS
+    assert len(json.dumps(state, ensure_ascii=False)) <= MAX_TOTAL_STATE_CHARS
 
 
 @pytest.mark.parametrize("max_chars", [3000, 12000])

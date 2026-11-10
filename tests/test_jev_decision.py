@@ -117,7 +117,7 @@ def test_answers_become_the_plugin_decision_contract():
 def test_target_outside_the_turn_falls_back_to_the_turn_itself():
     context = turn("m1", "m2")
     decision = decision_from_answers(context, answers(target=choice("elsewhere")))
-    assert decision.target_message_ids == ("m1", "m2")
+    assert decision.target_message_ids == ("m2", "m1")
 
 
 def test_a_background_message_cannot_head_the_reply():

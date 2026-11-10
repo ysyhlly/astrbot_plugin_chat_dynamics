@@ -1,4 +1,4 @@
-"""@ must reply; quote/name wake only requires Jev to identify the bot."""
+"""Separate explicit @, quoted replies and ambiguous name/supplement wakes."""
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
@@ -28,10 +28,11 @@ def event_for(kind):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('recipient,confidence,reply', [('bot', 0.35, True), ('bot', 0.34, False), ('other', 0.99, False), ('unclear', 0.99, False)])
 @pytest.mark.parametrize('kind', ['quote', 'name', 'platform'])
-async def test_soft_wake_only_needs_a_bot_recipient(jev_plugin, recipient, confidence, reply, kind):
+async def test_soft_wake_respects_action_and_recipient(jev_plugin, recipient, confidence, reply, kind):
     p, bridge = jev_plugin
     await p.save_config_values({'bot_names': ['小助手']})
-    p.jev.payload = answers(action='ignore', state='observing', reason='low_value_chatter',
+    # Isolate recipient confidence from the independent action decision.
+    p.jev.payload = answers(action='reply', state='casual', reason='addressed_question',
                             join={'type': 'noul', 'noul': 0.01},
                             recipient={'type': 'choice', 'choice': recipient, 'confidence': confidence})
     event = event_for(kind)
@@ -42,7 +43,7 @@ async def test_soft_wake_only_needs_a_bot_recipient(jev_plugin, recipient, confi
         assert len(p.jev.calls) == 1
         assert 'recipient' in p.jev.calls[0]['questions']
         assert p.jev.calls[0]['state']['conversation']['reply_required'] is False
-        assert bool(event.replies_sent) == bool(bridge.requests) == reply
+        assert bool(event.replies_sent) == bool(bridge.requests) == (reply and kind == "quote")
     finally:
         await p.terminate()
 
@@ -51,7 +52,7 @@ async def test_soft_wake_only_needs_a_bot_recipient(jev_plugin, recipient, confi
 @pytest.mark.parametrize('text', ['小助手下午好', '我想问小助手一个问题'])
 async def test_full_nickname_wake_is_not_limited_to_local_vocative_phrases(jev_plugin, text):
     p, bridge = jev_plugin
-    p.jev.payload = answers(action='ignore', join={'type': 'noul', 'noul': 0.01})
+    p.jev.payload = answers(action='reply', join={'type': 'noul', 'noul': 0.01})
     event = MockEvent(text)
     try:
         await p.on_group_message(event)
@@ -268,3 +269,53 @@ def test_textual_at_and_at_all_do_not_claim_real_bot_at():
     for event in [MockEvent('@bot_42'), MockEvent('大家看看', components=[AtAll()]), MockEvent('看看', components=[At('peer')])]:
         parsed = parse_group_event(event)
         assert 'bot_42' not in parsed.platform_mentions
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("晚安", "none"), ("晚安安", "none"), ("晚安安安~", "none"),
+    ("安安静静地睡觉", "none"), ("祝你平平安安", "none"),
+    ("安安，晚上好", "name"), ("夏目安安晚安", "name"),
+    ("安安，晚安安", "name"),
+])
+@pytest.mark.parametrize("host_wake", [False, True])
+def test_alias_overlap_does_not_inherit_host_wake(text, expected, host_wake):
+    from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin
+    host = SimpleNamespace(bot_names=["夏目安安", "安安"])
+    parsed = parse_group_event(MockEvent(text, is_at_or_wake_command=host_wake))
+    runtime = SimpleNamespace(bot_id="bot_42", dag=None)
+    # A flag without any alias is still a supported host wake prefix.
+    if text == "晚安" and host_wake:
+        expected = "name"
+    assert ChatDynamicsPlugin._wake_kind(host, parsed, runtime) == expected
+
+
+@pytest.mark.parametrize("kind", ["name", "supplement"])
+@pytest.mark.parametrize("recipient_confidence,action,expected", [
+    (0.35, "reply", "ignore"), (0.69, "reply", "ignore"),
+    (0.70, "reply", "reply"), (0.99, "ignore", "ignore"),
+    (0.99, "acknowledge", "acknowledge"),
+])
+def test_weak_wake_admission_matrix(kind, recipient_confidence, action, expected):
+    from .test_narrative_coordination import turn
+    from astrbot_plugin_chat_dynamics.core.jev_decision import decision_from_answers
+    decision = decision_from_answers(turn(kind), answers(
+        action=action, recipient={"type": "choice", "choice": "bot", "confidence": recipient_confidence},
+        join={"type": "noul", "noul": 0.01}))
+    assert decision.action == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["晚安安", "安安静静地睡觉", "祝你平平安安"])
+async def test_ambiguous_alias_with_host_flag_does_not_force_reply(jev_plugin, text):
+    p, bridge = jev_plugin
+    await p.save_config_values({"bot_names": ["夏目安安", "安安"]})
+    p.jev.payload = answers(action="ignore", join={"type": "noul", "noul": 0.01})
+    event = MockEvent(text, is_at_or_wake_command=True)
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+        assert p.jev.calls[0]["state"]["conversation"]["wake_kind"] == "none"
+        assert not bridge.requests and not event.replies_sent
+    finally:
+        await p.terminate()

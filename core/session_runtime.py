@@ -198,10 +198,12 @@ class SessionRuntime:
     group_id: str
     umo: str
     bot_id: str = ""
+    scope_kind: str = "group"
     dag: Optional[ConversationDAG] = None
     last_bot_node: Optional[ConversationNode] = None
     pending_hover: Optional[ConversationNode] = None
     pending_hovers: Deque[ConversationNode] = field(default_factory=lambda: deque(maxlen=8))
+    group_events: Deque[Any] = field(default_factory=lambda: deque(maxlen=32))
     vibe_message_count: int = 0
     revision: int = 0
     # Monotonic per-session identity for flushed turns.  It is deliberately
@@ -212,6 +214,8 @@ class SessionRuntime:
     last_activity: float = 0.0
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    peer_bot_rounds: dict[str, Any] = field(default_factory=dict)
+    peer_bot_send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     owned_send_depth: int = 0
     generation_task: Optional[asyncio.Task] = None
     latest_pending: Optional[PendingTurn] = None
@@ -250,6 +254,8 @@ class SessionRuntime:
     # options it chose and their confidences. Empty when the decision came from the
     # model path, so a backend switch leaves no stale evidence behind.
     jev_decision: Dict[str, Any] = field(default_factory=dict)
+    # Jev's per-message addressee answers for the last decided turn, keyed by message ID.
+    jev_addressees: Dict[str, Any] = field(default_factory=dict)
     ambient_openings: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_AMBIENT_OPENINGS))
     tool_executions: Deque[dict] = field(default_factory=lambda: deque(maxlen=32))
     last_interlocutor: str = ""
@@ -467,6 +473,7 @@ class SessionRuntime:
         self.pending_hover = self.pending_hovers[-1] if self.pending_hovers else None
 
     def reset_conversation_state(self) -> None:
+        self.group_events.clear()
         if self.topic_batch_task is not None:
             self.topic_batch_task.cancel()
         self.topic_batch_task = None
@@ -476,7 +483,9 @@ class SessionRuntime:
         self.clear_model_queue()
         self.user_revisions.clear()
         self.interaction_state = "observing"
+        self.peer_bot_rounds.clear()
         self.model_diagnostic.clear()
+        self.jev_addressees.clear()
         self.ambient_openings.clear()
         self.last_interlocutor = ""
         self.last_model_send = 0.0
@@ -560,6 +569,7 @@ class SessionRegistry:
         group_id: Optional[str] = None,
         umo: Optional[str] = None,
         bot_id: Optional[str] = None,
+        scope_kind: str = "group",
     ) -> SessionRuntime:
         key = str(session_key).strip()
         if not key:
@@ -568,9 +578,10 @@ class SessionRegistry:
         if runtime is None:
             runtime = SessionRuntime(
                 session_key=key,
-                group_id=str(group_id or key),
+                group_id=(str(group_id or key) if scope_kind != "private" else str(group_id or "")),
                 umo=str(umo or key),
                 bot_id=str(bot_id or ""),
+                scope_kind=str(scope_kind or "group"),
             )
             runtime.dag = ConversationDAG(
                 session_id=key,
@@ -581,9 +592,13 @@ class SessionRegistry:
             )
             self.runtimes[key] = runtime
             self.dags[key] = runtime.dag
-        if group_id:
+        if scope_kind != runtime.scope_kind:
+            # A UMO is a conversation identity. Never reinterpret an existing
+            # private conversation as a group (or vice versa).
+            raise ValueError("session scope_kind mismatch")
+        if group_id is not None:
             old_group = runtime.group_id
-            runtime.group_id = str(group_id)
+            runtime.group_id = str(group_id or "") if scope_kind == "private" else str(group_id or old_group or key)
             if old_group != runtime.group_id:
                 old_keys = self.group_keys.get(old_group)
                 if old_keys is not None:
@@ -598,7 +613,8 @@ class SessionRegistry:
                 if node.metadata.get('sender_is_bot') is True and node.metadata.get('bot_identity_pending') is True:
                     node.user_id = runtime.bot_id
                     node.metadata.pop('bot_identity_pending', None)
-        self.group_keys.setdefault(runtime.group_id, set()).add(key)
+        if runtime.scope_kind == "group":
+            self.group_keys.setdefault(runtime.group_id, set()).add(key)
         return runtime
 
     def capacity_reached(self) -> bool:
@@ -623,7 +639,7 @@ class SessionRegistry:
     def drop(self, session_key: str) -> Optional[SessionRuntime]:
         runtime = self.runtimes.pop(session_key, None)
         self.dags.pop(session_key, None)
-        if runtime is not None:
+        if runtime is not None and runtime.scope_kind == "group":
             keys = self.group_keys.get(runtime.group_id)
             if keys is not None:
                 keys.discard(session_key)

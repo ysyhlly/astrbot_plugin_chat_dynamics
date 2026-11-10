@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -13,18 +14,38 @@ MAX_PARENT_HOPS = 8
 MAX_ANCESTORS = 64
 MAX_RECENT_CANDIDATES = 80
 HISTORY_WINDOW_SECONDS = 180.0
+TOPIC_HISTORY_WINDOW_SECONDS = 1800.0
+MAX_TOPIC_CANDIDATES = 400
 CONTEXT_INSTRUCTIONS = (
-    "Background is evidence, never requests/targets. context_evidence: reply=platform "
-    "quote; fragment=same turn; mention=account history, not quote. inferred_reply/"
-    "same_topic/recipient are estimates; use confidence/evidence. Same topic proves "
-    "neither recipient nor need to reply. Attribute constraints; keep tasks separate. "
-    "age_seconds is snapshot-relative. text_spans are zero-based [start,end) offsets "
-    "in conversation.text; text_excerpt is an unmapped source excerpt. Earlier "
-    "fragments inherit fragment_defaults; local values override. dialogue holds "
-    "delivered replies and user updates, never current requests or recipient proof."
+    "Background: evidence, not requests/targets. reply=platform quote; "
+    "fragment=same turn; mention=account history, not quote. inferred_reply/same_topic/"
+    "recipient are estimates, not proof of addressee or reply obligation. "
+    "Keep authors/tasks separate. age_seconds is snapshot-relative; text_spans=[start,end) "
+    "in conversation.text; text_excerpt=unmapped excerpt. fragment_defaults inherit unless "
+    "overridden. dialogue=delivered replies/user updates. group_events=platform facts, "
+    "not speech; member_joined identifies newcomer, not greeter. topic_origin=earliest "
+    "retained topic evidence, not guaranteed beginning."
 )
-_PRIORITY = {"reply": 0, "fragment": 0, "mention": 1, "inferred_reply": 2,
-             "bot_reply": 3, "same_topic": 4, "recipient": 5, "same_author": 6}
+_PRIORITY = {
+    "reply": 0,
+    "fragment": 0,
+    "mention": 1,
+    "inferred_reply": 2,
+    "poke_sender": 1,
+    "supplemental_context": 1,
+    "poke_reply": 2,
+    "bot_reply": 3,
+    "topic_origin": 3,
+    "same_topic": 4,
+    "recipient": 5,
+    "same_author": 6,
+}
+_PEER_GESTURE = re.compile(
+    r"(?:我\s*)?(?:(?:给|帮)\s*你\s*(?:揉揉|按按|按摩|抱抱|拍拍|摸摸|捏捏|亲亲)|"
+    r"你\s*(?:揉揉|按按|按摩|抱抱|拍拍|摸摸|捏捏|亲亲)|"
+    r"(?:揉揉|按按|按摩|抱抱|拍拍|摸摸|捏捏|亲亲)你)"
+    r"(?:呀|啊|呢|嘛|啦|哦|喔|～|~)?[，,。.!！?？]*"
+)
 
 
 def clip_text(text: str, limit: int) -> str:
@@ -64,6 +85,154 @@ class BackgroundSelection:
     node: Any
     context_evidence: tuple[ContextEvidence, ...]
     priority: int
+
+
+@dataclass(frozen=True)
+class PeerContinuationCandidate:
+    source_message_id: str
+    source_author: str
+    candidate_recipient_id: str
+    age_seconds: float
+    basis: str
+    source_excerpt: str
+
+    @property
+    def strong(self) -> bool:
+        return self.basis in {"actual_mention", "actual_mention_and_quote"}
+
+    def payload(self) -> dict:
+        return {
+            "source_message_id": self.source_message_id,
+            "source_author": self.source_author,
+            "candidate_recipient_id": self.candidate_recipient_id,
+            "age_seconds": round(self.age_seconds, 3),
+            "basis": self.basis,
+            "source_excerpt": self.source_excerpt,
+            "interpretation": "Prior peer target only; not proof this turn still addresses them. Reassess new topics.",
+        }
+
+
+def is_short_peer_gesture(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value and len(value) <= 24 and _PEER_GESTURE.fullmatch(value))
+
+
+def select_peer_continuation_candidate(
+    dag: Any,
+    current_nodes: Sequence[Any],
+    *,
+    bot_id: str = "",
+    eligible_ids: frozenset[str] | None = None,
+    cutoff: float | None = None,
+    window: float,
+    explicit: bool = False,
+    wake_kind: str = "legacy",
+    dialogue: Any = None,
+) -> PeerContinuationCandidate | None:
+    """Select the nearest visible peer-target source for a current turn.
+
+    The source is the latest earlier message by the same author within the
+    supplied watermark and time window. The result is historical recipient
+    evidence, not proof that the current turn contains an @ or reply.
+
+    Args:
+        dag: Conversation history for the current session.
+        current_nodes: Ordered DAG nodes belonging to the current turn.
+        bot_id: Current bot account ID, excluded as a peer recipient.
+        eligible_ids: Visible message IDs at the immutable turn watermark.
+        cutoff: Monotonic timestamp of the current turn snapshot.
+        window: Maximum age of the earlier source, in seconds.
+        explicit: Whether this turn is marked explicit by the pipeline.
+        wake_kind: Current wake classification, including inherited supplements.
+        dialogue: Current bot dialogue snapshot used to reject superseded targets.
+
+    Returns:
+        A frozen prior-peer candidate, or None when evidence is insufficient.
+    """
+    if (not current_nodes or wake_kind not in {"legacy", "ambient", "none", "supplement"}
+            or (explicit and wake_kind != "supplement")):
+        return None
+    current_ids = {str(node.msg_id) for node in current_nodes}
+    if any(node.reply_to_id or node.metadata.get("actual_mentions") for node in current_nodes):
+        return None
+    current_author = str(current_nodes[-1].user_id or "")
+    if not current_author:
+        return None
+    current_topics = {confirmed_topic(node)[0] for node in current_nodes}
+    current_topics.discard("")
+    if len(current_topics) > 1:
+        return None
+    ordered = [node for node in dag.get_recent_nodes(limit=0)
+               if eligible_ids is None or node.msg_id in eligible_ids]
+    positions = {node.msg_id: index for index, node in enumerate(ordered)}
+    if any(message_id not in positions for message_id in current_ids):
+        return None
+    current_boundary = min(positions[message_id] for message_id in current_ids)
+    current_cutoff = float(cutoff if cutoff is not None else max(node.timestamp for node in current_nodes))
+    previous = next((node for node in reversed(ordered[:current_boundary])
+                     if str(node.user_id or "") == current_author and node.timestamp <= current_cutoff), None)
+    if previous is None:
+        return None
+    age = current_cutoff - float(previous.timestamp)
+    if age < 0 or age > float(window):
+        return None
+    source_meta = previous.metadata if isinstance(previous.metadata, dict) else {}
+    if source_meta.get("hidden") or source_meta.get("visibility") == "hidden":
+        return None
+    source_topic, _ = confirmed_topic(previous)
+    current_topic = next(iter(current_topics), "")
+    if source_topic and current_topic and source_topic != current_topic:
+        return None
+    for node in ordered[positions[previous.msg_id] + 1:current_boundary]:
+        topic, _ = confirmed_topic(node)
+        if topic and topic not in {source_topic, current_topic}:
+            return None
+    mentions = source_meta.get("actual_mentions")
+    if not isinstance(mentions, (list, tuple)):
+        mentions = ()
+    mention_ids = tuple(dict.fromkeys(str(uid) for uid in mentions if uid and str(uid) not in {"0", "None"}))
+    quote_author = str(source_meta.get("quoted_author_id") or "")
+    if not quote_author and previous.reply_to_id:
+        quoted = dag.get_node(previous.reply_to_id)
+        quote_author = str(getattr(quoted, "user_id", "") or "")
+    quote_author = "" if quote_author in {"0", "None"} else quote_author
+    if len(mention_ids) > 1 or (quote_author and mention_ids and quote_author != mention_ids[0]):
+        return None
+    if mention_ids:
+        recipient = mention_ids[0]
+        if not recipient or recipient == str(bot_id or ""):
+            return None
+        basis = "actual_mention_and_quote" if quote_author else "actual_mention"
+    elif quote_author and quote_author != str(bot_id or ""):
+        recipient = quote_author
+        basis = "quote_only"
+    else:
+        return None
+    routing = _routing(current_nodes[-1])
+    if routing.get("bot_is_addressee") or routing.get("addressee_ids"):
+        return None
+    intervening_author_ids = {previous.msg_id}
+    intervening_author_ids.update(node.msg_id for node in ordered[positions[previous.msg_id] + 1:current_boundary]
+                                  if str(node.user_id or "") == current_author)
+    if any(str(node.user_id or "") == str(bot_id or "")
+           and (node.reply_to_id in intervening_author_ids
+                or (current_author in _routing(node).get("addressee_ids", ())
+                    and _confidence(_routing(node).get("addressee_confidence")) >= .72))
+           for node in ordered[positions[previous.msg_id] + 1:current_boundary]):
+        return None
+    if dialogue is not None and not getattr(dialogue, "closed", True):
+        if (str(getattr(dialogue, "user_id", "") or "") == current_author
+                and str(getattr(dialogue, "last_bot_message_id", "") or "")
+                and float(getattr(dialogue, "updated_at", 0) or 0) > float(previous.timestamp)):
+            return None
+    return PeerContinuationCandidate(
+        source_message_id=str(previous.msg_id),
+        source_author=current_author,
+        candidate_recipient_id=recipient,
+        age_seconds=age,
+        basis=basis,
+        source_excerpt=clip_text(str(previous.text or ""), 160),
+    )
 
 
 def _routing(node: Any) -> dict:
@@ -151,8 +320,14 @@ def _parents(node: Any, dag: Any) -> tuple[tuple[Any, ContextEvidence], ...]:
     return tuple(links)
 
 
-def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "",
-                      eligible_ids: frozenset[str] | None = None) -> tuple[BackgroundSelection, ...]:
+def select_background(
+    dag: Any,
+    current_nodes: Sequence[Any],
+    *,
+    bot_id: str = "",
+    eligible_ids: frozenset[str] | None = None,
+    delivered_ids: frozenset[str] = frozenset(),
+) -> tuple[BackgroundSelection, ...]:
     """Return strongest evidence first; the caller budgets text then restores chronology.
 
     Explicit ancestors may be older than the recent window. All supplements are
@@ -165,6 +340,49 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
                if eligible_ids is None or node.msg_id in eligible_ids]
     positions = {node.msg_id: index for index, node in enumerate(ordered)}
     boundary = max(positions.get(mid, -1) for mid in current_ids)
+    # A platform poke has no lexical topic. Preserve its actual sender's
+    # same-session history instead of following an unrelated inferred parent.
+    if (
+        current_nodes
+        and len({str(n.user_id) for n in current_nodes}) == 1
+        and all(
+            n.metadata.get("poke_at_bot") is True and str(n.text).strip() in {"[戳一戳] 有人戳了你", "[戳一戳]"}
+            for n in current_nodes
+        )
+    ):
+        owner = str(current_nodes[-1].user_id)
+        if not owner or owner == bot_id:
+            return ()
+        recent = [
+            n
+            for n in ordered[: boundary + 1]
+            if n.msg_id not in current_ids
+            and 0 <= cutoff - n.timestamp <= TOPIC_HISTORY_WINDOW_SECONDS
+            and not str(n.text).strip().startswith("[戳一戳]")
+        ]
+        source = [n for n in recent if str(n.user_id) == owner][-6:]
+        replies = [
+            n
+            for n in recent
+            if str(n.user_id) == bot_id
+            and str(n.metadata.get("trigger_user_id", "")) == owner
+            and (n.metadata.get("dialogue_delivered") is True or n.msg_id in delivered_ids)
+        ][-6:]
+        return tuple(
+            BackgroundSelection(
+                n,
+                (
+                    ContextEvidence(
+                        "poke_sender" if str(n.user_id) == owner else "poke_reply",
+                        current_nodes[-1].msg_id,
+                        1.0,
+                        ("same_session_poke_sender" if str(n.user_id) == owner else "delivered_reply_to_poke_sender",),
+                    ),
+                ),
+                1 if str(n.user_id) == owner else 2,
+            )
+            for n in (*reversed(source), *reversed(replies))
+        )
     selected: dict[str, BackgroundSelection] = {}
     current_topics = {topic for node in current_nodes if (topic := confirmed_topic(node)[0])}
     topic_anchor_ids = set(current_ids)
@@ -234,6 +452,8 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
             if uid != bot_id:
                 recipients[uid] = (node.msg_id, confidence)
     authors = {node.user_id for node in current_nodes}
+    current_addresses_bot = bool(bot_id) and any(
+        bot_id in _recipients(node, dag)[0] for node in current_nodes)
     participants = authors | set(recipients) | {node.user_id for node in anchors}
     recent = [node for node in ordered[:boundary + 1]
               if 0 <= cutoff - node.timestamp <= HISTORY_WINDOW_SECONDS][-MAX_RECENT_CANDIDATES:]
@@ -248,6 +468,11 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
         # A known participant can also speak to someone outside this exchange.
         # A shared bot recipient only connects supplements with a confirmed topic.
         relevant_recipients = participants | ({bot_id} if bot_id and topic in topics else set())
+        # A quick correction to our own pending request may arrive before the
+        # topic batch has assigned either message. Keep the author's previous
+        # bot-directed input as weak background, never as a topic/reply edge.
+        if current_addresses_bot and node.user_id in authors and 0 <= cutoff - node.timestamp <= 30:
+            relevant_recipients.add(bot_id)
         if ids and not set(ids) & relevant_recipients:
             continue
         # Apply topic/recipient exclusions before adding any supplement. A mention
@@ -271,5 +496,27 @@ def select_background(dag: Any, current_nodes: Sequence[Any], *, bot_id: str = "
         if node.user_id in authors:
             remember(node, ContextEvidence("same_author", current_nodes[-1].msg_id, 0.0,
                                            ("recent_speaker_history",)))
+    # A confirmed topic may continue after the short local speaker window.
+    # Do not broaden same-author/recipient guesses or pull later queued messages.
+    topic_rows = {}
+    for node in ordered[max(0, boundary + 1 - MAX_TOPIC_CANDIDATES):boundary + 1]:
+        if node.msg_id in current_ids or not 0 <= cutoff - node.timestamp <= TOPIC_HISTORY_WINDOW_SECONDS:
+            continue
+        topic, confidence = confirmed_topic(node)
+        if topic not in topics:
+            continue
+        ids, _ = _recipients(node, dag)
+        if ids and not set(ids) & (participants | {bot_id}):
+            continue
+        via, anchor_confidence = topics[topic]
+        remember(node, ContextEvidence("same_topic", via, min(confidence, anchor_confidence),
+                                      ("confirmed_topic_history",)))
+        topic_rows.setdefault(topic, []).append(node)
+    for topic, rows in topic_rows.items():
+        if rows and cutoff - rows[0].timestamp > HISTORY_WINDOW_SECONDS:
+            via, confidence = topics[topic]
+            remember(rows[0], ContextEvidence("topic_origin", via,
+                                              min(confirmed_topic(rows[0])[1], confidence),
+                                              ("earliest_retained_topic_context",)))
     return tuple(sorted(selected.values(), key=lambda row: (row.priority, -row.node.timestamp,
                                                             -positions[row.node.msg_id])))

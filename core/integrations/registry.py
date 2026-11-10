@@ -11,6 +11,7 @@ from .legacy.selflearning_legacy import SelfLearningStatus
 from .livingmemory import discover_livingmemory
 from .selflearning import SelfLearningHubClient
 from .semantic_provider import resolve_embedding_provider
+from .catalog import find_companion
 
 
 class CapabilityRegistry:
@@ -76,6 +77,8 @@ class IntegrationRegistry(LegacySelfLearningBridge):
     none of its probing calls are used for normal model context injection.
     """
 
+    _ownership_catalog_v1 = True
+
     def __init__(self, context=None, *, enabled=True, hub_url="", hub_key_env="SELFLEARNING_HUB_API_KEY"):
         self.capability_registry = CapabilityRegistry(context)
         self.hub_key_env = hub_key_env
@@ -85,6 +88,21 @@ class IntegrationRegistry(LegacySelfLearningBridge):
         self.affection = SelfLearningAffectionReader()
         super().__init__(context, enabled=enabled)
 
+    def narrative_provider(self, name: str):
+        """Resolve the host's current instance at each authorization boundary.
+
+        A time-based instance cache may survive a companion reload or disable
+        between generation and delivery. Keep expensive evidence reads cached
+        separately; registry identity checks stay fresh.
+        """
+        return self._resolve_narrative_provider(name)
+
+    def _resolve_narrative_provider(self, name: str):
+        try:
+            return find_companion(self.context, name)
+        except Exception:
+            return None
+
     def _find_plugins(self):
         self.capability_registry.context = self.context
         providers = self.capability_registry.discover()
@@ -93,6 +111,8 @@ class IntegrationRegistry(LegacySelfLearningBridge):
 
     def refresh(self):
         result = super().refresh()
+        self.affection.prune(tuple((provider["plugin"], affection_database(provider["plugin"]))
+                                  for provider in self._providers if provider["ready"]))
         self.capability_registry.update(self._providers, self.hub.snapshot(),
                                        enabled=self.enabled, embedding_id=self.embedding_id)
         return result

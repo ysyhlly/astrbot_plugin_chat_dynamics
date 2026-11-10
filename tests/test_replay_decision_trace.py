@@ -24,7 +24,8 @@ async def test_replay_500_messages_and_live_limit_preserve_stored_nodes():
         assert data["message_limit"] == data["retained_message_count"] == 500
         assert data["unassigned_message_count"] == 250
         assert data["topic_blocks"][0]["message_count"] == 250
-        assert data["topic_blocks"][0]["messages"][0]["msg_id"] == "1"
+        assigned = next(block for block in data['topic_blocks'] if not block['is_unassigned'])
+        assert assigned['messages'][0]['msg_id'] == '1'
         assert "hidden text" not in str(data) and "other-topic" not in str(data)
 
         panel = await plugin.save_config_values({"replay_message_limit": 80})

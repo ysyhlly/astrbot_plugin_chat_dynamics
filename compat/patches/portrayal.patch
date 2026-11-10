@@ -1,0 +1,413 @@
+--- a/_conf_schema.json
++++ b/_conf_schema.json
+@@ -100,6 +100,12 @@
+         "hint": "打开后，每轮对话中，若本地存有当前用户的画像，则自动将该用户画像注入到系统提示词中",
+         "default": false
+     },
++    "private_shared_group_sources": {
++        "description": "私聊可读取的群画像来源 UMO",
++        "type": "list",
++        "hint": "仅允许私聊读取名单中的群画像。每项填写精确群 UMO，例如 qq:GroupMessage:123；留空时不共享群画像。私聊画像不会写入这些群来源。",
++        "default": []
++    },
+     "entry_storage": {
+         "description": "提示词配置",
+         "hint": "可自定义多套提示词，并定义对应触发命令。由此实现不同风格的画像分析",
+--- a/core/config.py
++++ b/core/config.py
+@@ -140,6 +140,7 @@
+     llm: LLMConfig
+     message: MessageConfig
+     inject_prompt: bool
++    private_shared_group_sources: list[str]
+     entry_storage: list[dict[str, Any]]
+ 
+     _plugin_name: str = "astrbot_plugin_portrayal"
+--- a/core/db.py
++++ b/core/db.py
+@@ -29,10 +29,12 @@
+ 
+     def save(self) -> None:
+         payload = {uid: p.to_dict() for uid, p in self._data.items()}
+-        self.file.write_text(
++        temporary = self.file.with_suffix(self.file.suffix + ".tmp")
++        temporary.write_text(
+             json.dumps(payload, ensure_ascii=False, indent=2),
+             encoding="utf-8",
+         )
++        temporary.replace(self.file)
+ 
+     def get(self, user_id: str) -> UserProfile | None:
+         return self._data.get(user_id)
+@@ -41,5 +43,15 @@
+         self._data[profile.user_id] = profile
+         self.save()
+ 
++    def set_deferred(self, profile: UserProfile) -> None:
++        """Update memory only; the caller must call save() once when done.
++
++        save() rewrites the whole profile file (full json.dumps + atomic
++        replace). Callers that update many profiles in one batch (ingest_events
++        processes one event per profile) previously paid one full rewrite per
++        event; batching keeps the final file byte-identical with a single write.
++        """
++        self._data[profile.user_id] = profile
++
+     def all(self) -> dict[str, UserProfile]:
+         return self._data
+--- a/core/model.py
++++ b/core/model.py
+@@ -1,4 +1,4 @@
+-from dataclasses import asdict, dataclass
++from dataclasses import asdict, dataclass, field
+ from typing import Any
+ 
+ 
+@@ -21,6 +21,8 @@
+     portrait: str = ""
+     timestamp: int = 0
+     clone_prompt: str = ""
++    # Each portrait belongs to the conversation whose messages produced it.
++    scoped_portraits: dict[str, dict[str, Any]] = field(default_factory=dict)
+ 
+     @property
+     def persona_id(self) -> str:
+--- a/main.py
++++ b/main.py
+@@ -1,5 +1,20 @@
++# ruff: noqa: E402
++# Refresh owned dependencies before importing them during a scoped hot reload.
++
++from .reload_bootstrap import ensure_current
++ensure_current(
++    __package__,
++    __name__,
++    __file__,
++    checks=[
++        ('core.model', 'UserProfile', 'scoped_portraits'),
++        ('core.config', 'PluginConfig', 'private_shared_group_sources'),
++    ],
++)
++
+ import base64
+ import time
++from typing import Any
+ 
+ import aiohttp
+ 
+@@ -23,6 +38,30 @@
+ from .core.t2i import T2IRenderer
+ 
+ 
++def _is_private_event(event: object) -> bool:
++    getter = getattr(event, "get_message_type", None)
++    if not callable(getter):
++        return False
++    try:
++        message_type = getter()
++    except Exception:
++        return False
++    label = f"{getattr(message_type, 'name', '')} {message_type}".casefold()
++    return ("private" in label or "friend" in label) and "group" not in label
++
++
++def _group_source_matches(source_umo: object, platform: object) -> bool:
++    parts = str(source_umo or "").strip().split(":")
++    expected = str(platform or "").strip().casefold()
++    return (
++        len(parts) >= 3
++        and parts[1].casefold() == "groupmessage"
++        and bool(expected)
++        and parts[0].casefold() == expected
++        and bool(":".join(parts[2:]).strip())
++    )
++
++
+ class PortrayalPlugin(Star):
+     def __init__(self, context: Context, config: AstrBotConfig):
+         super().__init__(context)
+@@ -78,18 +117,181 @@
+         async for result in self._portrait_results(event, profile.portrait):
+             yield result
+ 
+-    @filter.on_llm_request()
++    @filter.on_llm_request(priority=7)  # 顺序确定化：原 0 并列
+     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
++        get_extra = getattr(event, "get_extra", None)
++        blocking_context = get_extra("_autonomous_blocking_context_v1", None) if callable(get_extra) else None
++        if (
++            isinstance(blocking_context, dict)
++            and blocking_context.get("schema_version") == 1
++            and blocking_context.get("projection_restricted") is True
++        ):
++            return
+         if not self.cfg.inject_prompt:
+             return
+         if not event.message_str:
+             return
+         sender_id = event.get_sender_id()
++        if self.cfg.message.is_protected_user(sender_id):
++            return
++        is_private = _is_private_event(event)
++        if is_private:
++            private_umo = str(getattr(event, "unified_msg_origin", "") or "")
++            # UMO prefix is the platform instance ID, unlike adapter name.
++            platform = private_umo.split(":", 1)[0] if ":" in private_umo else ""
++            managed = get_extra("_narrative_managed_v1", None) if callable(get_extra) else None
++            persona_id = ""
++            if isinstance(managed, dict):
++                managed_scope = managed.get("scope")
++                if isinstance(managed_scope, dict):
++                    persona_id = str(managed_scope.get("persona_id") or "")
++                persona_id = persona_id or str(managed.get("persona_id") or "")
++            portraits = self.get_private_shared_profiles(
++                platform=platform,
++                participants=[str(sender_id)],
++                persona_id=persona_id,
++            )
++            if portraits:
++                lines = [
++                    "[授权群聊中的同一用户画像，仅作为带来源的群内观察，不代表该用户在私聊中的自述]"
++                ]
++                for item in portraits:
++                    source_group = ":".join(str(item["source_umo"]).split(":")[2:])
++                    lines.append(
++                        f"来源群 {source_group}；主体 {item['subject_id']}：\n{item['text']}"
++                    )
++                req.system_prompt += "\n\n" + "\n\n".join(lines) + "\n"
++        if callable(get_extra) and get_extra("_narrative_managed_v1"):
++            return
+         profile = self.db.get(sender_id)
+         if not profile:
+             return
+         info = profile.to_text()
+         req.system_prompt += f"\n\n### 当前对话用户的背景信息\n{info}\n\n"
++
++    def get_private_shared_profiles(
++        self,
++        *,
++        platform: str,
++        participants: list[str],
++        persona_id: str = "",
++    ) -> list[dict[str, Any]]:
++        """Read only explicitly allowed, source-attributed portraits for the same subject."""
++        configured = getattr(self.cfg, "private_shared_group_sources", [])
++        if not isinstance(configured, (list, tuple, set)):
++            return []
++        allowed = {
++            str(source).strip()
++            for source in configured
++            if _group_source_matches(source, platform)
++        }
++        if not allowed:
++            return []
++
++        items = []
++        for user_id in dict.fromkeys(str(uid) for uid in participants):
++            if self.cfg.message.is_protected_user(user_id):
++                continue
++            profile = self.db.get(user_id)
++            if not profile:
++                continue
++            for source_umo in sorted(allowed):
++                record = profile.scoped_portraits.get(source_umo)
++                if (
++                    not isinstance(record, dict)
++                    or record.get("source_umo") != source_umo
++                    or str(record.get("subject_id") or "") != user_id
++                ):
++                    continue
++                stored_persona = str(record.get("persona_id") or "")
++                if stored_persona and (not persona_id or stored_persona != persona_id):
++                    continue
++                text = str(record.get("text") or "").strip()
++                if not text:
++                    continue
++                items.append({
++                    "text": text,
++                    "source_id": f"portrait:{source_umo}:{user_id}:{record.get('timestamp', 0)}",
++                    "occurred_at": record.get("timestamp"),
++                    "subject_id": user_id,
++                    "source_umo": source_umo,
++                    "evidence": record.get("evidence", []),
++                    "fact_kind": "subjective",
++                    "unknown": True,
++                })
++        return items
++
++    async def ingest_events(self, events: list[dict]) -> dict:
++        """Rebuild bounded, extractive background from attributed local speech.
++
++        Old unscoped portraits are never relabelled. No LLM or outgoing message
++        is needed to preserve what a participant actually said in this group.
++        """
++        accepted = 0
++        # 逐事件只改内存、循环结束统一落盘：db.set() 每次都会全量重写画像文件
++        # （json.dumps 整个库 + 原子替换），一批 N 个事件会产生 N 次全量写盘。
++        # 循环体内没有 await，所以这段对事件循环而言是原子的；finally 保证异常
++        # 中断时已接受的变更仍会落盘，最终文件内容与逐条 set() 完全相同。
++        try:
++            for event in events:
++                scope = event.get("scope", {})
++                umo, uid = scope.get("umo", ""), str(event.get("actor_id", ""))
++                if (event.get("schema_version") != 1 or event.get("type") != "message.received"
++                        or not umo or not uid or self.cfg.message.is_protected_user(uid)):
++                    continue
++                text = str(event.get("text", "")).strip()
++                if not text or not event.get("event_id"):
++                    continue
++                profile = self.db.get(uid) or UserProfile(user_id=uid)
++                record = dict(profile.scoped_portraits.get(umo) or {})
++                evidence = list(record.get("evidence", []))
++                if any(e.get("source_id") == event["event_id"] for e in evidence):
++                    continue
++                evidence.append({"source_id": event["event_id"], "text": text[:240],
++                                 "occurred_at": event.get("occurred_at", 0), "fact_kind": "observation"})
++                evidence.sort(key=lambda e: e.get("occurred_at", 0))
++                evidence = evidence[-20:]
++                # Keep a manually generated scoped portrait; append its new sources.
++                if not record.get("text") or record.get("extractive"):
++                    record.update(text="该成员在本群的近期原话（发言记录，不证明内容属实）：" +
++                                  "；".join(e["text"][:120] for e in evidence[-3:]), extractive=True)
++                record.update(source_umo=umo, subject_id=uid, evidence=evidence,
++                              timestamp=max(e["occurred_at"] for e in evidence))
++                profile.scoped_portraits[umo] = record
++                self.db.set_deferred(profile)
++                accepted += 1
++        finally:
++            if accepted:
++                self.db.save()
++        return {"schema_version": 1, "accepted": accepted}
++
++    async def get_profiles(self, scope: dict, participants: list[str]) -> dict:
++        """Return only portraits generated from this exact conversation.
++
++        Legacy portraits have no provenance and are deliberately excluded.
++        Portraits describe model interpretations, never verified user feelings.
++        """
++        items = []
++        umo = str(scope.get("umo", ""))
++        if not umo or not self.cfg.inject_prompt:
++            return {"schema_version": 1, "items": [], "available": bool(umo)}
++        for user_id in dict.fromkeys(str(uid) for uid in participants):
++            if self.cfg.message.is_protected_user(user_id):
++                continue
++            profile = self.db.get(user_id)
++            record = profile.scoped_portraits.get(umo) if profile else None
++            if not record or record.get("source_umo") != umo:
++                continue
++            text = str(record.get("text", "")).strip()
++            if not text:
++                continue
++            items.append({
++                "text": text, "source_id": f"portrait:{umo}:{user_id}:{record.get('timestamp', 0)}",
++                "occurred_at": record.get("timestamp"), "scope": dict(scope),
++                "subject_id": user_id, "source_umo": umo, "evidence": record.get("evidence", []),
++                "fact_kind": "subjective", "unknown": True,
++            })
++        return {"schema_version": 1, "items": items, "available": True}
+ 
+     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+@@ -126,6 +328,7 @@
+             profile.portrait = old_profile.portrait
+             profile.timestamp = old_profile.timestamp
+             profile.clone_prompt = old_profile.clone_prompt
++            profile.scoped_portraits = dict(old_profile.scoped_portraits)
+ 
+         yield event.plain_result(
+             f"正在发起{query_rounds}轮查询来获取{profile.nickname}的聊天记录..."
+@@ -174,6 +377,11 @@
+         # 保存画像并发送
+         profile.portrait = content
+         profile.timestamp = int(time.time())
++        profile.scoped_portraits[event.unified_msg_origin] = {
++            "source_umo": event.unified_msg_origin,
++            "subject_id": str(target_id),
++            "text": content, "timestamp": profile.timestamp,
++        }
+         self.db.set(profile)
+         async for result in self._portrait_results(event, content):
+             yield result
+--- a/metadata.yaml
++++ b/metadata.yaml
+@@ -2,6 +2,6 @@
+ display_name: 人物画像
+ desc: 爬取群友的聊天记录，进而用llm分析群友画像
+ help: 略
+-version: v1.1.8
++version: v1.2.0-rc.2
+ author: Zhalslar
+ repo: https://github.com/Zhalslar/astrbot_plugin_portrayal
+--- /dev/null
++++ b/reload_bootstrap.py
+@@ -0,0 +1,69 @@
++"""Refresh only this plugin's modules when a scoped source update is loaded."""
++
++from __future__ import annotations
++
++import hashlib
++import sys
++from pathlib import Path
++
++
++def ensure_current(package: str, main_module: str, entry_path: str, checks=(), version=None):
++    """Drop stale owned imports before the main module imports its dependencies.
++
++    Args:
++        package: The plugin's exact import package.
++        main_module: Currently executing entry module, retained throughout.
++        entry_path: Current plugin main file.
++        checks: Existing module/class/field signatures that distinguish old code.
++        version: Optional package version used by its own main registration.
++    """
++    parent = sys.modules.get(package)
++    if parent is None or not package:
++        return
++    root = Path(entry_path).resolve().parent
++    digest = hashlib.sha256()
++    excluded = {"tests", "data", ".git", "node_modules", ".venv", "__pycache__"}
++    try:
++        sources = sorted(
++            root.rglob("*.py"), key=lambda item: item.relative_to(root).as_posix()
++        )
++    except OSError:
++        # An unreadable source tree must not break plugin import. Leave the
++        # recorded fingerprint and the loaded modules untouched instead of
++        # degrading to an empty digest (which would silently disable change
++        # detection, or trigger a bogus purge).
++        return
++    for path in sources:
++        if any(part in excluded for part in path.relative_to(root).parts):
++            continue
++        try:
++            digest.update(path.relative_to(root).as_posix().encode())
++            digest.update(path.read_bytes())
++        except OSError:
++            # A partially readable tree yields a bogus fingerprint; abandon the
++            # comparison rather than purging modules based on it.
++            return
++    stamp = digest.hexdigest()
++    previous = getattr(parent, "_narrative_loaded_source_fingerprint", None)
++    incompatible = False
++    for module_name, class_name, attribute in checks:
++        module = sys.modules.get(package + "." + module_name)
++        candidate = getattr(module, class_name, None)
++        if candidate is not None and not (hasattr(candidate, attribute)
++                or attribute in getattr(candidate, "__dataclass_fields__", {})
++                or attribute in getattr(candidate, "model_fields", {})):
++            incompatible = True
++    if incompatible or previous is not None and previous != stamp:
++        prefix = package + "."
++        keep = {main_module, __name__}
++        for name in tuple(sys.modules):
++            if not name.startswith(prefix) or name in keep:
++                continue
++            module = sys.modules.pop(name)
++            owner_name, attribute = name.rsplit(".", 1)
++            owner = sys.modules.get(owner_name)
++            if owner is not None and getattr(owner, attribute, None) is module:
++                delattr(owner, attribute)
++    parent._narrative_loaded_source_fingerprint = stamp
++    if version is not None:
++        parent.__version__ = version

@@ -20,6 +20,7 @@ _PIPELINE_MODES = {PIPELINE_FILTER, PIPELINE_EXCLUSIVE}
 @dataclass(frozen=True)
 class RuntimeConfig:
     enabled: bool
+    autonomous_blocking_required: bool
     pipeline_mode: str
     ambient_intervention: bool
     takeover_all: bool
@@ -60,7 +61,15 @@ class RuntimeConfig:
     neural_link_threshold: float
     embedding_cache_size: int
     embedding_cache_ttl_seconds: int
+    peer_bot_ids: tuple[str, ...] = ()
+    peer_bot_max_rounds: int = 3
+    peer_bot_reset_seconds: float = 1800.0
     conversation_router_enabled: bool = True
+    reply_first_sentence_enabled: bool = True
+    rule_topic_routing_enabled: bool = True
+    discussion_reranker_provider: str = ""
+    discussion_rerank_threshold: float = 0.65
+    discussion_rerank_margin: float = 0.10
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
     topic_reranker_timeout: float = 3.0
@@ -82,6 +91,9 @@ class RuntimeConfig:
     # Native Jev decision; legacy is only an internal bridge-degradation state.
     decision_backend: str = "jev"
     reply_probability_threshold: float = 70.0
+    context_completion_enabled: bool = False
+    quote_reply_threshold: float = 35.0
+    name_reply_threshold: float = 70.0
     jev_timeout: float = 6.0
     jev_min_confidence: float = 0.6
     reply_timeout: float = 60.0
@@ -91,6 +103,7 @@ class RuntimeConfig:
     reply_prompt: str = DEFAULT_REPLY_PROMPT
     social_manners_enabled: bool = True
     relay_baton_enabled: bool = True
+    private_chat_enabled: bool = False
     private_field_enabled: bool = True
     hyped_quota_enabled: bool = True
     mood_memory_enabled: bool = False
@@ -122,6 +135,14 @@ class RuntimeConfig:
     rhythm_insomnia_enabled: bool = False
     rhythm_force_sleep: bool = False
     rhythm_skip_morning_hi_tonight: bool = False
+    narrative_enabled: bool = False
+    narrative_all_groups: bool = False
+    narrative_sessions: frozenset[str] = frozenset()
+    narrative_outreach_enabled: bool = False
+    narrative_outreach_sessions: frozenset[str] = frozenset()
+    narrative_context_retention_days: int = 7
+    narrative_rpc_timeout_seconds: int = 5
+    narrative_evidence_timeout_seconds: int = 10
 
 
 def _get(raw: Any, key: str, default: Any) -> Any:
@@ -293,15 +314,18 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),
         decision_backend="jev",
-        reply_probability_threshold=_number(raw, "reply_probability_threshold", 70.0,
-                                            lambda value: 0 <= value <= 100, warnings),
-        jev_timeout=_number(raw, "jev_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
-        jev_min_confidence=_number(
-            raw, "jev_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings
+        context_completion_enabled=_bool(_get(raw, "context_completion_enabled", False), False),
+        reply_probability_threshold=_number(
+            raw, "reply_probability_threshold", 70.0, lambda value: 0 <= value <= 100, warnings
         ),
+        quote_reply_threshold=_number(raw, "quote_reply_threshold", 35.0, lambda value: 0 <= value <= 100, warnings),
+        name_reply_threshold=_number(raw, "name_reply_threshold", 70.0, lambda value: 0 <= value <= 100, warnings),
+        jev_timeout=_number(raw, "jev_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
+        jev_min_confidence=_number(raw, "jev_min_confidence", 0.6, lambda value: 0.3 <= value <= 0.95, warnings),
         # A local decision call is tens of milliseconds; the budget only has to
         # absorb a cold first request, not a remote round trip.
         reply_timeout=_number(raw, "reply_timeout", 60.0, lambda value: 5 <= value <= 300, warnings),
+        reply_first_sentence_enabled=_bool(_get(raw, 'reply_first_sentence_enabled', True), True),
         tool_agent_timeout=_number(raw, "tool_agent_timeout", 120.0, lambda value: 5 <= value <= 600, warnings),
         wts_topic_weight=0.12,
         wts_professionalism_weight=0.08,
@@ -309,12 +333,17 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         wts_participation_weight=0.06,
         wts_fatigue_weight=1.0,
         enabled=_bool(_get(raw, "enable", True), True),
+        autonomous_blocking_required=_bool(_get(raw, "autonomous_blocking_required", False), False),
         pipeline_mode=mode,
         ambient_intervention=False,
         takeover_all=_bool(_get(raw, "takeover_all", False), False),
         takeover_groups=frozenset(takeover),
         exclude_groups=frozenset(excluded),
         bot_names=names,
+        peer_bot_ids=tuple(_strings(_get(raw, "peer_bot_ids", []))),
+        peer_bot_max_rounds=_integer(raw, "peer_bot_max_rounds", 3, 1, 100, warnings),
+        peer_bot_reset_seconds=_number(raw, "peer_bot_reset_seconds", 1800.0,
+            lambda value: 60 <= value <= 86400, warnings),
         provider_id="",
         reply_provider_id=str(_get(raw, "reply_provider", "") or "").strip(),
         vibe_provider_id="",
@@ -325,9 +354,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         pending_input_timeout=_number(raw, "pending_input_timeout", 60.0, lambda value: 1 <= value <= 300, warnings),
         strong_addressivity_threshold=strong,
         safe_hover_threshold=hover,
-        deep_cooling_minutes=_number(
-            raw, "deep_cooling_minutes", 15.0, lambda value: 0 <= value <= 180, warnings
-        ),
+        deep_cooling_minutes=_number(raw, "deep_cooling_minutes", 15.0, lambda value: 0 <= value <= 180, warnings),
         chars_per_second=_number(raw, "chars_per_second", 25.0, lambda value: 1 <= value <= 100, warnings),
         base_thinking_delay=_number(raw, "base_thinking_delay", 0.0, lambda value: 0 <= value <= 10, warnings),
         max_fragments=_integer(raw, "max_fragments", 10, 1, 10, warnings),
@@ -341,15 +368,15 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         telemetrics_window_seconds=_number(
             raw, "telemetrics_window_seconds", 60.0, lambda value: 15 <= value <= 300, warnings
         ),
-        fast_banter_enter_mpm=_number(
-            raw, "fast_banter_enter_mpm", 12.0, lambda value: 4 <= value <= 40, warnings
-        ),
-        chill_fade_enter_mpm=_number(
-            raw, "chill_fade_enter_mpm", 3.0, lambda value: 0.5 <= value <= 12, warnings
-        ),
+        fast_banter_enter_mpm=_number(raw, "fast_banter_enter_mpm", 12.0, lambda value: 4 <= value <= 40, warnings),
+        chill_fade_enter_mpm=_number(raw, "chill_fade_enter_mpm", 3.0, lambda value: 0.5 <= value <= 12, warnings),
         neural_embedding_enabled=_bool(_get(raw, "neural_embedding_enabled", False), False),
         conversation_router_enabled=_bool(_get(raw, "conversation_router_enabled", True), True),
         topic_reranker_enabled=_bool(_get(raw, "topic_reranker_enabled", True), True),
+        rule_topic_routing_enabled=_bool(_get(raw, "rule_topic_routing_enabled", True), True),
+        discussion_reranker_provider=str(_get(raw, "discussion_reranker_provider", "") or "").strip(),
+        discussion_rerank_threshold=_number(raw, "discussion_rerank_threshold", 0.65, lambda value: 0 <= value <= 1, warnings),
+        discussion_rerank_margin=_number(raw, "discussion_rerank_margin", 0.10, lambda value: 0 <= value <= 1, warnings),
         topic_reranker_provider=str(_get(raw, "topic_reranker_provider", "") or "").strip(),
         topic_reranker_timeout=_number(raw, "topic_reranker_timeout", 3.0, lambda value: 0.1 <= value <= 10, warnings),
         topic_title_timeout=_number(raw, "topic_title_timeout", 10.0, lambda value: 1 <= value <= 30, warnings),
@@ -360,19 +387,27 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         topic_window_seconds=_number(
             raw, "topic_window_seconds", 300.0, lambda value: 60.0 <= value <= 1800.0, warnings
         ),
-        topic_join_threshold=_number(
-            raw, "topic_join_threshold", 0.48, lambda value: 0.30 <= value <= 0.85, warnings
-        ),
+        topic_join_threshold=_number(raw, "topic_join_threshold", 0.48, lambda value: 0.30 <= value <= 0.85, warnings),
         topic_commit_threshold=_number(
-            raw, "topic_commit_threshold", 0.0,
-            lambda value: value == 0 or 0.30 <= value <= 0.95, warnings,
+            raw,
+            "topic_commit_threshold",
+            0.0,
+            lambda value: value == 0 or 0.30 <= value <= 0.95,
+            warnings,
         ),
         topic_ambiguity_threshold=_number(
-            raw, "topic_ambiguity_threshold", 0.0,
-            lambda value: value == 0 or 0.30 <= value <= 0.95, warnings,
+            raw,
+            "topic_ambiguity_threshold",
+            0.0,
+            lambda value: value == 0 or 0.30 <= value <= 0.95,
+            warnings,
         ),
         topic_margin_threshold=_number(
-            raw, "topic_margin_threshold", 0.06, lambda value: 0 <= value <= 0.5, warnings,
+            raw,
+            "topic_margin_threshold",
+            0.06,
+            lambda value: 0 <= value <= 0.5,
+            warnings,
         ),
         parent_window_seconds=_number(
             raw, "parent_window_seconds", 180.0, lambda value: 30.0 <= value <= 600.0, warnings
@@ -381,16 +416,23 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             raw, "parent_accept_threshold", 0.72, lambda value: 0.50 <= value <= 0.95, warnings
         ),
         embedding_provider=str(_get(raw, "embedding_provider", "") or "").strip(),
-        neural_link_threshold=_number(
-            raw, "neural_link_threshold", 0.78, lambda value: 0.5 <= value <= 0.95, warnings
-        ),
+        neural_link_threshold=_number(raw, "neural_link_threshold", 0.78, lambda value: 0.5 <= value <= 0.95, warnings),
         embedding_cache_size=_integer(raw, "embedding_cache_size", 512, 64, 4096, warnings),
         embedding_cache_ttl_seconds=_integer(raw, "embedding_cache_ttl_seconds", 1800, 0, 7200, warnings),
         presence_knob=_presence_knob(_get(raw, "presence_knob", "sensible"), warnings),
+        narrative_enabled=_bool(_get(raw, "narrative_enabled", False), False),
+        narrative_all_groups=_bool(_get(raw, "narrative_all_groups", False), False),
+        narrative_sessions=frozenset(_strings(_get(raw, "narrative_sessions", []))),
+        narrative_outreach_sessions=frozenset(_strings(_get(raw, "narrative_outreach_sessions", []))),
+        narrative_context_retention_days=_integer(raw, "narrative_context_retention_days", 7, 1, 90, warnings),
+        narrative_outreach_enabled=_bool(_get(raw, "narrative_outreach_enabled", False), False),
+        narrative_rpc_timeout_seconds=_integer(raw, "narrative_rpc_timeout_seconds", 5, 1, 60, warnings),
+        narrative_evidence_timeout_seconds=_integer(raw, "narrative_evidence_timeout_seconds", 10, 1, 120, warnings),
         decision_prompt=_prompt(raw, "decision_prompt", DEFAULT_DECISION_PROMPT, warnings),
         reply_prompt=_prompt(raw, "reply_prompt", DEFAULT_REPLY_PROMPT, warnings),
         social_manners_enabled=_bool(_get(raw, "social_manners_enabled", True), True),
         relay_baton_enabled=_bool(_get(raw, "relay_baton_enabled", True), True),
+        private_chat_enabled=_bool(_get(raw, "private_chat_enabled", False), False),
         private_field_enabled=_bool(_get(raw, "private_field_enabled", True), True),
         hyped_quota_enabled=_bool(_get(raw, "hyped_quota_enabled", True), True),
         mood_memory_enabled=_bool(_get(raw, "mood_memory_enabled", False), False),

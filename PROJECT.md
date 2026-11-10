@@ -1,5 +1,13 @@
 # Project: Conversation Router Layer
 
+## Current v1.16.0 contract
+
+The default path uses deterministic recipient rules, keeps ambiguous discussion membership unknown, and uses an independent native reranker to assist membership. LLM topic naming is separate from membership and cannot move messages between discussions. Jev decides participation, action and response style. AstrBot's main Agent owns generation and tools; Chat Dynamics owns validated delivery and truthful history.
+
+Companion identity comes from the host's current registry at authorization boundaries. Character, memory, relationship, profile and meme settings remain owned by their respective plugins. See [integration ownership](docs/integrations.md) and [rule routing](docs/rule-topic-routing.md) for the maintained contract.
+
+The architecture below documents the retained legacy router, selected explicitly with `rule_topic_routing_enabled=false`. Its historical milestones and test counts do not describe the current default path or current release verification.
+
 ## Architecture
 The Conversation Router acts as a short-term group chat conversational topology layer (`core/thread_router.py`) positioned between the message ingestion/DAG storage layer (`core/graph.py`) and downstream decision engines (`core/addressivity.py`, `core/persona_engine.py`, `core/arbiter.py`).
 

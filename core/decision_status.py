@@ -5,13 +5,14 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
 
-from astrbot.api import logger
-
 from . import web_api as web
+
+logger = logging.getLogger(__name__)
 
 
 def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_content=False):
@@ -93,7 +94,8 @@ class DecisionStatusWebAPI(web.ConsoleWebAPI):
             "provider_id": cfg.decision_provider_id,
             "enabled": cfg.enabled and not cfg.shadow_mode and cfg.decision_mode == "persona_model",
             "service": {key: service[key] for key in (
-                "configured", "available", "status", "detail", "model", "calls", "failures", "last_latency_ms") if key in service},
+                "configured", "available", "status", "detail", "model", "calls", "failures", "last_latency_ms",
+                "protocol", "usage") if key in service},
         })
 
     async def history(self):

@@ -83,7 +83,10 @@ def _analyze_text(text: str) -> MessageFeatures:
         short_followup=short_followup,
         dialogue_followup=short_followup or bool(re.search(r"然后|继续|那|这个|这样|怎么办|呢[？?]?$", text)),
         topicless_followup=short_followup or elliptical or bool(re.fullmatch(r"\s*那(?:这个|怎么办|怎么做)[呢？?。!！\s]*", text)),
-        question_ending=bool(re.search(r"[？?][\s）)\]】]*$|(?:吗|呢)[。！!\s]*$", stripped)),
+        question_ending=bool(re.search(r"[？?][\s）)\]】]*$|(?:吗|呢)[。！!\s]*$", stripped)) or bool(re.fullmatch(
+            r"(?:那)?(?:你|您).{0,36}(?:哪个|哪种|哪款|哪里|哪儿|什么版本|什么游戏|多少|几点|怎么样)(?:了|呀|啊|喵)?[。！!～~\s]*",
+            stripped,
+        ) and not re.search(r"不知道|不清楚|不管|无论|随便|告诉我了|已经说", stripped)),
         answer_boundary=answer_boundary,
         parent_question=bool(re.search(r"[?？]|怎么|如何|多少|几点|吗|能不能|可以吗|为啥|为什么", text)),
         parent_filler=bool(re.fullmatch(r"(?:哈+|[?？!！]+|嗯+|哦+|好的|好|ok|[hH]+|233+)", stripped, re.I)),

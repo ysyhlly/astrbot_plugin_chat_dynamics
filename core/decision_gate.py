@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
-
-from astrbot.api import logger
 
 from .media_gate import MediaAirGate, MediaGateVerdict
 from .occasion_skin import OccasionClassifier, OccasionSkin, apply_occasion_to_willingness, reason_to_zh
 from .social_manners import MannersVerdict, SocialMannersGate
 from .daily_rhythm import DailyRhythmGate, DailyRhythmVerdict, is_goodnight_text
 from .useful_proactive import UsefulProactiveGate, UsefulProactiveVerdict
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.decision_gate")
 
 @dataclass(frozen=True)
 class GateResult:
@@ -89,10 +90,12 @@ class DynamicsDecisionGate:
         group_memory: Any = None,
         public_memory_snippet: str = "",
         committed_reply: bool = False,
+        continuation: bool = False,
         public_topic: bool = False,
         node_now: Optional[float] = None,
         decisions: Any = None,
         decision_floor: float = 0.6,
+        current_exchange: bool = False,
     ) -> GateResult:
         # Evaluation may replay historical wall time; DAG ages use node_now.
         now = self._wall_now() if now is None else float(now)
@@ -110,6 +113,7 @@ class DynamicsDecisionGate:
             presence_knob=presence,
             now=now,
             deciding_detect_enabled=deciding_on,
+            current_exchange=current_exchange,
         )
         skin = self._with_model_dials(skin, decisions, decision_floor)
         manners = self.manners.evaluate(
@@ -118,7 +122,7 @@ class DynamicsDecisionGate:
             text=text,
             recent_nodes=recent_nodes,
             bot_id=bot_id,
-            explicit=explicit,
+            explicit=explicit or continuation,
             occasion_kind=skin.kind.value,
             presence_knob=presence,
             social_manners_enabled=bool(getattr(cfg, "social_manners_enabled", True)),

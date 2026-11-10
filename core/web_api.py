@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import hashlib
 import json
 import math
 import inspect
 import time
 from typing import Any, Dict, Optional
-
-from astrbot.api import logger
 
 from .dashboard import (
     scene_replay_snapshot,
@@ -19,6 +18,8 @@ from .dashboard import (
 )
 from .web_compat import error_response, json_response, query_value, request, request_json
 from .topic_annotations import TopicAnnotations
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.web_api")
 
 PLUGIN_NAME = "astrbot_plugin_chat_dynamics"
 _MAX_BODY_BYTES = 64 * 1024
@@ -173,6 +174,7 @@ class ConsoleWebAPI:
             ("presets", self.presets, ["GET"], "查看推荐配置预设"),
             ("preset/apply", self.apply_preset, ["POST"], "应用推荐配置预设"),
             ("config", self.config_get, ["GET"], "查看插件配置与生效值"),
+            ("integrations", self.integrations, ["GET"], "查看插件联动与设置归属"),
             ("config", self.config_save, ["POST"], "保存插件配置并立即应用到运行时"),
             ("config/apply", self.config_apply, ["POST"], "从已存配置强制同步到运行时"),
             ("providers", self.providers, ["GET"], "列出可用 Chat/Embedding Provider"),
@@ -181,6 +183,8 @@ class ConsoleWebAPI:
             ("ui_preferences", self.ui_preferences_save, ["POST"], "保存当前后台账号的界面偏好"),
             ("notebook", self.notebook_get, ["GET"], "群记忆小本列表"),
             ("notebook", self.notebook_post, ["POST"], "群记忆小本写入/忘掉/静音"),
+            ("narrative", self.narrative_get, ["GET"], "管理员查看角色生活与发送回执"),
+            ("narrative", self.narrative_post, ["POST"], "管理员控制角色生活与联系意图"),
             ("read_air", self.read_air, ["GET"], "今日读空气摘要"),
             ("replay", self.replay, ["GET"], "场景回放色块时间轨"),
             ("topic_annotations", self.annotations_get, ["GET"], "话题标注与混淆统计"),
@@ -253,6 +257,110 @@ class ConsoleWebAPI:
         if unknown:
             return _json_err("unknown fields: " + ", ".join(unknown), 400)
         return None
+
+    async def _narrative_admin_allowed(self):
+        """Require the host Dashboard JWT, not a plugin-scoped API key."""
+        try:
+            from astrbot.dashboard.api.auth import require_dashboard_user
+
+            raw = getattr(request, "_request", None)
+            if raw is None:
+                return False
+            username = await require_dashboard_user(raw)
+            expected = self.plugin.context.get_config().get("dashboard", {}).get("username")
+            return bool(username and (not expected or username == expected))
+        except Exception:
+            return False
+
+    async def narrative_get(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("narrative_get", 60)) is not None:
+            return limited
+        umo = (_query_param("umo") or "").strip()
+        if not umo or len(umo) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("umo required", 400)
+        try:
+            return _json_ok(await self.plugin.narrative.admin(umo))
+        except Exception as exc:
+            logger.warning("Narrative admin read unavailable type=%s", type(exc).__name__)
+            return _json_err("narrative unavailable", 503)
+
+    async def narrative_post(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("narrative_post", 20)) is not None:
+            return limited
+        body = await _json_body()
+        invalid = self._validate_fields(body, {"umo", "action", "intent_id", "patch", "query", "participants", "bundle_id"})
+        if invalid:
+            return invalid
+        umo = str(body.get("umo", "")).strip()
+        if not umo or len(umo) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("umo required", 400)
+        coordinator = self.plugin.narrative
+        if body.get('action') == 'context':
+            bundle_id = body.get('bundle_id')
+            if not isinstance(bundle_id, str) or not 1 <= len(bundle_id) <= 128:
+                return _json_err('bundle_id required', 400)
+            material = coordinator.journal.full_bundle(bundle_id)
+            if not material or material.get('scope', {}).get('umo') != umo:
+                return _json_err('context not found in this scope', 404)
+            return _json_ok(material)
+        if body.get("action") == "social":
+            participants = body.get("participants")
+            if not isinstance(participants, list) or not 1 <= len(participants) <= 8 or any(
+                    not isinstance(uid, str) or not uid or len(uid) > 128 for uid in participants):
+                return _json_err("participants must contain 1–8 participant IDs", 400)
+            return _json_ok(await coordinator.inspect_social(umo, participants))
+        if body.get("action") == "recall":
+            query = body.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 500:
+                return _json_err("query must contain 1–500 characters", 400)
+            return _json_ok(await coordinator.inspect_memory(umo, query.strip()))
+        data = await coordinator.admin(umo)
+        scope = (data.get("life", {}).get("snapshot") or {}).get("scope")
+        if not scope:
+            character = await coordinator.call("worldbook", "get_character_context",
+                                               {"platform": umo.rsplit(":", 2)[0], "umo": umo, "persona_id": "", "instance_id": ""}, None)
+            scope = (character or {}).get("scope")
+        if not scope:
+            return _json_err("character unavailable", 409)
+        action = body.get("action")
+        if action in {"pause", "resume", "pause_outreach", "resume_outreach"}:
+            method = "set_outreach_paused" if "outreach" in action else "set_paused"
+            result = await coordinator.call("dynamic_life_state", method, action.startswith("pause"), scope)
+        elif action == "cancel_intent":
+            iid = str(body.get("intent_id", ""))
+            owned = [*data.get("intents", []), *data.get("life", {}).get("intents", [])]
+            if not iid or not any(x.get("intent_id") == iid for x in owned):
+                return _json_err("intent not found in this conversation", 404)
+            result = await coordinator.call("dynamic_life_state", "cancel_intent", iid)
+            if result is not None:
+                coordinator.journal.intent_status(iid, "cancelled")
+        elif action in {"correct", "correct_global"}:
+            patch = body.get("patch")
+            if not isinstance(patch, dict) or not patch or set(patch) - {"activity", "availability", "subjective_state", "summary"}:
+                return _json_err("invalid state correction", 400)
+            if any(not isinstance(value, str) or len(value) > 600 for value in patch.values()):
+                return _json_err("correction values must be bounded text", 400)
+            if "availability" in patch and patch["availability"] not in {"available", "busy", "asleep", "unknown"}:
+                return _json_err("invalid availability", 400)
+            if action == "correct_global":
+                # A global edit must resolve the current authoritative binding,
+                # never a cached bundle from before a card change or unload.
+                character = await coordinator.call("worldbook", "get_character_context",
+                    {"platform": umo.rsplit(":", 2)[0], "umo": umo, "persona_id": "", "instance_id": ""}, None)
+                scope = (character or {}).get("scope") or {}
+                if not character or character.get("disabled") or not character.get("available", True) or scope.get("umo") != umo or not scope.get("persona_id"):
+                    return _json_err("current character unavailable", 409)
+                scope = dict(scope, platform="", umo="")
+            result = await coordinator.call("dynamic_life_state", "correct_state", scope, patch)
+        else:
+            return _json_err("unknown narrative action", 400)
+        if result is None:
+            return _json_err("narrative operation unavailable", 503)
+        return _json_ok(await coordinator.admin(umo))
 
     async def overview(self):
         if (limited := self._rate_limit("overview", 60)) is not None:
@@ -369,6 +477,18 @@ class ConsoleWebAPI:
             return _json_err("reset operation unavailable", 503)
         return _json_ok(data)
 
+
+    async def integrations(self):
+        if (limited := self._rate_limit("integrations", 60)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        try:
+            from .integrations.catalog import companion_snapshot
+            return _json_ok(companion_snapshot(self.plugin.context, self.plugin.get_effective_config()))
+        except Exception as exc:
+            logger.warning("[ChatDynamics] Integration snapshot unavailable type=%s", type(exc).__name__)
+            return _json_err("integration snapshot unavailable", 503)
 
     async def config_get(self):
         limited = self._rate_limit("config_get", 60)
@@ -514,9 +634,12 @@ class ConsoleWebAPI:
             pass
 
         try:
-            entry = await page_service.get_plugin_page_entry_config(
+            get_entry = page_service.get_plugin_page_entry_config
+            parameters = inspect.signature(get_entry).parameters
+            name_key = "view_name" if "view_name" in parameters else "page_name"
+            entry = await get_entry(
                 plugin_name=plugin_name,
-                page_name=page_name,
+                **{name_key: page_name},
                 username=username,
                 locale=locale,
             )

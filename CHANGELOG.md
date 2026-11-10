@@ -1,11 +1,182 @@
+## v1.16.0
+
+- 整理插件能力与设置归属：设置页显示伙伴版本、接口状态和依赖要求；伙伴配置继续由各插件管理，刷新状态保留未保存修改。
+- 统一通过宿主当前注册表解析伙伴，停用、重载或卸载立即生效；发送前仍核对来源、人格与成员边界。
+- 合并 rc.42–rc.50 的规则对象识别、独立 rerank 与话题归纳、私聊链路、流式首句及请求级表情预取；保留完整作用域和取消检查。
+- 修复发布包漏掉热重载入口的问题，补充兼容包、迁移说明和新旧路由模式的独立测试。
+- 本版要求 AstrBot 4.29.4 或以上（小于 5）。既有模型、接管范围和伙伴数据保留。
+
+## v1.16.0-rc.50
+
+- Stream one complete sentence for bounded, tool-free private greetings or already tool-free plain requests; preserve normal tool/image-plan rounds and confirmation capabilities.
+- Validate persona, member boundary and memory sources before publishing/sending. Keep continuation ownership, cancel stale tails and persist only delivered text, including interrupted streams.
+- Start the partner's isolated, request-owned meme prefetch alongside independent request hooks. Correct successful final-stream close diagnostics.
+
+## v1.16.0-rc.49
+
+- Distinguish native source identity, callback, tool ownership, persona and validation deadline failures without logging source content or weakening the guard.
+
+## v1.16.0-rc.48
+
+- Require the new delivery telemetry signature during scoped hot reload.
+- Preserve per-hook diagnostics and independent successful first-send latency sampling from rc.47.
+
+## v1.16.0-rc.47
+
+- Observe native per-plugin request/response/completion hook timings on owned event clones without replacing dispatch or changing stop handling.
+- Retain successful first-send latency in a separate bounded window, including receipt, queue and processing times; silent decisions cannot dilute delivery statistics.
+
+## v1.16.0-rc.46
+
+- Release validated final text to delivery before optional diagnostic finalization; prioritize a complete first sentence while preserving existing paragraph limits and delivery/history checks.
+- Record native agent build, request/response hooks, context compaction, model rounds, first visible model content, tool execution, finalization and generation-to-first-send timings without prompt/tool bodies.
+- Do not memoize pending evidence views, so newly derived evidence becomes visible without waiting for the read cache to expire.
+- Preserve rc.45 structured provider-failure diagnostics. Tool drafts and unconfirmed model chunks remain buffered until final response validation.
+
+## v1.16.0-rc.44
+
+- Combine adjacent fragments of the same native utterance only when recipient, anchor, causal candidate snapshot and boundary checks agree; preserve individual message IDs and confirmation times.
+- Skip rerank for pure acknowledgements/media placeholders while retaining source messages; add bounded exact-input caching, cancellation-safe coalescing, and short provider failure backoff.
+- Remove embedding waits from rule routing without cancelling background warmups used by other consumers.
+- Measure narrative RPCs by decision/reply phase and reuse exact version-validated reads within one turn. Keep recall uncached and bypass reuse when a provider has no revision contract.
+- Expose body-free call diagnostics in the overview API; preserve independent LLM topic naming and existing reply policy.
+
+## v1.16.0-rc.43
+
+- Keep low rerank scores as tentative seeds instead of creating singleton topics; promote seeds only after explicit or semantic support, with a recorded confirmation time.
+- Reopen untouched rc.42 singleton topics without deleting messages or merging established discussions. Preserve tentative evidence across restart.
+- Restore independent, batched LLM topic naming alongside native rerank. Reuse existing titles and prevent representative excerpts from overwriting them.
+- Keep title calls outside the state lock, reject stale results, and prohibit the title model from changing membership.
+
+## v1.16.0-rc.42
+
+- Default to explicit recipient rules with 45-second continuation and a 120-second anchor lifetime; stop inferring parent messages or asking Jev for recipient/topic assignments.
+- Use a separately bound native rerank provider for discussion membership. Shared participants do not merge discussions; close scores retain unresolved candidates.
+- Select substantive representative messages using distinct participants and recency; hide verbatim representatives when message bodies are hidden.
+- Preserve native participation/style decisions, boundaries, delivery, and the legacy routing switch for rollback. Unconfigured or failed rerank remains unknown.
+
+## v1.16.0-rc.41
+
+- Add a reviewed 299-character decision view for the exact audited card content; card changes and other personas retain the existing extractor.
+- Condense managed decision guidance and shared question focus prose without changing question types, choices, thresholds or full reply personas.
+- Keep nearby-context and current/quoted evidence budgets intact; no extra model call is introduced for compaction.
+
+## v1.16.0-rc.40
+
+- Give the decision model up to 20 preceding messages from the same session within 120 seconds, including speakers, ages, actual mentions and quote authors.
+- Keep this frozen scene evidence separate from reply targets and authoritative related history; filter blocked sources at capture and before inference.
+- Deduplicate and bound scene input, removing it before current/quoted evidence when the existing request or provider window is tight.
+- Add closed recipient candidates only for visible nearby speakers; retain one decision call and existing participation boundaries.
+
+## v1.16.0-rc.39
+
+- Unify confidence-aware reply targets, recipient checks and replay diagnostics.
+- Preserve confirmed delivery across journal failures; serialize journal IO off the event loop and recover durable receipt records without resending.
+- Preserve native attachment references across turns, exclude SDK control notices from history, and suppress duplicate host Agents.
+- Activate compact tool discovery for short social replies and add the bundle lookup index.
+- Refresh current SDK, configuration and UI regression contracts.
+
+# v1.16.0-rc.35 (2026-11-04)
+
+- Jev / System One 与 OpenAI Decisions 正式实现 AstrBot DecisionProvider.ask，注册到专用抉择模型分类，不再作为聊天模型；保留已配置模型 ID 和绑定，并兼容框架原生抉择服务。
+- 参数配置页只从抉择模型列表选择决策服务；保留模型发现功能，退出插件时撤销兼容适配。需要 AstrBot >=4.29.4。
+- 新增 AstrBot 原生 OpenAI Decisions 模型服务，默认地址 https://api.openai.com/v1、默认模型 gpt-6-luna；兼容网关可配置自己的地址、模型和请求路径。
+- 直接调用 /v1/decisions，将 predicate、choice、score 映射到现有决策契约；保留对象、候选、概率、连续评分和原有参与/停止边界，不通过聊天生成接口猜测决策。
+- 单候选通过 predicate 获取真实估计置信度；拒绝、答案缺失/错序、未知选项、非法概率或超时保持安静，不偷偷更换后端或重试聊天接口。
+- 设置页同时列出 Jev / System One 与 OpenAI Decisions，新增协议和用量展示数据；缓存读取/写入属于 input_tokens，不重复累计。
+- 保留现有模型选择；仅新增可选服务，不自动切换线上 Jev 或回复模型。使用说明见 docs/openai-decisions.md。
+
+# v1.16.0-rc.33 (2026-11-03)
+
+- 在同一次 Jev 判断的剩余预算内补充交流目的、表达方式和本轮新增内容三类判断，不新增模型轮次，也不挤掉已有对象与上下文判断。
+- 区分求助、分享、吐槽、寻求陪伴、玩笑和亲近表达；玩梗、接旧梗、反讽、夸张及“玩笑中包含真实问题”分别处理。
+- 语义判断带置信度且绑定当前会话、发言者与触发消息，低置信度和未判断项保持不确定。玩梗不构成强制回复、忽略真实困扰或越过互动边界的理由。
+- 回复模型接收同一份判断，先回应新增细节、回答或更正，避免重复安慰、建议和已问过的问题；允许按语境自然接梗，不编造梗来源或共同经历。
+- 补查后的复判覆盖先前理解；非法可选标签被丢弃，不阻止有效回复或污染记录。
+
+# v1.16.0-rc.32 (2026-11-03)
+
+- 设置页“决策模型”新增“上下文不足时自动补查”开关，默认关闭，可保存后立即生效。
+- 开启后，Jev 可按需选择补查来源者近期发言、当前话题背景或长期记忆；补查最多一次、最长八秒，完成后重新判断再生成回复。
+- 复判只允许上下文足够或需要澄清，不再提供补查选项。未找到、超时或服务不可用不等于事件未发生；仍缺关键事实时只问一个必要问题。
+- 本地补充限于原始消息快照、同一会话三十分钟内的记录，最多八条、三千字；长期记忆复用 LivingMemory 的公开来源校验接口，检查会话、人格、修订和成员边界。
+- 不补发或重写输入事件，不改变已发送历史；观察模式、私聊及自主联系不新增这一步，不因补查而强制开口。
+
+# v1.16.0-rc.31 (2026-11-03)
+
+- 戳机器人事件补入当前群内来源者最近三十分钟的发言（最多六条）和机器人对他的已发送回复（最多六条），不再依赖戳戳文本能否匹配话题。
+- 保留发言者、消息编号、时间和引用关系；上下文同时进入 Jev 判断和原生 Agent 回复，沿用成员屏蔽过滤与当前消息快照边界。
+- 普通回复模式复用同一选取逻辑；过期消息、其他人的无关对话、未发送草稿、后到消息不会作为戳戳来源者背景。
+- 叙事记忆检索增加戳戳来源者身份与有限近期上下文；戳戳不自动重启旧任务，也不编造缺失的聊天经历。
+
+# v1.16.0-rc.30 (2026-11-01)
+
+- 同一次 Jev 调用中增加逐条“说话对象”判断：当前消息及背景消息分别判断是对机器人、全群、某位成员还是不明确。成员选项只来自本轮出现过的账号；实际 @ 和引用已确定对象的消息不再重复询问。
+- 新增问题只使用请求预算的剩余空间，最多 6 条，不压缩已有上下文；超出预算的消息沿用路由与平台判断。
+- 回复请求新增 `conversation_map`：按时间列出每条消息的发言者、对象（附来源 platform/jev/router 与置信度）和话题编号，以及各话题标签和是否属于当前消息。低于 Jev 动作门槛的对象判断不采用。
+- 回复指引说明如何使用该映射：区分谁在对谁说，不把发给其他成员的话当成问自己，不混淆话题。
+
+## v1.16.0-rc.29
+
+- Prepare host history evidence concurrently with scoped memory, social context and profiles; retain correction-revision validation.
+- Keep peer-directed messages separate from the sender's pending bot request, including queued and buffered turns. Do not promote peer chatter to a request supplement.
+- Add regression coverage for recipient isolation, bounded merge windows and cancellation of concurrent reads.
+
+# v1.16.0-rc.28 (2026-10-30)
+
+- 为已送达的成员对话增加续聊候选和下一步上下文；普通对话可在十分钟内重新确认续聊，专注任务保留十五分钟范围。
+- 在同一次 Jev 调用中判断当前消息是回答、补充、重新接话、结束还是无关内容。确认对象和续聊关系后，避免被普通插话概率或泛化忽略决定再次截断。
+- 机器人问过的问题及用户后续回答共同进入决策和回复上下文；先回应新内容，避免重复询问，适度推进话题。
+- 温和收尾可被新的实质内容重新接上；单纯笑声和确认不强制回复，停止交互、其他接收人、媒体隐私和睡眠限制仍生效。
+- 增加延迟回答、交错话题、三轮连续回复、边界与收尾重开回归；复用已有模型调用，不增加主动发送任务。
+
+# v1.16.0-rc.27 (2026-10-30)
+
+- 将持续偏好、小打算、随时间淡化的对象情绪和专属昵称接入 Jev 决策及原生回复上下文。
+- 昵称只绑定当前成员；拒绝记录优先，不能作为唤醒或身份判定依据。新增材料继续经过成员边界过滤。
+- 按当前内容决定表达轻重，允许温和自然收尾，不在结束话题时硬加追问。
+- 保持现有主动联系开关、群范围、模型预算和用户自定义提示词。
+
+# v1.16.0-rc.26 (2026-10-28)
+
+- 设置页新增独立的“引用回复对象门槛 (%)”与“昵称回复对象门槛 (%)”，支持0–100，保存即生效，概览显示当前/草稿门槛。
+- 对象门槛与动作置信度分开；昵称仍须通过非忽略动作判断。实际@、补充消息、停止/睡眠规则保持原行为。
+- 未配置新字段时保持旧门槛35/70；本实例按用户要求将两项保存为45。非法数值在保存前拒绝。
+
+# v1.16.0-rc.25 (2026-10-28)
+
+新增主回复成功后的延迟媒体交接能力，图片通过原始事件、发送锁、边界租约和回执发送；过期、新回复、停止和重置会取消，失败/重复不计成功。提供原始用户文本给表情分析，避免内部规划污染选图。
+
+# v1.16.0-rc.24 (2026-10-28)
+
+- 重写 Jev 对象/参与/动作/状态提示：先确认谁对谁说，再理解当前任务；明确昵称提及与呼唤、群体问候、欢迎者与新人、同话题背景与实际回应对象的区别。
+- 重写普通和叙事回复指引：先回应具体问题或情绪，再自然体现人设；当前更正优先，必要时只澄清关键一点，不转答旧问题或机械追问。
+- 合并重复的亲近/边界/作息说明，保留善意互动、当前同意、已确认事实及工具回执约束。
+- Jev 人设不再重复加入决策规则；叙事回复指引只在系统提示注入一次，请求正文保留实际对话、来源和计划。
+- 精确迁移旧默认提示，保留管理员自定义内容；同步配置 schema。未改变对象门槛、概率、模型、回复长度或请求预算。
+
+# v1.16.0-rc.23 (2026-10-28)
+
+- 将真实 OneBot 入群/退群通知作为独立群事件送入后续 Jev 与回复 LLM；区分成员、操作人和欢迎发言者，不把请求或欢迎文字冒认为已入群事实，也不单独触发欢迎回复。
+- 群事件按完整会话隔离、去重、10 分钟过期；最多缓存32条、每轮最多4条，优先当前发言/提及成员，并经过成员边界过滤。支持重载时重建剩余时效，重置会清空。
+- 已确认同话题检索延长至30分钟、最多扫描400个可见节点，优先保留较早条件。普通同作者/对象历史仍限3分钟；排除其他话题和快照之后的消息，总回复背景仍限15条/6000字符。
+- 话题刷新新增来源重新经过成员边界过滤，不能重新带回被屏蔽内容。
+- 回复提示先回应当前问题，使用引用、话题和平台事件消解指代；目标不明确时简短澄清，不补编新成员身份或转答旧问题。
+- 记录上下文来源消息及群事件ID，便于追踪是否实际进入本轮请求。保留此前导航热修复。
+
+# v1.16.0-rc.22 (2026-10-28)
+
+- 修复晚安安、安安静静、平平安安的昵称误匹配及宿主唤醒标记经碎发聚合重新进入补充唤醒的旁路。
+- 昵称和补充消息要求对象置信度至少 0.70 且不低于动作门槛；动作必须有效、达到置信度门槛且不是 ignore。引用保留独立门槛，实际 @ 保留必回。
+- 睡眠唤醒独立授权；明确呼唤及引用只简短回应，歧义昵称和继承补充不自动唤醒。保留有明确意图的“我想问某昵称…”候选。
+- 取消、成员修订、会话重置、证据失效均记录明确终态；戳一戳超时正确归类。唤醒日志记录消息 ID、对象判断与最终原因，不记录消息正文。
+- 记忆降级仅在模型尚未开始调用时重试一次，共享剩余回复预算；拒绝/过滤及已开始调用的轮次不重放。
+- 设置面板展示持续生活接管哪些作息规则；记忆页展示全插件库容量、WAL、旧决策库及剩余磁盘。
+- 叙事维护移出事件循环；新增 SQLite 一致性归档与还原工具，校验完整性及压缩往返 SHA-256，保留原始库，恢复时禁止覆盖现有文件。
+
 # Changelog
 
 All notable changes to this plugin are recorded here.
-
-## v1.15.7 · AstrBot 统一日志合规修复（2026-10-05）
-
-- 全部运行模块统一从 `astrbot.api` 导入 `logger`，移除 Python 内置 `logging` 与独立 `getLogger()`，日志纳入 AstrBot 的级别控制、插件归属与统一输出格式。
-- 更新日志隐私回归测试，捕获真实 SDK 的独立插件日志并设置 DEBUG 级别；适配真实 SDK 的类型检查，保留现有日志级别、内容与业务行为。
 
 ## v1.15.6 · 精简回复与 Jev 决策输入（2026-10-04）
 

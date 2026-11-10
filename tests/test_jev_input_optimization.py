@@ -85,7 +85,7 @@ def test_soft_wakes_omit_join_and_still_require_a_confident_bot_recipient(wake):
     questions = build_questions(turn)
     assert "join" not in questions
     assert {"recipient", "completion", "action", "state", "length", "reason"} <= questions.keys()
-    payload = answers(recipient={"type": "choice", "choice": "bot", "confidence": .35})
+    payload = answers(recipient={"type": "choice", "choice": "bot", "confidence": .35 if wake == "quote" else .70})
     payload.pop("join")
     assert decision_from_answers(turn, payload).action == "reply"
     payload["recipient"]["confidence"] = .34

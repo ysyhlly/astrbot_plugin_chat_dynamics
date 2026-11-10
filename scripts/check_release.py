@@ -30,6 +30,8 @@ def _required_paths(root: Path) -> tuple[str, ...]:
     return (
         "__init__.py",
         "main.py",
+        "reload_bootstrap.py",
+        "docs/integrations.md",
         "core",
         "pages/console/index.html",
         "pages/console/app.js",
@@ -124,6 +126,7 @@ def iter_release_files(root: Path) -> Iterable[Path]:
     explicit = (
         "__init__.py",
         "main.py",
+        "reload_bootstrap.py",
         "_conf_schema.json",
         "metadata.yaml",
         "README.md",
@@ -131,6 +134,9 @@ def iter_release_files(root: Path) -> Iterable[Path]:
         "LICENSE",
         "requirements.txt",
         "pages",
+        "docs/integrations.md",
+        "docs/rule-topic-routing.md",
+        "docs/openai-decisions.md",
         ".astrbot-plugin",
         "i18n",
         "core",

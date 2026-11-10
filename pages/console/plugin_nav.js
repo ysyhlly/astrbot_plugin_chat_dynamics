@@ -116,7 +116,9 @@ export function signedContentHref(contentPath, theme, baseHref) {
       href = path + (q ? `?${q}` : "") + hash;
     }
   }
-  if (!href || !/[?&]asset_token=/.test(href)) return "";
+  const queryToken = /[?&]asset_token=[^&#]+/.test(href);
+  const pathToken = /^\/api\/v1\/plugins\/[^/]+\/(?:views|pages)\/[^/]+\/_t\/[^/?#]+(?:\/|$)/.test(href);
+  if (!href || (!queryToken && !pathToken)) return "";
   return href;
 }
 

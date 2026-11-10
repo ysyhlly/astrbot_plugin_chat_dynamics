@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-
-from astrbot.api import logger
+import logging
 
 from .platform_bridge import send_plain
+
+logger = logging.getLogger(__name__)
 
 
 class ReminderDelivery:
@@ -100,6 +101,10 @@ class ReminderDelivery:
                                 continue
                             # Keep an in-process receipt if persistence needs a retry.
                             self.delivered.add(receipt)
+                            narrative = getattr(p, 'narrative', None)
+                            if narrative is not None:
+                                effect = getattr(narrative, 'queue_reminder_effect', None) or narrative.reminder_effect
+                                effect(umo, row['id'], 'sent', text, result.message_id)
                             if result.message_id:
                                 runtime.remember_sent(result.message_id)
                             if p._sessions.get(key) is runtime:

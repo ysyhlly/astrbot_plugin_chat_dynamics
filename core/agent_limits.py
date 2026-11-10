@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from .reply_failure import ModelReplyFailure, provider_failure_code
 
 
 class ModelCallBudget:
@@ -10,6 +11,7 @@ class ModelCallBudget:
         self.remaining = float(seconds)
         self.depth = 0
         self.started = 0.0
+        self.failure_code = ''
 
     @asynccontextmanager
     async def scope(self):
@@ -36,15 +38,31 @@ class BudgetProvider:
         return getattr(self.provider, name)
 
     async def text_chat(self, *args, **kwargs):
+        if self.budget.failure_code:
+            raise ModelReplyFailure(self.budget.failure_code)
         async with self.budget.scope():
-            return await self.provider.text_chat(*args, **kwargs)
+            try:
+                result = await self.provider.text_chat(*args, **kwargs)
+                if getattr(result,'role',None)=='err':
+                    self.budget.failure_code = provider_failure_code(getattr(result,'completion_text',''))
+                return result
+            except Exception as exc:
+                self.budget.failure_code = provider_failure_code(exc)
+                raise
 
     async def text_chat_stream(self, *args, **kwargs):
+        if self.budget.failure_code:
+            raise ModelReplyFailure(self.budget.failure_code)
         stream = self.provider.text_chat_stream(*args, **kwargs)
         try:
             async with self.budget.scope():
                 async for response in stream:
+                    if getattr(response,'role',None)=='err':
+                        self.budget.failure_code = provider_failure_code(getattr(response,'completion_text',''))
                     yield response
+        except Exception as exc:
+            self.budget.failure_code = provider_failure_code(exc)
+            raise
         finally:
             await stream.aclose()
 

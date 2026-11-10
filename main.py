@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+# Refresh owned dependencies before importing them during a scoped hot reload.
 """AstrBot Chat Dynamics plugin orchestrator.
 
 Filter group chat: debounce fragments, gate native LLM, decorate replies.
@@ -5,6 +7,10 @@ Exclusive mode may still stop_event(); filter mode does not.
 """
 
 from __future__ import annotations
+
+from .reload_bootstrap import ensure_current
+ensure_current(__package__, __name__, __file__, checks=[('core.integrations.registry', 'IntegrationRegistry', '_ownership_catalog_v1'), ('core.agent_bridge', 'AgentOutput', 'stream_prefix'),('core.native_memory_bridge', '_NativeMemoryValidationProvider', '_source_failure_diagnostics_v1'),('core.pipeline_telemetry', 'PipelineTelemetry', 'record_delivery'), ('core.config', 'RuntimeConfig', 'narrative_all_groups'), ('core.web_api', 'ConsoleWebAPI', 'narrative_get'), ('core.integrations.registry', 'IntegrationRegistry', 'narrative_provider'), ('core.systemone.provider', 'SystemOneProvider', 'is_native_decision_provider'), ('core.systemone.service', 'SystemOneService', 'native_decision_refresh'), ('core.persona_engine', 'PersonaEngine', '_recipient_guard_release'), ('core.narrative', 'NarrativeCoordinator', 'finish_send_async'), ('core.persona_engine', 'PersonaEngine', '_decision_nearby_context_release'), ('core.persona_engine', 'PersonaEngine', '_decision_compaction_release')])
+
 
 import asyncio
 import hashlib
@@ -27,7 +33,7 @@ try:
     from astrbot.api.star import Context, Star, register
 except ImportError as exc:
     raise ImportError(
-        "Chat Dynamics 需要在 AstrBot (>=4.28.2,<5) 运行时中加载，当前环境无法导入 astrbot.api。"
+        "Chat Dynamics 需要在 AstrBot (>=4.29.4,<5) 运行时中加载，当前环境无法导入 astrbot.api。"
     ) from exc
 
 from .core.addressivity import AddressivityRouter
@@ -39,7 +45,9 @@ from .core.deferred_media import preserve_event_media, without_event_media
 from .core.media_archive import MediaArchive
 from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
-from .core.thread_router import ThreadRouter, build_contextual_query
+from .core.thread_router import build_contextual_query
+from .core.rule_topic_router import RuleTopicRouter as ThreadRouter
+from .core.discussion_reranker import DiscussionReranker
 from .core.topic_reranker import TopicReranker
 from .core.topic_batch import TopicBatcher
 from .core.graph import ConversationDAG, ConversationNode
@@ -50,6 +58,8 @@ from .core.llm_adapter import (LLMAdapter, LLMUnavailable, is_error_response, po
                                 system_prompt_for, vibe_hint_for)
 from .core.mood_memory import MoodMemoryStore
 from .core.reminder_delivery import ReminderDelivery
+from .core.narrative import NarrativeCoordinator
+from .core.native_memory_bridge import install_native_builder_bridge
 from .core.native_delivery import NativeDeliveryGuard, _NativeEventContext, after_message_sent as _native_after_message_sent
 from .core import turn_pipeline as _turn_pipeline
 from .core.turn_pipeline import _PokeJob, _PreparedTurn
@@ -64,7 +74,9 @@ from .core.persona_engine import (
     delivery_fragments,
 )
 from .core.poke import PokeReplyPolicy, drop_poke_streaks, next_poke_streak
+from .core.context_retrieval import select_background, clip_text
 from .core.platform_bridge import (
+    SendResult,
     build_poke_chain,
     chain_plain_text,
     has_understandable_media,
@@ -78,6 +90,7 @@ from .core.platform_bridge import (
     send_plain,
 )
 from .core.integrations.registry import IntegrationRegistry
+from .core import member_boundary as _member_boundary
 from .core.native_decision import NativeDecisionUnavailable
 from .core.systemone.routing import RoutedSystemOneClient
 from .core.systemone.service import SystemOneService
@@ -103,6 +116,13 @@ elif EventMessageType and hasattr(EventMessageType, "GROUP_MESSAGE"):
     _GROUP_MESSAGE_TYPE = EventMessageType.GROUP_MESSAGE
 else:
     _GROUP_MESSAGE_TYPE = "GROUP_MESSAGE"
+
+if hasattr(filter, "EventMessageType") and hasattr(filter.EventMessageType, "PRIVATE_MESSAGE"):
+    _PRIVATE_MESSAGE_TYPE = filter.EventMessageType.PRIVATE_MESSAGE
+elif EventMessageType and hasattr(EventMessageType, "PRIVATE_MESSAGE"):
+    _PRIVATE_MESSAGE_TYPE = EventMessageType.PRIVATE_MESSAGE
+else:
+    _PRIVATE_MESSAGE_TYPE = "PRIVATE_MESSAGE"
 
 _HOOK_PRIORITY = 100
 
@@ -179,6 +199,57 @@ _METRIC_NAMES = (
     "config_saved",
     "config_applied",
     "gate_unavailable",
+    "boundary_identity_unavailable",
+    "boundary_native_request_blocked",
+    "boundary_native_result_blocked",
+    "boundary_send_cancelled",
+    "boundary_shield_input",
+    "boundary_shield_queued_turn",
+    "boundary_silence_observed",
+    "boundary_unavailable",
+    "context_completion_attempted",
+    "embedding_warmup_skipped_changed",
+    "embedding_warmup_skipped_obsolete",
+    "embedding_warmup_skipped_revoked",
+    "group_notice_context_recorded",
+    "media_copy_failed",
+    "native_agent_cancelled",
+    "native_agent_failed",
+    "native_agent_started",
+    "native_agent_succeeded",
+    "private_media_gate_unavailable",
+    "private_media_privacy_blocked",
+    "private_persona_unavailable",
+    "semantic_communication_intent_accepted",
+    "semantic_communication_intent_asked",
+    "semantic_communication_intent_dropped_budget",
+    "semantic_communication_intent_dropped_invalid",
+    "semantic_communication_intent_dropped_low_confidence",
+    "semantic_communication_intent_dropped_missing",
+    "semantic_communication_intent_dropped_required_context_budget",
+    "semantic_communication_intent_recognized",
+    "semantic_communication_intent_returned",
+    "semantic_expression_mode_accepted",
+    "semantic_expression_mode_asked",
+    "semantic_expression_mode_dropped_budget",
+    "semantic_expression_mode_dropped_invalid",
+    "semantic_expression_mode_dropped_low_confidence",
+    "semantic_expression_mode_dropped_missing",
+    "semantic_expression_mode_dropped_required_context_budget",
+    "semantic_expression_mode_recognized",
+    "semantic_expression_mode_returned",
+    "semantic_turn_update_accepted",
+    "semantic_turn_update_asked",
+    "semantic_turn_update_dropped_budget",
+    "semantic_turn_update_dropped_invalid",
+    "semantic_turn_update_dropped_low_confidence",
+    "semantic_turn_update_dropped_missing",
+    "semantic_turn_update_dropped_required_context_budget",
+    "semantic_turn_update_recognized",
+    "semantic_turn_update_returned",
+    "unattributed_proactive_dispatch",
+    "deferred_media_failed",
+    "deferred_media_sent",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -196,6 +267,7 @@ _DIRECT_RUNTIME_ATTRS = (
     "presence_knob",
     "social_manners_enabled",
     "relay_baton_enabled",
+    "private_chat_enabled",
     "private_field_enabled",
     "hyped_quota_enabled",
     "media_image_gate_enabled",
@@ -245,7 +317,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.15.7",
+    "v1.16.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -276,6 +348,7 @@ class ChatDynamicsPlugin(Star):
             max_turn_chars=_MAX_TURN_CHARS,
         )
         self.thread_router = ThreadRouter(
+            rule_enabled=runtime_config.rule_topic_routing_enabled,
             reopen_archived_topics=False,
             topic_window_seconds=runtime_config.topic_window_seconds,
             topic_join_threshold=runtime_config.topic_join_threshold,
@@ -401,6 +474,7 @@ class ChatDynamicsPlugin(Star):
         # the web constructor reuses this instance instead of opening a second.
         self.topic_annotations = TopicAnnotations(self)
         self._decision_history_path = data_root / "decision-learning.sqlite3"
+        self.narrative = NarrativeCoordinator(self, data_root / "narrative-delivery.sqlite3")
         self._web = ConsoleWebAPI(self)
         self._web.register()
         self._web_apis_registered = self._web.registered
@@ -413,12 +487,35 @@ class ChatDynamicsPlugin(Star):
             self._apply_runtime_config(replace(runtime_config, decision_mode="legacy"), validated=True)
             self._runtime_config = replace(runtime_config, decision_mode="legacy")
             logger.warning("[ChatDynamics] Persona unavailable; using legacy mode: %s", self._persona_fallback)
+        self._native_request_bridge = install_native_builder_bridge(self)
+        # Re-check after installing signature-preserving native wrappers so
+        # the public overview reflects the live builder, not the pre-install cache.
+        self.persona_engine.bridge.check()
         self._refresh_multimodal_availability()
         self._config_source_snapshot = self._config_snapshot()
         logger.info(
             "[ChatDynamics] Initialized ChatDynamicsPlugin pipeline_mode=%s",
             self.pipeline_mode,
         )
+
+    async def prepare_memory_request(self, event: Any, req: Any, materials: Any = None,
+                                    purpose: str | None = None) -> dict:
+        """Public, request-scoped projection callback for companion native hooks.
+
+        Callers must use fresh IntegrationRegistry discovery. The result is a
+        plain receipt; bypass means the caller must not treat old host text as
+        verified evidence.
+        """
+        narrative = getattr(self, "narrative", None)
+        callback = getattr(narrative, "prepare_memory_request", None)
+        if not callable(callback):
+            return {"schema_version": 1, "status": "bypass", "reason": "projection_unavailable",
+                    "purpose": "reply", "provider": "astrbot_plugin_chat_dynamics"}
+        result = await callback(event, req, materials, purpose)
+        if not isinstance(result, dict):
+            return {"schema_version": 1, "status": "bypass", "reason": "projection_receipt_invalid",
+                    "purpose": "reply", "provider": "astrbot_plugin_chat_dynamics"}
+        return {**result, "provider": "astrbot_plugin_chat_dynamics"}
 
     @staticmethod
     def _coerce_config(config: Any) -> Any:
@@ -487,10 +584,10 @@ class ChatDynamicsPlugin(Star):
         self.exclude_groups = set(cfg.exclude_groups)
         self.bot_names = list(cfg.bot_names)
         if old_cfg is not None and hasattr(self, "_sessions"):
-            scope_keys = ("enabled", "takeover_all", "takeover_groups", "exclude_groups")
+            scope_keys = ("enabled", "takeover_all", "takeover_groups", "exclude_groups", "private_chat_enabled")
             if any(getattr(old_cfg, key, None) != getattr(cfg, key, None) for key in scope_keys):
                 for session_id, runtime in list(self._sessions.items()):
-                    if not self.is_group_takeover_enabled(runtime.group_id):
+                    if not self.is_runtime_scope_enabled(runtime):
                         # Clear an unsent native result before its guard is
                         # restored by invalidation.
                         for (key, _), context in list(getattr(self, "_native_context_by_event", {}).items()):
@@ -567,6 +664,7 @@ class ChatDynamicsPlugin(Star):
                 and self._runtime_config.decision_mode == "legacy"):
             cfg = self._prepare_config_candidate(cfg)
         self._apply_runtime_config(cfg, log_warnings=warnings, validated=validated_config is not None)
+        self.thread_router.rule_enabled = cfg.rule_topic_routing_enabled
         self.thread_router.configure_topics(
             window_seconds=cfg.topic_window_seconds, legacy_threshold=cfg.topic_join_threshold,
             commit_threshold=cfg.topic_commit_threshold, ambiguity_threshold=cfg.topic_ambiguity_threshold,
@@ -607,6 +705,7 @@ class ChatDynamicsPlugin(Star):
         old_cfg = self._runtime_config
         self._runtime_config = cfg
         batch_keys = ("enabled", "topic_reranker_enabled", "conversation_router_enabled", "topic_batch_interval",
+                      "rule_topic_routing_enabled", "discussion_reranker_provider", "discussion_rerank_threshold", "discussion_rerank_margin",
                       "topic_reranker_provider", "reply_provider_id", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups")
         if any(getattr(old_cfg, key, None) != getattr(cfg, key, None) for key in batch_keys):
             self.topic_batches.reconfigure()
@@ -691,11 +790,12 @@ class ChatDynamicsPlugin(Star):
         group_id: Optional[str] = None,
         umo: Optional[str] = None,
         bot_id: Optional[str] = None,
+        scope_kind: str = "group",
     ) -> SessionRuntime:
         if session_key not in self._sessions and not self._ensure_runtime_capacity(session_key):
             raise RuntimeError("session capacity reached")
         runtime = self._registry.get_or_create(
-            session_key, group_id=group_id, umo=umo, bot_id=bot_id
+            session_key, group_id=group_id, umo=umo, bot_id=bot_id, scope_kind=scope_kind
         )
         self._umo_by_session[runtime.session_key] = runtime.umo
         self._mark_panel_runtime_dirty()
@@ -842,12 +942,20 @@ class ChatDynamicsPlugin(Star):
                 created_by=str(payload.get("created_by") or "")[:128],
             )
             self.reminders.start()
+            narrative = getattr(self, "narrative", None)
+            if narrative is not None:
+                effect = getattr(narrative, 'queue_reminder_effect', None) or narrative.reminder_effect
+                effect(umo, item['id'], 'created')
             return {"item": item}
         if action in {'remove_reminder', 'mark_done', 'done_reminder'}:
             item_id = str(payload.get('id') or '')[:128]
             removed = store.remove_reminder(umo, item_id)
             if removed:
                 self.reminders.cancel(umo, item_id)
+                narrative = getattr(self, "narrative", None)
+                if narrative is not None:
+                    effect = getattr(narrative, 'queue_reminder_effect', None) or narrative.reminder_effect
+                    effect(umo, item_id, 'cancelled')
             return {'removed': removed}
         if action == "add_slang":
             item = store.add_slang_trial(
@@ -863,6 +971,11 @@ class ChatDynamicsPlugin(Star):
         if action == "due_anniversaries":
             return {"items": store.due_anniversaries(umo)}
         raise ValueError(f"unknown notebook action: {action}")
+
+    def is_narrative_session_enabled(self, umo: str) -> bool:
+        """Public early-hook ownership check; character binding is resolved separately."""
+        narrative = getattr(self, 'narrative', None)
+        return bool(narrative and narrative.enabled(umo))
 
 
     def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
@@ -1024,6 +1137,42 @@ class ChatDynamicsPlugin(Star):
             pass
         return False
 
+    def _peer_reply_allowed(self, runtime: SessionRuntime, event: Any, *,
+                            delivered: bool = False, touch: bool = False) -> bool:
+        """Check or commit a peer's logical reply round within one session.
+
+        Args:
+            runtime: Session owning the counter and send lock.
+            event: Original trigger; all fragments retain its source identity.
+            delivered: Commit one round after a successful platform send.
+            touch: Refresh the inactivity clock on a new peer input.
+
+        Returns:
+            Whether the source may be replied to, including its remaining fragments.
+        """
+        cfg = self._runtime_config
+        parsed = parse_group_event(event)
+        uid = str(getattr(event, "_chat_dynamics_boundary_uid", "") or parsed.sender_id or "")
+        if uid not in cfg.peer_bot_ids:
+            return True
+        now = self.time_service.wall_time()
+        state = runtime.peer_bot_rounds.get(uid)
+        if not isinstance(state, dict) or now - float(state.get("last_activity", 0)) >= cfg.peer_bot_reset_seconds:
+            state = {"sources": [], "last_activity": now}
+            runtime.peer_bot_rounds[uid] = state
+        source = str(getattr(event, "_chat_dynamics_peer_round_source", "")
+                     or parsed.message_id or f"event:{id(event)}")
+        sources = state["sources"]
+        allowed = source in sources or len(sources) < cfg.peer_bot_max_rounds
+        if touch or delivered:
+            state["last_activity"] = now
+            if delivered and allowed and source not in sources:
+                sources.append(source)
+                logger.info("[ChatDynamics] peer reply round session=%s peer=%s rounds=%s limit=%s",
+                            runtime.session_key, uid, len(sources), cfg.peer_bot_max_rounds)
+            self._mark_panel_runtime_dirty()
+        return allowed
+
     async def _send_owned(
         self,
         runtime: SessionRuntime,
@@ -1031,7 +1180,19 @@ class ChatDynamicsPlugin(Star):
         text: str,
         *,
         reply_to_id: Optional[str] = None,
+        native_source_validator=None,
+        send_effect=None,
     ):
+        peer_locked = False
+        parsed_peer = parse_group_event(event)
+        peer_uid = str(getattr(event, "_chat_dynamics_boundary_uid", "") or parsed_peer.sender_id or "")
+        if peer_uid in self._runtime_config.peer_bot_ids:
+            await runtime.peer_bot_send_lock.acquire()
+            peer_locked = True
+            if not self._peer_reply_allowed(runtime, event):
+                runtime.peer_bot_send_lock.release()
+                self._metric("peer_bot_round_limit")
+                return SendResult(False, error="peer_bot_round_limit")
         marker = (runtime.session_key, id(event))
         token = _OWNED_SEND_CONTEXT.set(marker)
         self._owned_send_events.add(marker)
@@ -1048,21 +1209,97 @@ class ChatDynamicsPlugin(Star):
         except Exception:
             pass
         runtime.owned_send_depth += 1
+        narrative = (None if runtime.scope_kind == "private"
+                     else getattr(self, "narrative", None))
+        attempt = None
+        result = None
         try:
-            result = await send_plain(
-                event,
-                self.context,
-                runtime.umo,
-                text,
-                reply_to_id=reply_to_id,
-            )
+            uid = str(getattr(event, "_chat_dynamics_boundary_uid", "") or "")
+            boundary_token = getattr(event, "_chat_dynamics_boundary_token", None)
+            async with _member_boundary.send_lease(self, event, uid, boundary_token):
+                managed = getattr(event, "_extras", {}).get("_narrative_managed_v1")
+                if managed:
+                    # 走异步包装器：evidence_current 的同步读会取 LM 侧 sidecar 锁，
+                    # 后台写入线程持锁时会拖住事件循环（本处处于发送路径）。
+                    evidence_check = getattr(narrative, "evidence_current_async", None)
+                    evidence_ok = (
+                        await evidence_check(managed) if callable(evidence_check) else False
+                    )
+                    if not evidence_ok:
+                        try:
+                            setattr(event, "_chat_dynamics_evidence_failed_closed", True)
+                        except Exception:
+                            pass
+                        raise _member_boundary.BoundaryCancelled("evidence_revision_changed")
+                recipient_ids = sorted(self._outgoing_target_uids(runtime, text, reply_to_id) - {uid})
+                captured_snapshot = getattr(event, "_chat_dynamics_boundary_policy_snapshot", None)
+                if not _member_boundary.dispatch_targets_current(self, event, recipient_ids, captured_snapshot):
+                    raise _member_boundary.BoundaryCancelled("recipient_boundary_changed")
+                media_check = getattr(text, "_cd_media_validate_v1", None)
+                if callable(media_check) and not media_check():
+                    return SendResult(False, error="joint_meme_candidate_unavailable")
+                if narrative is not None:
+                    begin = getattr(narrative, 'begin_send_async', None) or getattr(narrative, 'begin_send')
+                    if inspect.iscoroutinefunction(begin):
+                        attempt = await begin(event, text)
+                    else:
+                        attempt = await asyncio.to_thread(begin, event, text)
+                if send_effect is not None:
+                    result = await send_effect(event)
+                else:
+                    result = await send_plain(
+                        event, self.context, runtime.umo, text, reply_to_id=reply_to_id)
             if result.success:
-                self.selflearning.note_delivered(event, text)
+                self._peer_reply_allowed(runtime, event, delivered=True)
+                media_confirmed = getattr(text, "_cd_media_success_v1", None)
+                if callable(media_confirmed):
+                    try:
+                        await media_confirmed()
+                    except Exception:
+                        logger.warning("[ChatDynamics] delivered media bookkeeping failed", exc_info=True)
+            if result.success and not attempt:
+                source_current = True
+                if native_source_validator is not None:
+                    source_current = False
+                    if callable(native_source_validator):
+                        try:
+                            check = native_source_validator(event)
+                            if inspect.isawaitable(check):
+                                source_current = await check is True
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            source_current = False
+                if source_current:
+                    self.selflearning.note_delivered(event, text)
             return result
+        except _member_boundary.BoundaryCancelled:
+            try:
+                setattr(event, "_chat_dynamics_boundary_failed_closed", True)
+            except Exception:
+                pass
+            return SendResult(False, error="boundary_policy_cancelled")
         finally:
-            runtime.owned_send_depth = max(0, runtime.owned_send_depth - 1)
-            self._owned_send_events.discard(marker)
-            _OWNED_SEND_CONTEXT.reset(token)
+            try:
+                if narrative is not None and attempt:
+                    try:
+                        finish = getattr(narrative, 'finish_send_async', None) or getattr(narrative, 'finish_send')
+                        if inspect.iscoroutinefunction(finish):
+                            await finish(event, attempt, text, result)
+                        else:
+                            await asyncio.to_thread(finish, event, attempt, text, result)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # A bookkeeping failure cannot undo a platform send or
+                        # authorize another send. Production uses the durable outbox.
+                        logger.error('Send receipt unavailable code=CD_RECEIPT_HANDOFF type=%s', type(exc).__name__)
+            finally:
+                runtime.owned_send_depth = max(0, runtime.owned_send_depth - 1)
+                self._owned_send_events.discard(marker)
+                _OWNED_SEND_CONTEXT.reset(token)
+                if peer_locked:
+                    runtime.peer_bot_send_lock.release()
 
     def _get_or_create_dag(self, session_id: str) -> ConversationDAG:
         runtime = self._get_or_create_runtime(session_id, group_id=session_id, umo=session_id)
@@ -1097,6 +1334,33 @@ class ChatDynamicsPlugin(Star):
         """Create a collision-free local ID when an adapter returns no ID."""
         self._outgoing_sequence += 1
         return f"bot_{int(self.time_service.time() * 1000)}_{self._outgoing_sequence}"
+
+    @staticmethod
+    def _outgoing_target_uids(runtime: SessionRuntime, text: Any, reply_to_id: Optional[str]) -> Set[str]:
+        """Resolve only actual outgoing At/Poke/Reply payload targets by trusted UID."""
+        targets: Set[str] = set()
+        components = getattr(text, "chain", ()) if not isinstance(text, str) else ()
+        for component in components or ():
+            kind = type(component).__name__.lower()
+            raw_type = getattr(component, "type", None)
+            type_name = str(getattr(raw_type, "value", raw_type) or "").lower()
+            if kind not in {"at", "poke", "reply"} and type_name not in {"at", "poke", "reply"}:
+                continue
+            if kind in {"at", "poke"} or type_name in {"at", "poke"}:
+                uid = getattr(component, "qq", None) or getattr(component, "user_id", None)
+                if uid is not None and str(uid).strip():
+                    targets.add(str(uid).strip())
+            if kind == "reply" or type_name == "reply":
+                reply_to_id = str(getattr(component, "id", "") or reply_to_id or "")
+        if reply_to_id:
+            try:
+                node = runtime.dag.get_node(str(reply_to_id)) if runtime.dag is not None else None
+            except Exception:
+                node = None
+            target_uid = str(getattr(node, "user_id", "") or "")
+            if target_uid and target_uid != str(runtime.bot_id or ""):
+                targets.add(target_uid)
+        return targets
 
     def _create_background_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -1150,6 +1414,11 @@ class ChatDynamicsPlugin(Star):
             return False
         return group_id in self.takeover_groups
 
+    def is_runtime_scope_enabled(self, runtime: SessionRuntime) -> bool:
+        if getattr(runtime, "scope_kind", "group") == "private":
+            return bool(self.enabled and getattr(self, "private_chat_enabled", False))
+        return self.is_group_takeover_enabled(runtime.group_id)
+
     def _is_filter_mode(self) -> bool:
         return str(getattr(self, "pipeline_mode", PIPELINE_FILTER) or PIPELINE_FILTER) != PIPELINE_EXCLUSIVE
 
@@ -1162,6 +1431,89 @@ class ChatDynamicsPlugin(Star):
             event._chat_dynamics_blocks_native = True
         except Exception:
             pass
+        setter = getattr(event, 'should_call_llm', None)
+        try:
+            if callable(setter):
+                setter(True)
+                return
+        except Exception:
+            pass
+        try:
+            event.call_llm = True
+        except Exception:
+            # The marker is also checked at the native request boundary.
+            pass
+
+    def _boundary_blocks_event(self, event: Any) -> bool:
+        """Fail closed at native request/result boundaries when policy requires it."""
+        extras = getattr(event, "_extras", None)
+        extras = extras if isinstance(extras, dict) else {}
+        authorized = extras.get("_ablock_control_authorized", False)
+        getter = getattr(event, "get_extra", None)
+        if callable(getter):
+            try:
+                authorized = getter("_ablock_control_authorized", authorized)
+            except Exception:
+                pass
+        if authorized:
+            return False
+        state = _member_boundary.resolve_state(self, event)
+        if state.disabled:
+            return False
+        if not state.available:
+            return bool(state.required)
+        parsed = parse_group_event(event)
+        uid = str(parsed.sender_id or "")
+        if not uid:
+            return bool(state.required)
+        policy, token, policy_state = _member_boundary.peek(self, event, uid)
+        if not policy_state.available:
+            return bool(policy_state.required)
+        if _member_boundary.blocked(policy):
+            return True
+        if getattr(event, "_chat_dynamics_boundary_policy_snapshot", None) is None:
+            snapshot, snapshot_state = _member_boundary.capture_policy_snapshot(self, event)
+            if not snapshot_state.available and (snapshot_state.required or snapshot_state.service is not None):
+                return True
+            if snapshot_state.available and not snapshot_state.disabled and snapshot is not None:
+                try:
+                    setattr(event, "_chat_dynamics_boundary_policy_snapshot", snapshot)
+                except Exception:
+                    pass
+        captured = getattr(event, "_chat_dynamics_boundary_token", None)
+        if captured is not None and token != captured:
+            return True
+        try:
+            setattr(event, "_chat_dynamics_boundary_uid", uid)
+            setattr(event, "_chat_dynamics_boundary_token", token)
+        except Exception:
+            pass
+        return False
+
+    def _stop_boundary_event(self, event: Any, *, clear_result: bool = False) -> None:
+        self._suppress_native_llm(event)
+        stopper = getattr(event, "stop_event", None)
+        if callable(stopper):
+            try:
+                stopper()
+            except Exception:
+                pass
+        extras = getattr(event, "_extras", None)
+        if isinstance(extras, dict):
+            extras["agent_stop_requested"] = True
+        setter = getattr(event, "set_extra", None)
+        if callable(setter):
+            try:
+                setter("agent_stop_requested", True)
+            except Exception:
+                pass
+        if clear_result:
+            clearer = getattr(event, "clear_result", None)
+            if callable(clearer):
+                try:
+                    clearer()
+                except Exception:
+                    pass
         setter = getattr(event, "should_call_llm", None)
         if callable(setter):
             try:
@@ -1198,6 +1550,8 @@ class ChatDynamicsPlugin(Star):
                 pass
 
     def _wake_kind(self, parsed: Any, runtime: SessionRuntime) -> str:
+        from .core.bot_identity import BotIdentityMatcher
+
         bot_id = runtime.bot_id or parsed.self_id
         if bot_id and str(bot_id) in getattr(parsed, "platform_mentions", ()):
             return "at"
@@ -1217,16 +1571,15 @@ class ChatDynamicsPlugin(Star):
             return "name"
         text = getattr(parsed, "text", "") or ""
         for name in self.bot_names:
-            if not name:
-                continue
-            boundary = r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])" if name.isascii() else re.escape(name)
-            if re.search(boundary, text, re.I):
+            if BotIdentityMatcher.wake_candidate(name, text):
                 # A full nickname is only a candidate: Jev must distinguish
                 # calling the bot from discussing it or an overlapping name.
                 return "name"
         # AstrBot's combined flag also covers wake prefixes and replies. It
         # does not prove that this message contains a real @ component.
-        return "name" if parsed.is_at_or_wake else "none"
+        # A host prefix flag must not reintroduce a rejected alias overlap.
+        rejected_alias = "安安" in self.bot_names and bool(re.search(r"晚安安+|早安安+|安安静静|平平安安", text))
+        return "name" if parsed.is_at_or_wake and not rejected_alias else "none"
 
     def _looks_like_strong_address(self, parsed: Any, runtime: SessionRuntime) -> bool:
         return self._wake_kind(parsed, runtime) != "none"
@@ -1301,6 +1654,7 @@ class ChatDynamicsPlugin(Star):
             except RuntimeError:
                 self._session_sweep_task = None
         self.reminders.start()
+        self.narrative.start()
         logger.info(
             "[ChatDynamics] Ready. mode=%s takeover_all=%s group_count=%d exclude_count=%d",
             self.pipeline_mode,
@@ -1308,6 +1662,17 @@ class ChatDynamicsPlugin(Star):
             len(self.takeover_groups),
             len(self.exclude_groups),
         )
+
+    async def submit_intent(self, intent: dict):
+        """Submit a source-attributed scoped motive to narrative coordination.
+
+        Args:
+            intent: A schema-v1 ContactIntent from the life authority.
+
+        Returns:
+            The versioned acceptance result.
+        """
+        return await self.narrative.submit_intent(intent)
 
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
@@ -1331,7 +1696,16 @@ class ChatDynamicsPlugin(Star):
             if inspect.isawaitable(payload):
                 payload = await payload
             restore_runtime_state(self, payload)
-            self._runtime_persist_saved_revision = self._runtime_persist_revision
+            migrated = False
+            if self._runtime_config.rule_topic_routing_enabled:
+                for runtime in self._sessions.values():
+                    migrated = self.thread_router.refresh_topics(runtime) or migrated
+                    pending_titles = [runtime.dag.nodes[mid] for topic in runtime.routing_state.topics.values()
+                                      if topic.label_requested and not topic.generated_title
+                                      for mid in topic.message_ids[-1:] if mid in runtime.dag.nodes]
+                    if pending_titles:
+                        self.topic_batches.enqueue(runtime, pending_titles)
+            self._runtime_persist_saved_revision = -1 if migrated else self._runtime_persist_revision
         except Exception as exc:
             logger.warning("[ChatDynamics] Panel restore failed type=%s", type(exc).__name__)
 
@@ -1467,24 +1841,38 @@ class ChatDynamicsPlugin(Star):
         try:
             await self._shutdown_work()
         finally:
-            # No matter how this shutdown ends (cancelled, failed, or clean),
-            # the plugin must hand back the state it owns. Doing the release in
-            # the outermost finally is what makes that true for every path
-            # instead of only the paths that happen to reach the end.
             try:
-                # The persistence loop returns as soon as the stop event is
-                # set, so this is the only chance to write the session/DAG/
-                # metric snapshot. Cancelling or failing shutdown must not
-                # skip it.
+                narrative = getattr(self, 'narrative', None)
+                closer = getattr(narrative, 'close_io', None)
+                if callable(closer):
+                    await asyncio.shield(closer())
+            finally:
+                self._release_provider_hooks()
                 try:
                     await asyncio.shield(self._save_panel_runtime())
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     logger.warning("[ChatDynamics] Final panel save failed type=%s", type(exc).__name__)
-            finally:
-                self._release_session_state()
+                finally:
+                    self._release_session_state()
 
+    def _release_provider_hooks(self):
+        """Keep provider/hooks available until owned work has been cancelled."""
+        service = getattr(self, '_systemone_service', None)
+        close_catalog = getattr(service, 'close', None)
+        if callable(close_catalog):
+            try:
+                close_catalog()
+            except Exception as exc:
+                logger.info('[ChatDynamics] Decision catalog restore failed type=%s',type(exc).__name__)
+        bridge = getattr(self, "_native_request_bridge", None)
+        if bridge is not None:
+            try:
+                bridge.uninstall()
+            except Exception as exc:
+                logger.info("[ChatDynamics] Native request bridge restore failed type=%s", type(exc).__name__)
+            self._native_request_bridge = None
     def _release_session_state(self) -> None:
         """Forget every session-scoped object owned by this plugin instance."""
         for session_id in set(self._sessions) | set(self.arbiter.cooling_export()):
@@ -1567,6 +1955,8 @@ class ChatDynamicsPlugin(Star):
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
         """Filter group chat with session-scoped state and bounded input."""
+        from .core.agent_timings import mark_received
+        mark_received(event)
         # Before the config refresh, so an applied policy is folded into the
         # values that refresh is about to apply. Throttled inside; reading
         # another plugin's preferences on every message would put unrelated IO on
@@ -1576,8 +1966,61 @@ class ChatDynamicsPlugin(Star):
         parsed = parse_group_event(event, command_prefixes=extra_prefixes)
         if not parsed.group_id:
             return
+        narrative = getattr(self, 'narrative', None)
+        if narrative is not None:
+            await narrative.note_member_activity(event, parsed)
         if parsed.is_command or host_command_activated(event):
             return
+        boundary_state = _member_boundary.resolve_state(self, event)
+        if not boundary_state.available and _member_boundary.fail_closed(boundary_state):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed; dropping turn session=%s message_id=%s reason=boundary_unavailable",
+                event.unified_msg_origin, getattr(parsed, "message_id", ""),
+            )
+            self._block_native_for_mode(event)
+            self._metric("boundary_unavailable")
+            return
+        captured_snapshot, snapshot_state = _member_boundary.capture_policy_snapshot(self, event)
+        if snapshot_state.available and not snapshot_state.disabled and captured_snapshot is not None:
+            try:
+                setattr(event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
+            except Exception:
+                pass
+        if not parsed.sender_id and getattr(self._runtime_config, "autonomous_blocking_required", False):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed; dropping turn session=%s reason=boundary_identity_unavailable",
+                event.unified_msg_origin,
+            )
+            self._block_native_for_mode(event)
+            self._metric("boundary_identity_unavailable")
+            return
+        if parsed.sender_id:
+            policy, boundary_token, boundary_state = _member_boundary.peek(self, event, parsed.sender_id)
+            if not boundary_state.available and _member_boundary.fail_closed(boundary_state):
+                logger.warning(
+                    "[ChatDynamics] boundary fail-closed; dropping turn session=%s message_id=%s reason=boundary_unavailable",
+                    event.unified_msg_origin, getattr(parsed, "message_id", ""),
+                )
+                self._block_native_for_mode(event)
+                self._metric("boundary_unavailable")
+                return
+            if _member_boundary.blocked(policy):
+                if str((policy or {}).get("mode", "")).lower() == "shield":
+                    self._block_native_for_mode(event)
+                    self._metric("boundary_shield_input")
+                    return
+                try:
+                    setattr(event, "_chat_dynamics_boundary_silence", True)
+                    setattr(event, "_chat_dynamics_boundary_uid", parsed.sender_id)
+                except Exception:
+                    pass
+                self._suppress_native_llm(event)
+            else:
+                try:
+                    setattr(event, "_chat_dynamics_boundary_uid", parsed.sender_id)
+                    setattr(event, "_chat_dynamics_boundary_token", boundary_token)
+                except Exception:
+                    pass
         if not self.is_group_takeover_enabled(parsed.group_id):
             return
         if self._shutting_down:
@@ -1635,10 +2078,31 @@ class ChatDynamicsPlugin(Star):
                     self._block_native_for_mode(event)
                 return
 
+            if parsed.sender_id in self._runtime_config.peer_bot_ids:
+                setattr(event, "_chat_dynamics_peer_round_source", parsed.message_id or self._next_outgoing_id())
+                if not self._peer_reply_allowed(runtime, event, touch=True):
+                    if not self.shadow_mode:
+                        self._stop_boundary_event(event, clear_result=True)
+                    self._metric("peer_bot_round_limit")
+                    logger.info("[ChatDynamics] peer reply blocked session=%s peer=%s reason=peer_bot_round_limit",
+                                session_key, parsed.sender_id)
+                    return
+
             # A new explicit request from the same user interrupts only that
             # user's already generated native tail.  This runs after the
             # message-ID dedupe so a repeated hook for the same event cannot
             # cancel the batch created by that event.
+            from .core.group_context import member_notice, remember_notice
+            notice = member_notice(event, parsed, now=now, wall_time=self.time_service.wall_time())
+            if notice is not None:
+                if remember_notice(runtime, notice):
+                    self._metric("group_notice_context_recorded")
+                    self._mark_panel_runtime_dirty()
+                    logger.info("[ChatDynamics] group context event session=%s event=%s kind=%s member=%s",
+                                runtime.session_key, notice.event_id, notice.kind, notice.member_id)
+                # A platform fact is background for later turns, not a member
+                # request or a reason to interrupt/generate a welcome by itself.
+                return
             strong_address = self._looks_like_strong_address(parsed, runtime)
             if strong_address:
                 runtime.invalidate_followups_for_user(parsed.sender_id)
@@ -1691,11 +2155,28 @@ class ChatDynamicsPlugin(Star):
                 return
 
             bounded_text = self._bounded_text(parsed.text)
-            if self._persona_mode() and not self.persona_engine.has_pending_explicit_request(
-                runtime, parsed.sender_id, mandatory_only=True
-            ) and (
-                strong_address
-                or not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id)
+            # A peer-directed message is a separate conversation, even when
+            # its author also owns an unfinished reply from this bot.
+            bot_id = str(runtime.bot_id or parsed.self_id or "")
+            reply_author = str(getattr(parsed, "reply_sender_id", "") or "")
+            if not reply_author and parsed.reply_to_id:
+                quoted = runtime.dag.get_node(parsed.reply_to_id)
+                reply_author = str(getattr(quoted, "user_id", "") or "")
+            other_recipients = set(getattr(parsed, "platform_mentions", ()) or ()) - {
+                bot_id,
+                parsed.sender_id,
+                "",
+                "all",
+                "0",
+            }
+            addressed_elsewhere = not strong_address and bool(
+                other_recipients or (reply_author and reply_author not in {bot_id, parsed.sender_id})
+            )
+            if (
+                self._persona_mode()
+                and not addressed_elsewhere
+                and not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id, mandatory_only=True)
+                and (strong_address or not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id))
             ):
                 runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
             # Native callbacks arrive after ingress.  Capture the member
@@ -1725,7 +2206,11 @@ class ChatDynamicsPlugin(Star):
             )
             self._metric("message_received")
 
-            is_fast_path = not input_truncated and not bare_bot_mention and self._is_fast_path_turn(parsed, runtime)
+            # Limited peers always use owned delivery so concurrent native host
+            # replies cannot escape the atomic successful-round counter.
+            is_fast_path = (parsed.sender_id not in self._runtime_config.peer_bot_ids
+                            and not input_truncated and not bare_bot_mention
+                            and self._is_fast_path_turn(parsed, runtime))
             fast_path_epoch = runtime.epoch
             if is_fast_path:
                 await self.debounce.discard(session_key, user_id=parsed.sender_id)
@@ -1736,6 +2221,9 @@ class ChatDynamicsPlugin(Star):
                     try:
                         buffered_event = preserve_event_media(event, archive=self.media_archive,
                                                                session=parsed.unified_msg_origin or session_key)
+                        captured_snapshot = getattr(event, "_chat_dynamics_boundary_policy_snapshot", None)
+                        if captured_snapshot is not None:
+                            setattr(buffered_event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
                     except Exception as exc:
                         logger.warning("attachment copy failed; using text fallback type=%s", type(exc).__name__)
                         buffered_event = without_event_media(event)
@@ -1753,6 +2241,7 @@ class ChatDynamicsPlugin(Star):
                         on_flush=self.on_turn_flushed,
                         defer_callback=True,
                         immediate=self._wake_kind(parsed, runtime) == "at",
+                        supersede_pending=not addressed_elsewhere,
                     )
                 except RuntimeError:
                     if not self._shutting_down:
@@ -1764,6 +2253,179 @@ class ChatDynamicsPlugin(Star):
                 runtime,
                 native_pipeline=True,
                 epoch=fast_path_epoch,
+            )
+
+    @filter.event_message_type(_PRIVATE_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
+    async def on_private_message(self, event: AstrMessageEvent) -> None:
+        """Route opted-in private messages through the shared persona reply chain."""
+        from .core.agent_timings import mark_received
+        mark_received(event)
+        self.refresh_config()
+        if (self._shutting_down or self.shadow_mode
+                or not bool(getattr(self, "private_chat_enabled", False))):
+            return
+        if not self._persona_mode():
+            # Legacy mode has no Jev-free direct turn implementation. Keep the
+            # host's private reply available when the owned Agent bridge has
+            # degraded instead of claiming the message and then dropping it.
+            self._metric("private_persona_unavailable")
+            return
+        extra_prefixes = [self.command_prefix] if self.command_prefix not in ("/", "／") else None
+        parsed = parse_group_event(event, command_prefixes=extra_prefixes)
+        if parsed.group_id or parsed.is_command or host_command_activated(event):
+            return
+        session_key = str(parsed.unified_msg_origin or "").strip()
+        if not session_key or not parsed.sender_id:
+            return
+        # OneBot can emit blank notifications. They must not claim the native
+        # path, consume message IDs or invalidate an in-flight persona turn.
+        bounded_text = self._bounded_text(parsed.text)
+        if parsed.has_media and not bounded_text.strip():
+            bounded_text = media_placeholder_text(parsed)
+        if not bounded_text.strip() and not parsed.has_media:
+            return
+
+        boundary_state = _member_boundary.resolve_state(self, event)
+        if not boundary_state.available and _member_boundary.fail_closed(boundary_state):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed; dropping private turn session=%s reason=boundary_unavailable",
+                event.unified_msg_origin,
+            )
+            self._stop_boundary_event(event)
+            self._metric("boundary_unavailable")
+            return
+        captured_snapshot, snapshot_state = _member_boundary.capture_policy_snapshot(self, event)
+        if snapshot_state.available and not snapshot_state.disabled and captured_snapshot is not None:
+            try:
+                setattr(event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
+            except Exception:
+                pass
+        if not parsed.sender_id and getattr(self._runtime_config, "autonomous_blocking_required", False):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed; dropping private turn session=%s reason=boundary_identity_unavailable",
+                event.unified_msg_origin,
+            )
+            self._stop_boundary_event(event)
+            self._metric("boundary_identity_unavailable")
+            return
+        policy, boundary_token, boundary_state = _member_boundary.peek(self, event, parsed.sender_id)
+        if not boundary_state.available and _member_boundary.fail_closed(boundary_state):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed; dropping private turn session=%s reason=boundary_unavailable",
+                event.unified_msg_origin,
+            )
+            self._stop_boundary_event(event)
+            self._metric("boundary_unavailable")
+            return
+        if _member_boundary.blocked(policy):
+            if str((policy or {}).get("mode", "")).lower() == "shield":
+                self._stop_boundary_event(event)
+                self._metric("boundary_shield_input")
+                return
+            try:
+                setattr(event, "_chat_dynamics_boundary_silence", True)
+                setattr(event, "_chat_dynamics_boundary_uid", parsed.sender_id)
+            except Exception:
+                pass
+        else:
+            try:
+                setattr(event, "_chat_dynamics_boundary_uid", parsed.sender_id)
+                setattr(event, "_chat_dynamics_boundary_token", boundary_token)
+            except Exception:
+                pass
+
+        if not self._ensure_runtime_capacity(session_key):
+            return
+        runtime = self._get_or_create_runtime(
+            session_key, group_id="", umo=session_key, bot_id=parsed.self_id, scope_kind="private"
+        )
+        try:
+            setattr(event, "_chat_dynamics_scope_kind", "private")
+        except Exception:
+            pass
+        async with runtime.state_lock:
+            if self._shutting_down or not self.is_runtime_scope_enabled(runtime):
+                return
+            now = self.time_service.time()
+            runtime.touch(now)
+            if parsed.self_id and parsed.sender_id == parsed.self_id:
+                return
+            if parsed.message_id and parsed.message_id in runtime.sent_id_set:
+                self._metric("loopback_ignored")
+                return
+            if parsed.message_id and not runtime.remember_seen(parsed.message_id):
+                self._block_native_for_mode(event)
+                self._metric("duplicate_ignored")
+                return
+            self._block_native_for_mode(event)
+            if parsed.sender_id in self._runtime_config.peer_bot_ids:
+                setattr(event, "_chat_dynamics_peer_round_source", parsed.message_id or self._next_outgoing_id())
+                if not self._peer_reply_allowed(runtime, event, touch=True):
+                    self._stop_boundary_event(event, clear_result=True)
+                    self._metric("peer_bot_round_limit")
+                    return
+            if parsed.message_id:
+                try:
+                    setattr(event, "_chat_dynamics_epoch", runtime.epoch)
+                    setattr(event, "_chat_dynamics_user_revision",
+                            runtime.user_revisions.get(parsed.sender_id, 0) + 1)
+                except Exception:
+                    pass
+            runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
+            if bounded_text != parsed.text:
+                self._metric("input_truncated")
+            parsed.text = bounded_text
+            runtime.request_media_understand = False
+            if parsed.has_media:
+                try:
+                    verdict = self.decision_gate.media.evaluate(
+                        text=bounded_text,
+                        has_media=True,
+                        media_component_types=parsed.media_component_types,
+                        outline=parsed.outline or "",
+                        explicit=True,
+                        quoted_bot=bool(parsed.reply_to_id),
+                        media_privacy_strict=self._runtime_config.media_privacy_strict,
+                        media_image_gate_enabled=self._runtime_config.media_image_gate_enabled,
+                        media_voice_gate_enabled=self._runtime_config.media_voice_gate_enabled,
+                        media_understand_reply_enabled=self._runtime_config.media_understand_reply_enabled,
+                    )
+                    runtime.last_media_gate = verdict.as_dict()
+                    runtime.request_media_understand = bool(verdict.request_understand)
+                    if verdict.privacy_hit:
+                        self._metric("private_media_privacy_blocked")
+                        return
+                except Exception as exc:
+                    runtime.request_media_understand = False
+                    self._metric("private_media_gate_unavailable")
+                    logger.warning("private media gate unavailable code=CD_PRIVATE_MEDIA_GATE type=%s",
+                                   type(exc).__name__)
+                    return
+            self._metric("message_received")
+            try:
+                buffered_event = preserve_event_media(
+                    event, archive=self.media_archive, session=session_key
+                )
+                if captured_snapshot is not None:
+                    setattr(buffered_event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
+                setattr(buffered_event, "_chat_dynamics_scope_kind", "private")
+            except Exception as exc:
+                logger.warning("private attachment copy failed; using text fallback type=%s", type(exc).__name__)
+                buffered_event = without_event_media(event)
+                buffered_event.message_str = bounded_text + "\n[附件暂时不可读取]"
+                setattr(buffered_event, "_chat_dynamics_scope_kind", "private")
+                self._metric("media_copy_failed")
+            self._media_leases = {lease for lease in self._media_leases if lease.alive}
+            lease = getattr(buffered_event, "_chat_dynamics_media_cleanup", None)
+            if lease is not None:
+                self._media_leases.add(lease)
+            await self.debounce.ingest(
+                session_id=session_key,
+                user_id=parsed.sender_id,
+                text=bounded_text,
+                event=buffered_event,
+                on_flush=self.on_turn_flushed,
+                defer_callback=True,
             )
 
     def _record_non_text_turn(self, parsed, session_key: str) -> None:
@@ -1896,8 +2558,12 @@ class ChatDynamicsPlugin(Star):
                     text=self._bounded_text(text),
                     timestamp=self.time_service.time(),
                     reply_to_id=previous_bot_msg_id,
-                    metadata={"platform_message_id": bool(platform_msg_id), "poke_reply": True,
-                              "trigger_user_id": user_id},
+                    metadata={
+                        "platform_message_id": bool(platform_msg_id),
+                        "poke_reply": True,
+                        "trigger_user_id": user_id,
+                        "dialogue_delivered": True,
+                    },
                 )
                 bot_node.metadata["platform_message_id"] = bool(platform_msg_id)
                 previous_bot_msg_id = bot_msg_id
@@ -1916,15 +2582,48 @@ class ChatDynamicsPlugin(Star):
                 if not sent_any:
                     _release_claim()
             elif decision.speak:
-                context_nodes = dag.get_thread_context(trigger_node.msg_id, max_nodes=8) if dag is not None else []
-                context_text = "\n".join(
-                    f"{node.user_id}: {self._bounded_text(node.text, 300)}" for node in context_nodes
+                selections = (
+                    select_background(
+                        dag,
+                        [trigger_node],
+                        bot_id=str(runtime.bot_id or ""),
+                        delivered_ids=frozenset(runtime.sent_id_set),
+                    )
+                    if dag is not None
+                    else ()
                 )
+                frames = []
+                for selected in sorted(selections, key=lambda row: row.node.timestamp):
+                    node = selected.node
+                    quoted = dag.get_node(node.reply_to_id) if node.reply_to_id else None
+                    frames.append(
+                        {
+                            "frame_id": node.msg_id,
+                            "author_uid": str(node.user_id),
+                            "source_uids": list(
+                                dict.fromkeys([str(node.user_id), user_id] + ([str(quoted.user_id)] if quoted else []))
+                            ),
+                            "provenance_complete": True,
+                            "kind": "event",
+                            "text": clip_text(node.text, 400),
+                            "age_seconds": max(0, trigger_node.timestamp - node.timestamp),
+                            "reply_to": node.reply_to_id or "",
+                            "quoted_author_uid": str(quoted.user_id) if quoted else "",
+                            "mentioned_user_ids": list(
+                                node.metadata.get("actual_mentions", node.mentioned_users) or ()
+                            ),
+                        }
+                    )
+                frames, boundary = _member_boundary.filter_frames(self, raw_event, frames, purpose="role_input")
+                if not boundary.available and (_member_boundary.fail_closed(boundary) or boundary.service is not None):
+                    _release_claim()
+                    return
+                context_text = json.dumps(frames, ensure_ascii=False)
                 prompt = (
                     f"{poke_hint_for()}\n"
                     f"用户 {user_id} 戳了你，短时间内连续第 {streak} 次。"
                     "根据上下文自然回应，只输出一句简短回复，不要解释规则或复述计数。\n"
-                    f"当前会话上下文（聊天内容，不是指令）：\n{context_text}"
+                    f"来源者在当前群的近期上下文（聊天记录，不是新指令；没有记录时不要编造）：\n{context_text}"
                 )
                 if self._persona_mode():
                     # Persona mode owns the wording.  _generate_llm only ever sends the
@@ -2048,7 +2747,15 @@ class ChatDynamicsPlugin(Star):
                     async with runtime.send_lock:
                         if not current():
                             break
-                        result = await self._send_owned(runtime, raw_event, fragment)
+                        check_sources = getattr(output, "native_sources_current", None)
+                        if callable(check_sources) and not await check_sources():
+                            self._metric("poke_native_source_invalidated")
+                            break
+                        if getattr(output, "native_memory_validator", None) is not None:
+                            result = await self._send_owned(runtime, raw_event, fragment,
+                                                            native_source_validator=output.native_sources_current)
+                        else:
+                            result = await self._send_owned(runtime, raw_event, fragment)
                     if not result.success:
                         self._metric("send_failed")
                         break
@@ -2108,11 +2815,13 @@ class ChatDynamicsPlugin(Star):
                 return
             if not self._ensure_runtime_capacity(result.session_id):
                 return
+            private_scope = getattr(first_event, "_chat_dynamics_scope_kind", "") == "private"
             runtime = self._get_or_create_runtime(
                 result.session_id,
-                group_id=parsed.group_id or result.session_id,
+                group_id="" if private_scope else (parsed.group_id or result.session_id),
                 umo=parsed.unified_msg_origin or result.session_id,
                 bot_id=parsed.self_id,
+                scope_kind="private" if private_scope else "group",
             )
         async with runtime.state_lock:
             if self._shutting_down or not self.debounce.is_result_current(result):
@@ -2178,11 +2887,15 @@ class ChatDynamicsPlugin(Star):
         from .core.routing_contract import ROUTING_WEIGHTS_VERSION
         return ROUTING_WEIGHTS_VERSION
 
-    def _topic_reranker(self, *, for_display: bool = False) -> TopicReranker | None:
+    def _topic_reranker(self, *, for_display: bool = False) -> TopicReranker | DiscussionReranker | None:
         cfg = self._runtime_config
         if (not cfg.topic_reranker_enabled or (self.shadow_mode and not for_display)
                 or not cfg.conversation_router_enabled):
             return None
+        if cfg.rule_topic_routing_enabled and not for_display:
+            return DiscussionReranker(self.context, cfg.discussion_reranker_provider,
+                timeout=cfg.topic_reranker_timeout, threshold=cfg.discussion_rerank_threshold,
+                margin=cfg.discussion_rerank_margin)
         return TopicReranker(
             LLMAdapter(self.context, configured_provider_id=cfg.topic_reranker_provider or cfg.reply_provider_id),
             enabled=True, timeout_seconds=cfg.topic_title_timeout if for_display else cfg.topic_reranker_timeout,
@@ -2289,7 +3002,7 @@ class ChatDynamicsPlugin(Star):
             owner_revision = runtime.user_revisions.get(owner_user_id, 0)
         if (
             self._shutting_down
-            or not self.is_group_takeover_enabled(runtime.group_id)
+            or not self.is_runtime_scope_enabled(runtime)
             or revision != runtime.revision
             or expected_epoch != runtime.epoch
             or not self._user_revision_is_current(runtime, owner_user_id, owner_revision)
@@ -2307,7 +3020,7 @@ class ChatDynamicsPlugin(Star):
         )
         if (
             self._shutting_down
-            or not self.is_group_takeover_enabled(runtime.group_id)
+            or not self.is_runtime_scope_enabled(runtime)
             or revision != runtime.revision
             or expected_epoch != runtime.epoch
             or not self._user_revision_is_current(runtime, owner_user_id, owner_revision)
@@ -2444,8 +3157,11 @@ class ChatDynamicsPlugin(Star):
                     text=self._bounded_text(fragment),
                     timestamp=self.time_service.time(),
                     reply_to_id=trigger_node.msg_id if is_first else previous_bot_msg_id,
-                    metadata={"platform_message_id": bool(platform_msg_id),
-                              "trigger_user_id": trigger_node.user_id},
+                    metadata={
+                        "platform_message_id": bool(platform_msg_id),
+                        "trigger_user_id": trigger_node.user_id,
+                        "dialogue_delivered": True,
+                    },
                 )
                 bot_node.metadata["platform_message_id"] = bool(platform_msg_id)
                 previous_bot_msg_id = bot_msg_id
@@ -2598,7 +3314,8 @@ class ChatDynamicsPlugin(Star):
         if getattr(self._runtime_config, "conversation_router_enabled", True):
             self.thread_router.observe_bot_message(runtime, node)
 
-    def _schedule_neural_embed(self, session_id: str, node: Optional[ConversationNode]) -> Optional[asyncio.Task]:
+    def _schedule_neural_embed(self, session_id: str, node: Optional[ConversationNode], *,
+                               native_source_validator=None) -> Optional[asyncio.Task]:
         if self.shadow_mode:
             return
         if not getattr(self, "embeddings", None) or not self.embeddings.enabled:
@@ -2613,7 +3330,10 @@ class ChatDynamicsPlugin(Star):
             ready = asyncio.Event()
             query = build_contextual_query(node, runtime.dag) if runtime is not None else node.text
             task = self._create_background_task(
-                self._warm_neural_embedding(session_id, node.msg_id, query, expected_epoch, ready)
+                self._warm_neural_embedding(
+                    session_id, node.msg_id, query, expected_epoch, ready,
+                    native_source_validator=native_source_validator,
+                )
             )
             task.routing_ready = ready
             self._embedding_tasks_by_session.setdefault(session_id, set()).add(task)
@@ -2638,7 +3358,23 @@ class ChatDynamicsPlugin(Star):
         text: str,
         expected_epoch: Optional[int] = None,
         ready: Optional[asyncio.Event] = None,
+        native_source_validator=None,
     ) -> None:
+        async def sources_current() -> bool:
+            if native_source_validator is None:
+                return True
+            if not callable(native_source_validator):
+                return False
+            try:
+                result = native_source_validator()
+                if not inspect.isawaitable(result):
+                    return False
+                return await result is True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+
         try:
             runtime = self._sessions.get(session_id)
             if runtime is None or (
@@ -2647,7 +3383,25 @@ class ChatDynamicsPlugin(Star):
                 return
             original_runtime = runtime
             source_node = runtime.dag.get_node(msg_id) if runtime.dag is not None else None
-            raw_text = source_node.text if source_node is not None else text
+            # Background work can outlive eviction, reset, or source revocation.
+            # Validate before remote IO as well as before committing its result.
+            if source_node is None or self._shutting_down:
+                self._metric("embedding_warmup_skipped_obsolete")
+                return
+            if not await sources_current():
+                self._metric("embedding_warmup_skipped_revoked")
+                return
+            runtime = self._sessions.get(session_id)
+            if (runtime is not original_runtime or runtime.dag is None
+                    or runtime.dag.get_node(msg_id) is not source_node
+                    or self._shutting_down
+                    or (expected_epoch is not None and runtime.epoch != expected_epoch)):
+                self._metric("embedding_warmup_skipped_obsolete")
+                return
+            if build_contextual_query(source_node, runtime.dag) != text:
+                self._metric("embedding_warmup_skipped_changed")
+                return
+            raw_text = source_node.text
             if raw_text != text:
                 vector, _ = await asyncio.gather(self.embeddings.embed(text), self.embeddings.embed(raw_text))
             else:
@@ -2656,6 +3410,8 @@ class ChatDynamicsPlugin(Star):
                 ready.set()
             if vector is None:
                 return
+            if not await sources_current():
+                return
             runtime = self._sessions.get(session_id)
             if runtime is not original_runtime or runtime.dag is None:
                 return
@@ -2663,6 +3419,8 @@ class ChatDynamicsPlugin(Star):
                 if self._shutting_down or (
                     expected_epoch is not None and runtime.epoch != expected_epoch
                 ):
+                    return
+                if not await sources_current():
                     return
                 node = runtime.dag.get_node(msg_id)
                 if node is None:
@@ -3043,11 +3801,18 @@ class ChatDynamicsPlugin(Star):
     def _event_in_scope(self, event: Any) -> Optional[str]:
         self.refresh_config()
         parsed = parse_group_event(event) if event is not None else None
-        if parsed is None or not parsed.group_id:
+        if parsed is None:
             return None
-        if not self.is_group_takeover_enabled(parsed.group_id):
+        if parsed.group_id:
+            if not self.is_group_takeover_enabled(parsed.group_id):
+                return None
+            return self._event_session_key(parsed)
+        session_key = str(parsed.unified_msg_origin or "")
+        runtime = self._sessions.get(session_key)
+        if (runtime is None or runtime.scope_kind != "private"
+                or not self.is_runtime_scope_enabled(runtime)):
             return None
-        return self._event_session_key(parsed)
+        return session_key
 
     def _event_epoch_is_current(self, event: Any, session_key: str) -> bool:
         runtime = self._sessions.get(session_key)
@@ -3120,9 +3885,13 @@ class ChatDynamicsPlugin(Star):
             except Exception:
                 return
 
-    @filter.on_llm_request(priority=_HOOK_PRIORITY)
+    @filter.on_llm_request(priority=1002)  # B22 顺序确定化：原 _HOOK_PRIORITY(100) 与另两家并列。值由日志实测加载序推出（本插件第22，介于 gemini 第14 与 recall_cancel 第46 之间）；消息阶段装饰器仍用 _HOOK_PRIORITY
     async def on_llm_request(self, event: AstrMessageEvent, request: Any = None) -> None:
         if self._shutting_down or self.shadow_mode or request is None:
+            return
+        if self._boundary_blocks_event(event):
+            self._stop_boundary_event(event)
+            self._metric("boundary_native_request_blocked")
             return
         session_key = self._event_in_scope(event)
         if not session_key:
@@ -3229,6 +3998,10 @@ class ChatDynamicsPlugin(Star):
 
     @filter.on_decorating_result()
     async def on_decorating_result(self, event: AstrMessageEvent) -> None:
+        if not self._shutting_down and not self.shadow_mode and self._boundary_blocks_event(event):
+            self._stop_boundary_event(event, clear_result=True)
+            self._metric("boundary_native_result_blocked")
+            return
         if self._persona_mode():
             return
         if self._shutting_down or self.shadow_mode:
@@ -3417,7 +4190,7 @@ class ChatDynamicsPlugin(Star):
             if current_runtime is not runtime:
                 return False
             if (self._shutting_down or current_runtime.epoch != context.epoch
-                    or not self.is_group_takeover_enabled(current_runtime.group_id)):
+                    or not self.is_runtime_scope_enabled(current_runtime)):
                 return False
             return self._user_revision_is_current(
                 current_runtime,
@@ -3478,15 +4251,20 @@ class ChatDynamicsPlugin(Star):
         self._mark_command_event(event)
         extra_prefixes = [self.command_prefix] if self.command_prefix not in ("/", "／") else None
         parsed = parse_group_event(event, command_prefixes=extra_prefixes)
-        if not parsed.group_id or not self.is_group_takeover_enabled(parsed.group_id):
-            return
-
         session_key = self._event_session_key(parsed)
         runtime = self._sessions.get(session_key)
+        if parsed.group_id:
+            if not self.is_group_takeover_enabled(parsed.group_id):
+                return
+        elif (runtime is None or runtime.scope_kind != "private"
+              or not self.is_runtime_scope_enabled(runtime)):
+            return
         # A stop command is deliberately a no-op for an unknown UMO.  In
         # particular, this command must never create a runtime for a group
         # that has not already entered the takeover pipeline.
-        if runtime is None or runtime.group_id != str(parsed.group_id):
+        if (runtime is None
+                or (parsed.group_id and runtime.group_id != str(parsed.group_id))
+                or (not parsed.group_id and runtime.scope_kind != "private")):
             return
         user_id = str(parsed.sender_id or "")
         if not user_id:

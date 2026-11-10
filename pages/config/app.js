@@ -1,4 +1,5 @@
 import { friendlyError } from "./api.js";
+import { mountIntegrationStatus } from "./integration_status.js";
 
 const PLUGIN = "astrbot_plugin_chat_dynamics";
 const REQUEST_TIMEOUT_MS = 8000;
@@ -8,27 +9,38 @@ const CHAT_PROVIDER_KEYS = new Set([
   "topic_reranker_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
+const RERANK_PROVIDER_KEYS = new Set(["discussion_reranker_provider"]);
 const ROUTE_KEYS = new Set([
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
   "decision_provider", "reply_provider",
   "topic_reranker_enabled", ]);
 const BASE_BASIC_KEYS = new Set([
+  "private_chat_enabled", "peer_bot_ids", "peer_bot_max_rounds", "peer_bot_reset_seconds",
+  "context_completion_enabled",
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
-  "reply_probability_threshold", "reply_provider", "reply_timeout", "bot_names",
+  "reply_probability_threshold", "quote_reply_threshold", "name_reply_threshold", "reply_provider", "reply_timeout", "bot_names",
+  "narrative_enabled", "narrative_all_groups", "narrative_sessions", "narrative_outreach_enabled",
 ]);
 const BASIC_HINTS = {
+  context_completion_enabled: "缺少关键上下文时先补查一次（限时8秒），再复判并回复或澄清；群聊与戳戳共用。",
+  quote_reply_threshold: "引用机器人的对象置信门槛；达到门槛后仍需通过动作判断。规则模式下真实平台引用可直接确认对象。这不是随机回复概率。",
+  name_reply_threshold: "昵称呼唤的对象置信门槛；仅把机器人当作谈论对象时不强制接话，动作判断独立生效。这不是随机回复概率。",
   enable: "关闭后，本插件不会处理群聊消息。",
   shadow_mode: "观察模式只记录判断，不发送插件回复。",
   takeover_all: "选择指定群或全部群。排除名单始终优先。",
   takeover_groups: "仅在“指定群”模式生效；多个群号用逗号或换行分隔。",
   exclude_groups: "这里的群始终不接管，即使选择全部群。",
-  bot_names: "@机器人必须回复，无需填写昵称；引用机器人或叫这里的名字，交给 Jev 确认是在对机器人说话即可接话。",
-  decision_provider: "选择在 AstrBot 模型服务中添加并启用的 Jev / System One 模型。地址和密钥沿用该模型服务。",
-  jev_timeout: "引用或昵称唤醒仍需 Jev 确认对象；超时继续旁听。@机器人直接回复，不等待 Jev。",
-  jev_min_confidence: "普通群聊动作门槛 0.3–0.95；状态、长度或理由不确定时采用默认值。引用或昵称唤醒的对象门槛为 0.35。",
-  reply_probability_threshold: "填 0–100；例如 60 表示普通群聊开口概率达到 60% 才回复。@不受这个门槛限制；引用或昵称唤醒只需确认接话对象是机器人。",
+  bot_names: "填写机器人昵称。规则模式根据真实 @、引用和明确呼唤识别对象；普通参与仍由决策模型判断，成员屏蔽和停止策略优先。",
+  decision_provider: "选择已启用的 Jev / System One 或 OpenAI Decisions 模型。地址和密钥沿用该模型服务。",
+  jev_timeout: "普通参与判断超时后继续旁听。真实 @ 直接进入回复链，不等待是否开口判断；成员屏蔽和停止策略仍生效。",
+  jev_min_confidence: "普通群聊动作门槛 0.3–0.95；状态、长度或理由不确定时采用默认值。引用和昵称对象门槛分别由对应百分比设置控制，动作判断仍独立生效。",
+  reply_probability_threshold: "填 0–100；例如 60 表示普通群聊开口概率达到 60% 才回复。@不受这个门槛限制；引用和昵称使用各自的对象门槛；昵称还需通过动作判断。",
   reply_provider: "只生成回复正文，不决定是否开口。留空则使用 AstrBot 默认回复模型。",
-  reply_timeout: "回复正文生成超时，与决策超时分别计算；@机器人生成失败或超时后会补一条简短回应。",
+  reply_timeout: "回复生成总时限，与决策时限独立。真实 @ 生成失败时可反馈简短状态；已停止、失效或受屏蔽的回合不补发。",
+  narrative_enabled: "启用角色持续生活与状态共享。选择全部群或填写完整会话 UMO，并在动态生活插件中启用叙事模式及对应范围。",
+  narrative_all_groups: "明确对所有群启用持续生活；只接入世界书角色与生活插件配置人格匹配的群聊，私聊和明确卸下角色的会话仍跳过。此开关不随“全部群接管”自动开启，生活插件的范围也须匹配。",
+  narrative_sessions: "未开启“全部群叙事”时只对这些完整会话 UMO 生效，例如 qq-main:GroupMessage:123456；每行一个。开启全部群叙事后此列表无需填写，可保留以便以后切回指定会话。",
+  narrative_outreach_enabled: "允许已启用叙事的会话接收有明确动机的主动联系；生活推进本身不会强制发言。可在记忆小本中单独暂停。",
 };
 const OPTION_LABELS = {
   // Keep participation labels identical to the control panel.
@@ -44,12 +56,16 @@ const CONFIG_GROUPS = [
     "open": true,
     "keys": [
       "enable",
+      "private_chat_enabled",
       "shadow_mode",
       "pipeline_mode",
       "takeover_all",
       "takeover_groups",
       "exclude_groups",
       "bot_names",
+      "peer_bot_ids",
+      "peer_bot_max_rounds",
+      "peer_bot_reset_seconds",
       "command_prefix"
     ]
   },
@@ -60,9 +76,12 @@ const CONFIG_GROUPS = [
     "open": true,
     "keys": [
       "decision_provider",
+      "context_completion_enabled",
       "jev_timeout",
       "jev_min_confidence",
       "reply_probability_threshold",
+      "quote_reply_threshold",
+      "name_reply_threshold",
       "decision_timeout",
       "decision_prompt"
     ]
@@ -75,17 +94,38 @@ const CONFIG_GROUPS = [
     "keys": [
       "reply_provider",
       "reply_timeout",
+      "reply_first_sentence_enabled",
       "tool_agent_timeout",
       "reply_prompt"
     ]
   },
   {
+    "id": "narrative",
+    "title": "角色持续生活",
+    "blurb": "角色状态与事件推演、群聊范围和主动联系；详细记录见记忆小本",
+    "open": false,
+    "keys": [
+      "narrative_enabled",
+      "narrative_all_groups",
+      "narrative_sessions",
+      "narrative_outreach_enabled",
+      "narrative_outreach_sessions",
+      "narrative_context_retention_days",
+      "narrative_rpc_timeout_seconds",
+      "narrative_evidence_timeout_seconds"
+    ]
+  },
+  {
     "id": "routing",
     "title": "话题识别与归属",
-    "blurb": "Jev 匹配现有话题，新话题标签累计生成，一小时无人讨论后归档",
+    "blurb": "规则识别对话对象，重排序判断讨论归属，LLM 独立归纳主题名称；低分先待定",
     "open": true,
     "keys": [
       "conversation_router_enabled",
+      "rule_topic_routing_enabled",
+      "discussion_reranker_provider",
+      "discussion_rerank_threshold",
+      "discussion_rerank_margin",
       "topic_reranker_enabled",
       "topic_reranker_provider",
       "topic_batch_interval",
@@ -237,6 +277,13 @@ const CONFIG_GROUPS = [
     ]
   },
   {
+    "id": "boundaries",
+    "title": "边界与联动依赖",
+    "blurb": "成员屏蔽服务的可用性要求；具体成员策略在自主屏蔽插件中管理",
+    "open": false,
+    "keys": ["autonomous_blocking_required"]
+  },
+  {
     "id": "console",
     "title": "面板隐私",
     "blurb": "分别控制话题小标题和消息正文的显示",
@@ -252,6 +299,7 @@ const SPAN2_KEYS = new Set([
   "takeover_groups",
   "exclude_groups",
   "bot_names",
+  "narrative_sessions",
   ]);
 
 const els = {
@@ -335,13 +383,17 @@ function routeInfo() {
   const observing = Boolean(value("shadow_mode"));
   const providerId = String(value("decision_provider") || "");
   const jevProvider = providerOptions.systemone.find(row => row.id === providerId);
+  const narrativeEnabled = Boolean(value("narrative_enabled"));
+  const narrativeAllGroups = Boolean(value("narrative_all_groups"));
+  const narrativeSessions = [...new Set(listSetting(value("narrative_sessions")))];
   const issues = [];
   if (takeoverAll && whitelist.length) issues.push({key: "takeover_groups", kind: "未使用", text: "已选择全部群聊，白名单不会缩小生效范围；排除名单仍有效。"});
-  if (!providerId || (providerOptions.loaded && !jevProvider)) issues.push({key: "decision_provider", kind: "决策模型未就绪", text: "请选择已启用的 Jev / System One 模型。"});
-  if (providerOptions.loaded && !providerOptions.routerReady) issues.push({key: "decision_provider", kind: "模型连接未就绪", text: "内置 Jev 模型连接尚未就绪，请重新加载 Chat Dynamics。"});
+  if (!providerId || (providerOptions.loaded && !jevProvider)) issues.push({key: "decision_provider", kind: "决策模型未就绪", text: "请选择已启用的 Jev / System One 或 OpenAI Decisions 模型。"});
+  if (providerOptions.loaded && !providerOptions.routerReady) issues.push({key: "decision_provider", kind: "模型连接未就绪", text: "内置决策模型连接尚未就绪，请重新加载 Chat Dynamics。"});
   if (!providerOptions.loaded) issues.push({key: "decision_provider", kind: "列表读取失败", text: "已保存的选择会保留，请刷新模型列表后核对。"});
   if (observing) issues.push({key: "shadow_mode", kind: "不会发送", text: "观察模式只记录判断，不发送插件回复。"});
-  return {value, excluded, whitelist, groups, enabled, takeoverAll, observing, providerId, jevProvider, issues};
+  return {value, excluded, whitelist, groups, enabled, takeoverAll, observing, providerId, jevProvider, issues,
+    narrativeEnabled, narrativeAllGroups, narrativeSessions};
 }
 
 function basicKeysForRoute() {
@@ -400,6 +452,14 @@ function updateScopeStatus() {
     : groups.length ? `对 ${groups.length} 个指定群生效。`
     : "尚未选择有效群聊，请填写群号或将范围改为“全部群”。";
   if (observing) message += " 插件总观察已开启，不会发送插件回复。";
+  if (Object.hasOwn(configState.schema, "narrative_enabled")) {
+    message += !route.narrativeEnabled ? " 持续生活已关闭。"
+      : route.narrativeAllGroups ? " 持续生活：全部群，按世界书与生活人格匹配。"
+        : route.narrativeSessions.length ? ` 持续生活：${route.narrativeSessions.length} 个指定会话。`
+          : " 持续生活尚未选择会话；可填写完整 UMO 或明确开启全部群叙事。";
+    if (route.narrativeEnabled) message += value("narrative_outreach_enabled")
+      ? " 主动联系已允许，仍受生活插件的范围和联系门控约束。" : " 主动联系已关闭。";
+  }
   if (configState.mismatches.length && !configDirty) message += " 有已存设置尚未应用，以下表单可能与运行状态不同。";
   els.configScopeStatus.textContent = `${configDirty ? "保存后" : "当前"}：${message}`;
   els.configScopeHeadline.textContent = !route.enabled ? "插件已关闭"
@@ -412,10 +472,12 @@ function updateScopeStatus() {
       : "保存后仍不会接管群聊，直到启用插件并选择生效范围。"
     : "修改设置后，保存会立即应用到当前生效的群聊。";
   els.decisionOverview.dataset.route = "jev";
-  els.configDecisionHeadline.textContent = `Jev · ${route.jevProvider?.model || "未选择有效模型"}`;
+  const protocol = route.jevProvider?.decision_protocol;
+  const protocolLabel = protocol === "openai_decisions" ? "OpenAI Decisions" : protocol === "native_decision" ? "原生抉择" : "Jev";
+  els.configDecisionHeadline.textContent = `${protocolLabel} · ${route.jevProvider?.model || "未选择有效模型"}`;
   els.configDecisionStatus.textContent = "使用所选模型服务中的地址、密钥和模型 ID 完成结构化决策。";
-  els.configModelHeadline.textContent = "@必回，引用 / 昵称先确认对象";
-  els.configModelStatus.textContent = "@机器人直接回复；正文生成失败或超时会补简短回应。引用机器人、昵称或唤醒名由 Jev 确认对象是机器人即可接话，判断超时或不明确则继续旁听。";
+  els.configModelHeadline.textContent = `@必回 · 引用 ≥ ${value("quote_reply_threshold") ?? 35}% · 昵称 ≥ ${value("name_reply_threshold") ?? 70}%`;
+  els.configModelStatus.textContent = "@机器人直接回复；引用机器人仍需确认接话对象。昵称和补充消息还需有足够把握认为值得回应，不会把“忽略”强制改成回复。晚安安、安安静静等歧义表达不作为昵称呼唤。睡眠中只有明确呼唤或引用才可简短回应。";
   els.configStartTitle.textContent = configDirty ? "保存后路径预览" : "当前运行路径";
   els.configOverviewState.textContent = configDirty ? "尚未保存" : configState.mismatches.length ? "已保存未应用" : "已应用";
   els.configOverviewState.dataset.state = configDirty ? "draft" : configState.mismatches.length ? "pending" : "applied";
@@ -432,7 +494,20 @@ function updateFieldContexts(route) {
     takeover_groups: route.takeoverAll ? "当前选择全部群，此列表不会限制范围" : "仅这些群会被接管",
     reply_provider: "仅生成回复正文，不决定是否开口",
     decision_provider: "地址和密钥在 AstrBot 模型服务中维护",
+    narrative_sessions: route.narrativeAllGroups
+      ? "全部群叙事已开启，此列表当前不限制范围；仅匹配生活人格的群聊生效"
+      : "仅完整 UMO 列表中的群聊启用叙事；不会继承全部群接管开关",
   };
+  const rhythmKeys = ["daily_rhythm_enabled", "rhythm_timezone", "rhythm_morning_hi_enabled",
+    "rhythm_day_share_slots", "rhythm_goodnight_text_quota", "rhythm_sleep_after_winddown",
+    "rhythm_allow_self_sleep", "rhythm_allow_wake", "rhythm_insomnia_enabled",
+    "rhythm_force_sleep", "rhythm_skip_morning_hi_tonight"];
+  if (route.narrativeEnabled) {
+    for (const key of rhythmKeys) contexts[key] = "接入持续生活状态的会话使用生活插件的作息；这些设置仅用于未接入的会话。";
+    for (const key of ["gap_fill_proactive_enabled", "cold_memory_nudge_enabled"])
+      contexts[key] = "接入持续生活状态的会话不使用此主动开口规则。";
+  }
+  contexts.narrative_context_retention_days = "到期后精简在线摘要，完整压缩上下文与发送回执仍保留，不会自动删除历史。";
   els.configForm.querySelectorAll("[data-context-key]").forEach(node => {
     node.textContent = contexts[node.dataset.contextKey] || "";
     node.hidden = !node.textContent;
@@ -548,20 +623,21 @@ function updateEditedFields() {
 }
 
 function isProviderField(key, schema) {
-  if (CHAT_PROVIDER_KEYS.has(key) || EMBEDDING_PROVIDER_KEYS.has(key)) return true;
+  if (CHAT_PROVIDER_KEYS.has(key) || EMBEDDING_PROVIDER_KEYS.has(key) || RERANK_PROVIDER_KEYS.has(key)) return true;
   const special = String((schema && schema._special) || "");
   return special === "select_provider" || special.startsWith("select_provider");
 }
 
 function providerListForKey(key) {
+  if (RERANK_PROVIDER_KEYS.has(key)) return providerOptions.rerank || [];
   if (EMBEDDING_PROVIDER_KEYS.has(key)) return providerOptions.embedding || [];
   if (key === "decision_provider") return providerOptions.systemone;
-  return providerOptions.chat.filter(row => !row.systemone);
+  return providerOptions.chat.filter(row => !row.systemone && !row.decision);
 }
 
 function refreshProviderSelects() {
   els.configForm.querySelectorAll("select[data-config-key]").forEach(input => {
-    if (!CHAT_PROVIDER_KEYS.has(input.dataset.configKey) && !EMBEDDING_PROVIDER_KEYS.has(input.dataset.configKey)) return;
+    if (!CHAT_PROVIDER_KEYS.has(input.dataset.configKey) && !EMBEDDING_PROVIDER_KEYS.has(input.dataset.configKey) && !RERANK_PROVIDER_KEYS.has(input.dataset.configKey)) return;
     const select = renderProviderSelect(input.dataset.configKey, input.value);
     const template = document.createElement("template");
     template.innerHTML = select;
@@ -570,14 +646,14 @@ function refreshProviderSelects() {
   const count = providerOptions.systemone.length;
   document.getElementById("jevConnectionStatus").textContent = !providerOptions.loaded
     ? "模型列表暂时不可用；已保存的模型选择仍会保留。"
-    : !count ? "尚无可选的 Jev 决策模型。请到模型服务添加并启用模型，再刷新。"
-    : `已找到 ${count} 个 Jev / System One 模型${providerOptions.routerReady ? "，内置连接已就绪。" : "；内置连接尚未就绪，请重新加载 Chat Dynamics。"}`;
+    : !count ? "尚无可选的决策模型。请到模型服务添加 Jev / System One 或 OpenAI Decisions，再刷新。"
+    : `已找到 ${count} 个决策模型${providerOptions.routerReady ? "，内置连接已就绪。" : "；内置连接尚未就绪，请重新加载 Chat Dynamics。"}`;
 }
 
 function prepareJevSelection() {
   if (configBusy) return;
   focusConfigField("decision_provider");
-  setConfigNote("请选择 Jev 决策模型，核对群聊范围后保存。");
+  setConfigNote("请选择决策模型，核对群聊范围后保存。");
 }
 
 async function refreshModelList() {
@@ -681,7 +757,7 @@ function renderProviderSelect(key, value) {
   const options = providerListForKey(key);
   const current = String(value ?? "");
   const seen = new Set();
-  const empty = key === "decision_provider" ? "请选择 Jev / System One 模型" : "（空 / 沿用默认）";
+  const empty = key === "decision_provider" ? "请选择 Jev / OpenAI Decisions 模型" : RERANK_PROVIDER_KEYS.has(key) ? "（未配置 / 归属保留未知）" : "（空 / 沿用默认）";
   const parts = [`<option value="">${empty}</option>`];
   for (const row of options) {
     const id = String((row && row.id) || "");
@@ -875,8 +951,9 @@ async function loadProviders() {
     const data = await apiGet("providers");
     providerOptions = {
       chat: Array.isArray(data && data.chat) ? data.chat : [],
-      systemone: Array.isArray(data?.systemone) ? data.systemone : (data?.chat || []).filter(row => row.systemone),
+      systemone: Array.isArray(data?.decision) ? data.decision : Array.isArray(data?.systemone) ? data.systemone : (data?.chat || []).filter(row => row.systemone),
       embedding: Array.isArray(data && data.embedding) ? data.embedding : [],
+      rerank: Array.isArray(data && data.rerank) ? data.rerank : [],
       routerReady: data?.systemone_router_ready === true,
       loaded: true,
     };
@@ -893,11 +970,11 @@ async function loadConfigPanel() {
     const [providers, panel] = await Promise.allSettled([loadProviders(), apiGet("config")]);
     if (panel.status === "rejected") throw panel.reason;
     renderConfigForm(panel.value || {});
-    const chatN = providerOptions.chat.length;
+    const chatN = providerOptions.chat.filter(row => !row.systemone && !row.decision).length;
     const embN = providerOptions.embedding.length;
     setConfigNote(providers.status === "rejected"
       ? "配置已读取，模型列表暂时不可用；已保存的模型选择仍会保留。"
-      : `已读取 · ${chatN - providerOptions.systemone.length} 个聊天模型 · ${providerOptions.systemone.length} 个 Jev 决策模型 · ${embN} 个向量模型`);
+      : `已读取 · ${chatN} 个聊天模型 · ${providerOptions.systemone.length} 个抉择模型 · ${embN} 个向量模型`);
   } catch (err) {
     setConfigNote(friendlyError(err, "读取配置失败，请稍后重试。"), true);
   } finally {
@@ -925,7 +1002,7 @@ async function saveConfigPanel() {
   if (!els.configForm || configBusy) return;
   const route = routeInfo();
   if (!route.providerId || (providerOptions.loaded && (!route.jevProvider || !providerOptions.routerReady))) {
-    setConfigNote("Jev 设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。", true);
+    setConfigNote("决策设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。", true);
     return;
   }
   let updates;
@@ -1048,6 +1125,21 @@ async function boot() {
     void saveConfigPanel();
   });
   setConfigDirty(false);
+  const integrations = mountIntegrationStatus({
+    apiGet,
+    focusGroup(id) {
+      const group = [...els.configForm.querySelectorAll("details.config-group")].find(node => node.dataset.groupId === id);
+      if (!group) return;
+      setConfigMode("advanced");
+      openGroups.add(id);
+      els.configSearch.value = "";
+      filterConfigFields();
+      group.open = true;
+      group.querySelector("summary").focus({preventScroll: true});
+      group.scrollIntoView({block: "start"});
+    },
+  });
+  void integrations.refresh();
   await loadConfigPanel();
 }
 

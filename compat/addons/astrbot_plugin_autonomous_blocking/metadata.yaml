@@ -1,0 +1,6 @@
+name: astrbot_plugin_autonomous_blocking
+display_name: Autonomous Blocking
+desc: Bot-owner scoped silence and shield policies with a local SQLite audit trail.
+version: 0.1.1
+author: OpenAI
+repo: ""

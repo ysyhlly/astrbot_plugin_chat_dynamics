@@ -18,6 +18,41 @@ from .test_plugin_lifecycle import At, MockEvent
 jev_plugin = _jev_plugin
 
 
+@pytest.mark.asyncio
+async def test_partner_reload_releases_cached_old_plugin_and_database_references():
+    import gc
+    import weakref
+
+    class Database:
+        async def get_user_affection(self, group_id, user_id):
+            return score(group_id, user_id)
+
+    class Partner:
+        def __init__(self):
+            self.db_manager = Database()
+            self.plugin_config = {}
+            self._hook_handler = object()
+
+        def inject_diversity_to_llm_request(self, *args):
+            raise AssertionError('discovery must not run hooks')
+
+    old = Partner()
+    plugin_ref, database_ref = weakref.ref(old), weakref.ref(old.db_manager)
+    meta = NS(name='astrbot_plugin_self_learning', star_cls=old, activated=True)
+    registry = IntegrationRegistry(NS(get_all_stars=lambda: [meta]))
+    try:
+        assert await registry.affection_for_decision(group_id='group', user_id='user')
+        assert registry.affection._cache
+        meta.star_cls = Partner()
+        del old
+        registry.refresh()
+        gc.collect()
+        assert plugin_ref() is None and database_ref() is None
+        assert not registry.affection._cache
+    finally:
+        await registry.close()
+
+
 def registry_for(getter, *, name="astrbot_plugin_self_learning", config=None):
     def forbidden(*_args, **_kwargs):
         raise AssertionError("affection reads must not invoke hooks, updates or legacy context")

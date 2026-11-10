@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from .decision_routing import message_snapshot
+from .discussion_fragments import fragment_groups
 
 MAX_PENDING = 128
 MAX_MESSAGES = 32
@@ -58,8 +59,13 @@ class TopicBatcher:
                 async with runtime.state_lock:
                     if not current():
                         return
-                    entries = list(runtime.topic_batch_pending.values())[-MAX_MESSAGES:]
-                    runtime.topic_batch_pending.clear()
+                    if getattr(h._runtime_config, 'rule_topic_routing_enabled', False):
+                        entries = list(runtime.topic_batch_pending.values())[:MAX_MESSAGES]
+                        for node, _ in entries:
+                            runtime.topic_batch_pending.pop(node.msg_id, None)
+                    else:
+                        entries = list(runtime.topic_batch_pending.values())[-MAX_MESSAGES:]
+                        runtime.topic_batch_pending.clear()
                 await self.process(runtime, entries, is_current=current)
                 async with runtime.state_lock:
                     if not runtime.topic_batch_pending:
@@ -71,6 +77,21 @@ class TopicBatcher:
 
     async def process(self, runtime, entries, *, is_current) -> None:
         h = self.host
+        if getattr(h._runtime_config, 'rule_topic_routing_enabled', False):
+            # Sequential causal processing. A shared participant never merges topics.
+            epoch, config_id = runtime.epoch, h._turn_config_identity()
+            reranker = h._topic_reranker()
+            for group in fragment_groups(runtime, sorted(entries, key=lambda entry: entry[0].timestamp)):
+                def valid():
+                    return (is_current() and runtime.epoch == epoch
+                            and config_id == h._turn_config_identity()
+                            and all(runtime.topic_stop_revisions.get(n.user_id, 0) == rev for n, rev in group))
+                if not valid():
+                    return
+                if reranker is not None:
+                    await h.thread_router.rerank_group(runtime, [n for n, _ in group], reranker, is_current=valid)
+            h._mark_panel_runtime_dirty()
+            # Naming is an independent LLM step, batched once after membership.
         async with runtime.state_lock:
             if not is_current():
                 return
@@ -82,12 +103,22 @@ class TopicBatcher:
                 return
             now = h.time_service.time()
             state.expire_topics(dag, now)
+            rule_mode = getattr(h._runtime_config, 'rule_topic_routing_enabled', False)
+            if rule_mode:
+                h.thread_router.refresh_topics(runtime)
             topics, title_work, deferred = {}, {}, []
             for topic in sorted(state.topics.values(), key=lambda t: t.updated_at, reverse=True):
                 if (not topic.label_requested or topic.generated_title or topic.title_in_flight
                         or topic.title_failures >= 3 or now < topic.title_retry_at):
                     continue
-                nodes = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes][-3:]
+                nodes = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes]
+                if rule_mode:
+                    if len(nodes) < 2:
+                        continue
+                    representatives = [dag.nodes[mid] for mid, _ in topic.exemplar_messages if mid in dag.nodes and mid in topic.message_ids]
+                    nodes = list({n.msg_id: n for n in (representatives[:1] + nodes[:1] + nodes[-3:])}.values())
+                else:
+                    nodes = nodes[-3:]
                 if not nodes:
                     continue
                 if len(topics) >= MAX_TOPICS:

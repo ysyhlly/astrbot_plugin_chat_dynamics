@@ -161,10 +161,15 @@ async def test_poke_sends_paragraphs_with_shared_limit_and_interval(jev_plugin, 
     p.time_service.sleep = sleep
     try:
         await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
         expected = (paragraphs if len(paragraphs) <= limit else
                     [*paragraphs[:limit - 1], "\n\n".join(paragraphs[limit - 1:])])
         assert event.replies_sent == expected
-        assert delays == [pytest.approx(1.2)] * (len(expected) - 1)
+        runtime = p._sessions[event.unified_msg_origin]
+        assert [delay for delay in delays if 0 < delay < 10] == [
+            pytest.approx(scale_delay(1.2, runtime.last_delay_scale)),
+        ] * (len(expected) - 1)
         assert bridge.commits == [reply]
         assert _bot_texts(p._sessions[event.unified_msg_origin]) == expected
     finally:
@@ -221,11 +226,15 @@ async def test_poke_persona_change_during_pause_cancels_unsent_paragraphs(jev_pl
     event = prepare_poke(p, bridge)
 
     async def switch_persona(_delay):
-        bridge.persona = replace(bridge.persona, persona_id="switched")
+        if event.replies_sent and _delay > 0:
+            bridge.persona = replace(bridge.persona, persona_id="switched")
+        await asyncio.sleep(0)
 
     p.time_service.sleep = switch_persona
     try:
         await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
         assert event.replies_sent == [PARAGRAPHS[0]]
         assert bridge.commits == [PARAGRAPHS[0]]
     finally:
