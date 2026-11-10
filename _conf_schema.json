@@ -365,7 +365,7 @@
     "description": "启用讨论归属辅助",
     "type": "bool",
     "default": true,
-    "hint": "使用独立重排序服务处理讨论归属歧义，并由话题归纳模型批量概括已形成的讨论。低分消息先保持待定，不直接建立新主题。"
+    "hint": "按判断模式调用原生重排序或归属 LLM，并由话题归纳模型批量命名。低分先待定。关闭后只保留本地规则，不调用额外归属模型或标题模型。"
   },
   "topic_reranker_provider": {
     "description": "话题归纳模型",
@@ -827,10 +827,29 @@
     "description": "证据视图超时（秒）"
   },
   "rule_topic_routing_enabled": {
-    "description": "规则判断对话对象",
+    "description": "使用新版对话归属链路",
     "type": "bool",
     "default": true,
-    "hint": "使用 @、引用和短期互回识别对象；话题歧义交给独立重排序服务。关闭可恢复旧归属路径。"
+    "hint": "推荐开启，再用判断模式选择规则＋重排序或 LLM。关闭时仅走旧 Jev 归属链路，以下判断模式不生效。"
+  },
+  "discussion_judgment_mode": {
+    "description": "对象与讨论判断模式",
+    "type": "string",
+    "default": "rerank",
+    "options": ["rerank", "llm"],
+    "hint": "rerank：规则判断回复谁，原生重排序判断讨论；llm：聊天模型合并判断隐含回复对象和讨论归属。真实 @、引用仍优先；无需判断具体回哪句。默认保持原方案。"
+  },
+  "discussion_llm_provider": {
+    "description": "归属判断 LLM",
+    "type": "string",
+    "default": "",
+    "hint": "仅 llm 模式使用普通聊天模型，不能选 Rerank 或 Jev。留空沿用回复模型，再留空使用当前会话聊天模型。与独立话题命名模型分开。"
+  },
+  "discussion_llm_timeout": {
+    "description": "LLM 归属判断超时（秒）",
+    "type": "float",
+    "default": 3.0,
+    "hint": "范围 0.1–30。普通消息先判断再决定是否回应，会增加等待；每轮合并对象和讨论判断，失败或不确定时保留规则结果，不串行补调其他归属模型。"
   },
   "discussion_reranker_provider": {
     "description": "讨论归属重排序模型 ID",
@@ -842,7 +861,7 @@
     "description": "讨论匹配分数阈值",
     "type": "float",
     "default": 0.65,
-    "hint": "0–1 的初始阈值，需按模型回放校准；不是概率。"
+    "hint": "两种模式共用的 0–1 分数门槛；LLM 对象也需达到此值。模型分数不是实测概率，切换模型后需回放校准。"
   },
   "discussion_rerank_margin": {
     "description": "讨论候选最小分差",

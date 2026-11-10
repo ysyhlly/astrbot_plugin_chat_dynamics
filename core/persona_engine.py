@@ -1275,7 +1275,9 @@ class PersonaEngine:
             runtime.jev_decision["semantic_coverage"] = coverage
             runtime.jev_decision["request_budget"] = request_budget
             if rule_routing:
-                runtime.jev_decision["recipient_source"] = "rules"
+                runtime.jev_decision["recipient_source"] = (
+                    "llm" if turn.messages and any(e.startswith("recipient_llm_")
+                        for e in getattr(turn.messages[-1].semantics, "routing_evidence", ())) else "rules")
             runtime.jev_addressees = resolved_addressees
             runtime.jev_decision["interaction_frame"] = {
                 "session_key": turn.session_key,

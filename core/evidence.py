@@ -13,6 +13,7 @@ ROUTING_CODES = frozenset({
     "topic_reply_continuation", "topic_reply_evidence", "topic_ambiguous",
     "topic_not_formed", "topic_burst_confirmed", "topic_reopen", "topic_llm_rerank",
     "topic_jev_new", "topic_jev_match",
+    "topic_llm_judgment", "recipient_llm_match", "recipient_llm_none",
     "rule_recipient_continuation", "rule_recipient_reciprocal", "recipient_unknown", "recipient_unresolved", "recipient_stopped",
     "topic_rule_quote", "topic_rule_quote_seed", "topic_rule_short_followup", "topic_rule_seed", "topic_native_rerank", "topic_native_new", "topic_seed_confirmed",
     "topic_backfill", "pending_followup", "parent_override", "parent_topic_override", "selected_score",

@@ -20,9 +20,10 @@ def substantive(node):
 
 
 class RuleTopicRouter(ThreadRouter):
-    def __init__(self, *args, rule_enabled=True, recipient_gap=45.0, recipient_lifetime=120.0, **kwargs):
+    def __init__(self, *args, rule_enabled=True, judgment_mode="rerank", recipient_gap=45.0, recipient_lifetime=120.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.rule_enabled = rule_enabled
+        self.judgment_mode = judgment_mode
         self.recipient_gap, self.recipient_lifetime = recipient_gap, recipient_lifetime
 
     @staticmethod
@@ -59,6 +60,16 @@ class RuleTopicRouter(ThreadRouter):
                 candidates.append((seed.timestamp, RerankCandidate(seed.msg_id, seed.text[:400], (seed.text[:240],))))
         candidates.sort(key=lambda c: c[0], reverse=True)
         return [c for _, c in candidates[:8]]
+
+    def _judgment_history(self, runtime, node):
+        revisions = getattr(runtime, 'topic_stop_revisions', {})
+        rows = [n for n in self._past(runtime, node)
+                if 0 <= node.timestamp - n.timestamp <= self.topic_resolver.window_seconds
+                and n.metadata.get('dialogue_stop_revision', 0) == revisions.get(
+                    str(n.metadata.get('trigger_user_id') or n.user_id), 0)]
+        return [{'id': n.msg_id, 'user_id': n.user_id, 'text': n.text[:400],
+                 'mentions': list(n.metadata.get('actual_mentions', n.mentioned_users)),
+                 'quote_id': n.reply_to_id or ''} for n in rows[-16:]]
 
     @staticmethod
     def _representative(nodes, now):
@@ -198,7 +209,8 @@ class RuleTopicRouter(ThreadRouter):
             candidates = self._candidates(runtime, node)
             snapshot['topic_candidate_ids'] = [c.topic_id for c in candidates]
             # Recipient inheritance may supply context but cannot silently change topic.
-            if anchor and tid in state.topics and recipient['reason'].startswith('rule_recipient_') and not substantive(node):
+            if (self.judgment_mode != 'llm' and anchor and tid in state.topics
+                    and recipient['reason'].startswith('rule_recipient_') and not substantive(node)):
                 node.metadata['discussion_support_ids'] = [anchor.msg_id]
                 self._commit(runtime, node, tid, 'topic_rule_short_followup', .8)
             elif not candidates and substantive(node):
@@ -220,6 +232,8 @@ class RuleTopicRouter(ThreadRouter):
         if not nodes:
             return
         count = getattr(reranker, 'count', lambda *_: None)
+        judge = getattr(reranker, 'judge_scoped', None)
+        llm_mode = callable(judge)
         split = False
         def identity(node):
             r = node.metadata.get('routing', {})
@@ -235,16 +249,17 @@ class RuleTopicRouter(ThreadRouter):
                 split = True
             elif len(nodes) == 1 and (snapshots[0].get('topic_status') == 'committed' or snapshots[0].get('discussion_rank_attempted')):
                 return
-            if len(nodes) == 1 and low_information(nodes[0].text):
+            if not llm_mode and len(nodes) == 1 and low_information(nodes[0].text):
                 snapshots[0]['discussion_rank_reason'] = 'low_information'
                 snapshots[0]['discussion_rank_attempted'] = True
                 count('low_information_skips')
                 return
             excluded = {n.msg_id for n in nodes} if len(nodes) > 1 else set()
             candidates = self._candidates(runtime, nodes[0], excluded)
-            if len(nodes) > 1 and (not candidates or any(self._candidates(runtime, n, excluded) != candidates for n in nodes[1:])):
+            history = self._judgment_history(runtime, nodes[0]) if llm_mode else []
+            if len(nodes) > 1 and ((not candidates and not llm_mode) or any(self._candidates(runtime, n, excluded) != candidates for n in nodes[1:])):
                 split = True
-            if not split and not candidates:
+            if not split and not candidates and not (llm_mode and history):
                 return
             revisions = dict(getattr(runtime, 'topic_stop_revisions', {}))
             if len(nodes) > 1 and len(fragment_groups(runtime, [(n, revisions.get(n.user_id, 0)) for n in nodes])) != 1:
@@ -265,8 +280,11 @@ class RuleTopicRouter(ThreadRouter):
             count('fragment_query_reductions', len(nodes) - 1)
             count('fragment_groups')
         scoped = getattr(reranker, 'rank_scoped', None)
-        ranking = (await scoped(query, candidates, (runtime.session_key, epoch, sorted(revisions.items())))
-                   if callable(scoped) else await reranker.rank(query, candidates))
+        if llm_mode:
+            ranking = await judge(query, candidates, history=history, author_id=nodes[0].user_id, umo=runtime.umo)
+        else:
+            ranking = (await scoped(query, candidates, (runtime.session_key, epoch, sorted(revisions.items())))
+                       if callable(scoped) else await reranker.rank(query, candidates))
         async with _state_guard(runtime):
             if (runtime.dag is not dag or runtime.routing_state is not state or getattr(runtime, 'epoch', None) != epoch
                     or any(dag.get_node(n.msg_id) is not n or n.metadata.get('routing') is not s for n, s in zip(nodes, snapshots))
@@ -277,15 +295,35 @@ class RuleTopicRouter(ThreadRouter):
                     or any(dag.get_node(mid) is not seed or not seed.metadata.get('discussion_seed')
                            for mid, seed in seed_objects.items())
                     or any(self._candidates(runtime, n, excluded) != candidates for n in nodes)
+                    or (llm_mode and self._judgment_history(runtime, nodes[0]) != history)
                     or (is_current and not is_current())):
                 count('stale_results_dropped')
                 return
             for snapshot in snapshots:
                 snapshot['discussion_rank_reason'] = ranking.reason
+                snapshot['judgment_backend'] = 'llm' if llm_mode else 'rerank'
                 snapshot['topic_candidates'] = list(ranking.scores)
                 if len(nodes) > 1:
                     snapshot['discussion_fragment_ids'] = [n.msg_id for n in nodes]
-            if ranking.reason != 'ranked' or not ranking.scores:
+            if ranking.reason != 'ranked':
+                return
+            recipients = getattr(ranking, 'recipient_ids', None)
+            confidence = getattr(ranking, 'recipient_confidence', 0.0)
+            if llm_mode and recipients is not None and confidence >= reranker.threshold:
+                for snapshot in snapshots:
+                    if (snapshot.get('explicit_reply') or snapshot.get('explicit_mention')
+                            or set(snapshot.get('evidence', ())) & {
+                                'explicit_mention', 'explicit_reply', 'recipient_stopped', 'recipient_unresolved'}):
+                        continue
+                    snapshot.update(addressee_ids=list(recipients), addressee_confidence=confidence,
+                                    addressee_ambiguous=not bool(recipients),
+                                    bot_is_addressee=runtime.bot_id in recipients,
+                                    bot_addressee_confidence=confidence if runtime.bot_id in recipients else 0.0,
+                                    recipient_anchor_id='')
+                    snapshot['evidence'].append('recipient_llm_match' if recipients else 'recipient_llm_none')
+                    snapshot['ambiguous'] = snapshot.get('topic_ambiguous', True) or not bool(recipients)
+                    snapshot['ledger'] = routing_ledger(snapshot)
+            if not ranking.scores:
                 return
             best, tid = ranking.scores[0]
             second = ranking.scores[1][0] if len(ranking.scores) > 1 else 0.0
@@ -294,12 +332,12 @@ class RuleTopicRouter(ThreadRouter):
                 if best >= reranker.threshold and best - second >= reranker.margin:
                     node.metadata['discussion_support_topic_id'] = tid
                     if tid in seed_objects and tid not in state.topics:
-                        self._promote_seed(runtime, seed_objects[tid], node, 'topic_native_rerank', best)
+                        self._promote_seed(runtime, seed_objects[tid], node, 'topic_llm_judgment' if llm_mode else 'topic_native_rerank', best)
                         state.topics[tid].created_at = nodes[-1].timestamp
                         seed_objects[tid].metadata['discussion_confirmed_at'] = nodes[-1].timestamp
                         seed_objects[tid].metadata['discussion_confirmed_by'] = nodes[-1].msg_id
                     else:
-                        self._commit(runtime, node, tid, 'topic_native_rerank', best)
+                        self._commit(runtime, node, tid, 'topic_llm_judgment' if llm_mode else 'topic_native_rerank', best)
                     if len(nodes) > 1:
                         node.metadata['discussion_confirmed_at'] = nodes[-1].timestamp
                         node.metadata['discussion_confirmed_by'] = nodes[-1].msg_id

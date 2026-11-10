@@ -67,6 +67,9 @@ class RuntimeConfig:
     conversation_router_enabled: bool = True
     reply_first_sentence_enabled: bool = True
     rule_topic_routing_enabled: bool = True
+    discussion_judgment_mode: str = "rerank"
+    discussion_llm_provider: str = ""
+    discussion_llm_timeout: float = 3.0
     discussion_reranker_provider: str = ""
     discussion_rerank_threshold: float = 0.65
     discussion_rerank_margin: float = 0.10
@@ -374,6 +377,9 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         conversation_router_enabled=_bool(_get(raw, "conversation_router_enabled", True), True),
         topic_reranker_enabled=_bool(_get(raw, "topic_reranker_enabled", True), True),
         rule_topic_routing_enabled=_bool(_get(raw, "rule_topic_routing_enabled", True), True),
+        discussion_judgment_mode=("llm" if _get(raw, "discussion_judgment_mode", "rerank") == "llm" else "rerank"),
+        discussion_llm_provider=str(_get(raw, "discussion_llm_provider", "") or "").strip(),
+        discussion_llm_timeout=_number(raw, "discussion_llm_timeout", 3.0, lambda value: 0.1 <= value <= 30, warnings),
         discussion_reranker_provider=str(_get(raw, "discussion_reranker_provider", "") or "").strip(),
         discussion_rerank_threshold=_number(raw, "discussion_rerank_threshold", 0.65, lambda value: 0 <= value <= 1, warnings),
         discussion_rerank_margin=_number(raw, "discussion_rerank_margin", 0.10, lambda value: 0 <= value <= 1, warnings),

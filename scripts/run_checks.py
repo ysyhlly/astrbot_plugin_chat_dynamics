@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 BACKEND = [
+    "test_discussion_llm",
     "test_companion_catalog", "test_rule_topic_router", "test_rule_routing_integration", "test_poke_source_boundary", "test_compat_bundle",
     "test_builtin_systemone", "test_wake_policy", "test_strong_wake_delivery",
     "test_jev_decision", "test_jev_decision_layer", "test_jev_turn_completion", "test_selflearning_affection", "test_participation_prompts", "test_member_stop",
