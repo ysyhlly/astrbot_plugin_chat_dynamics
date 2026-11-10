@@ -90,8 +90,10 @@ class RuntimeConfig:
     parent_accept_threshold: float = 0.72
     decision_mode: str = "persona_model"
     decision_provider_id: str = ""
+    decision_llm_provider: str = ""
+    decision_llm_timeout: float = 6.0
     decision_timeout: float = 8.0
-    # Native Jev decision; legacy is only an internal bridge-degradation state.
+    # Transport selection is exposed as participation_backend; old backend keys stay retired.
     decision_backend: str = "jev"
     reply_probability_threshold: float = 70.0
     context_completion_enabled: bool = False
@@ -315,8 +317,10 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         rhythm_timezone=rhythm_timezone,
         decision_mode="persona_model",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),
+        decision_llm_provider=str(_get(raw, "decision_llm_provider", "") or "").strip(),
+        decision_llm_timeout=_number(raw, "decision_llm_timeout", 6.0, lambda value: 1 <= value <= 30, warnings),
         decision_timeout=_number(raw, "decision_timeout", 8.0, lambda value: 1 <= value <= 30, warnings),
-        decision_backend="jev",
+        decision_backend="llm" if _get(raw, "participation_backend", "jev") == "llm" else "jev",
         context_completion_enabled=_bool(_get(raw, "context_completion_enabled", False), False),
         reply_probability_threshold=_number(
             raw, "reply_probability_threshold", 70.0, lambda value: 0 <= value <= 100, warnings

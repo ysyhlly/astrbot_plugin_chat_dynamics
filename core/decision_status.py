@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import web_api as web
+from .native_decision import selected_decision_client
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +88,12 @@ class DecisionStatusWebAPI(web.ConsoleWebAPI):
         if getattr(self.plugin, "_shutting_down", False):
             return web._json_err("plugin is shutting down", 503)
         cfg = self.plugin._runtime_config
-        client = getattr(self.plugin, "jev", None)
+        client = selected_decision_client(self.plugin)
         service = client.snapshot() if client else {}
         return web._json_ok({
-            "backend": "jev", "decision_mode": cfg.decision_mode,
-            "provider_id": cfg.decision_provider_id,
+            "backend": cfg.decision_backend, "decision_mode": cfg.decision_mode,
+            "provider_id": (cfg.decision_llm_provider or cfg.reply_provider_id or 'current_umo')
+                if cfg.decision_backend == 'llm' else cfg.decision_provider_id,
             "enabled": cfg.enabled and not cfg.shadow_mode and cfg.decision_mode == "persona_model",
             "service": {key: service[key] for key in (
                 "configured", "available", "status", "detail", "model", "calls", "failures", "last_latency_ms",

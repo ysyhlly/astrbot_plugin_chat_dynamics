@@ -351,7 +351,7 @@ function renderOverview(data) {
     els.shadowState.textContent = "—";
   }
   if (safeData.decision_mode === "persona_model") {
-    const backend = "Jev 决策模型";
+    const backend = safeData.participation_backend === 'llm' ? "普通 LLM 参与决策" : "Jev 决策模型";
     els.shadowState.textContent += ` · ${backend}`;
     els.shadowState.title = `人设状态由 ${safeData.agent_bridge || "未知"} 提供`;
   } else if (safeData.persona_fallback) {
@@ -792,8 +792,8 @@ function renderRoom(
     // Read the action itself so older weakest-answer summaries cannot make a
     // confident participation decision look uncertain.
     const confidence = typeof evidence.action?.confidence === "number" ? evidence.action.confidence : NaN;
-    const layer = decision.backend === "jev"
-      ? ` · Jev 决策${Number.isFinite(confidence) ? ` 动作置信 ${confidence.toFixed(2)}` : ""}`
+    const layer = ["jev", "llm"].includes(decision.backend)
+      ? ` · ${decision.backend === 'llm' ? 'LLM' : 'Jev'} 决策${Number.isFinite(confidence) ? ` 动作置信 ${confidence.toFixed(2)}` : ""}`
       : "";
     els.traceMeta.textContent = `人设状态 ${decision.state || detail.interaction_state} · ${decision.action || "等待决策"} · ${decision.reason_code || ""} · ${decision.latency_ms || 0}ms · 排队 ${detail.model_queue_depth || 0}${decision.shadow ? " · 仅观察" : ""}${layer}`;
     els.traceMeta.title = `回应消息：${(decision.target_message_ids || []).join("、")}`;

@@ -8,12 +8,14 @@ const CHAT_PROVIDER_KEYS = new Set([
   "decision_provider",
   "topic_reranker_provider",
   "discussion_llm_provider",
+  "decision_llm_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
 const RERANK_PROVIDER_KEYS = new Set(["discussion_reranker_provider"]);
 const ROUTE_KEYS = new Set([
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
   "decision_provider", "reply_provider",
+  "participation_backend", "decision_llm_provider",
   "topic_reranker_enabled", ]);
 const BASE_BASIC_KEYS = new Set([
   "private_chat_enabled", "peer_bot_ids", "peer_bot_max_rounds", "peer_bot_reset_seconds",
@@ -44,6 +46,7 @@ const BASIC_HINTS = {
   narrative_outreach_enabled: "允许已启用叙事的会话接收有明确动机的主动联系；生活推进本身不会强制发言。可在记忆小本中单独暂停。",
 };
 const OPTION_LABELS = {
+  participation_backend: { jev: "Jev／原生抉择（默认）", llm: "普通 LLM 参与决策" },
   discussion_judgment_mode: { rerank: "规则＋原生重排序（默认）", llm: "LLM 判断对象与讨论" },
   // Keep participation labels identical to the control panel.
   presence_knob: { ghost: "隐身", sensible: "懂事（默认）", lively: "活跃" },
@@ -78,6 +81,9 @@ const CONFIG_GROUPS = [
     "open": true,
     "keys": [
       "decision_provider",
+      "participation_backend",
+      "decision_llm_provider",
+      "decision_llm_timeout",
       "context_completion_enabled",
       "jev_timeout",
       "jev_min_confidence",
@@ -388,21 +394,28 @@ function routeInfo() {
   const observing = Boolean(value("shadow_mode"));
   const providerId = String(value("decision_provider") || "");
   const jevProvider = providerOptions.systemone.find(row => row.id === providerId);
+  const llm = value("participation_backend") === "llm";
+  const llmProviderId = String(value("decision_llm_provider") || value("reply_provider") || "");
+  const llmProvider = providerOptions.chat.find(row => row.id === llmProviderId && !row.systemone && !row.decision);
+  const decisionReady = llm ? (!llmProviderId || !providerOptions.loaded || Boolean(llmProvider))
+    : Boolean(providerId && (!providerOptions.loaded || (jevProvider && providerOptions.routerReady)));
   const narrativeEnabled = Boolean(value("narrative_enabled"));
   const narrativeAllGroups = Boolean(value("narrative_all_groups"));
   const narrativeSessions = [...new Set(listSetting(value("narrative_sessions")))];
   const issues = [];
   if (takeoverAll && whitelist.length) issues.push({key: "takeover_groups", kind: "未使用", text: "已选择全部群聊，白名单不会缩小生效范围；排除名单仍有效。"});
-  if (!providerId || (providerOptions.loaded && !jevProvider)) issues.push({key: "decision_provider", kind: "决策模型未就绪", text: "请选择已启用的 Jev / System One 或 OpenAI Decisions 模型。"});
-  if (providerOptions.loaded && !providerOptions.routerReady) issues.push({key: "decision_provider", kind: "模型连接未就绪", text: "内置决策模型连接尚未就绪，请重新加载 Chat Dynamics。"});
+  if (!llm && (!providerId || (providerOptions.loaded && !jevProvider))) issues.push({key: "decision_provider", kind: "决策模型未就绪", text: "请选择已启用的 Jev / System One 或 OpenAI Decisions 模型。"});
+  if (!llm && providerOptions.loaded && !providerOptions.routerReady) issues.push({key: "decision_provider", kind: "模型连接未就绪", text: "内置决策模型连接尚未就绪，请重新加载 Chat Dynamics。"});
+  if (llm && !decisionReady) issues.push({key:"decision_llm_provider",kind:"LLM 决策模型未就绪",text:"请选择已启用的普通聊天模型，不能使用 Jev 或重排序模型。"});
   if (!providerOptions.loaded) issues.push({key: "decision_provider", kind: "列表读取失败", text: "已保存的选择会保留，请刷新模型列表后核对。"});
   if (observing) issues.push({key: "shadow_mode", kind: "不会发送", text: "观察模式只记录判断，不发送插件回复。"});
   return {value, excluded, whitelist, groups, enabled, takeoverAll, observing, providerId, jevProvider, issues,
-    narrativeEnabled, narrativeAllGroups, narrativeSessions};
+    narrativeEnabled, narrativeAllGroups, narrativeSessions, llm, llmProviderId, llmProvider, decisionReady};
 }
 
-function basicKeysForRoute() {
-  return new Set([...BASE_BASIC_KEYS, "decision_provider", "jev_timeout", "jev_min_confidence"]);
+function basicKeysForRoute(route) {
+  return new Set([...BASE_BASIC_KEYS, "participation_backend", "jev_min_confidence",
+    ...(route.llm ? ["decision_llm_provider", "decision_llm_timeout"] : ["decision_provider", "jev_timeout"])]);
 }
 
 function filterConfigFields() {
@@ -476,11 +489,15 @@ function updateScopeStatus() {
       ? `保存后立即影响${route.takeoverAll ? "全部未排除群" : `${groups.length} 个指定群`}；保存前的修改不会生效。`
       : "保存后仍不会接管群聊，直到启用插件并选择生效范围。"
     : "修改设置后，保存会立即应用到当前生效的群聊。";
-  els.decisionOverview.dataset.route = "jev";
+  els.decisionOverview.dataset.route = route.llm ? "llm" : "jev";
   const protocol = route.jevProvider?.decision_protocol;
   const protocolLabel = protocol === "openai_decisions" ? "OpenAI Decisions" : protocol === "native_decision" ? "原生抉择" : "Jev";
-  els.configDecisionHeadline.textContent = `${protocolLabel} · ${route.jevProvider?.model || "未选择有效模型"}`;
-  els.configDecisionStatus.textContent = "使用所选模型服务中的地址、密钥和模型 ID 完成结构化决策。";
+  els.configDecisionHeadline.textContent = route.llm
+    ? `普通 LLM · ${route.llmProvider?.model || route.llmProviderId || "当前会话模型"}`
+    : `${protocolLabel} · ${route.jevProvider?.model || "未选择有效模型"}`;
+  els.configDecisionStatus.textContent = route.llm
+    ? "普通聊天模型只做结构化参与决策；正文仍走回复链路，失败时保守处理，不补调 Jev。"
+    : "使用所选模型服务中的地址、密钥和模型 ID 完成结构化决策。";
   els.configModelHeadline.textContent = `@必回 · 引用 ≥ ${value("quote_reply_threshold") ?? 35}% · 昵称 ≥ ${value("name_reply_threshold") ?? 70}%`;
   els.configModelStatus.textContent = "@机器人直接回复；引用机器人仍需确认接话对象。昵称和补充消息还需有足够把握认为值得回应，不会把“忽略”强制改成回复。晚安安、安安静静等歧义表达不作为昵称呼唤。睡眠中只有明确呼唤或引用才可简短回应。";
   els.configStartTitle.textContent = configDirty ? "保存后路径预览" : "当前运行路径";
@@ -492,6 +509,7 @@ function updateScopeStatus() {
   els.configConflictList.innerHTML = route.issues.map(issue => `<li><span>${escapeHtml(issue.kind)}</span><p>${escapeHtml(issue.text)}</p>${issue.key
     ? `<button type="button" data-focus-key="${escapeHtml(issue.key)}">定位参数</button>` : ""}</li>`).join("");
   updateFieldContexts(route);
+  updateModelConnectionNote();
 }
 
 function updateFieldContexts(route) {
@@ -648,16 +666,22 @@ function refreshProviderSelects() {
     template.innerHTML = select;
     input.innerHTML = template.content.firstElementChild.innerHTML;
   });
-  const count = providerOptions.systemone.length;
+  updateModelConnectionNote();
+}
+
+function updateModelConnectionNote() {
+  const llm = settingValue("participation_backend") === "llm";
+  const count = llm ? providerOptions.chat.filter(row => !row.systemone && !row.decision).length : providerOptions.systemone.length;
   document.getElementById("jevConnectionStatus").textContent = !providerOptions.loaded
     ? "模型列表暂时不可用；已保存的模型选择仍会保留。"
+    : llm ? `普通 LLM 模式可用 ${count} 个聊天模型，不需要配置 Jev；留空时按回复模型或当前会话模型解析。`
     : !count ? "尚无可选的决策模型。请到模型服务添加 Jev / System One 或 OpenAI Decisions，再刷新。"
     : `已找到 ${count} 个决策模型${providerOptions.routerReady ? "，内置连接已就绪。" : "；内置连接尚未就绪，请重新加载 Chat Dynamics。"}`;
 }
 
 function prepareJevSelection() {
   if (configBusy) return;
-  focusConfigField("decision_provider");
+  focusConfigField(routeInfo().llm ? "decision_llm_provider" : "decision_provider");
   setConfigNote("请选择决策模型，核对群聊范围后保存。");
 }
 
@@ -1006,7 +1030,7 @@ function focusConfigField(key) {
 async function saveConfigPanel() {
   if (!els.configForm || configBusy) return;
   const route = routeInfo();
-  if (!route.providerId || (providerOptions.loaded && (!route.jevProvider || !providerOptions.routerReady))) {
+  if (!route.decisionReady) {
     setConfigNote("决策设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。", true);
     return;
   }

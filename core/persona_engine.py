@@ -52,6 +52,7 @@ from .reply_failure import ModelReplyFailure, unavailable_reply
 from . import member_boundary
 from .context_completion import complete_context
 from .early_reply import final_fragments
+from .native_decision import selected_decision_client
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
@@ -69,7 +70,13 @@ def _turn_log_id(runtime, item: "ModelTurn") -> str:
 
 
 _REQUEST_SUPPLEMENT_WINDOW = 120.0
-_WAKE_ADMITTED_REASONS = frozenset({"jev_wake_addressed", "jev_wake_low_confidence_acknowledged"})
+_WAKE_ADMITTED_REASONS = frozenset(f'{backend}_{reason}' for backend in ('jev', 'llm')
+    for reason in ('wake_addressed', 'wake_low_confidence_acknowledged'))
+_WAITING_REASONS = frozenset({'jev_waiting_for_completion', 'llm_waiting_for_completion'})
+
+
+def _decision_prefix(plugin):
+    return 'llm_' if plugin._runtime_config.decision_backend == 'llm' else 'jev_'
 
 
 @dataclass(frozen=True)
@@ -1060,18 +1067,19 @@ class PersonaEngine:
         *,
         runtime: Any = None,
     ) -> TurnDecision:
-        """One bounded native Jev call, with the local conservative fallback."""
+        """One bounded call to the selected decision transport, with a conservative fallback."""
         p, turn = self.plugin, item.context
-        prefix = "jev_"
+        prefix = _decision_prefix(p)
         rule_routing = bool(
             getattr(p._runtime_config, "rule_topic_routing_enabled", False)
             and p._runtime_config.conversation_router_enabled
             and not item.private_direct
         )
-        client = getattr(p, "jev", None)
+        client = selected_decision_client(p)
         if client is None:
-            return TurnDecision.fallback(turn, "jev_unavailable")
-        timeout = p._runtime_config.jev_timeout
+            return TurnDecision.fallback(turn, prefix + "unavailable")
+        timeout = (p._runtime_config.decision_llm_timeout if p._runtime_config.decision_backend == 'llm'
+                   else p._runtime_config.jev_timeout)
         floor = p._runtime_config.jev_min_confidence
         observations = dict(item.observations)
         context_options = {
@@ -1228,6 +1236,7 @@ class PersonaEngine:
                 state=bounded_state,
                 questions=questions,
                 timeout=timeout,
+                **({'umo': turn.session_key} if p._runtime_config.decision_backend == 'llm' else {}),
             )
         coverage = semantic_coverage(intent_questions, answers, floor=floor)
         for key, status in coverage.items():
@@ -1274,6 +1283,7 @@ class PersonaEngine:
             runtime.jev_decision = describe_answers(answers)
             runtime.jev_decision["semantic_coverage"] = coverage
             runtime.jev_decision["request_budget"] = request_budget
+            runtime.jev_decision["backend"] = p._runtime_config.decision_backend
             if rule_routing:
                 runtime.jev_decision["recipient_source"] = (
                     "llm" if turn.messages and any(e.startswith("recipient_llm_")
@@ -1298,7 +1308,7 @@ class PersonaEngine:
             addressees=resolved_addressees,
         )
         decision = annotate_model_decision(decision, turn, answers, resolved_addressees)
-        if topic_mapping is not None and decision.reason_code != "jev_waiting_for_completion":
+        if topic_mapping is not None and decision.reason_code not in _WAITING_REASONS:
             async with runtime.state_lock:
                 if (
                     await self.valid_async(runtime, item)
@@ -1717,7 +1727,7 @@ class PersonaEngine:
             )
             if (
                 mode in {"recent", "topic", "memory"}
-                and decision.reason_code != "jev_waiting_for_completion"
+                and decision.reason_code not in _WAITING_REASONS
                 and reason not in {"other_recipient", "boundary_or_sensitive"}
                 and not item.observations.get("context_completion", {}).get("attempted")
                 and not any(set(m.mentioned_users) - {turn.bot_id} for m in turn.messages)
@@ -1778,10 +1788,10 @@ class PersonaEngine:
                     decision,
                     action="clarify",
                     length="brief",
-                    reason_code="jev_context_clarify",
+                    reason_code=_decision_prefix(p) + "context_clarify",
                     response_goal="当前仍缺少作答所需的关键信息。只问一个具体、必要的澄清问题，不猜测缺失内容，不声称未检索到的事情从未发生。",
                 )
-        if bundle is not None and decision.action != "ignore" and decision.reason_code != "jev_waiting_for_completion":
+        if bundle is not None and decision.action != "ignore" and decision.reason_code not in _WAITING_REASONS:
             previous = bundle.wire()
             full_bundle = await self.telemetry.run("prepare_reply", turn, narrative.prepare(runtime, item, persona))
             if full_bundle is None:
@@ -1817,7 +1827,7 @@ class PersonaEngine:
         async with runtime.state_lock:
             if not await self.valid_async(runtime, item):
                 return
-            if not item.private_direct and decision.reason_code != "jev_waiting_for_completion":
+            if not item.private_direct and decision.reason_code not in _WAITING_REASONS:
                 item = refresh_topic_context(runtime, item, boundary_host=p)
                 turn = item.context
         projection = await self._project_persona(persona, turn)
@@ -1834,7 +1844,7 @@ class PersonaEngine:
             ):
                 return
             now = p.time_service.time()
-            if decision.reason_code == "jev_waiting_for_completion":
+            if decision.reason_code in _WAITING_REASONS:
                 waiting_id = turn.messages[-1].message_id
 
                 async def expired():
@@ -1847,11 +1857,11 @@ class PersonaEngine:
                             and runtime.model_diagnostic.get("waiting_user_id") == turn.author
                         ):
                             self.diagnostic(
-                                runtime, "jev_incomplete_expired", action="ignore", reason_zh="补充输入等待已结束"
+                                runtime, _decision_prefix(p) + "incomplete_expired", action="ignore", reason_zh="补充输入等待已结束"
                             )
 
                 deferred = await p.debounce.defer_result(item.debounce_result, on_expire=expired)
-                reason = decision.reason_code if deferred else "jev_incomplete_expired"
+                reason = decision.reason_code if deferred else _decision_prefix(p) + "incomplete_expired"
                 self.diagnostic(
                     runtime,
                     reason,
@@ -1882,6 +1892,7 @@ class PersonaEngine:
                 "jev_dialogue_answer",
                 "jev_dialogue_continue",
                 "jev_dialogue_reopen",
+                "llm_dialogue_answer", "llm_dialogue_continue", "llm_dialogue_reopen",
             }
             continuation = continuation or dialogue_reply
             addressed = (
@@ -1988,7 +1999,7 @@ class PersonaEngine:
                         group_memory=getattr(p, "group_memory", None),
                         committed_reply=decision.action != "ignore",
                         continuation=dialogue_reply,
-                        public_topic=decision.reason_code == "jev_open_group_topic",
+                        public_topic=decision.reason_code in {"jev_open_group_topic", "llm_open_group_topic"},
                         current_exchange=bool(
                             (
                                 continuation
@@ -2180,8 +2191,8 @@ class PersonaEngine:
                     "reason_code": decision.reason_code,
                 }
                 goal = str(decision.response_goal or "")
-                if runtime.jev_decision and decision.reason_code.startswith("jev_"):
-                    # Native Jev's response goal comes from the plugin's fixed
+                if runtime.jev_decision and decision.reason_code.startswith(("jev_", "llm_")):
+                    # Both transports' response goal comes from the plugin's fixed
                     # action/reason templates, not from conversation text.
                     plan.update(response_goal=goal[:600], response_goal_source="program")
                 else:

@@ -123,6 +123,9 @@ class ConfigPanel:
             "topic_batch_interval": cfg.topic_batch_interval,
             "replay_show_topic_titles": cfg.replay_show_topic_titles,
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
+            "participation_backend": cfg.decision_backend,
+            "decision_llm_provider": cfg.decision_llm_provider,
+            "decision_llm_timeout": cfg.decision_llm_timeout,
             "decision_prompt": cfg.decision_prompt,
             "reply_prompt": cfg.reply_prompt,
             "reply_first_sentence_enabled": cfg.reply_first_sentence_enabled,
@@ -382,14 +385,20 @@ class ConfigPanel:
             provider = getter(updates['discussion_reranker_provider']) if callable(getter) else None
             if not callable(getattr(provider, 'rerank', None)):
                 raise ValueError('discussion_reranker_provider：请选择已加载的原生重排序模型服务。')
-        text_keys = {"reply_provider", "topic_reranker_provider", "discussion_llm_provider"}
+        text_keys = {"reply_provider", "topic_reranker_provider", "discussion_llm_provider", "decision_llm_provider"}
         for key in text_keys.intersection(updates):
             provider = getter(updates[key]) if callable(getter) and updates[key] else None
             if is_decision_provider(provider):
                 raise ValueError(f"{key}：Jev / OpenAI Decisions 只用于决策，请选择普通聊天模型生成文字。")
-            if key == "discussion_llm_provider" and updates[key] and not callable(getattr(provider, "text_chat", None)):
-                raise ValueError("discussion_llm_provider：请选择已加载的普通聊天模型。")
-        if "decision_provider" not in updates:
+            if key in {"discussion_llm_provider", "decision_llm_provider"} and updates[key] and not callable(getattr(provider, "text_chat", None)):
+                raise ValueError(f"{key}：请选择已加载的普通聊天模型。")
+        if cfg.decision_backend == "llm":
+            selected = cfg.decision_llm_provider or cfg.reply_provider_id
+            provider = getter(selected) if callable(getter) and selected else None
+            if selected and (is_decision_provider(provider) or not callable(getattr(provider, "text_chat", None))):
+                raise ValueError("decision_llm_provider：LLM 决策需要已加载的普通聊天模型，不能使用 Jev 或重排序模型。")
+            return
+        if not {"decision_provider", "participation_backend"}.intersection(updates):
             return
         if not cfg.decision_provider_id:
             raise ValueError("decision_provider：请选择在 AstrBot 模型服务中添加的 Jev / System One 或 OpenAI Decisions 模型。")

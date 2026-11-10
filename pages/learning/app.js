@@ -10,7 +10,7 @@ async function refresh() {
     const data = await apiGet('decision/status');
     if (stopped) return;
     const service = data.service || {};
-    el('mode').textContent = data.enabled ? 'Jev 直接决策' : data.decision_mode !== 'persona_model' ? '回复桥接不可用' : '关闭或仅观察';
+    el('mode').textContent = data.enabled ? (data.backend === 'llm' ? '普通 LLM 参与决策' : 'Jev 直接决策') : data.decision_mode !== 'persona_model' ? '回复桥接不可用' : '关闭或仅观察';
     el('model').textContent = service.model || data.provider_id || '未选择';
     el('calls').textContent = String(service.calls ?? 0);
     el('failures').textContent = String(service.failures ?? 0);

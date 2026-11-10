@@ -54,7 +54,7 @@ flowchart LR
 | 表情预取 | `start_joint_reply_prefetch` 返回本请求拥有的检索任务 | 表情插件 |
 | 成员策略 | `resolve_context`、`peek_policy`、`policy_snapshot`、`filter_frames` 及发送租约 | 自主屏蔽 |
 
-实现通过宿主公开注册表发现伙伴，不导入对方模块或直接打开其数据库文件。Jev 的当前成员好感度兼容查询通过既有 `db_manager.get_user_affection(group_id, user_id)` 门面进行，只接受账号和群回显匹配的有限数值；过期或已重载伙伴的缓存引用会释放。旧 SelfLearning 管理适配器集中留在 `core/integrations/legacy/`，不参与普通回复的重复注入。记忆原生请求和工具还有独立的身份、回调、来源及版本检查：发现接口不绕过这些检查，Beta 自主回忆工具也不会因此被当作已支持的标准工具。
+实现通过宿主公开注册表发现伙伴，不导入对方模块或直接打开其数据库文件。两种参与决策后端的当前成员好感度兼容查询通过既有 `db_manager.get_user_affection(group_id, user_id)` 门面进行，只接受账号和群回显匹配的有限数值；过期或已重载伙伴的缓存引用会释放。旧 SelfLearning 管理适配器集中留在 `core/integrations/legacy/`，不参与普通回复的重复注入。记忆原生请求和工具还有独立的身份、回调、来源及版本检查：发现接口不绕过这些检查，Beta 自主回忆工具也不会因此被当作已支持的标准工具。
 
 兼容补丁采用命名的 v1 请求标记承接现有 AstrBot Hook。它们属于程序内部的请求能力，不是聊天中可设置的参数；不得从用户文本构造。独立事件副本上的表情检索禁止发送，采用候选前再次检查作用域。
 

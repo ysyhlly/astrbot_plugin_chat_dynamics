@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 BACKEND = [
+    "test_llm_participation",
     "test_discussion_llm",
     "test_companion_catalog", "test_rule_topic_router", "test_rule_routing_integration", "test_poke_source_boundary", "test_compat_bundle",
     "test_builtin_systemone", "test_wake_policy", "test_strong_wake_delivery",
@@ -25,7 +26,7 @@ BACKEND = [
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",
     "test_decision_gate_clock", "test_release_contract",
 ]
-BROWSER = ["test_companion_settings_browser", "test_rule_routing_browser", "test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser", "test_annotation_concurrency_browser"]
+BROWSER = ["test_llm_participation_browser", "test_companion_settings_browser", "test_rule_routing_browser", "test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser", "test_annotation_concurrency_browser"]
 
 
 def main():
