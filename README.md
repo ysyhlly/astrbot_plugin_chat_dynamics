@@ -100,6 +100,8 @@ AstrBot 4.29.4–4.x；正常的人格与主 Agent 管理器。安装包仅含�
 
 ## 开发验证
 
-安装 `requirements-dev.txt` 和 AstrBot 4.29.4 后，运行 `python scripts/run_checks.py backend`。SDK 集成测试单独运行 `python -m pytest integration -q`；不要与单元测试混在同一进程。浏览器检查先安装 Playwright Chromium，再运行 `python scripts/run_checks.py browser`。`python scripts/check_release.py` 核对发布文件和页面资源，`python scripts/build_release.py` 生成运行安装包；`python scripts/build_compat_release.py` 单独生成兼容包。发布门槛以这些维护中的检查为准，早期兼容路径测试仍保留为历史参考。
+安装 `requirements-dev.txt` 和 AstrBot 4.29.4 后，运行 `python scripts/run_checks.py backend`。SDK 集成测试单独运行 `python -m pytest integration -q`；不要与单元测试混在同一进程。未安装 LivingMemory 时，一项真实伙伴工具用例会标为可选跳过；可在源码 checkout 中运行 `python scripts/prepare_companion_fixture.py --destination data/plugins/astrbot_plugin_livingmemory`，准备固定基线并应用兼容补丁的隔离源码夹具。CI 会准备此夹具并强制执行全部 SDK 用例，不依赖在线插件。此脚本不加载插件，不覆盖不同的已有目录。
+
+浏览器检查先安装 Playwright Chromium，再运行 `python scripts/run_checks.py browser`。`python scripts/check_release.py` 核对发布文件和页面资源，`python scripts/build_release.py` 生成运行安装包；`python scripts/build_compat_release.py` 单独生成兼容包。发布门槛以这些维护中的检查为准，早期兼容路径测试仍保留为历史参考。
 
 CI 使用这份当前回归清单，覆盖内置模型服务、唤醒、决策、取消、配置、持久化与当前页面，并单独运行真实 AstrBot SDK 的主 Agent、原生消息和停止指令集成测试。全源码 lint 与基础模块类型检查继续保留。旧训练、旧后端和旧模型决策模式的历史测试保留在仓库，不代表 v1.15 仍支持这些功能；本版本不沿用包含退役功能的旧覆盖率门槛。

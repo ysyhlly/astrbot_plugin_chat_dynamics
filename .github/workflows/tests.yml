@@ -18,7 +18,8 @@ jobs:
       - run: python scripts/check_release.py
       - run: mkdir -p artifacts
       - run: python scripts/run_checks.py backend --junitxml=artifacts/backend.xml
-      - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 python -m pytest integration -q --junitxml=artifacts/integration.xml
+      - run: python scripts/prepare_companion_fixture.py --destination "$GITHUB_WORKSPACE/data/plugins/astrbot_plugin_livingmemory"
+      - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 CHAT_DYNAMICS_REQUIRE_COMPANION=1 CHAT_DYNAMICS_LIVINGMEMORY_FIXTURE="$GITHUB_WORKSPACE/data/plugins/astrbot_plugin_livingmemory" python -m pytest integration -q --junitxml=artifacts/integration.xml
       - run: python -m compileall -q main.py core tests integration scripts
       - run: python -m ruff check main.py core tests integration scripts
       - run: python -m mypy

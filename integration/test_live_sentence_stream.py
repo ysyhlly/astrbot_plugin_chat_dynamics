@@ -1,4 +1,7 @@
 import asyncio
+import importlib
+import os
+from pathlib import Path
 from types import SimpleNamespace as NS
 import pytest
 from .test_persona_agent import host_fixture as host_fixture, PrivateEvent
@@ -20,13 +23,28 @@ def private_event(text="你好"):
     return event
 
 
+def _inside_fixture(module_path, fixture_path):
+    return Path(module_path).resolve().is_relative_to(Path(fixture_path).resolve())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("real_memory_tool", [False, True])
 async def test_sentence_precedes_model_finish_and_tail_is_not_replayed(host_fixture, real_memory_tool):
     ctx, _, calls = host_fixture
     event = private_event()
     if real_memory_tool:
-        from data.plugins.astrbot_plugin_livingmemory.core.tools.memory_search_tool import MemorySearchTool
+        try:
+            module = importlib.import_module("data.plugins.astrbot_plugin_livingmemory.core.tools.memory_search_tool")
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"data", "data.plugins", "data.plugins.astrbot_plugin_livingmemory"}:
+                raise
+            if os.environ.get("CHAT_DYNAMICS_REQUIRE_COMPANION") == "1":
+                raise
+            pytest.skip("optional LivingMemory source is absent; prepare_companion_fixture.py enables this case")
+        fixture = os.environ.get("CHAT_DYNAMICS_LIVINGMEMORY_FIXTURE")
+        if fixture:
+            assert await asyncio.to_thread(_inside_fixture, module.__file__, fixture)
+        MemorySearchTool = module.MemorySearchTool
         from astrbot.core.provider.func_tool_manager import FunctionToolManager, _PermissionGuardedTool
         from astrbot.core.agent.tool import ToolSet
 
