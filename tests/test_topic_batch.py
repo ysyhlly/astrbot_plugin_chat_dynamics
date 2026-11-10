@@ -20,7 +20,7 @@ from .test_plugin_lifecycle import MockEvent, Reply, _plugin
 @pytest.fixture
 def batch_plugin(monkeypatch):
     monkeypatch.setattr(AstrBotAgentBridge, "check", lambda self: True)
-    p = _plugin({"daily_rhythm_enabled": False}, clock=VirtualClock(100))
+    p = _plugin({"daily_rhythm_enabled": False, "rule_topic_routing_enabled": False}, clock=VirtualClock(100))
     p.persona_engine.bridge = BridgeDouble()
     p.jev = JevDouble(answers(action="ignore", reason="low_value_chatter",
                              topic={"type": "choice", "choice": "NEW", "confidence": .9}))

@@ -6,15 +6,16 @@ user mentions, and reconstructs threaded sub-conversations.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from astrbot.api import logger
-
 from .semantics import SemanticMatch, semantic_match
 from .routing_contract import EDGE_KINDS, INFERRED_EDGE_KINDS
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.graph")
 
 
 @dataclass

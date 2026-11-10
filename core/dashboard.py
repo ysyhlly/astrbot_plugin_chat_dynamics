@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
-
-from astrbot.api import logger
+import logging
 
 from .routing_trace import build_routing_trace, redact_trace_identifiers, trace_with_updates
+from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.dashboard")
 
 
 def _attr_int(obj: Any, key: str, default: int) -> int:
@@ -244,6 +245,10 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
     active_tasks = len(active_task_set)
     metrics = dict(getattr(plugin, "_metrics", {}))
     metrics["active_tasks"] = active_tasks
+    telemetry = getattr(getattr(plugin, "persona_engine", None), "telemetry", None)
+    if telemetry is not None:
+        metrics["pipeline"] = telemetry.snapshot()
+    metrics["counter_window"] = "persisted_lifetime"
     metrics.update(
         {
             "received": metrics.get("message_received", 0),
@@ -296,6 +301,13 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "embedding_cache_size": int(getattr(getattr(plugin, "embeddings", None), "cache_len", 0) or 0),
         "embedding_stats": (plugin.embeddings.snapshot_stats()
                             if callable(getattr(getattr(plugin, "embeddings", None), "snapshot_stats", None)) else {}),
+        "call_optimizations": {
+            "discussion": (getattr(plugin.context, '_cd_discussion_calls').snapshot()
+                           if callable(getattr(getattr(getattr(plugin, 'context', None), '_cd_discussion_calls', None), 'snapshot', None)) else {}),
+            "narrative": (plugin.narrative.call_diagnostics()
+                          if callable(getattr(getattr(plugin, 'narrative', None), 'call_diagnostics', None)) else {}),
+            "embedding_waits_skipped": metrics.get('routing_embedding_wait_skipped', 0),
+        },
         "session_count": len(sessions),
         "live_count": live,
         "cooling_count": cooling,
@@ -323,6 +335,10 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "jev": jev_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
+            "decision_input_compaction": bool(getattr(getattr(plugin, "persona_engine", None), "_decision_compaction_release", False)),
+            "decision_nearby_context": bool(getattr(getattr(plugin, "persona_engine", None), "_decision_nearby_context_release", False)),
+            "async_receipt_journal": callable(getattr(getattr(plugin, "narrative", None), "finish_send_async", None)),
+            "recipient_consistency": bool(getattr(getattr(plugin, "persona_engine", None), "_recipient_guard_release", False)),
             "mood_memory": bool(getattr(plugin, "mood_memory_enabled", False)),
             "slang_trial": bool(getattr(plugin, "slang_trial_enabled", False)),
             "group_memory": bool(getattr(plugin, "group_memory_enabled", True)),
@@ -690,13 +706,15 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
         for node in nodes:
             routing = node.metadata.get("routing", {})
             topic = _replay_node_topic(node)
-            if not topic:
-                continue
             key = (sid, topic)
             runtime = getattr(plugin, "_sessions", {}).get(sid)
             topic_state = getattr(getattr(runtime, "routing_state", None), "topics", {}).get(topic)
             archived = getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).get(topic)
             generated_title = getattr(topic_state, "generated_title", "") or getattr(archived, "title", "") or node.metadata.get("topic_title", "")
+            rule_mode = routing.get('routing_mode') == 'rules'
+            # Representatives are verbatim chat, unlike generated summaries.
+            if rule_mode and show_content and not generated_title:
+                generated_title = getattr(topic_state, 'label', '') or generated_title
             if key not in groups:
                 title_status = "hidden" if not show_titles else (
                     "ready" if generated_title else
@@ -706,13 +724,15 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
                     "pending")
                 groups[key] = {
                     "session_id": sid, "topic_id": topic,
-                    "topic_title": _truncate(generated_title or node.text, 36) if show_titles and (generated_title or show_content and node.text) else f"话题 {len(groups) + 1}",
-                    "topic_status": "archived" if archived else "committed", "title_status": title_status,
+                    "topic_title": ("未归话题消息" if not topic else
+                        _truncate(generated_title or node.text, 36) if show_titles and (generated_title or show_content and node.text) else f"话题 {len(groups) + 1}"),
+                    "topic_status": "unassigned" if not topic else "archived" if archived else "committed",
+                    "is_unassigned": not bool(topic), "title_status": "unassigned" if not topic else title_status,
                     "start_ts": node.timestamp + wall_offset, "end_ts": node.timestamp + wall_offset,
                     "events": [], "messages": [], "message_count": 0, "count": 0,
                 }
             group = groups[key]
-            if show_titles and generated_title:
+            if topic and show_titles and generated_title:
                 group["topic_title"] = _truncate(generated_title, 36)
                 group["title_status"] = "ready"
             group["end_ts"] = max(group["end_ts"], node.timestamp + wall_offset)

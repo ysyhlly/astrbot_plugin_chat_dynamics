@@ -75,8 +75,12 @@ async def test_poke_honors_configured_three_second_interval(jev_plugin):
     p.time_service.sleep = record
     try:
         await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
         assert len(event.replies_sent) == 3
-        assert delays == [3.0, 3.0], delays
+        from astrbot_plugin_chat_dynamics.core.pacer import scale_delay
+        interval = scale_delay(3.0, p._sessions[event.unified_msg_origin].last_delay_scale)
+        assert [delay for delay in delays if 0 < delay < 10] == [interval, interval], delays
     finally:
         await p.terminate()
 

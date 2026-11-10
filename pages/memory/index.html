@@ -64,6 +64,84 @@
 <p class="ops-note" id="sessionNote" role="status" aria-live="polite">
 </p>
 </section>
+<section class="wire-card narrative-panel" id="narrativePanel" aria-labelledby="narrativeTitle">
+<div class="card-heading">
+<div>
+<p class="eyebrow">角色生活 · 管理员</p>
+<h2 id="narrativeTitle">持续生活与联系</h2>
+</div>
+<button type="button" class="button button-quiet" id="btnNarrativeRefresh" disabled>刷新生活</button>
+</div>
+<p class="section-copy">查看当前会话使用的角色状态、素材来源和实际发送结果。生活状态由同一角色共享，约定和联系按会话保存。</p>
+<p class="ops-note" id="narrativeStatus" role="status" aria-live="polite">请选择会话。</p>
+<div class="narrative-actions" aria-label="生活控制">
+<button type="button" class="button button-quiet" data-narrative-action="pause" disabled>暂停生活推进</button>
+<button type="button" class="button button-quiet" data-narrative-action="resume" disabled>恢复生活推进</button>
+<button type="button" class="button button-quiet" data-narrative-action="pause_outreach" disabled>暂停主动联系</button>
+<button type="button" class="button button-quiet" data-narrative-action="resume_outreach" disabled>恢复主动联系</button>
+</div>
+<div class="narrative-content hidden" id="narrativeContent">
+<div class="narrative-grid">
+<section class="narrative-block" aria-labelledby="narrativeSnapshotTitle">
+<h3 id="narrativeSnapshotTitle">当前状态</h3>
+<dl id="narrativeSnapshot" class="narrative-snapshot"></dl>
+<form id="narrativeCorrectForm" class="narrative-correction">
+<h4>纠正当前状态</h4>
+<label for="narrativeActivity">活动<input id="narrativeActivity" name="activity" maxlength="300" placeholder="例如：修改小说草稿" /></label>
+<label for="narrativeAvailability">可交互状态<select id="narrativeAvailability" name="availability">
+<option value="">保持当前状态</option>
+<option value="available">可以交互</option>
+<option value="busy">忙碌</option>
+<option value="asleep">睡眠</option>
+<option value="unknown">未知</option>
+</select></label>
+<p class="section-copy">只提交填写的字段；纠正会记为新事件，并影响同一角色的其他会话。</p>
+<button type="submit" class="button" id="btnNarrativeCorrect" disabled>记录纠正</button>
+</form>
+</section>
+<section class="narrative-block" aria-labelledby="narrativeMaterialsTitle">
+<h3 id="narrativeMaterialsTitle">本轮素材与来源</h3>
+<div id="narrativeMaterials" class="narrative-list"></div>
+</section>
+<details class="narrative-block narrative-collapsible" id="narrativeDiarySection">
+<summary>
+<h3 id="narrativeDiaryTitle">生活日记</h3>
+<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+</summary>
+<div id="narrativeDiary" class="narrative-list" role="region" aria-labelledby="narrativeDiaryTitle" tabindex="0"></div>
+</details>
+<details class="narrative-block narrative-collapsible" id="narrativeCommitmentsSection">
+<summary>
+<h3 id="narrativeCommitmentsTitle">当前会话约定</h3>
+<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+</summary>
+<div id="narrativeCommitments" class="narrative-list" role="region" aria-labelledby="narrativeCommitmentsTitle" tabindex="0"></div>
+</details>
+<details class="narrative-block narrative-collapsible" id="narrativeIntentsSection">
+<summary>
+<h3 id="narrativeIntentsTitle">联系意图</h3>
+<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+</summary>
+<div id="narrativeIntents" class="narrative-list" role="region" aria-labelledby="narrativeIntentsTitle" tabindex="0"></div>
+</details>
+<details class="narrative-block narrative-collapsible" id="narrativeReceiptsSection">
+<summary>
+<h3 id="narrativeReceiptsTitle">发送回执</h3>
+<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+</summary>
+<div id="narrativeReceipts" class="narrative-list" role="region" aria-labelledby="narrativeReceiptsTitle" tabindex="0"></div>
+</details>
+</div>
+<details class="narrative-details">
+<summary>调用统计与待分发回执</summary>
+<pre id="narrativeStats"></pre>
+</details>
+</div>
+</section>
 <div class="notebook-workspace">
 <section class="wire-card notebook-browser">
 <div class="card-heading">

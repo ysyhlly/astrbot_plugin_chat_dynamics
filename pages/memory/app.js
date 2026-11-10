@@ -30,6 +30,19 @@ const els = {
   btnUnmute: document.getElementById("btnUnmute"),
   btnLoad: document.getElementById("btnLoad"),
   btnRefresh: document.getElementById("btnRefresh"),
+  narrativePanel: document.getElementById("narrativePanel"),
+  narrativeStatus: document.getElementById("narrativeStatus"),
+  narrativeContent: document.getElementById("narrativeContent"),
+  narrativeSnapshot: document.getElementById("narrativeSnapshot"),
+  narrativeMaterials: document.getElementById("narrativeMaterials"),
+  narrativeDiary: document.getElementById("narrativeDiary"),
+  narrativeCommitments: document.getElementById("narrativeCommitments"),
+  narrativeIntents: document.getElementById("narrativeIntents"),
+  narrativeReceipts: document.getElementById("narrativeReceipts"),
+  narrativeStats: document.getElementById("narrativeStats"),
+  narrativeCorrectForm: document.getElementById("narrativeCorrectForm"),
+  btnNarrativeRefresh: document.getElementById("btnNarrativeRefresh"),
+  btnNarrativeCorrect: document.getElementById("btnNarrativeCorrect"),
 };
 
 let selectedUmo = storageGet(UMO_KEY, "");
@@ -39,6 +52,223 @@ let online = false;
 let busy = false;
 let loadFailed = false;
 let notebookRevision = 0;
+let narrativeRevision = 0;
+let narrativeData = null;
+let narrativeLoading = false;
+
+const AVAILABILITY_LABELS = {
+  available: "可以交互", busy: "忙碌", asleep: "睡眠", unknown: "未知",
+};
+
+function narrativeValue(value) {
+  if (value == null || value === "") return "—";
+  return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+}
+
+function narrativeRows(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).map(([provider, row]) =>
+    row && typeof row === "object" && !Array.isArray(row)
+      ? { provider, ...row } : { provider, text: narrativeValue(row) });
+}
+
+function narrativeCanWrite() {
+  const life = narrativeData?.life;
+  return Boolean(selectedUmo && narrativeData && narrativeData.enabled !== false
+    && narrativeData.can_write !== false && life && life.managed !== false
+    && life.available !== false && life.snapshot && life.snapshot.managed !== false);
+}
+
+function setNarrativeEnabled() {
+  if (!els.narrativePanel) return;
+  const ok = narrativeCanWrite() && !busy && !narrativeLoading;
+  els.btnNarrativeRefresh.disabled = !selectedUmo || busy || narrativeLoading;
+  els.btnNarrativeCorrect.disabled = !ok;
+  els.narrativeCorrectForm.querySelectorAll("input,select").forEach((node) => { node.disabled = !ok; });
+  const life = narrativeData?.life || {};
+  const paused = life.paused ?? life.snapshot?.paused;
+  const outreachPaused = life.outreach_paused ?? life.proactive_paused ?? life.snapshot?.outreach_paused;
+  els.narrativePanel.querySelectorAll("[data-narrative-action]").forEach((node) => {
+    const action = node.dataset.narrativeAction;
+    const alreadySet = (action === "pause" && paused === true)
+      || (action === "resume" && paused === false)
+      || (action === "pause_outreach" && outreachPaused === true)
+      || (action === "resume_outreach" && outreachPaused === false);
+    node.disabled = !ok || alreadySet;
+  });
+  els.narrativeIntents.querySelectorAll("button").forEach((node) => { node.disabled = !ok; });
+}
+
+function clearNarrative(message, error = false) {
+  narrativeData = null;
+  els.narrativeContent.classList.add("hidden");
+  for (const name of ["narrativeSnapshot", "narrativeMaterials", "narrativeDiary", "narrativeCommitments", "narrativeIntents", "narrativeReceipts", "narrativeStats"]) {
+    els[name].replaceChildren();
+  }
+  els.narrativeStatus.textContent = message;
+  els.narrativeStatus.classList.toggle("error", error);
+  setNarrativeEnabled();
+}
+
+function addNarrativeText(parent, tag, text, className = "") {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = narrativeValue(text);
+  parent.append(node);
+  return node;
+}
+
+function renderNarrativeList(host, rows, kind, empty) {
+  host.replaceChildren();
+  const entries = narrativeRows(rows).slice(0, 100);
+  if (!entries.length) {
+    addNarrativeText(host, "p", empty, "narrative-empty");
+    return;
+  }
+  for (const raw of entries) {
+    const row = raw && typeof raw === "object" ? raw : { text: raw };
+    const item = document.createElement("article");
+    item.className = "narrative-item";
+    const title = kind === "material" ? row.provider || row.source_id || row.name || "素材"
+      : kind === "receipt" ? row.status || row.result || "发送结果"
+        : kind === "intent" ? row.reason || row.description || "联系意图"
+          : kind === "commitment" ? row.description || row.text || "约定"
+            : row.fact_kind || "生活记录";
+    addNarrativeText(item, "strong", title);
+    const text = row.text ?? row.content ?? row.actual_content ?? row.actual_text ?? row.summary;
+    if (text != null) addNarrativeText(item, "p", text);
+    const time = row.occurred_at ?? row.occurred ?? row.sent_at ?? row.created_at ?? row.updated_at;
+    const meta = [
+      time ? formatTs(time) : "",
+      row.status ?? row.availability ?? (row.available === false ? "不可用" : ""),
+      row.source_id ?? (row.source_ids ? narrativeValue(row.source_ids) : ""),
+    ].filter(Boolean).join(" · ");
+    if (meta) addNarrativeText(item, "p", meta, "meta");
+    const details = document.createElement("details");
+    details.className = "narrative-details";
+    addNarrativeText(details, "summary", "查看来源与记录详情");
+    addNarrativeText(details, "pre", row);
+    item.append(details);
+    const id = row.intent_id ?? row.id;
+    const finalStatus = ["sent", "completed", "cancelled", "expired", "failed", "uncertain", "rejected"].includes(row.status);
+    if (kind === "intent" && id && !finalStatus) {
+      const button = addNarrativeText(item, "button", "取消此联系", "button button-quiet");
+      button.type = "button";
+      button.dataset.intentId = String(id);
+      button.setAttribute("aria-label", `取消联系：${narrativeValue(title)}`);
+    }
+    host.append(item);
+  }
+}
+
+function renderNarrative(result) {
+  const life = result?.life || {};
+  const snapshot = life.snapshot;
+  if (result?.enabled === false || life.managed === false || life.available === false
+      || !snapshot || snapshot.managed === false) {
+    clearNarrative(life.reason || result?.reason || "当前会话尚未启用持续叙事生活；请在设置中配置会话范围。请确认生活插件与世界书已连接。");
+    return;
+  }
+  narrativeData = result;
+  els.narrativeContent.classList.remove("hidden");
+  els.narrativeStatus.classList.remove("error");
+  const paused = life.paused ?? snapshot.paused;
+  const outreachPaused = life.outreach_paused ?? life.proactive_paused ?? snapshot.outreach_paused;
+  els.narrativeStatus.textContent = [
+    `已加载 · 会话 ${redactId(selectedUmo)}`,
+    paused === true ? "生活推进已暂停" : "",
+    outreachPaused === true ? "主动联系已暂停" : "",
+    snapshot.stale ? "状态已过期，等待推进" : "",
+    result.can_write === false ? "仅可查看" : "",
+  ].filter(Boolean).join(" · ");
+  els.narrativeSnapshot.replaceChildren();
+  const fields = [
+    ["角色", snapshot.scope?.persona_id ?? snapshot.persona_id],
+    ["状态修订", snapshot.revision], ["活动", snapshot.activity],
+    ["可交互状态", AVAILABILITY_LABELS[snapshot.availability] || snapshot.availability],
+    ["主观状态", snapshot.subjective_state], ["近期摘要", snapshot.summary],
+    ["有效时间", formatTs(snapshot.valid_from ?? snapshot.valid_at)],
+    ["状态来源", snapshot.source_ids],
+  ];
+  const storage = result.storage;
+  if (storage) {
+    const gib = (bytes) => `${(Number(bytes || 0) / 1024 ** 3).toFixed(2)} GiB`;
+    fields.push(["插件存储（所有会话）", `叙事库 ${gib(storage.database_bytes)} · 写入日志 ${gib(storage.wal_bytes)} · 旧决策库 ${gib(storage.legacy_database_bytes)}`],
+      ["磁盘剩余", `${gib(storage.free_bytes)}${storage.low_space ? " · 空间不足 5 GiB，请安排归档" : ""}`],
+      ["历史保留", "到期精简在线摘要；完整压缩上下文、回执及旧决策历史保留。归档需校验后另存，不自动删库。"]);
+  }
+  for (const [label, value] of fields) {
+    addNarrativeText(els.narrativeSnapshot, "dt", label);
+    addNarrativeText(els.narrativeSnapshot, "dd", value);
+  }
+  renderNarrativeList(els.narrativeMaterials, result.materials, "material", "尚无本轮素材记录。");
+  renderNarrativeList(els.narrativeDiary, life.diary, "diary", "尚无生活记录。");
+  renderNarrativeList(els.narrativeCommitments, life.commitments ?? snapshot.commitments, "commitment", "当前会话没有约定。");
+  const intents = [...narrativeRows(life.intents), ...narrativeRows(result.intents)];
+  const seen = new Set();
+  const uniqueIntents = intents.filter((row) => {
+    const id = row.intent_id ?? row.id;
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  renderNarrativeList(els.narrativeIntents, uniqueIntents, "intent", "当前会话没有联系意图。");
+  renderNarrativeList(els.narrativeReceipts, result.receipts, "receipt", "尚无发送回执。");
+  els.narrativeStats.textContent = JSON.stringify({
+    life: life.stats ?? { calls: life.calls ?? [], pending_count: life.pending_count ?? 0 },
+    coordinator: result.stats ?? {}, pending_notifications: result.pending_notifications ?? [],
+    daily_plan: life.daily_plan ?? [], plan_date: life.plan_date ?? "",
+  }, null, 2);
+  setNarrativeEnabled();
+}
+
+async function loadNarrative() {
+  if (!els.narrativePanel) return;
+  const revision = ++narrativeRevision;
+  const umo = selectedUmo;
+  narrativeLoading = Boolean(umo);
+  clearNarrative(umo ? "正在加载角色生活…" : "请选择会话。");
+  els.narrativePanel.setAttribute("aria-busy", String(narrativeLoading));
+  if (!umo) return;
+  try {
+    const result = await apiGet("narrative", { umo });
+    if (revision !== narrativeRevision || umo !== selectedUmo) return;
+    renderNarrative(result);
+  } catch (err) {
+    if (revision !== narrativeRevision || umo !== selectedUmo) return;
+    clearNarrative(friendlyError(err, "角色生活读取失败；请刷新重试。此面板仅对管理员开放。"), true);
+  } finally {
+    if (revision === narrativeRevision && umo === selectedUmo) {
+      narrativeLoading = false;
+      els.narrativePanel.setAttribute("aria-busy", "false");
+      setNarrativeEnabled();
+    }
+  }
+}
+
+async function mutateNarrative(action, payload = {}) {
+  if (!narrativeCanWrite() || busy || narrativeLoading) return;
+  const umo = selectedUmo;
+  busy = true;
+  setEnabled();
+  els.narrativeStatus.classList.remove("error");
+  els.narrativeStatus.textContent = "正在记录操作…";
+  try {
+    await apiPost("narrative", { umo, action, ...payload });
+    if (umo !== selectedUmo) return;
+    if (action === "correct") els.narrativeCorrectForm.reset();
+    await loadNarrative();
+  } catch (err) {
+    if (umo !== selectedUmo) return;
+    els.narrativeStatus.textContent = friendlyError(err, "操作失败；原状态未确认更改，请刷新检查。");
+    els.narrativeStatus.classList.add("error");
+  } finally {
+    busy = false;
+    setEnabled();
+  }
+}
 
 function showListLoading() {
   els.listEmpty.classList.add("hidden");
@@ -60,6 +290,7 @@ function setEnabled() {
   els.sessionSelect.disabled = busy;
   els.btnRefresh.disabled = busy;
   document.querySelectorAll(".tab").forEach((node) => { node.disabled = busy; });
+  setNarrativeEnabled();
 }
 
 function paintTabs() {
@@ -393,8 +624,10 @@ async function boot() {
   });
   els.sessionSelect.addEventListener("change", () => {
     const next = els.sessionSelect.value || "";
-    if (next !== selectedUmo && addFormHasInput()
-        && !window.confirm("切换会话会清空「新增记录」里填写的内容，继续吗？")) {
+    const narrativeDraft = Boolean(document.getElementById("narrativeActivity")?.value.trim()
+      || document.getElementById("narrativeAvailability")?.value);
+    if (next !== selectedUmo && (addFormHasInput() || narrativeDraft)
+        && !window.confirm("切换会话会清空未保存的新增记录或状态纠正，继续吗？")) {
       els.sessionSelect.value = selectedUmo;
       return;
     }
@@ -403,27 +636,52 @@ async function boot() {
     notebook = { anniversaries: [], reminders: [], slang_trials: [] };
     loadFailed = false;
     paintAddForm();
+    els.narrativeCorrectForm?.reset();
     showListLoading();
     setEnabled();
     void loadNotebook();
+    void loadNarrative();
   });
   els.btnRefresh.addEventListener("click", async () => {
     showListLoading();
     await loadSessions();
-    await loadNotebook();
+    await Promise.all([loadNotebook(), loadNarrative()]);
   });
   els.btnLoad.addEventListener("click", () => {
     showListLoading();
     void loadNotebook();
+    void loadNarrative();
   });
   els.btnMuteTonight.addEventListener("click", () => void mutate("mute_tonight", { hours: 10 }));
   els.btnUnmute?.addEventListener("click", () => void mutate("mute_tonight", { hours: 0 }));
   els.addForm.addEventListener("submit", onAdd);
   els.listHost.addEventListener("click", onListClick);
+  els.btnNarrativeRefresh?.addEventListener("click", () => void loadNarrative());
+  els.narrativePanel?.querySelectorAll("[data-narrative-action]").forEach((node) => {
+    node.addEventListener("click", () => void mutateNarrative(node.dataset.narrativeAction));
+  });
+  els.narrativeIntents?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-intent-id]");
+    if (button) void mutateNarrative("cancel_intent", { intent_id: button.dataset.intentId });
+  });
+  els.narrativeCorrectForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const patch = {};
+    const activity = document.getElementById("narrativeActivity").value.trim();
+    const availability = document.getElementById("narrativeAvailability").value;
+    if (activity) patch.activity = activity;
+    if (availability) patch.availability = availability;
+    if (!Object.keys(patch).length) {
+      els.narrativeStatus.textContent = "请填写活动或选择可交互状态。";
+      els.narrativeStatus.classList.add("error");
+      return;
+    }
+    void mutateNarrative("correct", { patch });
+  });
   paintAddForm();
   showListLoading();
   await loadSessions();
-  await loadNotebook();
+  await Promise.all([loadNotebook(), loadNarrative()]);
 }
 
 boot();

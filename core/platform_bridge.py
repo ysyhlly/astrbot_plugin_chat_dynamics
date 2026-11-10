@@ -6,16 +6,20 @@ and extracts At / Reply / self_id from real AstrMessageEvent shapes.
 
 from __future__ import annotations
 
+import logging
+import os
 import hashlib
 import inspect
+import random
 import re
 import copy
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-from astrbot.api import logger
-
 from .member_identity import display_name
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.platform_bridge")
 
 
 def _session_label(session_id: Any) -> str:
@@ -593,6 +597,9 @@ def result_has_rich_media(result: Any) -> bool:
 def chain_plain_text(chain: Any) -> str:
     if chain is None:
         return ""
+    semantic = getattr(chain, "_cd_delivery_text_v1", None)
+    if isinstance(semantic, str):
+        return semantic
     if isinstance(chain, str):
         return chain
     if hasattr(chain, "get_plain_text"):
@@ -613,12 +620,180 @@ def chain_plain_text(chain: Any) -> str:
     return str(chain)
 
 
+_VOICE_PLAIN_COMPONENT_TYPES = frozenset({"plain", "text"})
+# Components that carry no media of their own; only these may share a chain
+# with an attached voice Record (Reply/At are part of a normal text reply).
+_VOICE_SAFE_COMPONENT_TYPES = frozenset({
+    "plain", "text", "at", "atall", "reply",
+})
+
+
+def _clamp_probability(value: Any, default: float = 1.0) -> float:
+    """Normalize a TTS trigger probability the way ResultDecorateStage does."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return 0.0
+    return max(0.0, min(number, 1.0))
+
+
+def _make_record_component(audio_path: str, text: str) -> Any:
+    """Build a framework Record, or None when the real import is unavailable.
+
+    An invented Record double would serialize as a broken voice segment, so
+    callers must bail out instead of sending one.
+    """
+    try:
+        from astrbot.api.message_components import Record
+    except Exception:
+        return None
+    return Record(file=audio_path, url=audio_path, text=text)
+
+
+async def _session_tts_allowed(event: Any) -> bool:
+    """Session-level TTS switch, fail-open like the framework default.
+
+    AstrBot disables TTS per session through ``/tts``; the framework treats an
+    unconfigured session as enabled. A missing or broken switch must never
+    silence replies, so any import/call failure reports True.
+    """
+    try:
+        from astrbot.core.star.session_llm_manager import SessionServiceManager
+    except Exception:
+        return True
+    try:
+        result = SessionServiceManager.should_process_tts_request(event)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+    except Exception:
+        return True
+
+
+async def maybe_attach_voice(
+    event: Any,
+    context: Any,
+    session_id: str,
+    chain: Any,
+) -> Any:
+    """Attach a framework TTS ``Record`` to a plain-text chain when enabled.
+
+    Returns ``chain`` unchanged unless every gate passes, and swallows every
+    error so a TTS problem can never break delivery:
+
+    0. an event exists (the reminder path sends with ``event=None``);
+    1. the chain holds exactly one non-empty Plain text component and no
+       non-text component (Record/Image/File/Poke/unknown);
+    2. ``context.get_config(umo)`` reports ``provider_tts_settings.enable``;
+    3. the session-level TTS switch allows it (fail-open, see
+       ``_session_tts_allowed``);
+    4. ``random.random()`` passes the clamped ``trigger_probability``;
+    5. ``context.get_using_tts_provider_async(umo)`` returns a provider;
+    6. ``provider.get_audio(text)`` returns a non-empty path.
+
+    With ``dual_output`` the Record is appended before the original Plain, the
+    same order ResultDecorateStage uses; otherwise the Record replaces that
+    Plain component.
+    """
+    try:
+        if event is None:
+            # The reminder path sends without an event; never attach voice there.
+            return chain
+        components = getattr(chain, "chain", None)
+        if not isinstance(components, list) or not components:
+            return chain
+        plains: List[Any] = []
+        for comp in components:
+            lowered = _comp_type_name(comp).lower()
+            if lowered in _VOICE_PLAIN_COMPONENT_TYPES:
+                if str(getattr(comp, "text", "") or "").strip():
+                    plains.append(comp)
+            elif lowered not in _VOICE_SAFE_COMPONENT_TYPES:
+                # Voice is only ever attached to pure text; media, pokes and
+                # unknown components keep the original chain untouched.
+                return chain
+        if len(plains) != 1:
+            return chain
+        plain = plains[0]
+        voice_text = str(getattr(plain, "text", "") or "")
+        if not voice_text.strip() or context is None:
+            return chain
+        get_config = getattr(context, "get_config", None)
+        if not callable(get_config):
+            return chain
+        umo = str(getattr(event, "unified_msg_origin", None) or session_id or "")
+        if not umo:
+            return chain
+        cfg = get_config(umo)
+        if inspect.isawaitable(cfg):
+            cfg = await cfg
+        settings: Any = None
+        if hasattr(cfg, "get"):
+            settings = cfg.get("provider_tts_settings")
+        if not isinstance(settings, dict) or not settings.get("enable"):
+            return chain
+        if not await _session_tts_allowed(event):
+            return chain
+        probability = _clamp_probability(settings.get("trigger_probability", 1.0))
+        if random.random() > probability:
+            return chain
+        provider_getter = getattr(context, "get_using_tts_provider_async", None)
+        if not callable(provider_getter):
+            return chain
+        provider = provider_getter(umo)
+        if inspect.isawaitable(provider):
+            provider = await provider
+        if provider is None:
+            return chain
+        get_audio = getattr(provider, "get_audio", None)
+        if not callable(get_audio):
+            return chain
+        audio_path = get_audio(voice_text)
+        if inspect.isawaitable(audio_path):
+            audio_path = await audio_path
+        if not audio_path or not str(audio_path).strip():
+            return chain
+        record = _make_record_component(str(audio_path), voice_text)
+        if record is None:
+            return chain
+        dual_output = bool(settings.get("dual_output"))
+        new_components: List[Any] = []
+        for comp in components:
+            if comp is plain:
+                new_components.append(record)
+                if dual_output:
+                    new_components.append(comp)
+                continue
+            new_components.append(comp)
+        chain.chain = new_components
+        try:
+            byte_size = await asyncio.to_thread(os.path.getsize, str(audio_path))
+        except Exception:
+            byte_size = None
+        logger.info(
+            "[ChatDynamics] TTS voice attached session=%s bytes=%s dual_output=%s",
+            _session_label(session_id),
+            "unknown" if byte_size is None else byte_size,
+            dual_output,
+        )
+        return chain
+    except Exception as exc:
+        logger.debug(
+            "[ChatDynamics] TTS attach skipped code=CD_TTS_ATTACH type=%s",
+            type(exc).__name__,
+        )
+        return chain
+
+
 async def send_plain(
     event: Any,
     context: Any,
     session_id: str,
     text: Any,
     reply_to_id: Optional[str] = None,
+    allow_voice: bool = False,
 ) -> SendResult:
     """Dispatches a plain-text fragment through official AstrBot send APIs.
 
@@ -626,6 +801,11 @@ async def send_plain(
     1. event.send(MessageChain)
     2. context.send_message(unified_msg_origin, MessageChain)
     Returns success separately from the optional platform message id.
+
+    ``allow_voice`` is opt-in: only owned chat replies pass True so their
+    plain-text chain may gain a framework TTS ``Record`` (see
+    ``maybe_attach_voice``); command acknowledgements and reminders keep the
+    default and stay text-only.
     """
     if isinstance(text, str):
         chain = build_plain_chain(text, reply_to_id=reply_to_id)
@@ -635,9 +815,31 @@ async def send_plain(
         chain.chain = list(text.chain)
         if reply_to_id:
             chain.chain.insert(0, _make_reply_component(reply_to_id))
+    if allow_voice:
+        chain = await maybe_attach_voice(event, context, session_id, chain)
     result = None
     try:
-        if event is not None and hasattr(event, "send"):
+        components = getattr(chain, "chain", [])
+        if (
+            str(_safe_call(event, "get_platform_name", "")).lower() == "aiocqhttp"
+            and len(components) == 1
+            and _comp_type_name(components[0]).lower() == "poke"
+        ):
+            # NapCat exposes pokes as actions, not send_group_msg segments.
+            target_id = _poke_target_id(components[0])
+            group_id = str(_safe_call(event, "get_group_id", "") or "")
+            if not target_id.isdigit() or (group_id and not group_id.isdigit()):
+                return SendResult(False, error="invalid poke target")
+            call_action = getattr(getattr(event, "bot", None), "call_action", None)
+            if not callable(call_action):
+                return SendResult(False, error="poke API unavailable")
+            payload = {"user_id": target_id}
+            if group_id:
+                payload["group_id"] = group_id
+            result = call_action("send_poke", **payload)
+            if inspect.isawaitable(result):
+                result = await result
+        elif event is not None and hasattr(event, "send"):
             result = event.send(chain)
             if inspect.isawaitable(result):
                 result = await result

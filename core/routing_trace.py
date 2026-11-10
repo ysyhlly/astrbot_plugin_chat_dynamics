@@ -217,6 +217,25 @@ def redact_trace_identifiers(trace):
         turn["session_id"] = ""
         turn["message_id"] = ""
         turn["turn_id"] = ""
+    stages = result.get("decision_stages", {})
+    if isinstance(stages, dict):
+        persona = stages.get("persona", {})
+        if isinstance(persona, dict):
+            for key in ("target_message_ids", "candidate_message_ids", "candidate_participant_ids", "participant_ids", "evidence"):
+                if key in persona:
+                    persona[key] = []
+        judgement = stages.get("judgement", {})
+        if isinstance(judgement, dict):
+            if "focus_message_id" in judgement:
+                judgement["focus_message_id"] = ""
+            for row in judgement.get("current_addressees", []):
+                row["message_id"] = ""
+                row.pop("user_id", None)
+            for row in judgement.get("platform", []):
+                row["message_id"] = ""
+                row["mentioned_user_ids"] = []
+                row["quoted_message_id"] = ""
+                row["quoted_author_id"] = ""
     state = result.get("state", {})
     state["active_interlocutor"] = None
     state["last_bot_message_id"] = None

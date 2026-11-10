@@ -1,7 +1,11 @@
 """Bounded historical stage facts, separate from final reply admission."""
 from copy import deepcopy
+from dataclasses import replace
+import math
 
+from . import outcome_recorder as outcomes
 from .persona_axes import AXIS_NAMES as PERSONA_AXIS_NAMES
+from .jev_decision import ACTIONS, STATES, LENGTHS, REASONS
 
 # `decision_trace` is a bounded-facts record and holds no free text at all -- not
 # conversation, not the response goal, not persona prose, not the model's own
@@ -33,6 +37,108 @@ CUE_TAGS = frozenset({
     "media_drop", "topic_shift", "negation", "boundary_signal", "name_drop",
     "subject_only", "filler",
 })
+
+
+_MODEL_CHOICES = {
+    "action": ACTIONS, "state": STATES, "length": LENGTHS, "reason": REASONS,
+    "recipient": ("bot", "other", "unclear"),
+    "completion": ("complete", "wait"),
+    "continuity": ("answer", "continue", "reopen", "end", "unrelated", "unclear"),
+}
+_REASON_CATEGORY = {
+    "addressed_request": "direct_address", "addressed_question": "information_request",
+    "ongoing_thread": "ongoing_thread", "open_group_topic": "question_open",
+    "social_signal": "social_gesture", "other_recipient": "other_addressee",
+    "boundary_or_sensitive": "private_boundary", "low_value_chatter": "no_addressee",
+}
+
+
+def _probability(value):
+    return (type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value))
+
+
+def _model_choices(answers):
+    clean = {}
+    for key, options in _MODEL_CHOICES.items():
+        raw = answers.get(key) if isinstance(answers, dict) else None
+        if (isinstance(raw, dict) and raw.get("type") == "choice"
+                and raw.get("choice") in options and _probability(raw.get("confidence"))):
+            clean[key] = {"choice": raw["choice"], "confidence": float(raw["confidence"])}
+    return clean
+
+
+def _current_addressees(turn, addressees):
+    """Only offered, current-message member identities can leave in a trace."""
+    current = {m.message_id for m in turn.messages}
+    known = {m.author for m in (*turn.messages, *turn.background)}
+    for message in (*turn.messages, *turn.background):
+        known.update(message.mentioned_users)
+        sem = message.semantics
+        known.update(getattr(sem, "recipient_ids", ()) or ())
+        known.add(getattr(sem, "quoted_author_id", ""))
+    if turn.peer_continuation is not None:
+        known.add(turn.peer_continuation.candidate_recipient_id)
+    rows = []
+    for message in turn.messages[-8:]:
+        raw = (addressees or {}).get(message.message_id)
+        if not isinstance(raw, dict) or not _probability(raw.get("confidence")):
+            continue
+        kind = raw.get("kind")
+        if kind not in {"bot", "member", "group", "unclear"}:
+            continue
+        row = {"message_id": str(message.message_id)[:160], "kind": kind,
+               "confidence": float(raw["confidence"])}
+        if kind == "member":
+            uid = raw.get("user_id")
+            if not isinstance(uid, str) or uid not in known or uid in {"", turn.bot_id, message.author}:
+                continue
+            row["user_id"] = str(uid)[:160]
+        if message.message_id in current:
+            rows.append(row)
+    return rows
+
+
+def annotate_model_decision(decision, turn, answers, addressees):
+    """Fill existing review fields from typed outputs, without saving model prose."""
+    choices = _model_choices(answers)
+    confidence = tuple((key, choices[key]["confidence"])
+                       for key in ("action", "state", "length") if key in choices)
+    category = _REASON_CATEGORY.get(choices.get("reason", {}).get("choice"), "")
+    current = _current_addressees(turn, addressees)
+    focus = next(iter(decision.target_message_ids), "")
+    selected = next((row for row in current if row["message_id"] == focus), None)
+    kind = selected["kind"] if selected else choices.get("recipient", {}).get("choice", "unclear")
+    assessment = (("addressee", kind),
+                  ("completeness", choices.get("completion", {}).get("choice", "unavailable")))
+    return replace(decision, confidence=confidence, reason_category=category, assessment=assessment)
+
+
+def model_judgement(turn, answers, addressees, *, focus_id=None):
+    choices = _model_choices(answers)
+    if not choices:
+        return None
+    result = {"schema_version": 1, **choices, "current_addressees": _current_addressees(turn, addressees)}
+    if focus_id is not None:
+        result["focus_message_id"] = str(focus_id)[:160]
+        for row in result["current_addressees"]:
+            row["selected"] = row["message_id"] == focus_id
+    probabilities = answers.get("action_probabilities", answers.get("action", {}).get("probabilities", {}))
+    if (isinstance(probabilities, dict) and set(probabilities) == set(ACTIONS)
+            and all(_probability(v) for v in probabilities.values())
+            and abs(sum(probabilities.values()) - 1) <= .02):
+        result["action_probabilities"] = {key: float(probabilities[key]) for key in ACTIONS}
+    join = answers.get("join", {})
+    if isinstance(join, dict) and join.get("type") == "noul" and _probability(join.get("noul")):
+        result["join"] = float(join["noul"])
+    result["platform"] = [{
+        "message_id": str(m.message_id)[:160],
+        "mentioned_user_ids": [str(uid)[:160] for uid in m.mentioned_users[:8]],
+        "at_bot": bool(turn.bot_id and turn.bot_id in m.mentioned_users),
+        "quoted_message_id": str(m.reply_to or "")[:160],
+        "quoted_author_id": str(getattr(m.semantics, "quoted_author_id", "") or "")[:160],
+    } for m in turn.messages[-8:]]
+    result["omitted_current_messages"] = max(0, len(turn.messages) - 8)
+    return result
 
 
 def _persona_record(proposed, allowed=()) -> dict:
@@ -82,8 +188,42 @@ def record_outcome(runtime, item, marker, *args, **kwargs):
             marker(node, *args, **kwargs)
 
 
+# A turn that stopped being current still ended: no one else will ever write it.
+_OPEN_TERMINAL_OUTCOMES = frozenset({None, "", outcomes.VALUE_IN_FLIGHT, outcomes.VALUE_NOT_ATTEMPTED})
+
+
+def record_terminal_outcome(runtime, item, marker, *args, only_in_flight: bool = False, **kwargs) -> bool:
+    """Write one terminal ending for a turn the normal writer now refuses.
+
+    `record_outcome` deliberately drops a turn whose epoch or author revision
+    moved on. That is right while its generation may still finish, but it also
+    meant the ending of an invalidated turn was never recorded: the node stayed
+    `in_flight` forever and nothing downstream ever learned how the turn went.
+    This writer exists for that ending only: the node instance must still be the
+    current one in the DAG, an already terminal value is never overwritten, and
+    shadow turns stay untouched. `only_in_flight=True` is the final sweep that
+    closes exactly the turns nothing else finished.
+    """
+    turn = getattr(item, "context", None)
+    if turn is None or getattr(item, "shadow", False):
+        return False
+    written = False
+    for message, node in zip(turn.messages, item.outcome_nodes):
+        if node is None or runtime.dag.get_node(message.message_id) is not node:
+            continue
+        current = outcomes.read_outcome(node).get("final_outcome")
+        if only_in_flight:
+            if current != outcomes.VALUE_IN_FLIGHT:
+                continue
+        elif current not in _OPEN_TERMINAL_OUTCOMES:
+            continue
+        marker(node, *args, **kwargs)
+        written = True
+    return written
+
+
 def stage_trace(trace, *, persona, interaction_state, presence, turn, proposed, final, gate,
-                axes=None):
+                axes=None, model_answers=None, addressees=None):
     result = deepcopy(trace)
     rhythm = getattr(gate, "rhythm", None)
     constraints = {
@@ -145,6 +285,10 @@ def stage_trace(trace, *, persona, interaction_state, presence, turn, proposed, 
         "persona": record,
         "gate": constraints,
     }
+    judgement = model_judgement(turn, model_answers, addressees,
+                                focus_id=next(iter(proposed.target_message_ids), ""))
+    if judgement is not None:
+        result["decision_stages"]["judgement"] = judgement
     result["review_context"] = {
         "schema_version": 1, "decision_mode": "persona_model",
         "persona_fingerprint": str(persona.fingerprint)[:128],

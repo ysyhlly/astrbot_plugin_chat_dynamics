@@ -8,14 +8,18 @@ turn consolidation, and graceful lifecycle shutdown.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
+from collections import deque
+from statistics import median
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from astrbot.api import logger
-
 from .incompleteness import IncompletenessDetector
 from .time_service import SystemClock, TimeService
+
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.debounce")
 
 
 @dataclass
@@ -89,6 +93,7 @@ class _DebounceSlot:
         self.last_touch_time: float = 0.0
         self.session_generation: int = 0
         self.user_generation: int = 0
+        self.peer_directed: bool = False
         self.was_extended: bool = False
         self.dropped_fragments: int = 0
         self.on_flush: Optional[Callable[[DebounceResult], Awaitable[None]]] = None
@@ -96,6 +101,7 @@ class _DebounceSlot:
         self.semantic: bool = False
         self.cap_started_at: float = 0.0
         self.input_deadline: Optional[float] = None
+        self.fragment_gaps = deque(maxlen=8)
 
     @property
     def is_empty(self) -> bool:
@@ -231,6 +237,7 @@ class DebounceBuffer:
         *,
         defer_callback: bool = False,
         immediate: bool = False,
+        supersede_pending: bool = True,
     ) -> None:
         """Ingests an incoming message into the user's debounce window.
 
@@ -240,6 +247,7 @@ class DebounceBuffer:
             text: Message text content.
             event: Raw platform event object (AstrMessageEvent).
             on_flush: Async callback invoked when the turn flushes.
+            supersede_pending: Whether this message continues the pending recipient's turn.
         """
         # TC-09: Empty or whitespace-only messages are ignored
         if text is None or not text.strip():
@@ -248,6 +256,7 @@ class DebounceBuffer:
         now = self.time_service.time()
         key = (session_id, user_id)
         result: Optional[DebounceResult] = None
+        separated_result: Optional[DebounceResult] = None
 
         # 1. Retrieve or create slot under master lock
         async with self._master_lock:
@@ -266,16 +275,36 @@ class DebounceBuffer:
         async with slot.lock:
             if self._is_closed:
                 raise RuntimeError("DebounceBuffer has been closed")
+            previous_touch = slot.last_touch_time
             slot.last_touch_time = now
             slot.on_flush = on_flush
 
             # Keep fragments while Jev is judging them. A newer fragment takes
             # ownership of the whole pending utterance and invalidates the old
             # answer, including a late answer from a soft wake.
+            separate_turn = (not supersede_pending or slot.peer_directed
+                             or bool(re.match(r"^(?:换个话题|另一个问题|另外问(?:个|一下)|说个别的|与此无关)", text.strip())))
+            if (not separate_turn and (slot.items or slot.pending_result is not None)
+                    and 0 < now - previous_touch <= min(3.0, self.max_cap)):
+                slot.fragment_gaps.append(now - previous_touch)
+            if separate_turn and slot.items:
+                separated_result = self._extract_result_locked(slot)
+            slot.peer_directed = not supersede_pending
             prior = slot.pending_result
             slot.pending_result = None
-            if (prior is not None and prior.metadata.get("awaiting_input")
-                    and now >= prior.metadata.get("input_deadline", now)):
+            if separate_turn and prior is not None:
+                # Keep the earlier request valid and independently owned. A
+                # message to a peer must not merge into or restart that reply.
+                if prior.metadata.get("awaiting_input"):
+                    prior.metadata["awaiting_input"] = False
+                    self.release_result_media(prior)
+                    prior.metadata["superseded"] = True
+                prior = None
+            if (
+                prior is not None
+                and prior.metadata.get("awaiting_input")
+                and now >= prior.metadata.get("input_deadline", now)
+            ):
                 prior.metadata["superseded"] = True
             if prior is not None and self.is_result_current(prior):
                 slot.items[:0] = prior.messages
@@ -308,7 +337,11 @@ class DebounceBuffer:
 
             # 3. Form candidate text to evaluate incompleteness
             candidate_text = self._merge_texts([it.text for it in slot.items], max_chars=self.max_turn_chars)
-            is_incomplete = not slot.semantic and self.check_incompleteness(candidate_text)
+            # A trailing comma/ellipsis does not establish an unfinished
+            # thought. Semantic mode still collects real open syntax, while
+            # Jev remains responsible for the actual completion decision.
+            completion_probe = candidate_text.rstrip(" ,，、:：;；~～….-—") if slot.semantic else candidate_text
+            is_incomplete = self.check_incompleteness(completion_probe)
             if is_incomplete:
                 slot.was_extended = True
 
@@ -329,9 +362,15 @@ class DebounceBuffer:
                 if immediate:
                     desired_cooldown = 0.0
                 elif slot.semantic:
-                    # Existing configurations may still contain the old 3.5s
-                    # default. Jev needs only a small burst-coalescing window.
-                    desired_cooldown = min(desired_cooldown, 0.25)
+                    # Local cues only choose a bounded collection pause. Jev
+                    # still judges completion; punctuation is never a stop rule.
+                    if is_incomplete:
+                        desired_cooldown = max(min(self.extended_cooldown, 0.8), min(self.base_cooldown, .25))
+                    elif (len(slot.fragment_gaps) >= 2 and not re.search(r"[。！？!?吗么呢]$", completion_probe)
+                          and text.strip() not in {"嗯", "嗯嗯", "好", "好的", "哈哈", "哈哈哈", "谢谢"}):
+                        desired_cooldown = max(min(self.base_cooldown, .25), min(.8, median(slot.fragment_gaps) + .05))
+                    else:
+                        desired_cooldown = min(desired_cooldown, 0.25)
 
                 target_cooldown = min(desired_cooldown, max_remaining)
 
@@ -345,6 +384,9 @@ class DebounceBuffer:
                 slot.timer_task = self._create_task(
                     self._timer_worker(slot, current_epoch, target_cooldown)
                 )
+
+        if separated_result is not None:
+            self._create_task(self._safe_invoke_callback(on_flush, separated_result))
 
         # Yield control outside slot.lock so timer_worker can start sleeping immediately
         await asyncio.sleep(0)
@@ -431,6 +473,7 @@ class DebounceBuffer:
             "truncated": bool(slot.dropped_fragments) or len(consolidated_text) < sum(len(it.text) for it in items_to_flush),
             "dropped_fragments": slot.dropped_fragments,
             "semantic": slot.semantic,
+            "peer_directed": slot.peer_directed,
             "flushed_at": self.time_service.time(),
             "cap_started_at": slot.cap_started_at,
             "input_deadline": slot.input_deadline,

@@ -44,7 +44,8 @@ def test_interleaved_group_replay(case):
     assert list(target_options(item.context)) == [current.msg_id]
     assert [message["message_id"] for message in state["conversation"]["messages"]] == [current.msg_id]
     assert state["conversation"]["text"] == current.text
-    assert len(json.dumps(state, ensure_ascii=False)) <= 12000
+    from astrbot_plugin_chat_dynamics.core.jev_decision import MAX_TOTAL_STATE_CHARS
+    assert len(json.dumps(state, ensure_ascii=False)) <= MAX_TOTAL_STATE_CHARS
     # Retrieval never converts a human recipient or an ignored turn into a reply.
     answers = {"action": {"type": "choice", "choice": "ignore", "confidence": .9},
                "join": {"type": "noul", "noul": .1}}
@@ -302,7 +303,8 @@ def test_long_guidance_does_not_evict_the_current_request_and_critical_quote():
     assert "不要联网下载" in state["conversation"]["background"][0]["text"]
     assert state["conversation"]["text"].startswith("请解释") and state["conversation"]["text"].endswith("末尾条件")
     assert state["decision_prompt"].startswith("开头规则") and state["decision_prompt"].endswith("末尾规则")
-    assert len(json.dumps(state, ensure_ascii=False)) <= 12000
+    from astrbot_plugin_chat_dynamics.core.jev_decision import MAX_TOTAL_STATE_CHARS
+    assert len(json.dumps(state, ensure_ascii=False)) <= MAX_TOTAL_STATE_CHARS
 
 
 def test_topic_refresh_keeps_the_original_watermark_and_immutable_decision_context():

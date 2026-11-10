@@ -61,6 +61,9 @@ def jev_plugin(monkeypatch):
     p = _plugin({
         "decision_mode": "persona_model",
         "decision_backend": "jev",
+        # This fixture covers the retained model-attribution mode. Rule routing
+        # has its own fixture and must never depend on Jev recipient answers.
+        "rule_topic_routing_enabled": False,
         "base_thinking_delay": 0,
         "debounce_base_cooldown": 10,
         "daily_rhythm_enabled": False,
@@ -294,7 +297,7 @@ async def test_an_unavailable_decision_layer_does_not_admit_a_soft_wake(jev_plug
 
 
 @pytest.mark.asyncio
-async def test_soft_wake_depends_on_recipient_not_action_confidence(jev_plugin):
+async def test_name_wake_requires_confident_action(jev_plugin):
     p, bridge = jev_plugin
     weak = answers()
     weak.update(action={"type": "choice", "choice": "clarify", "confidence": 0.2},
@@ -307,9 +310,8 @@ async def test_soft_wake_depends_on_recipient_not_action_confidence(jev_plugin):
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        plan = bridge.requests[0][0]["response_plan"]
-        assert (plan["action"], plan["state"], plan["length"], plan["reason_code"]) == (
-            "reply", "focused", "brief", "jev_wake_addressed")
+        assert not bridge.requests and not event.replies_sent
+        assert p._sessions[event.unified_msg_origin].model_diagnostic["reason_code"] == "jev_wake_action_uncertain"
     finally:
         await p.terminate()
 

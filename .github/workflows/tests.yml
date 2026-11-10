@@ -8,16 +8,18 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements-dev.txt "AstrBot==4.28.2"
+      - run: python -m pip install -r requirements-dev.txt "AstrBot==4.29.4"
       - run: python scripts/check_release.py
       - run: mkdir -p artifacts
       - run: python scripts/run_checks.py backend --junitxml=artifacts/backend.xml
-      - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 python -m pytest integration -q --junitxml=artifacts/integration.xml
+      - run: python scripts/prepare_companion_fixture.py --destination "$GITHUB_WORKSPACE/data/plugins/astrbot_plugin_livingmemory"
+      - run: CHAT_DYNAMICS_REQUIRE_REAL_SDK=1 CHAT_DYNAMICS_REQUIRE_COMPANION=1 CHAT_DYNAMICS_LIVINGMEMORY_FIXTURE="$GITHUB_WORKSPACE/data/plugins/astrbot_plugin_livingmemory" python -m pytest integration -q --junitxml=artifacts/integration.xml
       - run: python -m compileall -q main.py core tests integration scripts
       - run: python -m ruff check main.py core tests integration scripts
       - run: python -m mypy
@@ -29,12 +31,13 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements-dev.txt "AstrBot==4.28.2"
+      - run: python -m pip install -r requirements-dev.txt "AstrBot==4.29.4"
       - run: python -m playwright install --with-deps chromium
       - run: mkdir -p artifacts
       - run: python scripts/run_checks.py browser --junitxml=artifacts/browser.xml
@@ -55,6 +58,7 @@ jobs:
           python-version: "3.12"
       - run: python scripts/check_release.py
       - run: python scripts/build_release.py
+      - run: python scripts/build_compat_release.py
       - uses: actions/upload-artifact@v4
         with:
           name: chat-dynamics-release

@@ -234,7 +234,8 @@ def test_many_fragments_keep_all_ids_and_quote_identity_within_state_budget():
     context = replace(context, text="继续补充的正文" * 1000 + "先别回，等我说完", messages=tuple(
         replace(context.messages[0], message_id=f"part-{i}") for i in range(32)))
     state = build_state(context)
-    assert len(json.dumps(state, ensure_ascii=False)) <= 12000
+    from astrbot_plugin_chat_dynamics.core.jev_decision import MAX_TOTAL_STATE_CHARS
+    assert len(json.dumps(state, ensure_ascii=False)) <= MAX_TOTAL_STATE_CHARS
     assert [m["message_id"] for m in state["conversation"]["messages"]] == [f"part-{i}" for i in range(32)]
     assert all(m["author"] == "222002" and m["semantics"]["quoted_author_id"] == "111001"
                for m in state["conversation"]["messages"])

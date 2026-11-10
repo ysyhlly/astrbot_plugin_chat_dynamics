@@ -80,7 +80,7 @@ function confirmDiscardAnnotations() {
 const RECIPIENT_ERRORS = { correct: "判断正确", missed_bot: "漏判 Bot", false_bot: "误判为对 Bot 说", wrong_recipient: "收件人错误", missing_recipient: "遗漏收件人", subject_confusion: "混淆提及与称呼", unknown: "无法判断" };
 const RECIPIENT_BOOLS = { recipient_correct: "收件人判断正确", bot_targeted: "在对 Bot 说话", expected_reply: "Bot 应该回复" };
 function traceView(trace) {
-  if (!trace || trace.routing_schema_version !== 2) return '<p class="ops-note">暂无决策记录</p>';
+  if (!trace || ![2, 3].includes(trace.trace_schema_version ?? trace.routing_schema_version)) return '<p class="ops-note">暂无决策记录</p>';
   const yesNo = value => value === true ? "是" : value === false ? "否" : "待决";
   const recipient = trace.recipient || {}, topic = trace.topic || {}, participation = trace.participation || {};
   const ids = trace.identifiers_redacted ? "ID 已隐藏" : (recipient.ids || []).join(", ") || "未确定";
@@ -89,7 +89,26 @@ function traceView(trace) {
   const routingRows = [["话题", topic.topic_id, topic.confidence], ["父消息", parent.parent_id || parent.message_id, parent.confidence], ["收件人", ids, recipient.confidence]];
   const routingHtml = routingRows.map(([name, id, score]) => `<p class="ops-note">${escapeHtml(name)}：${escapeHtml(trace.identifiers_redacted ? "ID 已隐藏" : id || "未确定")} · 分数 ${escapeHtml(score ?? "—")}</p>`).join("");
   const evidenceHtml = (trace.ledger?.entries || []).map(entry => `<li>${escapeHtml(entry.domain)} · ${escapeHtml(entry.code)}：${escapeHtml(entry.raw_value)}${entry.contribution == null ? "" : ` · 贡献 ${escapeHtml(entry.contribution)}`}</li>`).join("");
-  return `${routingHtml}<details><summary>判断依据（启发式分数，未经概率校准）</summary><ul>${evidenceHtml || "<li>暂无证据明细</li>"}</ul></details><p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
+  const judgement = trace.decision_stages?.judgement;
+  const actionLabels = { reply: "回复", acknowledge: "简短回应", clarify: "澄清", close: "收尾", ignore: "不回复" };
+  const recipientLabels = { bot: "Bot", other: "其他成员", member: "其他成员", group: "公开群聊", unclear: "不明确" };
+  const score = value => typeof value === "number" && value >= 0 && value <= 1 ? `${Math.round(value * 100)}%` : "未记录";
+  const modelRecipient = judgement && "focus_message_id" in judgement
+    ? judgement.current_addressees?.find(row => row.selected) || judgement.recipient
+    : judgement?.current_addressees?.at(-1) || judgement?.recipient;
+  const modelHtml = judgement ? `<p class="ops-note" data-model-judgement>模型动作：${escapeHtml(actionLabels[judgement.action?.choice] || "未记录")}（${escapeHtml(score(judgement.action?.confidence))}） · 对象：${escapeHtml(recipientLabels[modelRecipient?.kind || modelRecipient?.choice] || "未记录")}（${escapeHtml(score(modelRecipient?.confidence))}） · 采用规则：${escapeHtml(trace.decision_branch || trace.decision_stages?.persona?.reason_code || "未记录")}</p>` : "";
+  return `${routingHtml}${modelHtml}<details><summary>判断依据（启发式分数，未经概率校准）</summary><ul>${evidenceHtml || "<li>暂无证据明细</li>"}</ul></details><p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
+}
+
+function blockDecisionCounts(block) {
+  if (block.is_unassigned) {
+    const outcomes = (block.messages || []).map(message => message.decision_trace?.outcome || {});
+    return { speak: outcomes.filter(outcome => outcome.delivered === true).length,
+      silent: outcomes.filter(outcome => outcome.final_outcome === "suppressed").length };
+  }
+  const events = block.events || [];
+  return { speak: events.filter(event => event.action === "speak").length,
+    silent: events.filter(event => event.action !== "speak").length };
 }
 
 function recipientEditor(index) {
@@ -201,8 +220,8 @@ function selectBlock(index, discardConfirmed = false) {
     return;
   }
   els.detailTitle.textContent = block.topic_title || "未关联主题";
-  const speak = (block.events || []).filter(event => event.action === "speak").length;
-  els.blockDetail.textContent = `开口 ${speak} 次 · 安静 ${(block.events || []).length - speak} 次`;
+  const { speak, silent } = blockDecisionCounts(block);
+  els.blockDetail.textContent = `开口 ${speak} 次 · 安静 ${silent} 次`;
   els.blockMeta.textContent = `${formatTs(block.start_ts)} — ${formatTs(block.end_ts)} · ${block.message_count || 0} 条消息`;
   if (TITLE_STATUS[block.title_status]) els.blockMeta.textContent += ` · ${TITLE_STATUS[block.title_status]}`;
   const events = Array.isArray(block.events) && block.events.length ? block.events : [];
@@ -218,7 +237,7 @@ function renderRail(data, discardConfirmed = false) {
   if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
   replayData = data;
   archivedTopics = Array.isArray(data.archived_topics) ? data.archived_topics : [];
-  blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
+  blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.is_unassigned || block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
   const allBlocks = blocks;
   const query = document.getElementById("topicSearch").value.trim().toLocaleLowerCase();
   document.getElementById("archivedTopicsPanel").classList.toggle("hidden", !archivedTopics.length);
@@ -228,23 +247,23 @@ function renderRail(data, discardConfirmed = false) {
     ? history.map(topic => `<li><strong>${escapeHtml(topic.topic_title || "历史话题")}</strong>${!selectedUmo && topic.session_id ? ` <small>会话 ${escapeHtml(redactId(topic.session_id))}</small>` : ""}</li>`).join("")
     : "<li>没有符合筛选条件的历史话题。</li>";
   const decision = document.getElementById("decisionFilter").value;
-  const speaks = block => (block.events || []).some(event => event.action === "speak");
-  const events = allBlocks.flatMap(block => block.events || []);
-  document.getElementById("summaryTopics").textContent = allBlocks.length;
+  const speaks = block => blockDecisionCounts(block).speak > 0;
+  const counts = allBlocks.map(blockDecisionCounts);
+  document.getElementById("summaryTopics").textContent = allBlocks.filter(block => !block.is_unassigned).length;
   document.getElementById("summaryMessages").textContent = allBlocks.reduce((sum, block) => sum + (Number(block.message_count) || 0), 0);
-  document.getElementById("summaryDecisions").textContent = `${events.filter(event => event.action === "speak").length} / ${events.filter(event => event.action !== "speak").length}`;
+  document.getElementById("summaryDecisions").textContent = `${counts.reduce((sum, count) => sum + count.speak, 0)} / ${counts.reduce((sum, count) => sum + count.silent, 0)}`;
   document.getElementById("topicTitleNote").textContent = data.topic_titles_redacted
     ? "话题小标题已隐藏，可在插件参数配置中开启“回放显示话题小标题”。"
-    : allBlocks.some(block => block.title_status && block.title_status !== "ready")
+    : allBlocks.some(block => !block.is_unassigned && block.title_status && block.title_status !== "ready")
       ? "已形成的话题会先显示，归纳完成后自动更新小标题。归纳失败或关闭时，可在详情查看状态。"
       : "";
   blocks = allBlocks.filter(block => (!query || (block.topic_title || "").toLocaleLowerCase().includes(query)) && (decision === "all" || (decision === "speak" ? speaks(block) : !speaks(block))));
   els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : archivedTopics.length ? "当前没有活跃话题，已归档话题可在下方查看。" : "目前没有形成话题，留白是正常状态。出现新的讨论后会显示话题。";
   const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
   document.getElementById("unassignedNote").textContent = unassigned
-    ? `最近保留的消息中有 ${unassigned} 条尚未形成话题，留白展示。零散聊天、图片和表情包不会自动合成一个话题。`
-    : "尚未形成连续讨论的消息留白展示。群聊不需要时时刻刻都有话题。";
-  els.railCounts.textContent = `${blocks.length} 个主题场景`;
+    ? `有 ${unassigned} 条消息尚未归入话题。点击“未归话题消息”可检查回复、对象判断与发送结果。`
+    : "未归入话题的消息也会保留判断记录。";
+  els.railCounts.textContent = `${blocks.filter(block => !block.is_unassigned).length} 个主题场景 · ${blocks.filter(block => block.is_unassigned).length} 组未归话题消息`;
   els.trackHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览最近判断";
   if (Number.isInteger(data.message_limit) && Number.isInteger(data.retained_message_count)) {
     els.trackHint.textContent += ` · 当前回看 ${data.retained_message_count} 条 · 每会话最多 ${data.message_limit} 条`;

@@ -3,9 +3,10 @@
 import json
 import math
 import os
+import time
 from urllib.parse import urlsplit
 
-from astrbot.api.provider import Provider
+from astrbot.core.provider.provider import DecisionProvider
 from astrbot.core.config.default import CONFIG_METADATA_2
 from astrbot.core.provider.entities import LLMResponse, ProviderType
 from astrbot.core.provider.register import (
@@ -27,7 +28,7 @@ PROVIDER_TYPE = "systemone_catalog"
 DEFAULT_CONFIG = {
     "type": PROVIDER_TYPE,
     "provider": "systemone",
-    "provider_type": "chat_completion",
+    "provider_type": "decision",
     "id": "systemone",
     "enable": False,
     "api_base": "",
@@ -39,9 +40,10 @@ DEFAULT_CONFIG = {
     "custom_headers": {},
 }
 
-class SystemOneProvider(Provider):
+class SystemOneProvider(DecisionProvider):
     is_systemone_provider = True
     is_chat_dynamics_builtin = True
+    is_native_decision_provider = True
 
     def __init__(self, provider_config, provider_settings):
         super().__init__(provider_config, provider_settings)
@@ -53,6 +55,56 @@ class SystemOneProvider(Provider):
             raise SystemOneError("超时应为 0～300 秒之间的有限数值。")
         self.timeout = timeout
         self._http = SystemOneHTTPClient()
+        self._context_capability = None
+        self._context_capability_at = 0.0
+        self._context_capability_key = None
+
+    def get_keys(self):
+        keys = self.provider_config.get('key') or ['']
+        if isinstance(keys,str):
+            return [keys]
+        if not isinstance(keys,list) or any(not isinstance(key,str) for key in keys):
+            raise SystemOneError('抉择模型密钥格式无效。',code='invalid_credentials')
+        return keys
+
+    async def ask(self, questions, state=None, *, request_max_retries=0):
+        from astrbot.core.provider.entities import DecisionError
+        from .native import from_typed_questions, to_typed_answers
+        if request_max_retries != 0:
+            raise ValueError('Chat Dynamics 抉择服务仅执行单次请求，不支持自动重试。')
+        raw = from_typed_questions(questions)
+        try:
+            answers = await self.systemone_evaluate(state={} if state is None else state,questions=raw)
+        except SystemOneError as exc:
+            raise DecisionError(str(exc)) from None
+        return to_typed_answers(answers,raw)
+
+    async def systemone_count_tokens(self, *, state, questions, timeout=3):
+        """Optional native capability; no raw prompts are logged or persisted."""
+        normalized = self._validated_questions(state=state, questions=questions)
+        limit = min(self.timeout, float(timeout))
+        now = time.monotonic()
+        identity = (self.get_model(), self.provider_config.get('api_base'), self.provider_config.get('models_path'))
+        if self._context_capability is None or self._context_capability_key != identity or now - self._context_capability_at > 300:
+            try:
+                catalog = await request_json('GET', endpoint_url(self.provider_config.get('api_base', ''),
+                    self.provider_config.get('models_path', '/v1/models')), key=self.get_current_key(),
+                    headers=self.request_headers, timeout=limit, client=self._http)
+            except SystemOneError:
+                if self._context_capability is True:
+                    raise
+                return None
+            rows = catalog.get('models', []) if isinstance(catalog, dict) else []
+            self._context_capability = any(isinstance(row, dict) and row.get('name') == self.get_model()
+                                          and row.get('context_count_v1') is True for row in rows)
+            self._context_capability_at = now
+            self._context_capability_key = identity
+        if not self._context_capability:
+            return None
+        return await request_json('POST', endpoint_url(self.provider_config.get('api_base', ''),
+            '/v1/systemone/count_tokens'), key=self.get_current_key(), headers=self.request_headers,
+            timeout=limit, payload={'model':self.get_model(),'state':state,'questions':normalized},
+            max_body=256*1024, client=self._http)
 
     async def terminate(self):
         # AstrBot calls this on reload/unload and for temporary catalog providers.
@@ -99,8 +151,8 @@ class SystemOneProvider(Provider):
             models = [model for model in models if model.startswith("jev-")]
         return models
 
-    async def systemone_evaluate(self, *, state, questions, timeout=None, model=None):
-        if not isinstance(state, (str, dict, list)) or not state:
+    def _validated_questions(self, *, state, questions):
+        if not isinstance(state, (str, dict, list)) or (isinstance(state,str) and not state.strip()):
             raise SystemOneError("System One 需要非空 state。")
         if not isinstance(questions, dict) or not 0 < len(questions) <= 32:
             raise SystemOneError("System One 需要 1～32 个 typed questions。")
@@ -132,6 +184,10 @@ class SystemOneProvider(Provider):
                 not isinstance(spec.get("criteria"), list) or len(spec["criteria"]) < 2
             ):
                 raise SystemOneError("score 问题需要至少两个等级。")
+        return normalized_questions
+
+    async def systemone_evaluate(self, *, state, questions, timeout=None, model=None):
+        normalized_questions = self._validated_questions(state=state, questions=questions)
         selected_model = model or self.get_model()
         payload = {"model": selected_model, "state": state, "questions": normalized_questions}
         if len(json.dumps(payload, ensure_ascii=False).encode()) > 256 * 1024:
@@ -222,7 +278,7 @@ def register_adapter():
         del provider_cls_map[PROVIDER_TYPE]
     if PROVIDER_TYPE not in provider_cls_map:
         register_provider_adapter(
-            PROVIDER_TYPE, "Jev / System One 决策模型", provider_type=ProviderType.CHAT_COMPLETION,
+            PROVIDER_TYPE, "Jev / System One 决策模型", provider_type=ProviderType.DECISION,
             default_config_tmpl=None, provider_display_name="Jev / System One",
         )(SystemOneProvider)
     templates = CONFIG_METADATA_2["provider_group"]["metadata"]["provider"]["config_template"]

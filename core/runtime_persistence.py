@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
-
-from astrbot.api import logger
 
 from .graph import ConversationNode
 from .routing_contract import EDGE_KINDS
@@ -21,6 +20,7 @@ from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
 MAX_SESSIONS = 1000
+logger = logging.getLogger(__name__)
 
 # The host version the learning layer records, resolved from the same file the
 # plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the
@@ -51,9 +51,10 @@ MAX_NODES = 500
 # synchronously on the event loop, so the payload gets a total budget too: the
 # oldest sessions are dropped rather than blocking the loop with a huge build.
 MAX_TOTAL_BYTES = 4 * 1024 * 1024
-RUNTIME_FIELDS = ('last_activity', 'last_model_send', 'last_interlocutor',
+RUNTIME_FIELDS = ('scope_kind', 'last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
-                  'vibe_message_count', 'turn_sequence', 'model_diagnostic', 'topic_stop_revisions')
+                  'vibe_message_count', 'turn_sequence', 'model_diagnostic', 'topic_stop_revisions',
+                  'peer_bot_rounds')
 TOPIC_FIELDS = ('topic_id', 'message_ids', 'participants', 'updated_at', 'label',
                 'generated_title', 'title_attempted', 'label_requested', 'human_updated_at', 'created_at', 'exemplar_messages',
                 'centroid_vector', 'recent_message_ids', 'keywords', 'centroid_space',
@@ -78,7 +79,9 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 # `tests/test_static_contracts.py` holds them apart: every name in the first group
 # must have a producer in this tree (a key nobody writes is a phantom that a reader
 # will one day trust), and nothing may start writing a name in the second.
-_WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
+_WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome',
+                       'discussion_seed', 'discussion_confirmed_at', 'discussion_confirmed_by',
+                       'discussion_support_ids', 'discussion_support_topic_id', 'discussion_representative_id',
                        'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',
                        'inferred_parent_id', 'is_wake', 'trigger_user_id',
                        'quoted_author_id', 'quoted_author_name', 'topic_source_text',
@@ -89,7 +92,7 @@ _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'shadow_decision',
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.
-_LEGACY_META_FIELDS = ('source', 'addressivity', 'decision', 'vibe_mode', 'display_name')
+_LEGACY_META_FIELDS = ('shadow_decision', 'source', 'addressivity', 'decision', 'vibe_mode', 'display_name')
 META_FIELDS = _WRITTEN_META_FIELDS + _LEGACY_META_FIELDS
 SHADOW_FIELDS = ('session_key', 'timestamp', 'action', 'reason', 'willingness_score',
                  'threshold', 'topic_relevance', 'professionalism', 'question_value',
@@ -101,7 +104,8 @@ ARBITRATION_FIELDS = ('should_speak', 'willingness_score', 'threshold', 'reason'
 
 
 def _json(value, depth=0):
-    if depth > 6:
+    # Includes the allowlisted per-turn judgement/platform/mention-ID list.
+    if depth > 7:
         return None
     if value is None or isinstance(value, bool):
         return value
@@ -210,6 +214,8 @@ def export_runtime_state(plugin) -> dict:
         item = _fields(runtime, RUNTIME_FIELDS)
         item.update(session_key=runtime.session_key, group_id=runtime.group_id,
                     umo=runtime.umo, bot_id=runtime.bot_id)
+        from .group_context import export_group_events
+        item['group_events'] = export_group_events(runtime, plugin.time_service.time())
         item['nodes'] = []
         if runtime.dag:
             for node in runtime.dag.get_recent_nodes(MAX_NODES):
@@ -299,9 +305,16 @@ def restore_runtime_state(plugin, payload) -> None:
             continue
         if plugin._registry.capacity_reached():
             break
-        runtime = plugin._registry.get_or_create(key, group_id=str(item.get('group_id') or key), umo=key,
-                                                 bot_id=str(item.get('bot_id') or ''))
+        scope_kind = item.get('scope_kind', 'group')
+        if scope_kind not in {'group', 'private'}:
+            scope_kind = 'group'
+        group_id = '' if scope_kind == 'private' else str(item.get('group_id') or key)
+        runtime = plugin._registry.get_or_create(key, group_id=group_id, umo=key,
+                                                 bot_id=str(item.get('bot_id') or ''),
+                                                 scope_kind=scope_kind)
         restored_keys.add(key)
+        from .group_context import restore_group_events
+        restore_group_events(runtime, item.get('group_events', []), shift=shift, now=plugin.time_service.time())
         for name in RUNTIME_FIELDS:
             value = item.get(name)
             default = getattr(runtime, name)
@@ -332,6 +345,8 @@ def restore_runtime_state(plugin, payload) -> None:
                                         thread_id=str(row.get('thread_id') or row['msg_id'])[:1024])
                 meta = row.get('metadata', {})
                 node.metadata = _json({k: v for k, v in meta.items() if k in META_FIELDS}) if isinstance(meta, dict) else {}
+                if 'discussion_confirmed_at' in node.metadata:
+                    node.metadata['discussion_confirmed_at'] = _number(node.metadata['discussion_confirmed_at']) + shift
                 if node.msg_id not in runtime.dag.nodes:
                     runtime.dag.nodes[node.msg_id] = node
                     runtime.dag.chronological_ids.append(node.msg_id)

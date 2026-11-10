@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from collections import deque
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from astrbot.core.provider.entities import LLMResponse  # noqa: E402
 from astrbot.api.platform import MessageType  # noqa: E402
 from astrbot_plugin_chat_dynamics.core.agent_bridge import AstrBotAgentBridge  # noqa: E402
 from astrbot.core.pipeline.context_utils import call_event_hook as real_call_event_hook  # noqa: E402
+from astrbot_plugin_chat_dynamics.tests.test_jev_decision_layer import jev_plugin as jev_plugin  # noqa: E402
 
 
 class Event(AstrMessageEvent):
@@ -28,6 +30,19 @@ class Event(AstrMessageEvent):
                               sender=SimpleNamespace(user_id="u", nickname="user"), self_id="bot")
         meta = SimpleNamespace(id="test", name="test", support_proactive_message=False, support_streaming_message=False)
         super().__init__("完整请求", obj, meta, "room")
+        self.sent = []
+
+    async def send(self, message):
+        self.sent.append(message)
+
+
+class PrivateEvent(AstrMessageEvent):
+    def __init__(self):
+        obj = SimpleNamespace(type=MessageType.FRIEND_MESSAGE, message=[], message_id="dm-1", group_id="",
+                              sender=SimpleNamespace(user_id="u", nickname="user"), self_id="bot")
+        meta = SimpleNamespace(id="test", name="test", support_proactive_message=False, support_streaming_message=False)
+        super().__init__("私聊直接请求", obj, meta, "user")
+        self.unified_msg_origin = "test:FriendMessage:user"
         self.sent = []
 
     async def send(self, message):
@@ -475,3 +490,93 @@ async def test_real_sdk_dispatches_both_companions_once(host_fixture, monkeypatc
     assert forwarded_text.count("retrieved-memory-hint") == 1
     companion.hub.context.assert_not_awaited()
     await companion.close()
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_group_at_uses_jev_then_one_owned_agent_reply(host_fixture, jev_plugin):
+    """Keep the existing group path on Jev + the native owned Agent bridge."""
+    ctx, event, calls = host_fixture
+    plugin, _ = jev_plugin
+    event.is_at_or_wake_command = True
+    plugin.context = ctx
+    plugin.llm.context = ctx
+    plugin.persona_engine.bridge = AstrBotAgentBridge(ctx)
+
+    async def provider(_umo=None):
+        return "offline-test-provider"
+
+    plugin.llm.resolve_provider_id = provider
+    try:
+        await plugin.on_group_message(event)
+        from astrbot.core.provider.entities import ProviderRequest
+        await plugin.on_llm_request(event, ProviderRequest(prompt="unowned host duplicate"))
+        assert event.is_stopped()
+        assert not calls
+        await plugin.debounce.flush(session_id=event.unified_msg_origin)
+        runtime = plugin._sessions[event.unified_msg_origin]
+
+        async def wait_for_delivery():
+            for _ in range(1500):
+                if event.sent and runtime.generation_task is None:
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("owned group reply did not complete")
+
+        await asyncio.wait_for(wait_for_delivery(), timeout=20)
+        assert len(plugin.jev.calls) == 1
+        assert len(calls) == 1
+        assert len(event.sent) == 2  # the mocked provider returns two paragraphs
+    finally:
+        await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_private_direct_uses_same_owned_agent_without_jev(host_fixture, jev_plugin):
+    from dataclasses import replace
+    from astrbot.core.provider.entities import ProviderRequest
+
+    ctx, _group_event, calls = host_fixture
+    plugin, _ = jev_plugin
+    event = PrivateEvent()
+    plugin._apply_runtime_config(replace(plugin._runtime_config, private_chat_enabled=True), validated=True)
+    plugin.context = ctx
+    plugin.llm.context = ctx
+    plugin.persona_engine.bridge = AstrBotAgentBridge(ctx)
+
+    async def forbidden_jev(**_kwargs):
+        raise AssertionError("private direct path must not invoke Jev")
+
+    async def provider(_umo=None):
+        return "offline-test-provider"
+
+    async def chat(**kwargs):
+        calls.append(kwargs)
+        return LLMResponse(role="assistant", completion_text="私聊直接回答。")
+
+    plugin.jev.evaluate = forbidden_jev
+    plugin.llm.resolve_provider_id = provider
+    ctx.provider.text_chat = chat
+    try:
+        await plugin.on_private_message(event)
+        runtime = plugin._sessions[event.unified_msg_origin]
+        assert runtime.scope_kind == "private" and runtime.group_id == ""
+        await plugin.on_llm_request(event, ProviderRequest(prompt="unowned host duplicate"))
+        assert event.is_stopped()
+        assert not calls
+
+        await plugin.debounce.flush(session_id=event.unified_msg_origin)
+
+        async def wait_for_delivery():
+            for _ in range(1500):
+                if event.sent and runtime.generation_task is None:
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("private owned reply did not complete")
+
+        await asyncio.wait_for(wait_for_delivery(), timeout=20)
+        assert len(calls) == 1
+        assert len(event.sent) == 1
+        assert not plugin._registry.group_keys.get("")
+        assert plugin.decision_calls == []
+    finally:
+        await plugin.terminate()

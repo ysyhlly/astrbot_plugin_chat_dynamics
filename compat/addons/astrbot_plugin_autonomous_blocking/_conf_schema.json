@@ -1,0 +1,17 @@
+{
+  "enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "Enable policy enforcement. Disabling preserves the local database."
+  },
+  "default_scope": {
+    "type": "string",
+    "default": "bot",
+    "hint": "Default scope for admin set commands and model boundary tools: bot or session."
+  },
+  "protected_user_ids": {
+    "type": "list",
+    "default": [],
+    "description": "UIDs that policy setters cannot target. The bot's own UID is always protected."
+  }
+}

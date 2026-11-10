@@ -1,6 +1,7 @@
 """Real SDK regressions for auxiliary model budgets and continued media access."""
 import asyncio
 import json
+from dataclasses import replace
 
 import pytest
 from PIL import Image as PILImage
@@ -70,6 +71,11 @@ async def test_summary_model_obeys_reply_deadline(host_fixture, monkeypatch):
 async def test_attachment_tool_can_read_file_in_next_turn(host_fixture, jev_plugin, tmp_path):
     ctx, event, calls = host_fixture
     p, _ = jev_plugin
+    p._runtime_config = replace(p._runtime_config, media_understand_reply_enabled=True)
+    p.media_understand_reply_enabled = True
+    # The media gate and the real Agent must inspect the same offline provider.
+    p.context.get_provider_by_id = ctx.get_provider_by_id
+    p.context.get_using_provider = ctx.get_using_provider
     p.media_archive = MediaArchive(tmp_path / 'archive')
     source = tmp_path / 'picture.png'
     picture = PILImage.new('RGB', (2, 1))
@@ -102,7 +108,8 @@ async def test_attachment_tool_can_read_file_in_next_turn(host_fixture, jev_plug
                 if isinstance(content, list):
                     texts.extend(part.get('text', '') if isinstance(part, dict) else getattr(part, 'text', '') for part in content)
             texts.extend(getattr(part, 'text', '') for part in kwargs.get('extra_user_content_parts', []))
-            attachment = next(text.split('path ', 1)[1].rsplit(']', 1)[0] for text in texts if '[Image Attachment:' in text)
+            attachment = next(text.split('path ', 1)[1].rsplit(']', 1)[0] for text in texts
+                              if text.startswith(('[Image Attachment:', '[Image ')) and 'path ' in text)
         if model_count in (1, 3):
             return LLMResponse(role='assistant', completion_text='', tools_call_name=['allowed'],
                 tools_call_args=[{'path': attachment, 'page': 1 if model_count == 1 else 2}], tools_call_ids=[f'call{model_count}'])

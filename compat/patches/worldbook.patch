@@ -1,0 +1,377 @@
+--- a/core/store.py
++++ b/core/store.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++from copy import deepcopy
+ import logging
+ import os
+ import threading
+@@ -207,6 +208,56 @@
+                 self._store.sessions[session_id] = state
+             return state
+ 
++    def snapshot_context_inputs(
++        self, session_id: str
++    ) -> tuple[SessionState, CharacterCard | None, list[WorldBook]]:
++        """Copy the effective character and books without recording a read.
++
++        Args:
++            session_id: Full AstrBot unified message origin.
++
++        Returns:
++            Detached session, character, and active book snapshots. An explicit
++            missing character binding does not fall back to the global card.
++        """
++        session_id = str(session_id or "").strip()
++        with self._lock:
++            saved = self._store.sessions.get(session_id)
++            state = SessionState.from_dict(saved.to_dict()) if saved else SessionState()
++            card_id = state.card_id or self._store.default_card_id
++            raw_card = (
++                self._store.cards.get(card_id)
++                if card_id != SESSION_CARD_NONE
++                else None
++            )
++            card = CharacterCard.from_dict(deepcopy(raw_card)) if raw_card else None
++            book_ids = state.book_ids or self._store.active_book_ids
++            books = (
++                [self._store.books[bid] for bid in book_ids if bid in self._store.books]
++                if book_ids
++                else list(self._store.books.values())
++            )
++            return state, card, [
++                WorldBook.from_dict(book.to_dict()) for book in books if book.enabled
++            ]
++
++    def snapshot_global_character_inputs(
++        self, persona_id: str
++    ) -> tuple[SessionState, CharacterCard | None, list[WorldBook]]:
++        """Read one character and its own linked world, excluding session state."""
++        persona_id = str(persona_id or "").strip()
++        with self._lock:
++            candidates = [
++                raw for cid, raw in self._store.cards.items()
++                if str(raw.get("persona_id") or f"wb_{cid}") == persona_id
++            ] if persona_id else []
++            if len(candidates) != 1:
++                return SessionState(), None, []
++            card = CharacterCard.from_dict(deepcopy(candidates[0]))
++            book = self._store.books.get(card.linked_book_id)
++            books = [WorldBook.from_dict(book.to_dict())] if book and book.enabled else []
++            return SessionState(), card, books
++
+     def update_session(self, session_id: str, **kwargs: Any) -> SessionState:
+         session_id = str(session_id or "").strip() or "default"
+         with self._lock:
+--- a/main.py
++++ b/main.py
+@@ -1,5 +1,13 @@
++# ruff: noqa: E402
++# Refresh owned dependencies before importing them during a scoped hot reload.
+ from __future__ import annotations
+ 
++from .reload_bootstrap import ensure_current
++ensure_current(__package__, __name__, __file__, checks=[('core.store', 'WorldBookStore', 'snapshot_context_inputs')])
++
++
++import hashlib
++import json
+ import logging
+ import os
+ import re
+@@ -41,7 +49,7 @@
+ logger = logging.getLogger("astrbot")
+ 
+ PLUGIN_NAME = "astrbot_plugin_worldbook"
+-PLUGIN_VERSION = "v1.4.0"
++PLUGIN_VERSION = "v1.5.0"
+ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+ STATE_FILENAME = "worldbook_store.json"
+ 
+@@ -1399,6 +1407,178 @@
+ 
+     # ---------- LLM inject ----------
+ 
++    async def get_character_context(
++        self, scope: dict[str, Any], event: Any = None
++    ) -> dict[str, Any]:
++        """Read the authoritative, scoped character material for one turn.
++
++        Args:
++            scope: Platform, full UMO, persona ID, and instance ID supplied by
++                the coordinator. Effective character IDs are returned separately.
++            event: Original message event, event envelope, or plain query text.
++                Assembled provider prompts and arbitrary JSON are never scanned.
++
++        Returns:
++            Versioned plain data with detached source items and a content hash.
++            Disabled bindings are explicit and must not trigger persona fallback.
++        """
++        self._refresh_settings()
++        incoming = scope if isinstance(scope, dict) else {}
++        sid = str(incoming.get("umo") or "").strip()
++        result: dict[str, Any] = {
++            "schema_version": 1,
++            "available": False,
++            "disabled": False,
++            "scope": {
++                "platform": str(incoming.get("platform") or sid.split(":", 1)[0]),
++                "umo": sid,
++                "persona_id": "",
++                "instance_id": "",
++            },
++            "persona_id": "",
++            "instance_id": "",
++            "card_id": "",
++            "name": "",
++            "fingerprint": "",
++            "core_prompt": "",
++            "group_rules": "",
++            "world_items": [],
++            "world_prompt": "",
++            "scenario": "",
++            "source_ids": [],
++        }
++        raw_text, event_sid = self._character_event_text(event)
++        if event_sid and event_sid != sid:
++            result["reason"] = "scope_mismatch"
++            return result
++        if sid:
++            state, card, books = self.store.snapshot_context_inputs(sid)
++        else:
++            # Background life ticks may read the persona's own setting only.
++            # Never accept raw chat events or session-specific world selections.
++            if event is not None:
++                result["reason"] = "global_event_not_allowed"
++                return result
++            if not str(incoming.get("persona_id") or "").strip():
++                result["reason"] = "missing_scope"
++                return result
++            state, card, books = self.store.snapshot_global_character_inputs(
++                str(incoming["persona_id"])
++            )
++        if (
++            not self.settings.enabled
++            or not state.enabled
++            or not state.inject_card_prompt
++            or state.card_id == SESSION_CARD_NONE
++        ):
++            result["disabled"] = True
++            result["reason"] = "character_disabled"
++            return result
++        if card is None:
++            result["reason"] = "no_character"
++            return result
++
++        # Cards without a host persona have a deterministic identity until sync.
++        persona_id = card.persona_id or f"wb_{card.id}"
++        instance_id = persona_id
++        if str(incoming.get("persona_id") or "") == persona_id:
++            instance_id = str(incoming.get("instance_id") or persona_id)
++        resolved_scope = {
++            **result["scope"],
++            "persona_id": persona_id,
++            "instance_id": instance_id,
++        }
++        core_prompt = card.build_system_prompt(include_world_hint=True)
++        # Change the task perspective in returned material, never the stored card.
++        core_prompt = core_prompt.replace(
++            "严格以第一人称角色扮演", "对外表达采用角色视角"
++        )
++        group_rules = card.group_addendum.strip() if is_group_session(sid) else ""
++        matches = match_entries(
++            books,
++            raw_text,
++            active_scenario=state.scenario.strip(),
++            max_entries=self.settings.max_entries,
++            allow_auto_scenario=self.settings.auto_scenario,
++            dedupe_same_content=self.settings.dedupe_same_content,
++        )
++        scenario = state.scenario.strip() or matches.auto_scenario
++        source_ids = [f"worldbook:card:{card.id}"]
++        if group_rules:
++            source_ids.append(f"worldbook:card:{card.id}:group")
++        world_items = []
++        for matched in matches.matched:
++            entry = matched.entry
++            source_id = f"worldbook:book:{matched.book.id}:entry:{entry.uid}"
++            lines = [entry.display_name()]
++            if entry.scenarios:
++                lines.append(f"适用场景：{', '.join(entry.scenarios)}")
++            if entry.behavior:
++                lines.append(f"行为指引：{entry.behavior}")
++            if entry.content:
++                lines.append(entry.content)
++            world_items.append({
++                "text": "\n".join(lines),
++                "source_id": source_id,
++                "occurred_at": matched.book.updated_at,
++                "scope": dict(resolved_scope),
++                "fact_kind": "world_setting",
++                "confidence": "established_setting",
++                "unknown": False,
++            })
++            source_ids.append(source_id)
++        result.update({
++            "available": True,
++            "scope": resolved_scope,
++            "persona_id": persona_id,
++            "instance_id": instance_id,
++            "card_id": card.id,
++            "name": card.name,
++            "core_prompt": core_prompt,
++            "group_rules": group_rules,
++            "world_items": world_items,
++            "world_prompt": build_injection_text(
++                matches, active_scenario=scenario, style=self.settings
++            ),
++            "scenario": scenario,
++            "source_ids": source_ids,
++        })
++        material = {
++            key: result[key]
++            for key in (
++                "persona_id", "instance_id", "card_id", "core_prompt",
++                "group_rules", "world_items", "world_prompt", "scenario", "source_ids",
++            )
++        }
++        result["fingerprint"] = hashlib.sha256(
++            json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
++        ).hexdigest()
++        return result
++
++    def _character_event_text(self, event: Any) -> tuple[str, str]:
++        """Extract original message text and provenance without serializing it."""
++        if event is None:
++            return "", ""
++        if isinstance(event, str):
++            return event, ""
++        if isinstance(event, dict):
++            event_scope = event.get("scope")
++            sid = (
++                str(event_scope.get("umo") or "")
++                if isinstance(event_scope, dict)
++                else str(event.get("umo") or event.get("unified_msg_origin") or "")
++            )
++            for key in ("raw_text", "message_str", "text", "body"):
++                if isinstance(event.get(key), str):
++                    return event[key], sid
++            # Envelopes may place text in a structured body; do not scan metadata.
++            body = event.get("body")
++            if isinstance(body, dict) and isinstance(body.get("text"), str):
++                return body["text"], sid
++            return "", sid
++        sid = str(getattr(event, "unified_msg_origin", "") or "")
++        return self._message_text(event), sid
++
+     def _collect_scan_text(self, event: AstrMessageEvent, req: Any) -> str:
+         """Build the text that keyword matching runs against.
+ 
+@@ -1450,9 +1630,21 @@
+         # active scenario name also helps matching scenario-bound constant? not needed
+         return "\n".join(chunks)
+ 
+-    @filter.on_llm_request()
++    @filter.on_llm_request(priority=4)  # 顺序确定化：原 0 并列
+     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+         try:
++            get_extra = getattr(event, "get_extra", None)
++            if callable(get_extra) and get_extra("_narrative_managed_v1"):
++                return
++            blocking_context = get_extra("_autonomous_blocking_context_v1", None) if callable(get_extra) else None
++            if (
++                isinstance(blocking_context, dict)
++                and blocking_context.get("schema_version") == 1
++                and blocking_context.get("projection_restricted") is True
++            ):
++                # The core persona is already supplied by AstrBot's active persona;
++                # this plugin hook adds optional session/world material.
++                return
+             if not self.inject_enabled_global:
+                 return
+             sid = self._session_id(event)
+--- a/metadata.yaml
++++ b/metadata.yaml
+@@ -1,7 +1,7 @@
+ name: astrbot_plugin_worldbook
+ display_name: 世界书
+ desc: 导入世界书与角色卡；按关键词/场景注入设定，支持应用安安等角色扮演并与世界书叠加；附带可视化管理面板。
+-version: v1.4.0
++version: v1.5.0
+ author: ysyhly
+ repo: "https://github.com/ysyhlly/astrbot_plugin_worldbook"
+ astrbot_version: ">=4.16,<5"
+--- /dev/null
++++ b/reload_bootstrap.py
+@@ -0,0 +1,69 @@
++"""Refresh only this plugin's modules when a scoped source update is loaded."""
++
++from __future__ import annotations
++
++import hashlib
++import sys
++from pathlib import Path
++
++
++def ensure_current(package: str, main_module: str, entry_path: str, checks=(), version=None):
++    """Drop stale owned imports before the main module imports its dependencies.
++
++    Args:
++        package: The plugin's exact import package.
++        main_module: Currently executing entry module, retained throughout.
++        entry_path: Current plugin main file.
++        checks: Existing module/class/field signatures that distinguish old code.
++        version: Optional package version used by its own main registration.
++    """
++    parent = sys.modules.get(package)
++    if parent is None or not package:
++        return
++    root = Path(entry_path).resolve().parent
++    digest = hashlib.sha256()
++    excluded = {"tests", "data", ".git", "node_modules", ".venv", "__pycache__"}
++    try:
++        sources = sorted(
++            root.rglob("*.py"), key=lambda item: item.relative_to(root).as_posix()
++        )
++    except OSError:
++        # An unreadable source tree must not break plugin import. Leave the
++        # recorded fingerprint and the loaded modules untouched instead of
++        # degrading to an empty digest (which would silently disable change
++        # detection, or trigger a bogus purge).
++        return
++    for path in sources:
++        if any(part in excluded for part in path.relative_to(root).parts):
++            continue
++        try:
++            digest.update(path.relative_to(root).as_posix().encode())
++            digest.update(path.read_bytes())
++        except OSError:
++            # A partially readable tree yields a bogus fingerprint; abandon the
++            # comparison rather than purging modules based on it.
++            return
++    stamp = digest.hexdigest()
++    previous = getattr(parent, "_narrative_loaded_source_fingerprint", None)
++    incompatible = False
++    for module_name, class_name, attribute in checks:
++        module = sys.modules.get(package + "." + module_name)
++        candidate = getattr(module, class_name, None)
++        if candidate is not None and not (hasattr(candidate, attribute)
++                or attribute in getattr(candidate, "__dataclass_fields__", {})
++                or attribute in getattr(candidate, "model_fields", {})):
++            incompatible = True
++    if incompatible or previous is not None and previous != stamp:
++        prefix = package + "."
++        keep = {main_module, __name__}
++        for name in tuple(sys.modules):
++            if not name.startswith(prefix) or name in keep:
++                continue
++            module = sys.modules.pop(name)
++            owner_name, attribute = name.rsplit(".", 1)
++            owner = sys.modules.get(owner_name)
++            if owner is not None and getattr(owner, attribute, None) is module:
++                delattr(owner, attribute)
++    parent._narrative_loaded_source_fingerprint = stamp
++    if version is not None:
++        parent.__version__ = version

@@ -44,10 +44,13 @@ async def test_confirmed_wake_survives_participation_misclassification(jev_plugi
             assert p.jev.calls[0]['state']['conversation']['wake_kind'] == 'quote'
         else:
             assert not p.jev.calls
-        assert len(bridge.requests) == 1
-        assert event.replies_sent
+        should_reply = kind != 'quote_bot' or decline == 'join'
+        # A quote identifies the recipient but does not override an explicit
+        # ignore action. Actual platform mentions retain mandatory handling.
+        assert len(bridge.requests) == int(should_reply)
+        assert bool(event.replies_sent) is should_reply
         node = p._sessions[event.unified_msg_origin].dag.get_node(event.message_id)
-        assert node.metadata['outcome']['final_outcome'] == 'delivered'
+        assert (node.metadata['outcome']['final_outcome'] == 'delivered') is should_reply
     finally:
         await p.terminate()
 

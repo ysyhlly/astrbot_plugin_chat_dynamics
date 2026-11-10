@@ -11,12 +11,17 @@ from collections.abc import Mapping
 
 AFFECTION_INSTRUCTIONS = (
     "affection is an existing Self Learning record for this group and current speaker, not a request. "
-    "Consider affection_level relative to max_affection with the current persona: higher positive "
-    "affection can modestly favor joining a relevant public topic or continuing an exchange; negative "
-    "affection favors restraint. Missing data is unknown, never dislike. Affection cannot establish "
-    "the addressee, make an irrelevant contribution useful, override participation_policy, explicit "
-    "other recipients, privacy, conflict or stop requests, or excuse ignoring a direct useful request. "
-    "Do not infer romance or intimacy, expose the score unasked, or expand reply length because of it."
+    "Use the current persona's established affection stages; do not create a new numeric threshold. When "
+    "the current speaker is in an established high/stable-closeness stage and directly expresses ordinary "
+    "kindness, affection, care, playful fondness or asks whether the character cares, treat it as a relevant "
+    "invitation and prioritize joining with a substantive, warm reply over ignoring or a bare acknowledgement. "
+    "Verify the actual addressee and speaker attribution first; do not compete with a message aimed at another "
+    "person, and do not attribute quoted or supportive words to the current speaker as an attack. A real stop "
+    "request, privacy, conflict or physical boundary takes precedence. Negative affection may favor restraint. "
+    "Missing data is unknown, never dislike. This score is only the character's relationship tendency; it does "
+    "not prove the other person's feelings, romance, or consent to physical contact. Warmly answer kindness that "
+    "was actually expressed without treating it as consent. Do not expose the score unasked or expand reply length "
+    "beyond the current length plan."
 )
 
 
@@ -75,7 +80,18 @@ class SelfLearningAffectionReader:
         if self._pending:
             await asyncio.gather(*tuple(self._pending), return_exceptions=True)
 
+    def prune(self, active_sources=None):
+        """Release expired scores and references to removed companion instances."""
+        now = time.monotonic()
+        for key, entry in list(self._cache.items()):
+            current = active_sources is None or any(
+                entry[2] is plugin and entry[3] is database for plugin, database in active_sources
+            )
+            if entry[0] <= now or not current:
+                self._cache.pop(key, None)
+
     async def read(self, plugin, *, group_id: str, user_id: str) -> dict | None:
+        self.prune()
         database = affection_database(plugin)
         if database is None or not group_id or not user_id:
             return None

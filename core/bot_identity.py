@@ -13,6 +13,20 @@ class BotReference:
 
 class BotIdentityMatcher:
     @staticmethod
+    def wake_candidate(name: str, text: str) -> bool:
+        """Match an alias without promoting overlapping greetings or idioms."""
+        if not name:
+            return False
+        if name == "安安":
+            # Mask only ambiguous occurrences; a separate explicit call still wins.
+            text = re.sub(r"晚安安+|早安安+|安安静静|平平安安", "\u0000", text)
+        escaped = re.escape(name)
+        pattern = (r"(?<![A-Za-z0-9_])" + escaped + r"(?![A-Za-z0-9_])"
+                   if name.isascii() else
+                   r"(?:^\s*|(?:我想问|请问|问一下)\s*)" + escaped + r"|" + escaped + r"(?=[,，、？?!！~～\s]|$)")
+        return bool(re.search(pattern, text, re.I))
+
+    @staticmethod
     def vocative_spans(name: str, text: str) -> tuple[tuple[int, int], ...]:
         name = name.strip()
         if not name or not text:

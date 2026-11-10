@@ -143,6 +143,10 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     """Mutate a session after its state lock has been acquired."""
     if host._shutting_down:
         return
+    first_event = result.first_event
+    if (getattr(first_event, "_chat_dynamics_scope_kind", "") == "private"
+            or getattr(host._sessions.get(result.session_id), "scope_kind", "group") == "private"):
+        return _prepare_private_turn_locked(host, result)
     if not host.debounce.is_result_current(result):
         logger.info(
             "[ChatDynamics] Ignored stale debounced turn for reset session %s",
@@ -161,6 +165,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     parsed_events = []
     turn_mentions: List[str] = []
     is_wake = False
+    silence_seen = False
 
     runtime = host._sessions.get(session_id)
     if runtime is not None and any(
@@ -170,6 +175,50 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         return
     for raw in result.raw_events:
         parsed = parse_group_event(raw)
+        try:
+            from . import member_boundary
+            policy, boundary_token, boundary_state = member_boundary.peek(host, raw, parsed.sender_id)
+            if not boundary_state.available and member_boundary.fail_closed(boundary_state):
+                logger.warning(
+                    "[ChatDynamics] boundary fail-closed session=%s message_id=%s reason=boundary_service_unavailable",
+                    result.session_id, str(getattr(parsed, "message_id", "") or ""),
+                )
+                if hasattr(raw, "stop_event"):
+                    raw.stop_event()
+                host._block_native_for_mode(raw)
+                host._metric("boundary_unavailable")
+                return
+            if member_boundary.blocked(policy, purpose="reply"):
+                mode = str((policy or {}).get("mode", "")).lower()
+                if mode == "shield":
+                    host._block_native_for_mode(raw)
+                    host._metric("boundary_shield_queued_turn")
+                    return
+                silence_seen = True
+            setattr(raw, "_chat_dynamics_boundary_uid", parsed.sender_id)
+            setattr(raw, "_chat_dynamics_boundary_token", boundary_token)
+            if getattr(raw, "_chat_dynamics_boundary_policy_snapshot", None) is None:
+                snapshot, snapshot_state = member_boundary.capture_policy_snapshot(host, raw)
+                if not snapshot_state.available and (member_boundary.fail_closed(snapshot_state)
+                                                     or snapshot_state.service is not None):
+                    logger.warning(
+                        "[ChatDynamics] boundary fail-closed session=%s message_id=%s reason=boundary_policy_snapshot_unavailable",
+                        result.session_id, str(getattr(parsed, "message_id", "") or ""),
+                    )
+                    host._block_native_for_mode(raw)
+                    host._metric("boundary_unavailable")
+                    return
+                if snapshot_state.available and not snapshot_state.disabled and snapshot is not None:
+                    setattr(raw, "_chat_dynamics_boundary_policy_snapshot", snapshot)
+        except Exception as exc:
+            if getattr(getattr(host, "_runtime_config", None), "autonomous_blocking_required", False):
+                logger.warning(
+                    "[ChatDynamics] boundary fail-closed session=%s message_id=%s reason=boundary_service_error type=%s",
+                    result.session_id, str(getattr(parsed, "message_id", "") or ""), type(exc).__name__,
+                )
+                host._block_native_for_mode(raw)
+                host._metric("boundary_unavailable")
+                return
         if runtime is None:
             runtime = host._get_or_create_runtime(
                 session_id,
@@ -183,7 +232,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         for mention in parsed.platform_mentions:
             if mention not in turn_mentions:
                 turn_mentions.append(mention)
-        if parsed.is_at_or_wake:
+        if host._looks_like_strong_address(parsed, runtime):
             is_wake = True
 
     if runtime is None:
@@ -223,7 +272,9 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
                 "topic_source_text": parsed.text or "",
                 "message_count": result.message_count,
                 "duration": result.duration,
-                "is_wake": parsed.is_at_or_wake,
+                "is_wake": host._looks_like_strong_address(parsed, runtime),
+                "host_is_at_or_wake": parsed.is_at_or_wake,
+                "poke_at_bot": bool(parsed.has_poke and parsed.poke_at_bot),
                 "actual_mentions": actual_mentions,
                 "quoted_author_id": getattr(parsed, "reply_sender_id", ""),
                 "quoted_author_name": parsed.reply_sender_name,
@@ -237,6 +288,12 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
             dag.link_related(current_node.msg_id, previous_node.msg_id)
         turn_nodes.append(current_node)
         previous_node = current_node
+
+    if silence_seen:
+        # Silence keeps the source in the conversation DAG for observation,
+        # while bypassing routing, recall, decision, and every reply fallback.
+        host._metric("boundary_silence_observed")
+        return None
 
     if not turn_nodes:
         node = dag.add_message(
@@ -278,9 +335,13 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
                 host._claim_poke_event(last_event)
             else:
                 host._block_native_for_mode(last_event)
-        if poke_at_bot:
+        if not poke_at_bot:
+            return None
+        if not host._persona_mode():
+            # Legacy mode keeps the local poke policy.
             return _PokeJob(node=node, event=last_event, parsed=poke_events[-1], now=now)
-        return None
+        # persona_model: fall through so the Kev decision and persona engine
+        # handle a poke-at-bot exactly like any other turn.
 
     atmosphere = host.vibe_analyzer.get_atmosphere(session_id, current_time=now)
     vibe_mode = host.vibe_analyzer.get_mode(session_id, current_time=now)
@@ -317,6 +378,141 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     )
 
 
+def _prepare_private_turn_locked(host, result: DebounceResult):
+    """Build a private direct-reply turn without group routing or Jev state."""
+    if not host._persona_mode() or not host.debounce.is_result_current(result):
+        return None
+    raw_events = tuple(result.raw_events or ())
+    if not raw_events:
+        return None
+    session_id = str(result.session_id)
+    runtime = host._sessions.get(session_id)
+    parsed_events = tuple(parse_group_event(event) for event in raw_events)
+    if (any(parsed.group_id for parsed in parsed_events)
+            or len(parsed_events) != len(result.messages)):
+        return None
+    if runtime is None:
+        first = parsed_events[0]
+        runtime = host._get_or_create_runtime(
+            session_id, group_id="", umo=first.unified_msg_origin or session_id,
+            bot_id=first.self_id, scope_kind="private",
+        )
+    if runtime.scope_kind != "private" or not host.is_runtime_scope_enabled(runtime):
+        return None
+    if any(getattr(event, "_chat_dynamics_epoch", runtime.epoch) != runtime.epoch
+           for event in raw_events):
+        host._metric("stale_turn_ignored")
+        return None
+
+    # Recheck member policy after debounce: a queued private message can outlive
+    # a boundary change. Private turns do not contribute group learning rows.
+    from . import member_boundary
+    silence_seen = False
+    for event, parsed in zip(raw_events, parsed_events):
+        state = member_boundary.resolve_state(host, event)
+        if not state.available and member_boundary.fail_closed(state):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed session=%s message_id=%s reason=boundary_service_unavailable mode=private",
+                session_id, str(getattr(parsed, "message_id", "") or ""),
+            )
+            host._stop_boundary_event(event)
+            host._metric("boundary_unavailable")
+            return None
+        policy, token, state = member_boundary.peek(host, event, parsed.sender_id)
+        if not state.available and member_boundary.fail_closed(state):
+            logger.warning(
+                "[ChatDynamics] boundary fail-closed session=%s message_id=%s reason=boundary_service_unavailable mode=private",
+                session_id, str(getattr(parsed, "message_id", "") or ""),
+            )
+            host._stop_boundary_event(event)
+            host._metric("boundary_unavailable")
+            return None
+        if member_boundary.blocked(policy, purpose="reply"):
+            if str((policy or {}).get("mode", "")).lower() == "shield":
+                host._stop_boundary_event(event)
+                host._metric("boundary_shield_queued_turn")
+                return None
+            silence_seen = True
+        captured = getattr(event, "_chat_dynamics_boundary_token", None)
+        if captured is not None and token != captured:
+            host._metric("stale_turn_ignored")
+            return None
+
+    media_types = [kind for parsed in parsed_events
+                   for kind in (getattr(parsed, "media_component_types", ()) or ())]
+    has_media = any(bool(getattr(parsed, "has_media", False)) for parsed in parsed_events)
+    runtime.request_media_understand = False
+    if has_media:
+        try:
+            verdict = host.decision_gate.media.evaluate(
+                text=host._bounded_text(result.consolidated_text, _MAX_TURN_CHARS),
+                has_media=True, media_component_types=media_types,
+                outline=" ".join(str(getattr(parsed, "outline", "") or "") for parsed in parsed_events),
+                explicit=True, quoted_bot=any(bool(getattr(parsed, "reply_to_id", "")) for parsed in parsed_events),
+                media_privacy_strict=host._runtime_config.media_privacy_strict,
+                media_image_gate_enabled=host._runtime_config.media_image_gate_enabled,
+                media_voice_gate_enabled=host._runtime_config.media_voice_gate_enabled,
+                media_understand_reply_enabled=host._runtime_config.media_understand_reply_enabled,
+            )
+            runtime.last_media_gate = verdict.as_dict()
+            runtime.request_media_understand = bool(verdict.request_understand)
+            if verdict.privacy_hit:
+                host._metric("private_media_privacy_blocked")
+                return None
+        except Exception as exc:
+            host._metric("private_media_gate_unavailable")
+            logger.warning("private media gate unavailable code=CD_PRIVATE_MEDIA_GATE type=%s",
+                           type(exc).__name__)
+            return None
+
+    dag = runtime.dag
+    if dag is None:
+        raise RuntimeError("private session DAG is unavailable")
+    runtime.touch(host.time_service.time())
+    runtime.turn_sequence += 1
+    turn_id = f"private_{runtime.turn_sequence}_{result.user_id}"
+    turn_nodes = []
+    previous = None
+    for index, (parsed, item) in enumerate(zip(parsed_events, result.messages)):
+        text = host._bounded_text(getattr(item, "text", "") or parsed.text or "", _MAX_INPUT_CHARS)
+        msg_id = parsed.message_id or getattr(item, "node_id", "") or f"{turn_id}_{index}"
+        item.node_id = msg_id
+        node = dag.add_message(
+            msg_id=msg_id, user_id=parsed.sender_id or result.user_id, text=text,
+            timestamp=float(getattr(item, "timestamp", host.time_service.time()) or host.time_service.time()),
+            reply_to_id=parsed.reply_to_id, mentioned_users=list(dict.fromkeys(parsed.platform_mentions)),
+            metadata={
+                "turn_id": turn_id, "turn_index": index, "topic_source_text": parsed.text or "",
+                "message_count": result.message_count, "is_wake": False,
+                "actual_mentions": list(dict.fromkeys(parsed.platform_mentions)),
+                "quoted_author_id": parsed.reply_sender_id, "quoted_author_name": parsed.reply_sender_name,
+                "sender_name": parsed.sender_name, "sender_platform": parsed.platform,
+                "platform_message_id": bool(parsed.message_id), "scope_kind": "private",
+                "decision_source": "private_direct",
+            },
+        )
+        if previous is not None and not parsed.reply_to_id:
+            dag.link_related(node.msg_id, previous.msg_id)
+        turn_nodes.append(node)
+        previous = node
+    if not turn_nodes:
+        return None
+    node = turn_nodes[-1]
+    node.metadata["consolidated_text"] = host._bounded_text(result.consolidated_text, _MAX_TURN_CHARS)
+    host._mark_panel_runtime_dirty()
+    if silence_seen:
+        host._metric("boundary_silence_observed")
+        return None
+    if not host.shadow_mode:
+        host._schedule_mood_recall(session_id, result.user_id)
+    item = snapshot_turn(
+        runtime, result, [turn_node.msg_id for turn_node in turn_nodes], parsed_events,
+        True, {"scope": "private", "decision_source": "direct"}, host.shadow_mode,
+        wake_kind="private", boundary_host=host,
+    )
+    return replace(item, private_direct=True) if item is not None else None
+
+
 def _prepared_turn_current(host, turn: _PreparedTurn) -> bool:
     runtime = turn.runtime
     return bool(
@@ -341,6 +537,11 @@ async def _enrich_turn(host, turn: _PreparedTurn, *, allow_llm: bool = True) -> 
     # Reuse the largest configured stage allowance as the entire enrichment
     # allowance: serial stages do not each receive a new full deadline.
     cfg = host._runtime_config
+    if getattr(cfg, 'rule_topic_routing_enabled', False):
+        # Object rules and native discussion ranking do not consume embeddings.
+        # Keep warmups alive for the independent addressivity/memory consumers.
+        host._metric('routing_embedding_wait_skipped')
+        return
     allowance = max(float(cfg.routing_neural_timeout),
                     float(cfg.topic_reranker_timeout) if cfg.topic_reranker_enabled else 0.0)
     deadline = time.perf_counter() + max(0.0, allowance)
@@ -485,14 +686,16 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
     mark_not_attempted(node)
 
     if host._persona_mode():
-        explicit = explicit_platform
-        if not explicit and is_request_supplement(runtime, user_id, now):
+        kinds = {host._wake_kind(parsed, runtime) for parsed in parsed_events}
+        # The combined host flag may be a rejected nickname overlap. Only a
+        # classified wake or a real pending request can authorize continuation.
+        explicit = bool(kinds & {"at", "quote", "name", "poke"})
+        if not explicit and not result.metadata.get("peer_directed") and is_request_supplement(runtime, user_id, now):
             # Same-user addendum to a recent @/wake request is not ambient chatter.
             explicit = True
         observations = {"mpm": telemetrics.mpm, "mode": vibe_mode.value,
                         "addressivity": addressivity.score, "scene_tags": list(telemetrics.scene_tags)}
         canonical_ids = tuple(turn_node.msg_id for turn_node in turn_nodes) or (node.msg_id,)
-        kinds = {host._wake_kind(parsed, runtime) for parsed in parsed_events}
         wake_kind = next((kind for kind in ("at", "quote", "name", "poke") if kind in kinds),
                          "supplement" if explicit else "none")
         return snapshot_turn(
@@ -504,6 +707,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
             observations,
             host.shadow_mode,
             wake_kind=wake_kind,
+            boundary_host=host,
         )
 
     logger.debug(
@@ -542,7 +746,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
     )
 
     explicit_addr = addressivity.level == AddressivityLevel.STRONG
-    if not explicit_addr and is_request_supplement(runtime, user_id, now):
+    if not explicit_addr and not result.metadata.get("peer_directed") and is_request_supplement(runtime, user_id, now):
         explicit_addr = True
     recent_nodes = dag.get_recent_nodes(limit=12) if dag is not None and hasattr(dag, "get_recent_nodes") else []
     media_types = []

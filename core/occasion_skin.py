@@ -285,6 +285,7 @@ class OccasionClassifier:
         presence_knob: str = "sensible",
         now: Optional[float] = None,
         deciding_detect_enabled: bool = True,
+        current_exchange: bool = False,
     ) -> OccasionSkin:
         clean = (text or "").strip()
         tags = {str(t).lower() for t in (scene_tags or ())}
@@ -306,9 +307,7 @@ class OccasionClassifier:
 
         conflict = (
             any(m in clean for m in _CONFLICT_MARKERS)
-            or "tense" in tags
-            or "tense" in emotions
-            or "conflict" in tags
+            or (not current_exchange and ("tense" in tags or "tense" in emotions or "conflict" in tags))
         )
         vent = any(m in clean for m in _VENT_MARKERS) or "support" in tags or "negative" in emotions
         help_like = (

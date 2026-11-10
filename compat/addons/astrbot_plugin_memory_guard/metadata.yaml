@@ -1,0 +1,4 @@
+name: astrbot_plugin_memory_guard
+author: local
+version: 1.0.0
+desc: Low-frequency return of already-free glibc heap pages after RSS growth

@@ -61,10 +61,13 @@ jobs:
           PY
       - run: python scripts/check_release.py
       - run: python scripts/build_release.py
+      - run: python scripts/build_compat_release.py
       - name: Upload runtime package and verification files
         run: |
           for suffix in '' '.manifest.json' '.sha256'; do
             gh release upload "$RELEASE_TAG" "dist/astrbot_plugin_chat_dynamics-$RELEASE_TAG.zip$suffix" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$RELEASE_TAG" "dist/chat-dynamics-compat-$RELEASE_TAG.zip$suffix" \
               --repo "$GITHUB_REPOSITORY" --clobber
           done
       - name: Verify uploaded bytes

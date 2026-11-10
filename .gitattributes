@@ -1,1 +1,4 @@
 * text=auto eol=lf
+## Unified diff context lines contain a required space. Keep patch bytes exact;
+## their manifests and offline git-apply rehearsals validate these artifacts.
+compat/patches/*.patch -whitespace

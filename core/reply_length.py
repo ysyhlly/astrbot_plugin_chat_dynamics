@@ -5,9 +5,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ReplyLengthPolicy:
-    normal_sentences: int = 2
+    normal_sentences: int = 3
     normal_list_items: int = 2
-    detailed_chars: int = 120
+    detailed_chars: int = 200
 
     @staticmethod
     def _word(count: int) -> str:
@@ -16,7 +16,7 @@ class ReplyLengthPolicy:
     @property
     def criteria(self) -> dict[str, str]:
         return {
-            "brief": "One sentence or less suffices: greeting, confirmation or simple answer",
+            "brief": "One sentence or less suffices: a plain greeting, confirmation, ending or busy acknowledgement",
             "normal": (
                 f"One or {self._word(self.normal_sentences)} concise sentences or at most "
                 f"{self._word(self.normal_list_items)} short list items; simple explanations and steps stay compact"
@@ -47,13 +47,13 @@ class ReplyLengthPolicy:
     @property
     def decision_focus(self) -> str:
         return (
-            "Default to brief or normal. Judge the minimum useful answer to the current message, "
-            "not the length or complexity of background. A short list, a few steps or a technical "
-            "question alone does not require detailed. Choose detailed only for explicitly "
-            "requested depth or essential content that cannot fit a compact answer. Follow "
-            "operator decision_prompt length preferences while preserving explicit user requirements. "
-            f"Normal uses at most {self._word(self.normal_sentences)} sentences; detailed ordinary prose "
-            f"must fit {self.detailed_chars} characters in total. {self.exceptions_en}"
+            "Default brief/normal for the minimum useful answer to this message, not background complexity. "
+            "Jokes/reactions can take a few words; endings need no follow-up question. Use normal for specific "
+            "support, sharing or personal thoughts when brevity dismisses them. Technical questions or steps alone "
+            "do not require detailed; reserve it for requested depth or essential content. Follow decision_prompt "
+            "preferences and explicit user requirements. "
+            f"Normal: at most {self._word(self.normal_sentences)} sentences; detailed ordinary prose: "
+            f"at most {self.detailed_chars} characters. {self.exceptions_en}"
         )
 
     @property

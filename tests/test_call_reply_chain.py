@@ -218,14 +218,15 @@ async def test_poke_stop_only_cancels_its_member_and_returns_budget(jev_plugin):
     bob = MockEvent("", sender_id="bob", message_id="poke-bob", components=[Poke("bot_42")])
     tasks = [asyncio.create_task(p.on_group_message(e)) for e in (alice, bob)]
     try:
-        await wait_until(lambda: len(entered) == 2)
+        await wait_until(lambda: entered == ["alice"])
         runtime = p._sessions[alice.unified_msg_origin]
         await p.cmd_dynamics_stop(MockEvent("/dynamics_stop", sender_id="alice", message_id="stop"))
-        await wait_until(lambda: len(runtime.owned_turn_tasks) == 1)
+        await wait_until(lambda: entered == ["alice", "bob"])
         assert set(runtime.owned_turn_tasks.values()) == {"bob"}
         assert p.llm.provider_budget.diagnostics()["active"] == 1
         release.set()
         await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        await drain(p)
         assert not alice.replies_sent and bob.replies_sent == ["戳一戳回复"]
         assert not runtime.owned_turn_tasks
         assert p.llm.provider_budget.diagnostics()["active"] == 0

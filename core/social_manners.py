@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from astrbot.api import logger
+logger = logging.getLogger("astrbot_plugin_chat_dynamics.social_manners")
 
 
 @dataclass(frozen=True)

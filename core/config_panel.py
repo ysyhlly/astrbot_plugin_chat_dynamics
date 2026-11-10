@@ -7,8 +7,11 @@ import json
 import math
 import re
 from astrbot.api import logger
+from astrbot.core.provider.provider import DecisionProvider
+from astrbot.core.provider.register import provider_cls_map
 from .config import PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .prompt_policy import MAX_PROMPT_CHARS, PROMPT_DEFAULTS, resolve_prompt_default
+from .systemone.native import is_decision_provider
 
 _PRESETS = {
     "observe": {
@@ -99,10 +102,18 @@ class ConfigPanel:
         if cfg is None:
             cfg, _ = parse_runtime_config(self.host._coerce_config(getattr(self.host, "config", {}) or {}))
         return {
+            "peer_bot_ids": list(cfg.peer_bot_ids),
+            "peer_bot_max_rounds": cfg.peer_bot_max_rounds,
+            "peer_bot_reset_seconds": cfg.peer_bot_reset_seconds,
             "enable": bool(getattr(cfg, "enabled", True)),
+            "autonomous_blocking_required": bool(getattr(cfg, "autonomous_blocking_required", False)),
             "conversation_router_enabled": getattr(cfg, "conversation_router_enabled", True),
             "routing_neural_timeout": getattr(cfg, "routing_neural_timeout", 0.5),
             "topic_reranker_enabled": cfg.topic_reranker_enabled,
+            "rule_topic_routing_enabled": cfg.rule_topic_routing_enabled,
+            "discussion_reranker_provider": cfg.discussion_reranker_provider,
+            "discussion_rerank_threshold": cfg.discussion_rerank_threshold,
+            "discussion_rerank_margin": cfg.discussion_rerank_margin,
             "topic_reranker_provider": cfg.topic_reranker_provider,
             "topic_reranker_timeout": cfg.topic_reranker_timeout,
             "topic_title_timeout": cfg.topic_title_timeout,
@@ -111,7 +122,11 @@ class ConfigPanel:
             "decision_provider": getattr(cfg, "decision_provider_id", ""),
             "decision_prompt": cfg.decision_prompt,
             "reply_prompt": cfg.reply_prompt,
+            "reply_first_sentence_enabled": cfg.reply_first_sentence_enabled,
             "reply_probability_threshold": getattr(cfg, "reply_probability_threshold", 70.0),
+            "context_completion_enabled": cfg.context_completion_enabled,
+            "quote_reply_threshold": getattr(cfg, "quote_reply_threshold", 35.0),
+            "name_reply_threshold": getattr(cfg, "name_reply_threshold", 70.0),
             "decision_timeout": getattr(cfg, "decision_timeout", 8.0),
             "jev_timeout": getattr(cfg, "jev_timeout", 6.0),
             "jev_min_confidence": getattr(cfg, "jev_min_confidence", 0.6),
@@ -156,8 +171,15 @@ class ConfigPanel:
             "embedding_cache_size": getattr(cfg, "embedding_cache_size", 512),
             "embedding_cache_ttl_seconds": getattr(cfg, "embedding_cache_ttl_seconds", 1800),
             "presence_knob": getattr(cfg, "presence_knob", "sensible"),
+            "narrative_enabled": getattr(cfg, "narrative_enabled", False),
+            "narrative_all_groups": getattr(cfg, "narrative_all_groups", False),
+            "narrative_sessions": sorted(getattr(cfg, "narrative_sessions", ())),
+            "narrative_outreach_enabled": getattr(cfg, "narrative_outreach_enabled", False),
+            "narrative_outreach_sessions": sorted(getattr(cfg, "narrative_outreach_sessions", ())),
+            "narrative_context_retention_days": getattr(cfg, "narrative_context_retention_days", 7),
             "social_manners_enabled": bool(getattr(cfg, "social_manners_enabled", True)),
             "relay_baton_enabled": bool(getattr(cfg, "relay_baton_enabled", True)),
+            "private_chat_enabled": bool(getattr(cfg, "private_chat_enabled", False)),
             "private_field_enabled": bool(getattr(cfg, "private_field_enabled", True)),
             "hyped_quota_enabled": bool(getattr(cfg, "hyped_quota_enabled", True)),
             "media_image_gate_enabled": bool(getattr(cfg, "media_image_gate_enabled", True)),
@@ -250,6 +272,8 @@ class ConfigPanel:
                 raise ValueError(f"{key} must be an integer") from None
             if not math.isfinite(number) or abs(number - round(number)) > 1e-9:
                 raise ValueError(f"{key} must be an integer")
+            if key == "peer_bot_max_rounds" and not 1 <= number <= 100:
+                raise ValueError("Bot 互聊轮数必须在 1–100 之间")
             return int(round(number))
         if field_type == "float":
             if isinstance(value, bool) or value is None:
@@ -262,8 +286,12 @@ class ConfigPanel:
                 raise ValueError(f"{key} must be a number") from None
             if not math.isfinite(number):
                 raise ValueError(f"{key} must be a finite number")
-            if key == "reply_probability_threshold" and not 0 <= number <= 100:
-                raise ValueError("回复概率门槛必须在 0–100 之间")
+            if key in {"reply_probability_threshold", "quote_reply_threshold", "name_reply_threshold"} and not 0 <= number <= 100:
+                raise ValueError(f"{field_schema.get('description', key)}必须在 0–100 之间")
+            if key in {'discussion_rerank_threshold', 'discussion_rerank_margin'} and not 0 <= number <= 1:
+                raise ValueError(f'{key} 必须在 0–1 之间')
+            if key == "peer_bot_reset_seconds" and not 60 <= number <= 86400:
+                raise ValueError("Bot 互聊重置间隔必须在 60–86400 秒之间")
             return number
         if field_type == "list":
             if value is None:
@@ -347,20 +375,24 @@ class ConfigPanel:
     def _validate_model_selection(self, cfg: RuntimeConfig, updates: dict[str, Any]) -> None:
         context = getattr(self.host, "context", None)
         getter = getattr(context, "get_provider_by_id", None)
+        if updates.get('discussion_reranker_provider'):
+            provider = getter(updates['discussion_reranker_provider']) if callable(getter) else None
+            if not callable(getattr(provider, 'rerank', None)):
+                raise ValueError('discussion_reranker_provider：请选择已加载的原生重排序模型服务。')
         text_keys = {"reply_provider", "topic_reranker_provider"}
         for key in text_keys.intersection(updates):
             provider = getter(updates[key]) if callable(getter) and updates[key] else None
-            if getattr(provider, "is_systemone_provider", False):
-                raise ValueError(f"{key}：Jev / System One 只用于决策，请选择普通聊天模型生成文字。")
+            if is_decision_provider(provider):
+                raise ValueError(f"{key}：Jev / OpenAI Decisions 只用于决策，请选择普通聊天模型生成文字。")
         if "decision_provider" not in updates:
             return
         if not cfg.decision_provider_id:
-            raise ValueError("decision_provider：请选择在 AstrBot 模型服务中添加的 Jev / System One 模型。")
+            raise ValueError("decision_provider：请选择在 AstrBot 模型服务中添加的 Jev / System One 或 OpenAI Decisions 模型。")
         provider = getter(cfg.decision_provider_id) if callable(getter) else None
-        if not getattr(provider, "is_systemone_provider", False):
-            raise ValueError("decision_provider：所选 Jev 模型未加载或类型不匹配，请在模型服务中启用 Jev / System One。")
+        if not is_decision_provider(provider):
+            raise ValueError("decision_provider：所选决策模型未加载或类型不匹配，请启用 Jev / System One 或 OpenAI Decisions。")
         if not getattr(getattr(self.host, "jev", None), "is_systemone_router", False):
-            raise ValueError("内置 Jev 模型连接尚未就绪，请重新加载 Chat Dynamics。")
+            raise ValueError("内置决策模型连接尚未就绪，请重新加载 Chat Dynamics。")
 
     def _serialize_provider(self, provider: Any) -> dict[str, Any]:
         meta = None
@@ -381,7 +413,8 @@ class ConfigPanel:
             pid = str(getattr(meta, "id", "") or "")
             model = str(getattr(meta, "model", "") or "")
             ptype = str(getattr(meta, "type", "") or "")
-            provider_type = str(getattr(meta, "provider_type", "") or "")
+            role = getattr(meta, "provider_type", "")
+            provider_type = str(getattr(role, 'value', role) or "")
         if not pid:
             pid = str(cfg.get("id") or "")
         if not model:
@@ -395,12 +428,27 @@ class ConfigPanel:
             label_bits.append(model)
         if ptype and ptype not in label_bits:
             label_bits.append(ptype)
+        manager = getattr(getattr(self.host,'context',None),'provider_manager',None)
+        loader = getattr(getattr(manager,'load_provider',None),'__func__',None)
+        loader_globals = getattr(loader,'__globals__',{})
         return {
             "id": pid,
             "model": model,
             "type": ptype,
             "provider_type": provider_type,
             "systemone": bool(getattr(provider, "is_systemone_provider", False)),
+            "decision": isinstance(provider, DecisionProvider),
+            "native_ask": callable(getattr(provider,'ask',None)),
+            "runtime_decision_api": {
+                "has_decision_list": hasattr(manager,'decision_provider_insts'),
+                "same_native_base": loader_globals.get('DecisionProvider') is DecisionProvider,
+                "same_adapter_registry": loader_globals.get('provider_cls_map') is provider_cls_map,
+            } if is_decision_provider(provider) else None,
+            "adapter_bases": ([base.__module__+'.'+base.__name__ for base in type(provider).__mro__]
+                if getattr(provider,'is_systemone_provider',False) and not isinstance(provider,DecisionProvider) else None),
+            "decision_protocol": getattr(provider, "decision_protocol", "systemone")
+            if getattr(provider, "is_systemone_provider", False) else
+            ("native_decision" if is_decision_provider(provider) else ""),
             "label": " · ".join(bit for bit in label_bits if bit) or pid or "(unnamed)",
         }
 
@@ -409,20 +457,40 @@ class ConfigPanel:
         """List AstrBot chat/embedding providers for config dropdowns."""
         ctx = getattr(self.host, "context", None)
         chat: list[dict[str, Any]] = []
+        decision: list[dict[str, Any]] = []
         embedding: list[dict[str, Any]] = []
+        rerank: list[dict[str, Any]] = []
         if ctx is not None:
+            for provider in getattr(getattr(ctx, 'provider_manager', None), 'rerank_provider_insts', ()) or ():
+                item = self._serialize_provider(provider)
+                if item.get('id'):
+                    rerank.append(item)
             getter = getattr(ctx, "get_all_providers", None)
             if callable(getter):
                 try:
                     for provider in list(getter() or []):
                         item = self._serialize_provider(provider)
                         if item.get("id"):
-                            chat.append(item)
+                            (decision if is_decision_provider(provider) else chat).append(item)
                 except Exception as exc:
                     logger.warning(
                         "[ChatDynamics] list chat providers failed type=%s",
                         type(exc).__name__,
                     )
+            decision_getter = getattr(ctx,'get_all_decision_providers',None)
+            try:
+                manager = getattr(ctx,'provider_manager',None)
+                native_decisions = (manager.decision_provider_insts if
+                    hasattr(manager,'decision_provider_insts') else
+                    (decision_getter() if callable(decision_getter) else []))
+                by_id = {row['id']:row for row in decision}
+                for provider in native_decisions or []:
+                    item = self._serialize_provider(provider)
+                    if item.get('id'):
+                        by_id[item['id']] = item
+                decision = list(by_id.values())
+            except Exception as exc:
+                logger.warning('[ChatDynamics] list decision providers failed type=%s',type(exc).__name__)
             emb_getter = getattr(ctx, "get_all_embedding_providers", None)
             if callable(emb_getter):
                 try:
@@ -438,10 +506,13 @@ class ConfigPanel:
         # Stable order for UI.
         chat.sort(key=lambda row: str(row.get("id") or "").lower())
         embedding.sort(key=lambda row: str(row.get("id") or "").lower())
+        decision.sort(key=lambda row: str(row.get("id") or "").lower())
         return {
             "chat": chat,
-            "systemone": [row for row in chat if row["systemone"]],
+            "decision": decision,
+            "systemone": decision,  # Existing plugin pages use this compatibility alias.
             "embedding": embedding,
+            "rerank": sorted(rerank, key=lambda row: str(row.get('id') or '').lower()),
             "systemone_router_ready": bool(getattr(getattr(self.host, "jev", None), "is_systemone_router", False)),
         }
 

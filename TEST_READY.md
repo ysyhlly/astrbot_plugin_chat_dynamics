@@ -1,5 +1,7 @@
 # Test Readiness Summary (`TEST_READY.md`)
 
+> 历史记录：下文描述 2026-09-08 的旧路由测试，不是 v1.16.0 的发布验收结果。当前使用 `scripts/run_checks.py`、独立的 `integration/` 和 GitHub Tests 工作流；新旧规则路径使用独立测试条件。
+
 - **Component**: Conversation Router Layer (`core/thread_router.py`)
 - **Milestone**: `M_E2E` (Conversation Router E2E Testing Track)
 - **Author**: `teamwork_preview_test_writer_e2e_1`
