@@ -171,7 +171,7 @@ def _layer_snapshot(plugin: Any, layer: str) -> Dict[str, Any]:
 
     Both backends answer the same contract through the same four client methods,
     so the panel-safe projection is the same shape for either. Only the client
-    attribute name and the confidence-floor config key follow `layer`.
+    attribute name follows `layer`; both retain the existing confidence floor.
     """
     client = getattr(plugin, layer, None)
     if not callable(getattr(client, "snapshot", None)):
@@ -179,14 +179,15 @@ def _layer_snapshot(plugin: Any, layer: str) -> Dict[str, Any]:
     data = dict(client.snapshot())
     config = getattr(plugin, "_runtime_config", None)
     data["backend"] = str(getattr(config, "decision_backend", "model") or "model")
-    data["min_confidence"] = float(getattr(config, f"{layer}_min_confidence", 0.6) or 0.0)
-    data["enabled"] = data["backend"] == layer
+    data["min_confidence"] = float(getattr(config, "jev_min_confidence", 0.6) or 0.0)
+    data["enabled"] = data["backend"] == ('llm' if layer == 'llm_decision' else layer)
     return data
 
 
 def jev_snapshot(plugin: Any) -> Dict[str, Any]:
-    """The Jev decision layer's own status: endpoint, model, and how it has answered."""
-    return _layer_snapshot(plugin, "jev")
+    """Selected decision transport; retain the historical wire key for old panels."""
+    cfg = getattr(plugin, '_runtime_config', None)
+    return _layer_snapshot(plugin, 'llm_decision' if getattr(cfg, 'decision_backend', 'jev') == 'llm' else 'jev')
 
 
 
@@ -276,6 +277,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "decision_mode": getattr(plugin, "decision_mode", "legacy"),
         "persona_fallback": getattr(plugin, "_persona_fallback", ""),
         "requested_decision_mode": "persona_model",
+        "participation_backend": getattr(getattr(plugin, '_runtime_config', None), 'decision_backend', 'jev'),
         "agent_bridge": getattr(getattr(getattr(plugin, "persona_engine", None), "bridge", None), "diagnostic", "not_checked"),
         "ambient_intervention": bool(getattr(plugin, "ambient_intervention", False)),
         "takeover_all": bool(plugin.takeover_all),
@@ -290,7 +292,9 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
                 else str(getattr(plugin, "reply_provider_id", "") or getattr(plugin, "provider_id", "") or "")
             )
             or "current_umo",
-            "decision": str(getattr(getattr(plugin, "_runtime_config", None), "decision_provider_id", "") or "missing"),
+            "decision": (str(plugin._runtime_config.decision_llm_provider or plugin._runtime_config.reply_provider_id or 'current_umo')
+                if getattr(getattr(plugin, '_runtime_config', None), 'decision_backend', 'jev') == 'llm'
+                else str(getattr(getattr(plugin, "_runtime_config", None), "decision_provider_id", "") or "missing")),
         },
         "vibe_llm_enabled": bool(getattr(plugin, "vibe_llm_enabled", True)),
         "shadow_mode": bool(getattr(plugin, "shadow_mode", False)),

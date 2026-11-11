@@ -10,13 +10,13 @@
 </head><body><div class="app plugin-shell"><div class="plugin-layout">
   <aside class="plugin-side" aria-label="插件页面"><p class="plugin-side-label">群聊动态</p><nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav></aside>
   <main class="plugin-main">
-    <header class="topbar"><div><p class="eyebrow">群聊动态 / 决策</p><h1>决策模型</h1><p class="lede">查看 Jev 的连接、调用与耗时。运行统计不代表模型质量验收。</p></div><button type="button" id="refresh">立即刷新</button></header>
+    <header class="topbar"><div><p class="eyebrow">群聊动态 / 决策</p><h1>决策模型</h1><p class="lede">查看当前 Jev 或普通 LLM 的连接、调用与耗时。运行统计不代表模型质量验收。</p></div><button type="button" id="refresh">立即刷新</button></header>
     <p id="status" role="status" aria-live="polite">正在连接…</p>
     <section class="metrics" aria-label="运行摘要">
       <div><span>在线决策路径</span><strong id="mode">—</strong></div><div><span>当前模型</span><strong id="model">—</strong></div>
       <div><span>调用次数</span><strong id="calls">—</strong></div><div><span>失败次数</span><strong id="failures">—</strong></div>
       <div><span>最近请求耗时</span><strong id="latency">—</strong></div><div><span>模型连接</span><strong id="serviceState">—</strong></div>
     </section><p id="detail" class="section-copy"></p>
-    <section class="wire-card"><h2>失败时保守处理</h2><p class="section-copy">Jev 超时、不可用或置信度不足时采用本地保守计划：点名请求可能回应，普通群聊继续旁听。参与限制、冷却和发送保护仍然生效。</p></section>
+    <section class="wire-card"><h2>失败时保守处理</h2><p class="section-copy">所选决策模型超时、不可用或置信度不足时采用本地保守计划，不补调另一后端。参与限制、冷却和发送保护仍然生效。普通 LLM 输出的置信分数未经概率校准。</p></section>
     <section class="wire-card"><h2>历史样本导出</h2><p class="section-copy">历史数据库保留，只在点击导出时读取。每批最多 500 条；聊天内容按控制台隐私设置隐藏。模型调用不会再采集样本或启动训练。</p><button type="button" id="export">导出历史样本（最多 500 条）</button><p id="historyStatus" role="status" aria-live="polite"></p></section>
   </main></div></div><script type="module" src="./app.js"></script></body></html>

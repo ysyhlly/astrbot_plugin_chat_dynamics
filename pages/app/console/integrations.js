@@ -534,7 +534,8 @@ const DECISION_STATES = {
 // transports, so one card describes either and only the naming differs. Each
 // `payload[<layer>]` carries that layer's own endpoint and counters, while its
 // `backend` names whichever layer is currently selected.
-const DECISION_BACKENDS = { jev: {label: "Jev 决策模型", who: "所选 Jev / System One 模型"} };
+const DECISION_BACKENDS = { jev: {label: "Jev 决策模型", who: "所选 Jev / System One 模型"},
+  llm: {label: "普通 LLM 参与决策", who: "所选普通聊天模型"} };
 
 /** The decision layer's own status: which backend decides, and how it has answered. */
 export function renderDecisionLayer(layer) {

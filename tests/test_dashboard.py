@@ -175,7 +175,7 @@ def test_idle_sessions_are_pruned():
 
 
 def test_console_page_files_exist():
-    root = Path(__file__).resolve().parents[1] / "pages" / "console"
+    root = Path(__file__).resolve().parents[1] / "pages" / "app" / "console"
     for name in ("index.html", "app.js", "style.css", "_page.json"):
         assert (root / name).is_file()
     html = (root / "index.html").read_text(encoding="utf-8")
@@ -222,7 +222,7 @@ async def test_web_api_returns_503_during_shutdown():
 
 
 def test_console_uses_bridge_without_direct_fetch_fallback():
-    js = (Path(__file__).resolve().parents[1] / "pages" / "console" / "app.js").read_text(encoding="utf-8")
+    js = (Path(__file__).resolve().parents[1] / "pages" / "app" / "console" / "app.js").read_text(encoding="utf-8")
     assert "fetch(" not in js
     assert "session_key" in js
     assert "detailRequestToken" in js

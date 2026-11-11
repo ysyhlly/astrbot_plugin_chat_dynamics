@@ -18,6 +18,7 @@ from .dashboard import (
 )
 from .web_compat import error_response, json_response, query_value, request, request_json
 from .topic_annotations import TopicAnnotations
+from .page_layout import PAGE_ENTRY, SECTIONS, section_content_path
 
 logger = logging.getLogger("astrbot_plugin_chat_dynamics.web_api")
 
@@ -582,11 +583,11 @@ class ConsoleWebAPI:
             return _json_err("UI preference save failed", 503)
 
     async def page_nav(self):
-        """Return a fresh content_path for a sibling plugin page.
+        """Return a fresh app-scoped content_path for an internal section.
 
         Sandboxed plugin iframes cannot change parent hash and cannot reuse
-        page-scoped asset_token. Parent-authenticated bridge.apiGet hits this
-        endpoint; we mint a new token via PluginPageService.
+        arbitrary page-scoped asset_token. Parent-authenticated bridge.apiGet hits
+        this endpoint; the host signs the single app scope before selecting a section.
         """
         limited = self._rate_limit("page_nav", 60)
         if limited is not None:
@@ -595,7 +596,7 @@ class ConsoleWebAPI:
             return _json_err("plugin is shutting down", 503)
 
         page_name = (query_value("page") or query_value("page_name") or "").strip()
-        allowed = {"console", "config", "memory", "replay", "learning"}
+        allowed = set(SECTIONS)
         if page_name not in allowed:
             return _json_err("unsupported page", 400)
 
@@ -639,7 +640,7 @@ class ConsoleWebAPI:
             name_key = "view_name" if "view_name" in parameters else "page_name"
             entry = await get_entry(
                 plugin_name=plugin_name,
-                **{name_key: page_name},
+                **{name_key: PAGE_ENTRY},
                 username=username,
                 locale=locale,
             )
@@ -656,6 +657,10 @@ class ConsoleWebAPI:
             content_path = str(entry.get("content_path") or "").strip()
         if not content_path:
             return _json_err("content_path missing", 503)
+        try:
+            content_path = section_content_path(content_path, page_name)
+        except ValueError:
+            return _json_err("invalid app content_path", 503)
 
         theme = (query_value("theme") or "").strip()
         if theme in ("dark", "light"):

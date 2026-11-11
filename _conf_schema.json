@@ -105,8 +105,27 @@
     "default": 8.0,
     "hint": "范围 1~30 秒，包含等待全局决策名额；不重试。@机器人直接回复，不等待 Jev。引用或昵称唤醒仍需 Jev 确认对象；决策超时继续旁听。"
   },
+  "participation_backend": {
+    "description": "参与决策方式",
+    "type": "string",
+    "default": "jev",
+    "options": ["jev", "llm"],
+    "hint": "jev：现有 Jev／原生抉择模型；llm：普通聊天模型判断是否接话、动作、状态、长度和等待补充输入。两种方式互斥，不串行调用；对象与话题归属判断在另一组独立设置。"
+  },
+  "decision_llm_provider": {
+    "description": "参与决策 LLM",
+    "type": "string",
+    "default": "",
+    "hint": "仅 llm 模式使用普通聊天模型，不选 Jev 或 Rerank。留空沿用回复模型，再留空使用当前完整会话的聊天模型。只输出结构化决策，正文仍走原回复链路。"
+  },
+  "decision_llm_timeout": {
+    "description": "LLM 决策请求超时（秒）",
+    "type": "float",
+    "default": 6.0,
+    "hint": "范围 1–30 秒，仍受决策总时限约束。模型失败或输出无效时保守处理，不补调 Jev；真实 @ 的快速回复、成员停止及发送校验保持生效。"
+  },
   "decision_provider": {
-    "description": "决策模型",
+    "description": "Jev／原生抉择模型",
     "type": "string",
     "default": "",
     "hint": "在插件参数配置页从 AstrBot 专用抉择模型列表选择，支持 Jev / System One、OpenAI Decisions 及原生 DecisionProvider。模型服务归类为抉择模型，沿用地址、密钥和 ID；回复正文使用普通聊天模型。"
@@ -119,7 +138,7 @@
     "hint": "调整何时参与和话题偏好。活跃档可参与与自己无关的公开话题。支持多行，最多 4000 字符；留空使用默认，保存后立即生效。"
   },
   "jev_timeout": {
-    "description": "决策请求超时秒数",
+    "description": "Jev 决策请求超时秒数",
     "type": "float",
     "default": 6.0,
     "slider": {

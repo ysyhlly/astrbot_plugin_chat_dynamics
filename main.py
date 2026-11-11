@@ -9,7 +9,7 @@ Exclusive mode may still stop_event(); filter mode does not.
 from __future__ import annotations
 
 from .reload_bootstrap import ensure_current
-ensure_current(__package__, __name__, __file__, checks=[('core.integrations.registry', 'IntegrationRegistry', '_ownership_catalog_v1'), ('core.agent_bridge', 'AgentOutput', 'stream_prefix'),('core.native_memory_bridge', '_NativeMemoryValidationProvider', '_source_failure_diagnostics_v1'),('core.pipeline_telemetry', 'PipelineTelemetry', 'record_delivery'), ('core.config', 'RuntimeConfig', 'narrative_all_groups'), ('core.web_api', 'ConsoleWebAPI', 'narrative_get'), ('core.integrations.registry', 'IntegrationRegistry', 'narrative_provider'), ('core.systemone.provider', 'SystemOneProvider', 'is_native_decision_provider'), ('core.systemone.service', 'SystemOneService', 'native_decision_refresh'), ('core.persona_engine', 'PersonaEngine', '_recipient_guard_release'), ('core.narrative', 'NarrativeCoordinator', 'finish_send_async'), ('core.persona_engine', 'PersonaEngine', '_decision_nearby_context_release'), ('core.persona_engine', 'PersonaEngine', '_decision_compaction_release')])
+ensure_current(__package__, __name__, __file__, checks=[('core.config', 'RuntimeConfig', 'decision_llm_provider'), ('core.integrations.registry', 'IntegrationRegistry', '_ownership_catalog_v1'), ('core.agent_bridge', 'AgentOutput', 'stream_prefix'),('core.native_memory_bridge', '_NativeMemoryValidationProvider', '_source_failure_diagnostics_v1'),('core.pipeline_telemetry', 'PipelineTelemetry', 'record_delivery'), ('core.config', 'RuntimeConfig', 'narrative_all_groups'), ('core.web_api', 'ConsoleWebAPI', 'narrative_get'), ('core.integrations.registry', 'IntegrationRegistry', 'narrative_provider'), ('core.systemone.provider', 'SystemOneProvider', 'is_native_decision_provider'), ('core.systemone.service', 'SystemOneService', 'native_decision_refresh'), ('core.persona_engine', 'PersonaEngine', '_recipient_guard_release'), ('core.narrative', 'NarrativeCoordinator', 'finish_send_async'), ('core.persona_engine', 'PersonaEngine', '_decision_nearby_context_release'), ('core.persona_engine', 'PersonaEngine', '_decision_compaction_release')])
 
 
 import asyncio
@@ -50,6 +50,8 @@ from .core.rule_topic_router import RuleTopicRouter as ThreadRouter
 from .core.discussion_reranker import DiscussionReranker
 from .core.topic_reranker import TopicReranker
 from .core.discussion_llm import LLMDiscussionJudge
+from .core.llm_decision import LLMDecisionClient
+from .core.page_layout import retire_legacy_page_entries
 from .core.topic_batch import TopicBatcher
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
@@ -195,6 +197,8 @@ _METRIC_NAMES = (
     # had to fall back to the local plan because no answer was usable.
     "jev_decision",
     "jev_unavailable",
+    "llm_decision",
+    "llm_unavailable",
     # Recorded outside this tuple before, which meant they were persisted and then
     # dropped on restore: the restore loop only updates keys that already exist.
     "config_saved",
@@ -318,7 +322,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.17.0",
+    "v1.18.0",
     "",
 )
 class ChatDynamicsPlugin(Star):
@@ -326,6 +330,10 @@ class ChatDynamicsPlugin(Star):
 
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
+        try:
+            retire_legacy_page_entries(_PluginPath(__file__).resolve().parent)
+        except (OSError, ValueError) as exc:
+            logger.warning('[ChatDynamics] Legacy page entry migration deferred type=%s', type(exc).__name__)
         self.config: Any = self._coerce_config(config)
         self._config_warnings_seen: Set[str] = set()
         runtime_config, warnings = parse_runtime_config(self.config)
@@ -410,6 +418,7 @@ class ChatDynamicsPlugin(Star):
             bridge=self.selflearning,
         )
         self.jev = RoutedSystemOneClient(self, NativeDecisionUnavailable())
+        self.llm_decision = LLMDecisionClient(self)
         self._systemone_service = SystemOneService(self)
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
@@ -569,7 +578,7 @@ class ChatDynamicsPlugin(Star):
         previous_decision = getattr(self, "decision_mode", "legacy")
         old_cfg = getattr(self, "_runtime_config", None)
         self.decision_mode = cfg.decision_mode
-        reply_keys = ("reply_provider_id", "reply_prompt", "provider_id",
+        reply_keys = ("reply_provider_id", "reply_prompt", "provider_id", "decision_llm_provider", "decision_llm_timeout",
                       "media_privacy_strict", "media_understand_reply_enabled",
                       "media_image_gate_enabled", "media_voice_gate_enabled",
                       "reply_timeout", "tool_agent_timeout")
@@ -611,6 +620,8 @@ class ChatDynamicsPlugin(Star):
                 embedding_id=cfg.embedding_provider)
         if hasattr(self, "jev"):
             self.jev.configure(timeout=cfg.jev_timeout)
+        if hasattr(self, "llm_decision"):
+            self.llm_decision.configure()
         if hasattr(self, "mood_memory"):
             self.mood_memory.configure(enabled=cfg.mood_memory_enabled, bridge=getattr(self, "selflearning", None))
         if hasattr(self, "group_memory"):
@@ -1946,7 +1957,7 @@ class ChatDynamicsPlugin(Star):
         self._media_leases.clear()
         # Host failures must not leave our generators, timers or tool calls alive.
         close_error = None
-        for companion in (getattr(self, "selflearning", None), getattr(self, "jev", None)):
+        for companion in (getattr(self, "selflearning", None), getattr(self, "jev", None), getattr(self, "llm_decision", None)):
             closer = getattr(companion, "close", None)
             if callable(closer):
                 try:

@@ -12,7 +12,7 @@ from astrbot_plugin_chat_dynamics.core.web_api import PLUGIN_NAME
 from astrbot_plugin_chat_dynamics.tests.test_plugin_lifecycle import _plugin
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ROOT / "pages"
+PAGES = ROOT / "pages" / "app"
 PAGE_DIRS = ("console", "config", "today", "manners", "memory", "replay", "learning")
 
 

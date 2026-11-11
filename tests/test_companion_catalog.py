@@ -87,7 +87,7 @@ def test_all_current_visible_settings_have_one_named_category():
     from pathlib import Path
     import json
     root = Path(__file__).resolve().parents[1]
-    script = (root / 'pages/config/app.js').read_text(encoding='utf-8')
+    script = (root / 'pages/app/config/app.js').read_text(encoding='utf-8')
     raw = script.split('const CONFIG_GROUPS = ', 1)[1].split(';\n', 1)[0]
     groups = json.loads(raw)
     keys = [key for group in groups for key in group['keys']]

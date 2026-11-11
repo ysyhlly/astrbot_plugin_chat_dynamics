@@ -20,7 +20,7 @@ sync_playwright = playwright.sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONSOLE = ROOT / "pages" / "console"
+CONSOLE = ROOT / "pages" / "app" / "console"
 DEFAULT_SCREENSHOT_DIR = Path(
     r"C:\Users\31283\.codex\visualizations\2026\09\06\chat-dynamics-redesign"
 )

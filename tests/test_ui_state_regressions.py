@@ -21,7 +21,7 @@ def test_missing_selected_session_remains_visible():
     run_js(r'''
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-const source = fs.readFileSync('pages/shared/shell.js', 'utf8');
+const source = fs.readFileSync('pages/app/shared/shell.js', 'utf8');
 const fill = new Function('escapeHtml', source.slice(source.indexOf('export function fillSessionSelect')).replace('export ', '') + '; return fillSessionSelect;')(String);
 const select = {};
 fill(select, [{session_key:'new'}], 'old');
@@ -41,7 +41,7 @@ globalThis.document = {getElementById: () => null};
 globalThis.window = {location: {search:'', href:'https://example.test/current', assign: () => assigned++},
   ChatDynamicsBeforeNavigate: () => false,
   AstrBotPluginPage: {apiGet: async () => {requested++; return {content_path:'/next?asset_token=fresh'};}}};
-const source = fs.readFileSync('pages/shared/plugin_nav.js','utf8');
+const source = fs.readFileSync('pages/app/shared/plugin_nav.js','utf8');
 const module = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const button = {textContent:'Next', disabled:false, setAttribute(k,v){this[k]=v}, removeAttribute(k){delete this[k]}};
 await module.navigateToPluginPage('today', button);
@@ -60,7 +60,7 @@ def test_manners_busy_controls_block_all_mutual_operations():
     run_js(r'''
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-const source = fs.readFileSync('pages/manners/app.js','utf8');
+const source = fs.readFileSync('pages/app/manners/app.js','utf8');
 const controls = {btnRefresh:{}, btnSavePresence:{}, presenceRange:{}};
 const chips = [{}, {}];
 const body = source.slice(source.indexOf('function updateControls()'), source.indexOf('// Per-chip'));
@@ -78,7 +78,7 @@ def test_console_presence_save_refreshes_with_operation_token():
     run_js(r'''
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-const source = fs.readFileSync('pages/console/app.js', 'utf8');
+const source = fs.readFileSync('pages/app/console/app.js', 'utf8');
 const body = source.slice(source.indexOf('async function applyPresenceKnob()'), source.indexOf('async function loadNotebookLite()'));
 let posted = false, refreshed = false, ended = false;
 const apply = new Function('els','overviewOnline','operationInFlight','beginOperation','apiPost','refresh','endOperation','friendlyError', body + ';return applyPresenceKnob;')(

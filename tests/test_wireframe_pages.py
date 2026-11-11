@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ROOT / "pages"
+PAGES = ROOT / "pages" / "app"
 I18N = ROOT / "i18n"
 PLUGIN_I18N = ROOT / ".astrbot-plugin" / "i18n"
 

@@ -1,4 +1,9 @@
-"""Quiet fallback when no built-in native Jev model has been selected."""
+"""Participation transport selection and quiet missing-native-provider fallback."""
+
+
+def selected_decision_client(host):
+    key = 'llm_decision' if getattr(host._runtime_config, 'decision_backend', 'jev') == 'llm' else 'jev'
+    return getattr(host, key, None)
 
 
 class NativeDecisionUnavailable:
