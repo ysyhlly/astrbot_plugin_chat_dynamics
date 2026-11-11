@@ -39,7 +39,7 @@ def setup_workspace(context):
 
 def route_shared_sources(page):
     # Exercise canonical assets without mutating generated page-local copies.
-    shared = Path(__file__).resolve().parents[1] / 'pages' / 'shared'
+    shared = Path(__file__).resolve().parents[1] / 'pages' / 'app' / 'shared'
     for asset in ('shell.js', 'plugin_nav.js'):
         def handler_for(path):
             def handler(route):

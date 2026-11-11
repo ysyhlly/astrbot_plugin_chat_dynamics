@@ -7,5 +7,7 @@
   "pages.memory.title": "Notebook",
   "pages.memory.desc": "Anniversaries, reminders, and slang trials; forget or mute tonight.",
   "pages.replay.title": "Scene Replay",
-  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
+  "pages.replay.desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default.",
+  "pages.app.title": "Chat Dynamics",
+  "pages.app.desc": "Settings, console, decision models, memory and replay in one workspace."
 }

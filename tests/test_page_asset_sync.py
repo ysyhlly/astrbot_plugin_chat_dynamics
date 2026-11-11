@@ -5,7 +5,7 @@ from scripts.sync_page_assets import PAGES, asset_pairs, check_page_assets, main
 
 
 def _pages(root: Path) -> Path:
-    pages = root / "pages"
+    pages = root / "pages" / "app"
     for source, target in asset_pairs(pages):
         source.parent.mkdir(parents=True, exist_ok=True)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,7 @@ def test_release_check_includes_asset_drift(tmp_path):
 def test_check_reports_missing_source_or_copy(tmp_path):
     pages = _pages(tmp_path)
     (pages / "shared" / "theme.js").unlink()
-    (pages / "today" / "api.js").unlink()
+    (pages / "config" / "api.js").unlink()
     errors = check_page_assets(pages)
     # theme.js is published to every page, api.js to every page but console.
     assert len(errors) == len(PAGES) + 1

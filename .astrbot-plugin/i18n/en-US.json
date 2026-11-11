@@ -24,6 +24,10 @@
     "learning": {
       "title": "Decision model",
       "desc": "Native Jev status and read-only history export."
+    },
+    "app": {
+      "title": "Chat Dynamics",
+      "desc": "Settings, console, decision models, memory and replay in one workspace."
     }
   }
 }

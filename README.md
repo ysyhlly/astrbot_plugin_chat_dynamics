@@ -12,6 +12,8 @@ rc.43 修正了单条消息被过早建成主题的问题：低分先保留待�
 
 ## 切换参与决策
 
+插件详情只显示一个“群间 · Chat Dynamics”入口。打开后从内部导航访问控制台、参数配置、决策模型、记忆小本和场景回放。覆盖升级时，残留的旧入口 HTML 会保存到插件目录 `data/page-entry-backups/`；配置与业务数据不受影响。
+
 在设置页“参与决策方式”中选择：
 
 - `jev`（默认）：沿用 Jev / System One、OpenAI Decisions 或原生 DecisionProvider，选择“Jev／原生抉择模型”。

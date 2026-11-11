@@ -51,6 +51,7 @@ from .core.discussion_reranker import DiscussionReranker
 from .core.topic_reranker import TopicReranker
 from .core.discussion_llm import LLMDiscussionJudge
 from .core.llm_decision import LLMDecisionClient
+from .core.page_layout import retire_legacy_page_entries
 from .core.topic_batch import TopicBatcher
 from .core.graph import ConversationDAG, ConversationNode
 from .core.group_memory import GroupMemoryNotebook
@@ -329,6 +330,10 @@ class ChatDynamicsPlugin(Star):
 
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
+        try:
+            retire_legacy_page_entries(_PluginPath(__file__).resolve().parent)
+        except (OSError, ValueError) as exc:
+            logger.warning('[ChatDynamics] Legacy page entry migration deferred type=%s', type(exc).__name__)
         self.config: Any = self._coerce_config(config)
         self._config_warnings_seen: Set[str] = set()
         runtime_config, warnings = parse_runtime_config(self.config)

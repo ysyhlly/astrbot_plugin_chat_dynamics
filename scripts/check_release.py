@@ -33,10 +33,13 @@ def _required_paths(root: Path) -> tuple[str, ...]:
         "reload_bootstrap.py",
         "docs/integrations.md",
         "core",
-        "pages/console/index.html",
-        "pages/console/app.js",
-        "pages/console/style.css",
-        "pages/console/_page.json",
+        "pages/app/index.html",
+        "pages/app/entry.js",
+        "pages/app/_page.json",
+        "pages/app/console/index.html",
+        "pages/app/console/app.js",
+        "pages/app/console/style.css",
+        "pages/app/console/_page.json",
         "i18n",
         ".astrbot-plugin/i18n",
         "_conf_schema.json",
@@ -94,7 +97,12 @@ def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]
         elif relative == "core" and not any(path.glob("*.py")):
             errors.append("core must contain Python runtime modules")
 
-    errors.extend(check_page_assets(root / "pages"))
+    errors.extend(check_page_assets(root / "pages" / "app"))
+    pages = root / 'pages'
+    if pages.is_dir():
+        entries = sorted(path.name for path in pages.iterdir() if path.is_dir() and (path / 'index.html').is_file())
+        if entries != ['app']:
+            errors.append('plugin must expose exactly one page entry: app')
 
     try:
         version, repo = _read_metadata(root)

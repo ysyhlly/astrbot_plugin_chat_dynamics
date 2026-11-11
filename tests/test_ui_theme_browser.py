@@ -18,7 +18,7 @@ PAGES = ("console", "config", "memory", "replay", "learning")
 def page_server():
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=str(ROOT / "pages"), **kwargs)
+            super().__init__(*args, directory=str(ROOT / "pages" / "app"), **kwargs)
 
         def log_message(self, *_args):
             pass
