@@ -62,6 +62,7 @@ class RuntimeConfig:
     embedding_cache_size: int
     embedding_cache_ttl_seconds: int
     peer_bot_ids: tuple[str, ...] = ()
+    show_advanced_options: bool = False
     peer_bot_max_rounds: int = 3
     peer_bot_reset_seconds: float = 1800.0
     conversation_router_enabled: bool = True
@@ -314,6 +315,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     # Old routing/training settings cannot reactivate removed consumers.
 
     config = RuntimeConfig(
+        show_advanced_options=_bool(_get(raw, "show_advanced_options", False), False),
         rhythm_timezone=rhythm_timezone,
         decision_mode="persona_model",
         decision_provider_id=str(_get(raw, "decision_provider", "") or "").strip(),

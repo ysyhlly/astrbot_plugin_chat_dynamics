@@ -1,152 +1,103 @@
 {
   "enable": {
-    "description": "是否启用群聊动态过滤器",
+    "description": "启用群间",
     "type": "bool",
     "default": true,
-    "hint": "开启后，对生效范围内的群聊做防抖、指代门闩、冷却和回复装饰。主回复仍走 AstrBot 原管线（人格、历史、工具）。"
+    "hint": "在指定范围内合并消息、判断是否接话并生成回复。"
   },
-  "autonomous_blocking_required": {
-    "description": "要求自主屏蔽服务可用",
+  "show_advanced_options": {
+    "description": "显示高级配置",
     "type": "bool",
     "default": false,
-    "hint": "开启后，服务缺失或未就绪时，群间会阻止角色回复并抑制原生回复；管理员配置命令仍可用于关闭此项。"
+    "hint": "展开阈值、超时、缓存和兼容设置；仅控制原生配置窗口的显示，原有配置值保留。"
+  },
+  "private_chat_enabled": {
+    "description": "接管私聊",
+    "type": "bool",
+    "default": false,
+    "hint": "让私聊使用群间的回复与上下文链路。"
   },
   "shadow_mode": {
-    "description": "插件总观察模式（不发言）",
+    "description": "仅观察，不发言",
     "type": "bool",
     "default": false,
-    "hint": "这是插件全局观察开关，不同于下方决策学习 shadow。legacy 只记录预计动作；persona_model 仍可调用判断模型记录预判，但插件不生成或发送回复。"
-  },
-  "pipeline_mode": {
-    "description": "管线模式",
-    "type": "string",
-    "default": "filter",
-    "options": [
-      "filter",
-      "exclusive"
-    ],
-    "hint": "filter：只关门/装饰，不 stop_event，其它插件仍能收到消息。exclusive：旧独占模式，会吞掉后续插件，仅在确实需要时开启。"
+    "hint": "继续记录判断，但不生成或发送插件回复；不关闭模型判断调用。"
   },
   "takeover_all": {
-    "description": "对全部群聊生效",
+    "description": "对全部群生效",
     "type": "bool",
     "default": false,
-    "hint": "开启后对所有未被黑名单排除的群启用过滤器。默认关闭，避免一安装就改变全部群聊。"
+    "hint": "开启后对全部未排除群生效；关闭时使用指定群列表。"
   },
   "takeover_groups": {
-    "description": "生效群聊白名单",
+    "description": "指定群聊",
     "type": "list",
     "items": {
       "type": "string"
     },
     "default": [],
-    "hint": "填入需要过滤的群聊 ID。白名单为空且未开启“对全部群聊生效”时，不会处理任何群。"
+    "hint": "填写群号；列表为空且未启用全部群时，不处理任何群。",
+    "condition": {
+      "takeover_all": false
+    }
   },
   "exclude_groups": {
-    "description": "排除群聊黑名单",
+    "description": "排除群聊",
     "type": "list",
     "items": {
       "type": "string"
     },
     "default": [],
-    "hint": "黑名单中的群聊将保持 AstrBot 默认处理流程，本插件不介入。"
+    "hint": "这些群不由群间接管，优先于全部群和指定群设置。"
   },
   "bot_names": {
-    "description": "机器人昵称 / 唤醒名",
+    "description": "机器人称呼",
     "type": "list",
     "items": {
       "type": "string"
     },
     "default": [],
-    "hint": "填写机器人昵称。规则模式根据真实 @、引用和明确呼唤识别对象；普通参与仍由决策模型判断，成员屏蔽和停止策略优先。"
-  },
-  "context_completion_enabled": {
-    "description": "上下文不足时自动补查",
-    "type": "bool",
-    "default": false,
-    "hint": "群聊与戳戳中，由模型按需选择补查来源者近期发言、话题背景或长期记忆。每轮自动补查最多一次、最长8秒，随后复判；仍缺关键资料则澄清。长期记忆复用已启用的叙事记忆服务，不跨会话，不强制发言。"
-  },
-  "reply_probability_threshold": {
-    "description": "回复概率门槛（%）",
-    "type": "float",
-    "default": 70,
-    "slider": {
-      "min": 0,
-      "max": 100,
-      "step": 1
-    },
-    "hint": "填 0–100；例如 60 表示普通群聊开口概率达到 60% 才回复。@机器人不受这个门槛限制；引用需确认接话对象；昵称和补充消息还需通过动作判断。"
-  },
-  "quote_reply_threshold": {
-    "description": "引用回复对象门槛 (%)",
-    "type": "float",
-    "default": 35,
-    "slider": {
-      "min": 0,
-      "max": 100,
-      "step": 1
-    },
-    "hint": "引用机器人的对象置信门槛；达到门槛后仍需通过动作判断。规则模式下真实平台引用可直接确认对象。这不是随机回复概率。"
-  },
-  "name_reply_threshold": {
-    "description": "昵称回复对象门槛 (%)",
-    "type": "float",
-    "default": 70,
-    "slider": {
-      "min": 0,
-      "max": 100,
-      "step": 1
-    },
-    "hint": "昵称呼唤的对象置信门槛；仅把机器人当作谈论对象时不强制接话，动作判断独立生效。这不是随机回复概率。"
-  },
-  "decision_timeout": {
-    "description": "决策超时秒数",
-    "type": "float",
-    "default": 8.0,
-    "hint": "范围 1~30 秒，包含等待全局决策名额；不重试。@机器人直接回复，不等待 Jev。引用或昵称唤醒仍需 Jev 确认对象；决策超时继续旁听。"
+    "hint": "填写机器人昵称。真实 @、引用及成员停止规则仍优先。"
   },
   "participation_backend": {
     "description": "参与决策方式",
     "type": "string",
     "default": "jev",
-    "options": ["jev", "llm"],
-    "hint": "jev：现有 Jev／原生抉择模型；llm：普通聊天模型判断是否接话、动作、状态、长度和等待补充输入。两种方式互斥，不串行调用；对象与话题归属判断在另一组独立设置。"
+    "options": [
+      "jev",
+      "llm"
+    ],
+    "hint": "jev：原生抉择模型；llm：普通聊天模型。仅调用所选方式，失败时保守处理。"
+  },
+  "decision_provider": {
+    "description": "Jev／原生抉择模型 ID",
+    "type": "string",
+    "default": "",
+    "hint": "填写 AstrBot 抉择模型 ID，支持 Jev、System One 和 OpenAI Decisions。",
+    "condition": {
+      "participation_backend": "jev"
+    }
   },
   "decision_llm_provider": {
     "description": "参与决策 LLM",
     "type": "string",
     "default": "",
-    "hint": "仅 llm 模式使用普通聊天模型，不选 Jev 或 Rerank。留空沿用回复模型，再留空使用当前完整会话的聊天模型。只输出结构化决策，正文仍走原回复链路。"
-  },
-  "decision_llm_timeout": {
-    "description": "LLM 决策请求超时（秒）",
-    "type": "float",
-    "default": 6.0,
-    "hint": "范围 1–30 秒，仍受决策总时限约束。模型失败或输出无效时保守处理，不补调 Jev；真实 @ 的快速回复、成员停止及发送校验保持生效。"
-  },
-  "decision_provider": {
-    "description": "Jev／原生抉择模型",
-    "type": "string",
-    "default": "",
-    "hint": "在插件参数配置页从 AstrBot 专用抉择模型列表选择，支持 Jev / System One、OpenAI Decisions 及原生 DecisionProvider。模型服务归类为抉择模型，沿用地址、密钥和 ID；回复正文使用普通聊天模型。"
-  },
-  "decision_prompt": {
-    "description": "参与决策提示词",
-    "type": "string",
-    "editor": "textarea",
-    "default": "先确认谁在说话、对谁说、当前希望得到什么回应，再判断是否接话。真实@和明确请求比昵称重叠、同话题或相似词更可靠；引用内容不是当前发言者的请求。\n结合引用、已发送回复、待回答问题和同话题背景理解续聊；新补充只延续同一任务，明确换对象或更正时以本轮为准。入群事件中的成员才是新人，说欢迎的人不一定是新人；群体问候不自动等于在叫自己。\n按参与档位自然参与公开讨论，有具体贡献才接话；明确问别人、已经回答、要求停止或有效边界命中时不抢答。对象不明确时不要仅凭亲近关系或历史互动判成机器人；确实在问自己但指代缺失时可澄清。",
-    "hint": "调整何时参与和话题偏好。活跃档可参与与自己无关的公开话题。支持多行，最多 4000 字符；留空使用默认，保存后立即生效。"
-  },
-  "jev_timeout": {
-    "description": "Jev 决策请求超时秒数",
-    "type": "float",
-    "default": 6.0,
-    "slider": {
-      "min": 1,
-      "max": 30,
-      "step": 0.5
+    "hint": "选择普通聊天模型。留空沿用回复模型，再留空使用当前会话模型。",
+    "condition": {
+      "participation_backend": "llm"
     },
-    "hint": "普通参与判断超时后继续旁听。真实 @ 直接进入回复链，不等待是否开口判断；成员屏蔽和停止策略仍生效。"
+    "_special": "select_provider"
+  },
+  "reply_probability_threshold": {
+    "description": "参与分数门槛（%）",
+    "type": "float",
+    "default": 70,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "0–100，越高越谨慎；达标且其他规则允许时才接话。真实 @ 不受此门槛限制。"
   },
   "jev_min_confidence": {
     "description": "决策置信度门槛",
@@ -157,262 +108,268 @@
       "max": 0.95,
       "step": 0.05
     },
-    "hint": "动作判断的置信度门槛（0.3–0.95）。引用和昵称的对象门槛分别由对应百分比设置控制；补充消息保留原门槛。昵称及补充消息不会将忽略强制改为回复。"
+    "hint": "动作判断的置信度门槛（0.3–0.95）。引用和昵称的对象门槛分别由对应百分比设置控制；补充消息保留原门槛。昵称及补充消息不会将忽略强制改为回复。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "quote_reply_threshold": {
+    "description": "引用回复对象门槛 (%)",
+    "type": "float",
+    "default": 35,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "引用机器人的对象置信门槛；达到门槛后仍需通过动作判断。规则模式下真实平台引用可直接确认对象。这不是随机回复概率。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "name_reply_threshold": {
+    "description": "昵称回复对象门槛 (%)",
+    "type": "float",
+    "default": 70,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "昵称呼唤的对象置信门槛；仅把机器人当作谈论对象时不强制接话，动作判断独立生效。这不是随机回复概率。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "jev_timeout": {
+    "description": "Jev 决策请求超时秒数",
+    "type": "float",
+    "default": 6.0,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 0.5
+    },
+    "hint": "普通参与判断超时后继续旁听。真实 @ 直接进入回复链，不等待是否开口判断；成员屏蔽和停止策略仍生效。",
+    "condition": {
+      "show_advanced_options": true,
+      "participation_backend": "jev"
+    }
+  },
+  "decision_llm_timeout": {
+    "description": "LLM 决策请求超时（秒）",
+    "type": "float",
+    "default": 6.0,
+    "hint": "范围 1–30 秒，仍受决策总时限约束。模型失败或输出无效时保守处理，不补调 Jev；真实 @ 的快速回复、成员停止及发送校验保持生效。",
+    "condition": {
+      "show_advanced_options": true,
+      "participation_backend": "llm"
+    }
+  },
+  "decision_timeout": {
+    "description": "决策超时秒数",
+    "type": "float",
+    "default": 8.0,
+    "hint": "范围 1~30 秒，包含等待全局决策名额；不重试。@机器人直接回复，不等待 Jev。引用或昵称唤醒仍需 Jev 确认对象；决策超时继续旁听。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "context_completion_enabled": {
+    "description": "上下文不足时自动补查",
+    "type": "bool",
+    "default": false,
+    "hint": "群聊与戳戳中，由模型按需选择补查来源者近期发言、话题背景或长期记忆。每轮自动补查最多一次、最长8秒，随后复判；仍缺关键资料则澄清。长期记忆复用已启用的叙事记忆服务，不跨会话，不强制发言。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "decision_prompt": {
+    "description": "参与决策提示词",
+    "type": "string",
+    "editor": "textarea",
+    "default": "先确认谁在说话、对谁说、当前希望得到什么回应，再判断是否接话。真实@和明确请求比昵称重叠、同话题或相似词更可靠；引用内容不是当前发言者的请求。\n结合引用、已发送回复、待回答问题和同话题背景理解续聊；新补充只延续同一任务，明确换对象或更正时以本轮为准。入群事件中的成员才是新人，说欢迎的人不一定是新人；群体问候不自动等于在叫自己。\n按参与档位自然参与公开讨论，有具体贡献才接话；明确问别人、已经回答、要求停止或有效边界命中时不抢答。对象不明确时不要仅凭亲近关系或历史互动判成机器人；确实在问自己但指代缺失时可澄清。",
+    "hint": "调整何时接话及话题偏好，两种决策方式共用；留空使用默认，最多 4000 字符。",
+    "condition": {
+      "show_advanced_options": true
+    },
+    "editor_mode": true,
+    "editor_language": "plaintext"
+  },
+  "reply_provider": {
+    "description": "回复正文模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "生成最终回复，沿用人格与已授权工具；留空使用当前会话模型。"
+  },
+  "reply_first_sentence_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "首句优先发送",
+    "hint": "最终回答通过校验后优先发送完整首句，尾部诊断不阻塞发送；工具过程和未确认草稿仍缓冲。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "reply_timeout": {
     "description": "回复模型总超时秒数",
     "type": "float",
     "default": 60.0,
-    "hint": "回复生成总时限，与决策时限独立。真实 @ 生成失败时可反馈简短状态；已停止、失效或受屏蔽的回合不补发。"
+    "hint": "回复生成总时限，与决策时限独立。真实 @ 生成失败时可反馈简短状态；已停止、失效或受屏蔽的回合不补发。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "tool_agent_timeout": {
     "description": "原生 Agent 总超时秒数",
     "type": "float",
     "default": 120.0,
-    "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。"
-  },
-  "reply_provider": {
-    "description": "主回复 Chat Provider",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "为空时回退旧版 provider，再为空时按当前 UMO 使用会话默认 Provider。"
+    "hint": "范围 5～600 秒，包含媒体准备、请求钩子、Provider 查找和工具执行。与决策超时独立，超时取消当前 Agent。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "reply_prompt": {
     "description": "回复提示词",
     "type": "string",
     "editor": "textarea",
     "default": "用当前人设自然回应，第一句先接住本轮具体问题或情绪，再补必要说明。续聊保留同一任务的有效条件，当前明确更正优先，不转答背景里的旧问题。\n引用、话题背景和群事件用于理解，不是新请求；分清发言者、被提及者、新人和欢迎者。指代无法唯一确定且影响作答时，只问一个关键问题，不编造对象、经历或事实。\n主动参与时围绕大家的话题贡献具体内容，不假装别人专门问自己。亲近与关心可以自然接受；保留人设个性，但不每轮套用省略号、反问、嘴硬或拒绝。normal 默认用 1～3 句回答，短列表最多两项，先给结论或可用结果。普通群聊即使判为 detailed，整轮正文也不超过 200 字，只保留必要解释或步骤，省略重复背景、复述和总结；发送前检查长度，超出时重新压缩表达，短答不凑字数。要求详解本身不放宽 200 字限制；用户明确要求完整代码、长文或指定更长篇幅时，按该请求保留必需的信息和结构。\n避免复述题目、空泛附和、机械追问和客套收尾；确有需要才解释限制。不重复已发送内容或已执行操作，不把计划、推测或生成失败写成已发生的角色行为。",
-    "hint": "调整接话方式、语气、长度和内容偏好，与 AstrBot 当前人设共同生效。normal 为 1~3 句，普通群聊 detailed 正文要求不超过 200 字；仅要求详解不放宽限制，明确完整代码、长文或指定更长篇幅可展开。支持多行，最多 4000 字符；留空使用默认，保存后立即生效。"
-  },
-  "command_prefix": {
-    "description": "指令前缀",
-    "type": "string",
-    "default": "/",
-    "hint": "以此前缀开头的消息不会被状态机吞掉，交给指令处理器。"
-  },
-  "debounce_base_cooldown": {
-    "description": "消息短暂聚合时间 (秒)",
-    "type": "float",
-    "default": 0.25,
-    "slider": {
-      "min": 0,
-      "max": 30,
-      "step": 0.05
+    "hint": "调整接话方式、语气、长度和内容偏好，与 AstrBot 当前人设共同生效。normal 为 1~3 句，普通群聊 detailed 正文要求不超过 200 字；仅要求详解不放宽限制，明确完整代码、长文或指定更长篇幅可展开。支持多行，最多 4000 字符；留空使用默认，保存后立即生效。",
+    "condition": {
+      "show_advanced_options": true
     },
-    "hint": "Jev 判断前用于合并快速连发的短窗口，最多等待 0.25 秒；说完后直接进入回复，不再按标点延长等待。"
-  },
-  "debounce_extended_cooldown": {
-    "description": "Jev 未说完时继续等待 (秒)",
-    "type": "float",
-    "default": 1.0,
-    "slider": {
-      "min": 0,
-      "max": 60,
-      "step": 0.05
-    },
-    "hint": "历史兼容参数；原生 Jev 判断未说完后等待新消息，不按此间隔重复请求。"
-  },
-  "debounce_max_cap": {
-    "description": "快速碎发合并上限 (秒)",
-    "type": "float",
-    "default": 4.0,
-    "slider": {
-      "min": 0,
-      "max": 120,
-      "step": 0.5
-    },
-    "hint": "限制一批快速连发的合并时间，默认 4 秒；Jev 已判断未说完后的补充输入等待由独立超时控制。"
-  },
-  "pending_input_timeout": {
-    "description": "补充输入等待超时 (秒)",
-    "type": "float",
-    "default": 60.0,
-    "slider": {
-      "min": 1,
-      "max": 300,
-      "step": 1
-    },
-    "hint": "Jev 判断未说完后保留原文，收到新消息才重新判断；从首条输入计时，默认 60 秒。停止、重置或卸载会清理等待。"
-  },
-  "strong_addressivity_threshold": {
-    "description": "强指代判定阈值",
-    "type": "float",
-    "default": 0.7,
-    "slider": {
-      "min": 0,
-      "max": 1,
-      "step": 0.05
-    },
-    "hint": "定向度评分大于等于该阈值时判定为明确指向机器人（默认 0.70）。"
-  },
-  "safe_hover_threshold": {
-    "description": "安全悬停判定阈值",
-    "type": "float",
-    "default": 0.4,
-    "slider": {
-      "min": 0,
-      "max": 1,
-      "step": 0.05
-    },
-    "hint": "定向度在此区间内 (0.40 ~ 0.70) 仅静默记入图谱，不主动抢答（默认 0.40）。"
-  },
-  "deep_cooling_minutes": {
-    "description": "深度冷却周期 (分钟)",
-    "type": "float",
-    "default": 15.0,
-    "slider": {
-      "min": 0,
-      "max": 180,
-      "step": 1
-    },
-    "hint": "触发话题壁垒或冷场后，机器人保持静默观察的分钟数（默认 15.0 分钟）。"
-  },
-  "chars_per_second": {
-    "description": "模拟打字速率 (字/秒)",
-    "type": "float",
-    "default": 25.0,
-    "slider": {
-      "min": 1,
-      "max": 100,
-      "step": 1
-    },
-    "hint": "用于计算拟人化输入延迟的打字速度（默认 25.0 字/秒）。"
-  },
-  "base_thinking_delay": {
-    "description": "基础思考停顿 (秒)",
-    "type": "float",
-    "default": 0.0,
-    "slider": {
-      "min": 0,
-      "max": 10,
-      "step": 0.1
-    },
-    "hint": "旧回复路径的拟人化停顿；Jev 决定接话后，正文生成完成即发送，不额外叠加思考停顿。"
-  },
-  "max_fragments": {
-    "description": "最大碎发条数",
-    "type": "int",
-    "default": 10,
-    "slider": {
-      "min": 1,
-      "max": 10,
-      "step": 1
-    },
-    "hint": "回复按空行分成独立消息，可设为 1~10 条，默认最多 10 条；超出的自然段合并到最后一条，设为 1 则整段发送。普通回复和戳一戳共用此设置，代码、列表等结构保持完整。"
-  },
-  "max_fragment_chars": {
-    "description": "单条消息目标长度",
-    "type": "int",
-    "default": 120,
-    "slider": {
-      "min": 40,
-      "max": 500,
-      "step": 10
-    },
-    "hint": "碎发时单条消息的软长度目标；极长回复会优先保留完整内容。"
-  },
-  "inter_burst_interval": {
-    "description": "碎发基础间隔 (秒)",
-    "type": "float",
-    "default": 1.2,
-    "slider": {
-      "min": 0.6,
-      "max": 3,
-      "step": 0.1
-    },
-    "hint": "段间基础间隔；实际等待会结合当前回复节奏的倍率。设为 0 可取消段间等待。"
-  },
-  "strip_markdown_in_banter": {
-    "description": "闲聊模式格式降级",
-    "type": "bool",
-    "default": true,
-    "hint": "在快速碎梗与非正式闲聊氛围下自动清洗 Markdown 格式与生硬标点。"
-  },
-  "console_show_message_content": {
-    "description": "控制台显示消息正文",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
-  },
-  "replay_show_topic_titles": {
-    "description": "回放显示话题小标题",
-    "type": "bool",
-    "default": true,
-    "hint": "默认展示模型归纳的简短话题标题，与消息正文开关独立；关闭后用话题编号代替。正文仍由“控制台显示消息正文”控制。"
-  },
-  "telemetrics_window_seconds": {
-    "description": "遥测滑动窗口 (秒)",
-    "type": "float",
-    "default": 60.0,
-    "slider": {
-      "min": 15,
-      "max": 300,
-      "step": 5
-    },
-    "hint": "计算 MPM、平均字符数和场景标签时使用的时间窗口（默认 60 秒）。"
-  },
-  "fast_banter_enter_mpm": {
-    "description": "进入快速碎梗的 MPM",
-    "type": "float",
-    "default": 12.0,
-    "slider": {
-      "min": 4,
-      "max": 40,
-      "step": 0.5
-    },
-    "hint": "消息速率达到该阈值时，氛围状态机更倾向进入 fast_banter。"
-  },
-  "chill_fade_enter_mpm": {
-    "description": "进入能量衰退的 MPM",
-    "type": "float",
-    "default": 3.0,
-    "slider": {
-      "min": 0.5,
-      "max": 12,
-      "step": 0.5
-    },
-    "hint": "消息速率低于该阈值时，氛围状态机更倾向进入 chill_fade。"
+    "editor_mode": true,
+    "editor_language": "plaintext"
   },
   "conversation_router_enabled": {
-    "description": "启用短期会话路由",
+    "description": "识别对话对象与话题",
     "type": "bool",
     "default": true,
-    "hint": "结合活跃话题、候选父消息和对话对象判断自然续聊，区分谈论机器人与向机器人提问。"
+    "hint": "判断在回复谁、属于哪个讨论；与是否开口的决策独立。"
+  },
+  "rule_topic_routing_enabled": {
+    "description": "使用新版归属路径",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后使用下方的规则＋重排序或 LLM；关闭时保留旧版归属路径。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true
+    }
   },
   "topic_reranker_enabled": {
-    "description": "启用讨论归属辅助",
+    "description": "模型辅助归属与命名",
     "type": "bool",
     "default": true,
-    "hint": "按判断模式调用原生重排序或归属 LLM，并由话题归纳模型批量命名。低分先待定。关闭后只保留本地规则，不调用额外归属模型或标题模型。"
+    "hint": "处理归属歧义，并为已形成的讨论生成标题；关闭时保留本地规则。",
+    "condition": {
+      "conversation_router_enabled": true
+    }
   },
-  "topic_reranker_provider": {
-    "description": "话题归纳模型",
+  "discussion_judgment_mode": {
+    "description": "对象与话题判断方式",
+    "type": "string",
+    "default": "rerank",
+    "options": [
+      "rerank",
+      "llm"
+    ],
+    "hint": "rerank：规则＋原生重排序；llm：普通聊天模型辅助判断。真实 @ 和引用优先。",
+    "condition": {
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true
+    }
+  },
+  "discussion_reranker_provider": {
+    "description": "讨论归属 Rerank 模型 ID",
     "type": "string",
     "default": "",
-    "_special": "select_provider",
-    "hint": "仅用于生成新话题的标签；留空沿用回复模型，回复模型也为空时使用当前会话模型。归属使用 Jev。"
+    "hint": "填写 AstrBot 原生重排序模型 ID，不能填写聊天模型；未配置时保留未知。",
+    "condition": {
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true,
+      "discussion_judgment_mode": "rerank"
+    }
   },
-  "topic_batch_interval": {
-    "description": "讨论处理累计间隔（秒）",
-    "type": "float",
-    "default": 30.0,
-    "slider": {
-      "min": 5,
-      "max": 300,
-      "step": 5
+  "discussion_llm_provider": {
+    "description": "归属判断 LLM",
+    "type": "string",
+    "default": "",
+    "hint": "选择普通聊天模型。留空沿用回复模型，再留空使用当前会话模型。",
+    "condition": {
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true,
+      "discussion_judgment_mode": "llm"
     },
-    "hint": "默认按群累计 30 秒后处理尚未确定归属的消息；无待处理消息时不调用。后台归属不阻塞回复。旧模式下用于累计生成标签。"
+    "_special": "select_provider"
   },
-  "topic_reranker_timeout": {
-    "description": "话题复判超时（秒）",
+  "discussion_llm_timeout": {
+    "description": "LLM 归属判断超时（秒）",
     "type": "float",
     "default": 3.0,
-    "invisible": true,
+    "hint": "范围 0.1–30。普通消息先判断再决定是否回应，会增加等待；每轮合并对象和讨论判断，失败或不确定时保留规则结果，不串行补调其他归属模型。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true,
+      "discussion_judgment_mode": "llm"
+    }
+  },
+  "topic_reranker_timeout": {
+    "description": "重排序请求超时（秒）",
+    "type": "float",
+    "default": 3.0,
     "slider": {
       "min": 0.1,
       "max": 10,
       "step": 0.1
+    },
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "topic_reranker_enabled": true,
+      "discussion_judgment_mode": "rerank"
+    },
+    "hint": "原生重排序或旧版话题复判的等待上限，0.1–10 秒。"
+  },
+  "discussion_rerank_threshold": {
+    "description": "讨论匹配分数阈值",
+    "type": "float",
+    "default": 0.65,
+    "hint": "两种模式共用的 0–1 分数门槛；LLM 对象也需达到此值。模型分数不是实测概率，切换模型后需回放校准。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true
+    }
+  },
+  "discussion_rerank_margin": {
+    "description": "讨论候选最小分差",
+    "type": "float",
+    "default": 0.1,
+    "hint": "候选接近时保留歧义，不因共享参与者而合并。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": true,
+      "topic_reranker_enabled": true
+    }
+  },
+  "topic_reranker_provider": {
+    "description": "话题命名模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "仅概括讨论标题，不修改归属；留空沿用回复模型。",
+    "condition": {
+      "conversation_router_enabled": true,
+      "topic_reranker_enabled": true
     }
   },
   "topic_title_timeout": {
@@ -424,29 +381,28 @@
       "max": 30,
       "step": 1
     },
-    "hint": "普通模型生成新话题标签的超时，不阻塞回复。观察模式也可以生成标签。"
+    "hint": "普通模型生成新话题标签的超时，不阻塞回复。观察模式也可以生成标签。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "topic_reranker_enabled": true
+    }
   },
-  "routing_neural_timeout": {
-    "description": "模糊消息向量等待上限（秒）",
+  "topic_batch_interval": {
+    "description": "讨论处理累计间隔（秒）",
     "type": "float",
-    "default": 0.5,
+    "default": 30.0,
     "slider": {
-      "min": 0,
-      "max": 2,
-      "step": 0.1
+      "min": 5,
+      "max": 300,
+      "step": 5
     },
-    "hint": "仅启用神经向量时生效；明确 @ 或引用不等待。超时使用本地证据，0 表示不等待。"
-  },
-  "replay_message_limit": {
-    "description": "每会话回放消息上限",
-    "type": "int",
-    "default": 500,
-    "slider": {
-      "min": 80,
-      "max": 500,
-      "step": 20
-    },
-    "hint": "场景回放每个会话最多展示的最近消息数，包含已归属和未归属消息。实际受会话图谱 500 条及一小时保留期限制；调小只减少展示，不删除已保存消息。"
+    "hint": "默认按群累计 30 秒后处理尚未确定归属的消息；无待处理消息时不调用。后台归属不阻塞回复。旧模式下用于累计生成标签。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "topic_reranker_enabled": true
+    }
   },
   "topic_window_seconds": {
     "description": "活跃话题保留时间（秒）",
@@ -457,7 +413,26 @@
       "max": 1800.0,
       "step": 30.0
     },
-    "hint": "会话话题活跃窗口。超时无新消息的话题会被自动清理，避免历史话题错误复用。"
+    "hint": "会话话题活跃窗口。超时无新消息的话题会被自动清理，避免历史话题错误复用。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true
+    }
+  },
+  "replay_message_limit": {
+    "description": "每会话回放消息上限",
+    "type": "int",
+    "default": 500,
+    "slider": {
+      "min": 80,
+      "max": 500,
+      "step": 20
+    },
+    "hint": "场景回放每个会话最多展示的最近消息数，包含已归属和未归属消息。实际受会话图谱 500 条及一小时保留期限制；调小只减少展示，不删除已保存消息。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true
+    }
   },
   "topic_join_threshold": {
     "description": "话题阈值兼容设置",
@@ -468,19 +443,34 @@
       "max": 0.85,
       "step": 0.02
     },
-    "hint": "保留旧配置行为：作为歧义候选阈值；小于 0.58 时，确定归属阈值为 max(0.58, 此值 + 0.10)，否则等于此值。下方独立阈值非 0 时分别覆盖对应设置。"
+    "hint": "保留旧配置行为：作为歧义候选阈值；小于 0.58 时，确定归属阈值为 max(0.58, 此值 + 0.10)，否则等于此值。下方独立阈值非 0 时分别覆盖对应设置。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "topic_commit_threshold": {
     "description": "话题确定归属阈值",
     "type": "float",
     "default": 0.0,
-    "hint": "0 表示沿用兼容设置的旧映射；手动设置范围 0.30～0.95。匹配得分达到此值且满足领先间隔，才确定归入已有话题。"
+    "hint": "0 表示沿用兼容设置的旧映射；手动设置范围 0.30～0.95。匹配得分达到此值且满足领先间隔，才确定归入已有话题。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "topic_ambiguity_threshold": {
     "description": "话题歧义候选阈值",
     "type": "float",
     "default": 0.0,
-    "hint": "0 表示沿用话题阈值兼容设置；手动设置范围 0.30～0.95。控制需要保留并进一步判别的候选话题，不直接决定归属。"
+    "hint": "0 表示沿用话题阈值兼容设置；手动设置范围 0.30～0.95。控制需要保留并进一步判别的候选话题，不直接决定归属。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "topic_margin_threshold": {
     "description": "话题确定归属领先间隔",
@@ -491,7 +481,12 @@
       "max": 0.5,
       "step": 0.01
     },
-    "hint": "最佳候选相对第二候选的最低得分差。与确定归属阈值同时满足，才接受话题归属。"
+    "hint": "最佳候选相对第二候选的最低得分差。与确定归属阈值同时满足，才接受话题归属。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "parent_window_seconds": {
     "description": "候选父消息检索窗口（秒）",
@@ -502,7 +497,12 @@
       "max": 600.0,
       "step": 15.0
     },
-    "hint": "在当前话题内向前寻找最可能被回复/提问的父消息的时间跨度。"
+    "hint": "在当前话题内向前寻找最可能被回复/提问的父消息的时间跨度。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "parent_accept_threshold": {
     "description": "推断回复边接受阈值",
@@ -513,52 +513,28 @@
       "max": 0.95,
       "step": 0.02
     },
-    "hint": "多因子打分达到该阈值且显著领先（margin >= 0.08）时，才建立推断回复边 (inferred_reply)。"
+    "hint": "多因子打分达到该阈值且显著领先（margin >= 0.08）时，才建立推断回复边 (inferred_reply)。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
-  "neural_embedding_enabled": {
-    "description": "启用神经网络 Embedding",
-    "type": "bool",
-    "default": false,
-    "hint": "开启后通过 AstrBot Embedding Provider 计算语义向量。未配置或调用失败时自动回退到本地哈希 embedding。"
-  },
-  "embedding_provider": {
-    "description": "Embedding Provider ID",
-    "type": "string",
-    "default": "",
-    "hint": "在插件「参数配置」页从 Embedding 服务商下拉选择；留空则使用第一个可用的 Embedding Provider。原生设置页请填写 Embedding Provider ID。"
-  },
-  "neural_link_threshold": {
-    "description": "神经网络语义边阈值",
+  "routing_neural_timeout": {
+    "description": "模糊消息向量等待上限（秒）",
     "type": "float",
-    "default": 0.78,
-    "slider": {
-      "min": 0.5,
-      "max": 0.95,
-      "step": 0.01
-    },
-    "hint": "两侧都已缓存神经网络向量时，余弦相似度达到该阈值会建立语义候选边。"
-  },
-  "embedding_cache_size": {
-    "description": "Embedding 缓存条数",
-    "type": "int",
-    "default": 512,
-    "slider": {
-      "min": 64,
-      "max": 4096,
-      "step": 64
-    },
-    "hint": "进程内 LRU 缓存的文本向量条数，避免对同一句话重复请求 Embedding API。"
-  },
-  "embedding_cache_ttl_seconds": {
-    "description": "Embedding 缓存有效期（秒）",
-    "type": "int",
-    "default": 1800,
+    "default": 0.5,
     "slider": {
       "min": 0,
-      "max": 7200,
-      "step": 300
+      "max": 2,
+      "step": 0.1
     },
-    "hint": "超过该时长未再使用的文本向量会被回收，0 表示不按时间回收。CD 只保留短期工作记忆，长期记忆由记忆搭档负责。"
+    "hint": "仅启用神经向量时生效；明确 @ 或引用不等待。超时使用本地证据，0 表示不等待。",
+    "condition": {
+      "show_advanced_options": true,
+      "conversation_router_enabled": true,
+      "rule_topic_routing_enabled": false
+    }
   },
   "presence_knob": {
     "description": "分寸旋钮（存在感）",
@@ -575,67 +551,55 @@
     "description": "启用社交分寸总开关",
     "type": "bool",
     "default": true,
-    "hint": "关闭后接力棒/谁的场/捧场配额都不生效。默认开启（懂事档）。"
+    "hint": "关闭后接力棒/谁的场/捧场配额都不生效。默认开启（懂事档）。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "relay_baton_enabled": {
     "description": "接力棒：人类互回时靠边",
     "type": "bool",
     "default": true,
-    "hint": "人类互回时靠边；活跃档经决策确认是公开讨论时可以自然加入，明确面向某位群友的交流仍优先旁听。"
+    "hint": "人类互回时靠边；活跃档经决策确认是公开讨论时可以自然加入，明确面向某位群友的交流仍优先旁听。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "private_field_enabled": {
     "description": "谁的场：A↔B 私场不硬插",
     "type": "bool",
     "default": true,
-    "hint": "保守识别私人交流。活跃档经决策确认是公开话题时，不会仅因两位群友轮流发言而静默。"
+    "hint": "保守识别私人交流。活跃档经决策确认是公开话题时，不会仅因两位群友轮流发言而静默。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
-  "private_chat_enabled": {
-    "description": "私聊接入 Chat Dynamics",
+  "deciding_detect_enabled": {
+    "description": "识别决策中场合",
     "type": "bool",
-    "default": false,
-    "hint": "开启后私聊与群聊共用人设和生成发送链；私聊直接回复，不经过 Jev 是否回复判断。群聊记忆可作为只读背景，私聊内容仅留在私聊会话。与“谁的场”内心功能无关。"
+    "default": true,
+    "hint": "约时间/投票/选型/分工时进入决策中：不插科、短澄清；不确定不当决策态。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "newcomer_caution_enabled": {
+    "description": "新人更收",
+    "type": "bool",
+    "default": true,
+    "hint": "新/低频发言者提高插话门槛；禁止环境主动点名；误判偏收。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "hyped_quota_enabled": {
     "description": "捧场配额：整活最多起哄一次",
     "type": "bool",
     "default": true,
-    "hint": "同一段整活最多起哄一次；用完改旁听；被点名可回但不叠梗。"
-  },
-  "mood_memory_enabled": {
-    "description": "情绪轻接（话题情绪记忆）",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。短标签+衰减；有 selflearning 时优先消费已批准记忆。"
-  },
-  "slang_trial_enabled": {
-    "description": "黑话试用期",
-    "type": "bool",
-    "default": false,
-    "hint": "默认关闭。新梗小声用一次，冷场收回；未审查/敏感不进场。"
-  },
-  "group_memory_enabled": {
-    "description": "群记忆小本（纪念日/约定）",
-    "type": "bool",
-    "default": true,
-    "hint": "默认开启，但须显式写入纪念日或约定才有效。"
-  },
-  "selflearning_hub_url": {
-    "description": "Self Learning Hub v1 地址（可选）",
-    "type": "string",
-    "default": "",
-    "hint": "仅供不经过宿主请求钩子的内部回复使用；普通聊天由原生钩子增强，不重复调用 context。填写 Self Learning HTTP 服务地址或 /api/hub/v1 地址，留空关闭 Hub 连接。配置了密钥时仅接受 https（本机回环可用 http），避免凭据明文外发；其余情况按降级处理并在诊断里显示原因。Hub 需在 /context 响应里回显 group_id 与 user_id，缺失或不一致时本次背景数据会被丢弃（scope_mismatch）。"
-  },
-  "selflearning_hub_key_env": {
-    "description": "Hub API Key 环境变量名",
-    "type": "string",
-    "default": "SELFLEARNING_HUB_API_KEY",
-    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不返回面板。Self Learning 未开启 API 鉴权时可留空。为免任意环境变量被当作凭据外发，变量名须是 Hub/本插件相关名称（含 HUB、SELFLEARNING 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。"
-  },
-  "selflearning_integration": {
-    "description": "尝试对接 selflearning",
-    "type": "bool",
-    "default": true,
-    "hint": "有则增强记忆/关系/黑话候选；检测失败安静降级，不阻断回复链路。"
+    "hint": "同一段整活最多起哄一次；用完改旁听；被点名可回但不叠梗。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "media_image_gate_enabled": {
     "description": "会看图（门闩）",
@@ -653,71 +617,97 @@
     "description": "允许理解接话（默认关）",
     "type": "bool",
     "default": false,
-    "hint": "L2：未 @ 时，仅「看/听这个」等强相关才把图/语音交主 Agent。@ 或引用 bot 时始终交模型识图/听语音（隐私档除外）。宿主无多模态时安静降级。"
+    "hint": "L2：未 @ 时，仅「看/听这个」等强相关才把图/语音交主 Agent。@ 或引用 bot 时始终交模型识图/听语音（隐私档除外）。宿主无多模态时安静降级。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "media_privacy_strict": {
     "description": "媒体隐私严格档",
     "type": "bool",
     "default": true,
-    "hint": "证件/私密感图片不描述细节；未强点名时优先沉默。"
+    "hint": "证件/私密感图片不描述细节；未强点名时优先沉默。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
-  "deciding_detect_enabled": {
-    "description": "识别决策中场合",
+  "narrative_enabled": {
+    "description": "启用角色持续生活",
     "type": "bool",
-    "default": true,
-    "hint": "约时间/投票/选型/分工时进入决策中：不插科、短澄清；不确定不当决策态。"
+    "default": false,
+    "hint": "接入世界书与动态生活状态；需在对应插件配置人格和生效范围。"
   },
-  "gap_fill_proactive_enabled": {
-    "description": "缺口补全主动",
+  "narrative_all_groups": {
+    "description": "对全部群启用叙事（明确授权）",
     "type": "bool",
-    "default": true,
-    "hint": "悬空问句、约定缺口、求助后沉默等白名单才主动；不是怕冷场找话。"
+    "default": false,
+    "hint": "仅群聊；仍受角色绑定、生活插件同名开关和原接管排除规则限制，不包含私聊。",
+    "condition": {
+      "narrative_enabled": true
+    }
   },
-  "cold_memory_nudge_enabled": {
-    "description": "冷场公共记忆轻唤",
-    "type": "bool",
-    "default": true,
-    "hint": "开关默认开，但仅活跃档(lively)生效；无记忆小本不编群史。"
-  },
-  "newcomer_caution_enabled": {
-    "description": "新人更收",
-    "type": "bool",
-    "default": true,
-    "hint": "新/低频发言者提高插话门槛；禁止环境主动点名；误判偏收。"
-  },
-  "pace_align_enabled": {
-    "description": "节奏对齐",
-    "type": "bool",
-    "default": true,
-    "hint": "跟群节奏调延迟与片段长度；不单独授权更多主动。"
-  },
-  "proactive_quota_enabled": {
-    "description": "主动配额",
-    "type": "bool",
-    "default": true,
-    "hint": "规则模式（decision_mode=legacy）的每小时/每话题段上限，用尽后纯响应（只答 @/强相关）。人设模式由决策模型与每分钟开口预算控制，本组设置不参与人设模式判定。"
-  },
-  "proactive_quota_per_hour": {
-    "description": "每小时主动上限",
-    "type": "int",
-    "default": 2,
-    "slider": {
-      "min": 0,
-      "max": 20,
-      "step": 1
+  "narrative_sessions": {
+    "description": "持续生活会话范围",
+    "type": "list",
+    "items": {
+      "type": "string"
     },
-    "hint": "偏紧默认 2。用尽后只答点名/强相关。仅作用于规则模式。"
+    "default": [],
+    "hint": "每行一个完整 UMO，例如 qq-main:GroupMessage:123456；仅在未启用全部群叙事时使用。",
+    "condition": {
+      "narrative_enabled": true,
+      "narrative_all_groups": false
+    }
   },
-  "proactive_quota_per_topic": {
-    "description": "每话题段主动上限",
-    "type": "int",
-    "default": 1,
-    "slider": {
-      "min": 0,
-      "max": 10,
-      "step": 1
+  "narrative_outreach_enabled": {
+    "description": "允许叙事主动联系",
+    "type": "bool",
+    "default": false,
+    "hint": "仅叙事白名单群；每群每天两次，间隔两小时，00:00–08:00暂停。",
+    "condition": {
+      "narrative_enabled": true
+    }
+  },
+  "narrative_outreach_sessions": {
+    "type": "list",
+    "default": [],
+    "description": "主动联系会话范围",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true,
+      "narrative_outreach_enabled": true
     },
-    "hint": "同一话题段默认最多主动 1 次。仅作用于规则模式。"
+    "hint": "每行一个完整 UMO；需同时启用持续生活和主动联系，不继承全部群接管范围。"
+  },
+  "narrative_context_retention_days": {
+    "type": "int",
+    "default": 7,
+    "description": "上下文在线保留天数",
+    "hint": "到期后压缩归档，保留发送回执，不自动删除完整历史。",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true
+    }
+  },
+  "narrative_rpc_timeout_seconds": {
+    "type": "int",
+    "default": 5,
+    "hint": "动态生活等能力调用的默认等待上限，1–60 秒。",
+    "description": "生活服务请求超时（秒）",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true
+    }
+  },
+  "narrative_evidence_timeout_seconds": {
+    "type": "int",
+    "default": 10,
+    "hint": "读取已授权记忆证据的等待上限，1–120 秒。",
+    "description": "记忆证据读取超时（秒）",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true
+    }
   },
   "daily_rhythm_enabled": {
     "description": "今日作息总开关",
@@ -729,13 +719,21 @@
     "description": "今日作息时区",
     "type": "string",
     "default": "",
-    "hint": "填写 IANA 时区（如 Asia/Shanghai）；留空沿用服务器本地时区。无效值回退本地时区并告警。"
+    "hint": "填写 IANA 时区（如 Asia/Shanghai）；留空沿用服务器本地时区。无效值回退本地时区并告警。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_morning_hi_enabled": {
     "description": "醒来可早安",
     "type": "bool",
     "default": true,
-    "hint": "醒来窗可选问好；隐身/冲突/私场/决策中不主动早安。"
+    "hint": "醒来窗可选问好；隐身/冲突/私场/决策中不主动早安。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_day_share_slots": {
     "description": "白天分享槽",
@@ -746,7 +744,11 @@
       "max": 2,
       "step": 1
     },
-    "hint": "0～2 槽/日，耗主动配额；优先缺口/公共记忆，禁硬编炫耀日程。"
+    "hint": "0～2 槽/日，耗主动配额；优先缺口/公共记忆，禁硬编炫耀日程。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_goodnight_text_quota": {
     "description": "当晚文字晚安配额",
@@ -757,159 +759,537 @@
       "max": 2,
       "step": 1
     },
-    "hint": "收束会话文字晚安相关默认 1，最多 2；首波可回，后续静默。"
+    "hint": "收束会话文字晚安相关默认 1，最多 2；首波可回，后续静默。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_sleep_after_winddown": {
     "description": "收束后再睡",
     "type": "bool",
     "default": true,
-    "hint": "回晚安不得直接已睡；冷场约 20～40 分钟后再入睡。"
+    "hint": "回晚安不得直接已睡；冷场约 20～40 分钟后再入睡。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_allow_self_sleep": {
     "description": "允许自己主动睡",
     "type": "bool",
     "default": true,
-    "hint": "到睡点且已冷/收束完成可无声入睡；热聊推迟。"
+    "hint": "到睡点且已冷/收束完成可无声入睡；热聊推迟。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_allow_wake": {
     "description": "允许被吵醒",
     "type": "bool",
     "default": true,
-    "hint": "@/引用睡前/强求助/媒体向 bot/命令 → 短回后短醒冷却再睡。"
+    "hint": "@/引用睡前/强求助/媒体向 bot/命令 → 短回后短醒冷却再睡。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_insomnia_enabled": {
     "description": "允许睡不着主动",
     "type": "bool",
     "default": false,
-    "hint": "默认关。开启后极低概率+周期硬顶，至多一句气氛点缀。"
+    "hint": "默认关。开启后极低概率+周期硬顶，至多一句气氛点缀。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_force_sleep": {
     "description": "强制入睡",
     "type": "bool",
     "default": false,
-    "hint": "覆盖状态：环境主动=0；普通晚安不吵醒。"
+    "hint": "覆盖状态：环境主动=0；普通晚安不吵醒。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
   "rhythm_skip_morning_hi_tonight": {
     "description": "今晚别早安",
     "type": "bool",
     "default": false,
-    "hint": "今晚跳过醒来问好。"
+    "hint": "今晚跳过醒来问好。",
+    "condition": {
+      "show_advanced_options": true,
+      "daily_rhythm_enabled": true
+    }
   },
-  "narrative_enabled": {
-    "description": "启用持续叙事接入",
-    "type": "bool",
-    "default": false,
-    "hint": "需要世界书及叙事模式生活插件；只对下方完整会话白名单生效。"
-  },
-  "narrative_all_groups": {
-    "description": "对全部群启用叙事（明确授权）",
-    "type": "bool",
-    "default": false,
-    "hint": "仅群聊；仍受角色绑定、生活插件同名开关和原接管排除规则限制，不包含私聊。"
-  },
-  "narrative_sessions": {
-    "description": "叙事会话白名单（完整 UMO）",
-    "type": "list",
-    "items": {
-      "type": "string"
-    },
-    "default": [],
-    "hint": "例如 qq:GroupMessage:123456；为空时不接入，不继承全部群接管。"
-  },
-  "narrative_outreach_enabled": {
-    "description": "允许叙事主动联系",
-    "type": "bool",
-    "default": false,
-    "hint": "仅叙事白名单群；每群每天两次，间隔两小时，00:00–08:00暂停。"
-  },
-  "narrative_outreach_sessions": {
-    "type": "list",
-    "default": [],
-    "description": "叙事主动联系独立白名单（完整 UMO），不继承全部群接管"
-  },
-  "narrative_context_retention_days": {
-    "type": "int",
-    "default": 7,
-    "description": "完整回合上下文在线保留天数；过期压缩归档，回执不删除",
-    "hint": "到期精简在线摘要，完整压缩上下文和发送回执仍保留；不是自动删除期限。可使用 scripts/archive_storage.py 创建经过校验的独立归档。"
-  },
-  "narrative_rpc_timeout_seconds": {
-    "type": "int",
-    "default": 5,
-    "hint": "命名 RPC（worldbook / dynamic_life_state / livingmemory / self_learning / portrayal）单次调用的默认等待秒数，取值 1-60。",
-    "description": "命名 RPC 默认超时（秒）"
-  },
-  "narrative_evidence_timeout_seconds": {
-    "type": "int",
-    "default": 10,
-    "hint": "证据视图（livingmemory.get_evidence_view）单次等待秒数，取值 1-120。生产实测耗时 4.0~7.9s 且有长尾，默认 10s；若日志持续出现 outlier=full_budget 或 TimeoutError，请调大。",
-    "description": "证据视图超时（秒）"
-  },
-  "rule_topic_routing_enabled": {
-    "description": "使用新版对话归属链路",
+  "group_memory_enabled": {
+    "description": "群记忆小本（纪念日/约定）",
     "type": "bool",
     "default": true,
-    "hint": "推荐开启，再用判断模式选择规则＋重排序或 LLM。关闭时仅走旧 Jev 归属链路，以下判断模式不生效。"
+    "hint": "默认开启，但须显式写入纪念日或约定才有效。"
   },
-  "discussion_judgment_mode": {
-    "description": "对象与讨论判断模式",
-    "type": "string",
-    "default": "rerank",
-    "options": ["rerank", "llm"],
-    "hint": "rerank：规则判断回复谁，原生重排序判断讨论；llm：聊天模型合并判断隐含回复对象和讨论归属。真实 @、引用仍优先；无需判断具体回哪句。默认保持原方案。"
+  "mood_memory_enabled": {
+    "description": "情绪轻接（话题情绪记忆）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。短标签+衰减；有 selflearning 时优先消费已批准记忆。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
-  "discussion_llm_provider": {
-    "description": "归属判断 LLM",
+  "slang_trial_enabled": {
+    "description": "黑话试用期",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭。新梗小声用一次，冷场收回；未审查/敏感不进场。",
+    "condition": {
+      "show_advanced_options": true,
+      "group_memory_enabled": true
+    }
+  },
+  "selflearning_integration": {
+    "description": "尝试对接 selflearning",
+    "type": "bool",
+    "default": true,
+    "hint": "有则增强记忆/关系/黑话候选；检测失败安静降级，不阻断回复链路。"
+  },
+  "selflearning_hub_url": {
+    "description": "Self Learning Hub v1 地址（可选）",
     "type": "string",
     "default": "",
-    "hint": "仅 llm 模式使用普通聊天模型，不能选 Rerank 或 Jev。留空沿用回复模型，再留空使用当前会话聊天模型。与独立话题命名模型分开。"
+    "hint": "仅供不经过宿主请求钩子的内部回复使用；普通聊天由原生钩子增强，不重复调用 context。填写 Self Learning HTTP 服务地址或 /api/hub/v1 地址，留空关闭 Hub 连接。配置了密钥时仅接受 https（本机回环可用 http），避免凭据明文外发；其余情况按降级处理并在诊断里显示原因。Hub 需在 /context 响应里回显 group_id 与 user_id，缺失或不一致时本次背景数据会被丢弃（scope_mismatch）。",
+    "condition": {
+      "show_advanced_options": true,
+      "selflearning_integration": true
+    }
   },
-  "discussion_llm_timeout": {
-    "description": "LLM 归属判断超时（秒）",
-    "type": "float",
-    "default": 3.0,
-    "hint": "范围 0.1–30。普通消息先判断再决定是否回应，会增加等待；每轮合并对象和讨论判断，失败或不确定时保留规则结果，不串行补调其他归属模型。"
-  },
-  "discussion_reranker_provider": {
-    "description": "讨论归属重排序模型 ID",
+  "selflearning_hub_key_env": {
+    "description": "Hub API Key 环境变量名",
     "type": "string",
-    "default": "",
-    "hint": "填写 AstrBot 原生 Rerank 模型服务 ID；不是聊天模型。未配置或失败时保留未知，不使用 Jev 补猜。"
+    "default": "SELFLEARNING_HUB_API_KEY",
+    "hint": "填写运行 AstrBot 的进程环境变量名，不是密钥本身；凭据只从进程环境读取，不返回面板。Self Learning 未开启 API 鉴权时可留空。为免任意环境变量被当作凭据外发，变量名须是 Hub/本插件相关名称（含 HUB、SELFLEARNING 或 CHAT_DYNAMICS），否则回退默认值并在配置提示中说明。",
+    "condition": {
+      "show_advanced_options": true,
+      "selflearning_integration": true
+    }
   },
-  "discussion_rerank_threshold": {
-    "description": "讨论匹配分数阈值",
-    "type": "float",
-    "default": 0.65,
-    "hint": "两种模式共用的 0–1 分数门槛；LLM 对象也需达到此值。模型分数不是实测概率，切换模型后需回放校准。"
+  "autonomous_blocking_required": {
+    "description": "要求自主屏蔽服务可用",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，服务缺失或未就绪时，群间会阻止角色回复并抑制原生回复；管理员配置命令仍可用于关闭此项。"
   },
-  "discussion_rerank_margin": {
-    "description": "讨论候选最小分差",
+  "console_show_message_content": {
+    "description": "控制台显示消息正文",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭以减少群聊内容暴露；开启后管理员控制台详情会显示截断后的 DAG 和最近回复正文。"
+  },
+  "replay_show_topic_titles": {
+    "description": "回放显示话题小标题",
+    "type": "bool",
+    "default": true,
+    "hint": "默认展示模型归纳的简短话题标题，与消息正文开关独立；关闭后用话题编号代替。正文仍由“控制台显示消息正文”控制。"
+  },
+  "debounce_base_cooldown": {
+    "description": "消息短暂聚合时间 (秒)",
     "type": "float",
-    "default": 0.1,
-    "hint": "候选接近时保留歧义，不因共享参与者而合并。"
+    "default": 0.25,
+    "slider": {
+      "min": 0,
+      "max": 30,
+      "step": 0.05
+    },
+    "hint": "Jev 判断前用于合并快速连发的短窗口，最多等待 0.25 秒；说完后直接进入回复，不再按标点延长等待。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "debounce_extended_cooldown": {
+    "description": "补充消息等待间隔（秒）",
+    "type": "float",
+    "default": 1.0,
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 0.05
+    },
+    "hint": "所选决策模型判断未说完时继续等待；收到补充后合并重判。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "debounce_max_cap": {
+    "description": "快速碎发合并上限 (秒)",
+    "type": "float",
+    "default": 4.0,
+    "slider": {
+      "min": 0,
+      "max": 120,
+      "step": 0.5
+    },
+    "hint": "限制一批快速连发的合并时间，默认 4 秒；Jev 已判断未说完后的补充输入等待由独立超时控制。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "pending_input_timeout": {
+    "description": "补充输入等待超时 (秒)",
+    "type": "float",
+    "default": 60.0,
+    "slider": {
+      "min": 1,
+      "max": 300,
+      "step": 1
+    },
+    "hint": "Jev 判断未说完后保留原文，收到新消息才重新判断；从首条输入计时，默认 60 秒。停止、重置或卸载会清理等待。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "chars_per_second": {
+    "description": "模拟打字速率 (字/秒)",
+    "type": "float",
+    "default": 25.0,
+    "slider": {
+      "min": 1,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "用于计算拟人化输入延迟的打字速度（默认 25.0 字/秒）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "base_thinking_delay": {
+    "description": "基础思考停顿 (秒)",
+    "type": "float",
+    "default": 0.0,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 0.1
+    },
+    "hint": "旧回复路径的拟人化停顿；Jev 决定接话后，正文生成完成即发送，不额外叠加思考停顿。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "max_fragments": {
+    "description": "最大碎发条数",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "回复按空行分成独立消息，可设为 1~10 条，默认最多 10 条；超出的自然段合并到最后一条，设为 1 则整段发送。普通回复和戳一戳共用此设置，代码、列表等结构保持完整。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "max_fragment_chars": {
+    "description": "单条消息目标长度",
+    "type": "int",
+    "default": 120,
+    "slider": {
+      "min": 40,
+      "max": 500,
+      "step": 10
+    },
+    "hint": "碎发时单条消息的软长度目标；极长回复会优先保留完整内容。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "inter_burst_interval": {
+    "description": "碎发基础间隔 (秒)",
+    "type": "float",
+    "default": 1.2,
+    "slider": {
+      "min": 0.6,
+      "max": 3,
+      "step": 0.1
+    },
+    "hint": "段间基础间隔；实际等待会结合当前回复节奏的倍率。设为 0 可取消段间等待。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "pace_align_enabled": {
+    "description": "节奏对齐",
+    "type": "bool",
+    "default": true,
+    "hint": "跟群节奏调延迟与片段长度；不单独授权更多主动。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "strip_markdown_in_banter": {
+    "description": "闲聊模式格式降级",
+    "type": "bool",
+    "default": true,
+    "hint": "在快速碎梗与非正式闲聊氛围下自动清洗 Markdown 格式与生硬标点。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "peer_bot_ids": {
     "description": "限制互聊轮数的 Bot QQ",
     "type": "list",
     "default": [],
-    "hint": "按完整会话和 QQ 分别计数，仅填写需要限制的 Bot QQ。"
+    "hint": "按完整会话和 QQ 分别计数，仅填写需要限制的 Bot QQ。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "peer_bot_max_rounds": {
     "description": "Bot 互聊最多回复轮数",
     "type": "int",
     "default": 3,
-    "hint": "范围 1–100；成功回复一次算一轮，同一次回复的多个分段合计一轮。达到上限后不再响应对方，包括 @ 和引用。"
+    "hint": "范围 1–100；成功回复一次算一轮，同一次回复的多个分段合计一轮。达到上限后不再响应对方，包括 @ 和引用。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
   "peer_bot_reset_seconds": {
     "description": "Bot 互聊计数重置间隔（秒）",
     "type": "float",
     "default": 1800.0,
-    "hint": "范围 60–86400 秒。双方停止互动达到该时长后重置；对方在被限流后继续发言仍延长计时。其他成员发言不会清零。"
+    "hint": "范围 60–86400 秒。双方停止互动达到该时长后重置；对方在被限流后继续发言仍延长计时。其他成员发言不会清零。",
+    "condition": {
+      "show_advanced_options": true
+    }
   },
-  "reply_first_sentence_enabled": {
+  "neural_embedding_enabled": {
+    "description": "启用神经网络 Embedding",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后通过 AstrBot Embedding Provider 计算语义向量。未配置或调用失败时自动回退到本地哈希 embedding。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "embedding_provider": {
+    "description": "Embedding Provider ID",
+    "type": "string",
+    "default": "",
+    "hint": "在插件「参数配置」页从 Embedding 服务商下拉选择；留空则使用第一个可用的 Embedding Provider。原生设置页请填写 Embedding Provider ID。",
+    "condition": {
+      "show_advanced_options": true,
+      "neural_embedding_enabled": true
+    }
+  },
+  "neural_link_threshold": {
+    "description": "神经网络语义边阈值",
+    "type": "float",
+    "default": 0.78,
+    "slider": {
+      "min": 0.5,
+      "max": 0.95,
+      "step": 0.01
+    },
+    "hint": "两侧都已缓存神经网络向量时，余弦相似度达到该阈值会建立语义候选边。",
+    "condition": {
+      "show_advanced_options": true,
+      "neural_embedding_enabled": true
+    }
+  },
+  "embedding_cache_size": {
+    "description": "Embedding 缓存条数",
+    "type": "int",
+    "default": 512,
+    "slider": {
+      "min": 64,
+      "max": 4096,
+      "step": 64
+    },
+    "hint": "进程内 LRU 缓存的文本向量条数，避免对同一句话重复请求 Embedding API。",
+    "condition": {
+      "show_advanced_options": true,
+      "neural_embedding_enabled": true
+    }
+  },
+  "embedding_cache_ttl_seconds": {
+    "description": "Embedding 缓存有效期（秒）",
+    "type": "int",
+    "default": 1800,
+    "slider": {
+      "min": 0,
+      "max": 7200,
+      "step": 300
+    },
+    "hint": "超过该时长未再使用的文本向量会被回收，0 表示不按时间回收。CD 只保留短期工作记忆，长期记忆由记忆搭档负责。",
+    "condition": {
+      "show_advanced_options": true,
+      "neural_embedding_enabled": true
+    }
+  },
+  "strong_addressivity_threshold": {
+    "description": "强指代判定阈值",
+    "type": "float",
+    "default": 0.7,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "定向度评分大于等于该阈值时判定为明确指向机器人（默认 0.70）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "safe_hover_threshold": {
+    "description": "安全悬停判定阈值",
+    "type": "float",
+    "default": 0.4,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "定向度在此区间内 (0.40 ~ 0.70) 仅静默记入图谱，不主动抢答（默认 0.40）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "deep_cooling_minutes": {
+    "description": "深度冷却周期 (分钟)",
+    "type": "float",
+    "default": 15.0,
+    "slider": {
+      "min": 0,
+      "max": 180,
+      "step": 1
+    },
+    "hint": "触发话题壁垒或冷场后，机器人保持静默观察的分钟数（默认 15.0 分钟）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "telemetrics_window_seconds": {
+    "description": "遥测滑动窗口 (秒)",
+    "type": "float",
+    "default": 60.0,
+    "slider": {
+      "min": 15,
+      "max": 300,
+      "step": 5
+    },
+    "hint": "计算 MPM、平均字符数和场景标签时使用的时间窗口（默认 60 秒）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "fast_banter_enter_mpm": {
+    "description": "进入快速碎梗的 MPM",
+    "type": "float",
+    "default": 12.0,
+    "slider": {
+      "min": 4,
+      "max": 40,
+      "step": 0.5
+    },
+    "hint": "消息速率达到该阈值时，氛围状态机更倾向进入 fast_banter。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "chill_fade_enter_mpm": {
+    "description": "进入能量衰退的 MPM",
+    "type": "float",
+    "default": 3.0,
+    "slider": {
+      "min": 0.5,
+      "max": 12,
+      "step": 0.5
+    },
+    "hint": "消息速率低于该阈值时，氛围状态机更倾向进入 chill_fade。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "gap_fill_proactive_enabled": {
+    "description": "缺口补全主动",
     "type": "bool",
     "default": true,
-    "description": "首句优先发送",
-    "hint": "最终回答通过校验后优先发送完整首句，尾部诊断不阻塞发送；工具过程和未确认草稿仍缓冲。"
+    "hint": "悬空问句、约定缺口、求助后沉默等白名单才主动；不是怕冷场找话。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "cold_memory_nudge_enabled": {
+    "description": "冷场公共记忆轻唤",
+    "type": "bool",
+    "default": true,
+    "hint": "开关默认开，但仅活跃档(lively)生效；无记忆小本不编群史。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "proactive_quota_enabled": {
+    "description": "主动配额",
+    "type": "bool",
+    "default": true,
+    "hint": "规则模式（decision_mode=legacy）的每小时/每话题段上限，用尽后纯响应（只答 @/强相关）。人设模式由决策模型与每分钟开口预算控制，本组设置不参与人设模式判定。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "proactive_quota_per_hour": {
+    "description": "每小时主动上限",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "偏紧默认 2。用尽后只答点名/强相关。仅作用于规则模式。",
+    "condition": {
+      "show_advanced_options": true,
+      "proactive_quota_enabled": true
+    }
+  },
+  "proactive_quota_per_topic": {
+    "description": "每话题段主动上限",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "同一话题段默认最多主动 1 次。仅作用于规则模式。",
+    "condition": {
+      "show_advanced_options": true,
+      "proactive_quota_enabled": true
+    }
+  },
+  "pipeline_mode": {
+    "description": "管线模式",
+    "type": "string",
+    "default": "filter",
+    "options": [
+      "filter",
+      "exclusive"
+    ],
+    "hint": "filter：只关门/装饰，不 stop_event，其它插件仍能收到消息。exclusive：旧独占模式，会吞掉后续插件，仅在确实需要时开启。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "command_prefix": {
+    "description": "指令前缀",
+    "type": "string",
+    "default": "/",
+    "hint": "以此前缀开头的消息不会被状态机吞掉，交给指令处理器。",
+    "condition": {
+      "show_advanced_options": true
+    }
   }
 }
