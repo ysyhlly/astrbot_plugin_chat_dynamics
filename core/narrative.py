@@ -7,7 +7,7 @@ import copy
 import hashlib
 import inspect
 import json
-import logging
+from astrbot.api import logger
 import math
 import re
 import time
@@ -33,7 +33,6 @@ DECISION_GUIDANCE = COMPACT_DECISION_GUIDANCE
 _READ_SCOPE = ContextVar('cd_narrative_read_scope', default=None)
 _MEMO_METHODS = frozenset({'get_evidence_view', 'get_profiles', 'get_social_snapshot', 'get_social_context', 'get_snapshot'})
 
-logger = logging.getLogger(__name__)
 MANAGED_KEY = "_narrative_managed_v1"
 RECIPIENTS = ("dynamic_life_state", "livingmemory", "self_learning")
 MEMORY_RECALL_TIMEOUT_SECONDS = 8.0

@@ -7,6 +7,7 @@ run in a clean checkout before development dependencies are installed.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -87,9 +88,29 @@ def _check_schema(root: Path) -> list[str]:
     return errors
 
 
+def check_runtime_logging(root: Path) -> list[str]:
+    """Marketplace rule: packaged runtime code must use astrbot.api.logger."""
+    errors = []
+    for path in iter_release_files(root):
+        if path.suffix != '.py':
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding='utf-8-sig'))
+        except (SyntaxError, UnicodeError) as exc:
+            errors.append(f'invalid runtime source {path.relative_to(root)}: {type(exc).__name__}')
+            continue
+        for node in ast.walk(tree):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
+            if any(name == 'logging' or name.startswith('logging.') for name in names):
+                errors.append(f'{path.relative_to(root)}:{node.lineno}: use astrbot.api.logger, not stdlib logging')
+    return errors
+
+
 def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]:
     """Return human-readable release errors; an empty list means valid."""
     errors: list[str] = []
+    errors.extend(check_runtime_logging(root))
     for relative in _required_paths(root):
         path = root / relative
         if not path.exists():

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
+from astrbot.api import logger
 import math
 import time
 from collections import OrderedDict
@@ -18,7 +18,6 @@ from typing import Any, Optional, Sequence, Tuple
 from .semantics import SemanticMatch, semantic_match
 from .integrations.semantic_provider import provider_id as _provider_id, resolve_embedding_provider  # noqa: F401 - compatibility export
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.embedding")
 
 
 def _normalize_vec(values: Sequence[float]) -> Tuple[float, ...]:

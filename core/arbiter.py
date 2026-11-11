@@ -6,7 +6,7 @@ should gracefully back off to avoid spamming or interrupting group flow.
 
 from __future__ import annotations
 
-import logging
+from astrbot.api import logger
 import hashlib
 import re
 import time
@@ -19,7 +19,6 @@ from .semantics import classify_message
 from .telemetrics import RoomTelemetrics
 from .vibe_analyzer import GroupChatMode
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.arbiter")
 
 
 def _session_label(session_id: Any) -> str:

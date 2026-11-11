@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from astrbot.api import logger
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
@@ -29,7 +29,6 @@ TOPIC_MARGIN_THRESHOLD = 0.06
 PARENT_ACCEPT_THRESHOLD = 0.72
 PARENT_MARGIN_THRESHOLD = 0.08
 
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager

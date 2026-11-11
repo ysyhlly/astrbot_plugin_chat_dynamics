@@ -1,13 +1,12 @@
 """Stable host-owned storage with non-destructive legacy file preservation."""
 from __future__ import annotations
 
-import logging
+from astrbot.api import logger
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.storage")
 PLUGIN_NAME = "astrbot_plugin_chat_dynamics"
 
 

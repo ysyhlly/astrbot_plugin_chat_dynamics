@@ -5,7 +5,7 @@ import json
 
 import asyncio
 import hashlib
-import logging
+from astrbot.api import logger
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
@@ -54,7 +54,6 @@ from .context_completion import complete_context
 from .early_reply import final_fragments
 from .native_decision import selected_decision_client
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.persona_engine")
 
 
 def _turn_log_id(runtime, item: "ModelTurn") -> str:

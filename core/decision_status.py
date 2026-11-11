@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
+from astrbot.api import logger
 import sqlite3
 import time
 from pathlib import Path
@@ -13,7 +13,6 @@ from pathlib import Path
 from . import web_api as web
 from .native_decision import selected_decision_client
 
-logger = logging.getLogger(__name__)
 
 
 def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_content=False):

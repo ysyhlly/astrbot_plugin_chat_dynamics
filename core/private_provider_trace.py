@@ -4,13 +4,12 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-import logging
+from astrbot.api import logger
 import math
 from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
-_LOGGER = logging.getLogger("astrbot_plugin_chat_dynamics.private_provider_trace")
 _HOOK_OUTCOMES = frozenset({
     "ready", "partial", "empty", "deadline_exceeded", "cancelled", "busy",
     "error", "original_input_unavailable", "disabled",
@@ -233,7 +232,7 @@ class PrivateProviderTraceState:
         self.logged_calls += 1
         payload = dict(record, provider_result=provider_result)
         try:
-            _LOGGER.info("private_native_provider_trace_v1 %s", json.dumps(
+            logger.info("private_native_provider_trace_v1 %s", json.dumps(
                 payload, sort_keys=True, separators=(",", ":"),
             ))
         except Exception:
@@ -260,7 +259,7 @@ class PrivateProviderTraceState:
             "injection_success": False,
         }
         try:
-            _LOGGER.info("private_native_provider_trace_v1 %s", json.dumps(
+            logger.info("private_native_provider_trace_v1 %s", json.dumps(
                 payload, sort_keys=True, separators=(",", ":"),
             ))
         except Exception:

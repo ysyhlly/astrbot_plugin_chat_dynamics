@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+from astrbot.api import logger
 import math
 import re
 import time
@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .persist import atomic_write_json, read_umo_json, safe_umo
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.mood_memory")
 
 _BLOCKED_TAGS = {"conflict", "romance", "恋爱", "冲突", "吵架", "暧昧"}
 _TAG_RE = re.compile(r"^[\w\u4e00-\u9fff\-·]{1,24}$")

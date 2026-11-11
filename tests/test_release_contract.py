@@ -7,10 +7,22 @@ import shutil
 from pathlib import Path
 
 from scripts.build_release import build_archive
-from scripts.check_release import iter_release_files, plugin_version, validate_release
+from scripts.check_release import check_runtime_logging, iter_release_files, plugin_version, validate_release
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_runtime_logging_uses_only_host_logger_and_rejects_stdlib_aliases(tmp_path):
+    assert check_runtime_logging(ROOT) == []
+    core = tmp_path / 'core'
+    core.mkdir()
+    (core / 'rogue.py').write_text('import logging as log\nlogger = log.getLogger(__name__)\n', encoding='utf-8')
+    assert any('stdlib logging' in error for error in check_runtime_logging(tmp_path))
+    (core / 'rogue.py').write_text('from logging import getLogger\n', encoding='utf-8')
+    assert any('stdlib logging' in error for error in check_runtime_logging(tmp_path))
+    (core / 'rogue.py').write_text('from astrbot.api import logger\n', encoding='utf-8')
+    assert check_runtime_logging(tmp_path) == []
 
 
 def copy_release_tree(destination: Path) -> None:

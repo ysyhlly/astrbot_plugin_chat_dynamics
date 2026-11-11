@@ -7,7 +7,6 @@ an ambiguous Safe Hover zone (0.4 - 0.7) where messages are silently buffered.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 from enum import Enum
 from typing import Any, List, Optional, Set
@@ -19,7 +18,6 @@ from .topic_identity import node_topic_id
 from .graph import ConversationDAG, ConversationNode
 from .semantics import lexical_tokens, semantic_match
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.addressivity")
 
 
 class AddressivityLevel(str, Enum):
