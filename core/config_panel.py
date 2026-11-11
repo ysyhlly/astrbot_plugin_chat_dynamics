@@ -103,6 +103,7 @@ class ConfigPanel:
             cfg, _ = parse_runtime_config(self.host._coerce_config(getattr(self.host, "config", {}) or {}))
         return {
             "peer_bot_ids": list(cfg.peer_bot_ids),
+            "show_advanced_options": cfg.show_advanced_options,
             "peer_bot_max_rounds": cfg.peer_bot_max_rounds,
             "peer_bot_reset_seconds": cfg.peer_bot_reset_seconds,
             "enable": bool(getattr(cfg, "enabled", True)),

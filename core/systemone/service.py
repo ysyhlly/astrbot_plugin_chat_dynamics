@@ -1,11 +1,10 @@
 """Load existing native models after adapter registration or plugin reload."""
 import asyncio
 from importlib import import_module
-import logging
+from astrbot.api import logger
 
 catalog_bridge = import_module('.catalog_bridge', __package__)
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.systemone")
 
 
 class SystemOneService:

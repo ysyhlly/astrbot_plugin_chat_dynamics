@@ -322,7 +322,7 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.18.0",
+    "v1.18.1",
     "",
 )
 class ChatDynamicsPlugin(Star):

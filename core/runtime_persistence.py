@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from astrbot.api import logger
 import math
 import re
 import time
@@ -20,7 +20,6 @@ from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
 MAX_SESSIONS = 1000
-logger = logging.getLogger(__name__)
 
 # The host version the learning layer records, resolved from the same file the
 # plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+from astrbot.api import logger
 import hashlib
 import json
 import math
@@ -20,7 +20,6 @@ from .web_compat import error_response, json_response, query_value, request, req
 from .topic_annotations import TopicAnnotations
 from .page_layout import PAGE_ENTRY, SECTIONS, section_content_path
 
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.web_api")
 
 PLUGIN_NAME = "astrbot_plugin_chat_dynamics"
 _MAX_BODY_BYTES = 64 * 1024

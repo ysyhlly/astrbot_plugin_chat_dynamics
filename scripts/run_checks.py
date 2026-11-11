@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 BACKEND = [
+    "test_native_conf",
     "test_single_page_entry", "test_page_asset_sync",
     "test_llm_participation",
     "test_discussion_llm",

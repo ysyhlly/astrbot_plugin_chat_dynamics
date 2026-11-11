@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-import logging
+from astrbot.api import logger
 import os
 import re
 import stat
@@ -14,7 +14,6 @@ from typing import Any
 # Keep letters, digits, underscore, dot, dash, and @. Strip ':' so Windows
 # NTFS does not treat `platform:type:id` UMO tokens as alternate data streams.
 _SAFE_TOKEN = re.compile(r"[^\w.\-@]+")
-logger = logging.getLogger("astrbot_plugin_chat_dynamics.persist")
 
 
 def safe_umo(umo: str) -> str:

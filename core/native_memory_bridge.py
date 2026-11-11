@@ -7,13 +7,12 @@ import functools
 import hashlib
 import inspect
 import json
-import logging
+from astrbot.api import logger
 import math
 import sys
 import weakref
 from collections.abc import Mapping
 
-logger = logging.getLogger(__name__)
 
 
 class _ResetDelegate:

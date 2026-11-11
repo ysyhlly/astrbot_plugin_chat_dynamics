@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import inspect
 import json
-import logging
+from astrbot.api import logger
 import re
 import time
 from pathlib import Path
@@ -26,7 +26,6 @@ _SKIP_MEDIA_COPY = frozenset({"plain", "text", "at", "atall", "markdown", "menti
 # Tool receipts are a de-duplication aid, not context: bound what may be appended
 # to a system prompt for one turn.
 _MAX_RECEIPTS_CHARS = 4000
-_FAILURE_LOG = logging.getLogger(__name__)
 _SAFE_DIAGNOSTIC_NAME = re.compile(r"^[A-Za-z0-9_.]{1,96}$")
 _SAFE_DIAGNOSTIC_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _HTTP_STATUS_PACKAGES = (
@@ -115,7 +114,7 @@ def _log_generation_failure(managed: Any, exc: BaseException) -> None:
     """Best-effort diagnostics must never mask the original generation failure."""
     try:
         fields = _safe_generation_failure_fields(managed, exc)
-        _FAILURE_LOG.error(
+        logger.error(
             "chat_dynamics_generation_failure turn_id=%s bundle_id=%s exception_chain=%s http_statuses=%s",
             fields["turn_id"],
             fields["bundle_id"],
@@ -243,7 +242,7 @@ class ExecutionHooks:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _FAILURE_LOG.warning("Tool receipt unavailable code=CD_TOOL_RECEIPT type=%s", type(exc).__name__)
+            logger.warning("Tool receipt unavailable code=CD_TOOL_RECEIPT type=%s", type(exc).__name__)
 
     async def on_tool_start(self, run_context, tool, tool_args):
         signature = hashlib.sha256(json.dumps([tool.name, tool_args], sort_keys=True, default=str).encode()).hexdigest()
