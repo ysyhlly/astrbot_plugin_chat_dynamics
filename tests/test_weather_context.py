@@ -17,9 +17,11 @@ def material():
 
 
 def test_weather_reaches_both_chat_projections_without_duplicate_weather_prose():
-    data=material();before=copy.deepcopy(data)
+    data=material()
+    before=copy.deepcopy(data)
     bundle=TurnContextBundle('test',json.dumps(data))
-    decision=bundle.decision_context();reply=reply_material(data)['snapshot']
+    decision=bundle.decision_context()
+    reply=reply_material(data)['snapshot']
     for output in [decision,reply]:
         assert output['activity']=='在屋内读书'
         assert output['environment']['current']['wind_speed']==20
@@ -33,7 +35,8 @@ def test_weather_reaches_both_chat_projections_without_duplicate_weather_prose()
 
 
 def test_stale_or_expired_weather_is_not_presented_as_current_fact():
-    data=material();data['snapshot']['environment']['stale']=True
+    data=material()
+    data['snapshot']['environment']['stale']=True
     projected=environment_context(data['snapshot'],1100)
     assert projected['available'] is False and 'current' not in projected and 'forecast' not in projected
     data['snapshot']['environment']['stale']=False
@@ -42,8 +45,10 @@ def test_stale_or_expired_weather_is_not_presented_as_current_fact():
 
 
 def test_old_providers_and_simulated_weather_keep_correct_meaning():
-    data=material();data['snapshot'].pop('environment')
+    data=material()
+    data['snapshot'].pop('environment')
     assert '环境参考' in reply_material(data)['snapshot']['activity']
     assert 'environment' not in reply_material(data)['snapshot']
-    data=material();data['snapshot']['environment']['fact_kind']='fiction'
+    data=material()
+    data['snapshot']['environment']['fact_kind']='fiction'
     assert reply_material(data)['snapshot']['environment']['fact_kind']=='fiction'

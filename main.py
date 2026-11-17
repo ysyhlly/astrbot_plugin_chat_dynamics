@@ -41,7 +41,7 @@ from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .core.data_paths import resolve_data_root
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
-from .core.deferred_media import preserve_event_media, without_event_media
+from .core.deferred_media import preserve_event_media, release_event_media, without_event_media
 from .core.media_archive import MediaArchive
 from .core.decision_gate import DynamicsDecisionGate, GateResult
 from .core.embedding_adapter import EmbeddingAdapter
@@ -76,7 +76,7 @@ from .core.persona_engine import (
     PersonaEngine,
     delivery_fragments,
 )
-from .core.poke import PokeReplyPolicy, drop_poke_streaks, next_poke_streak
+from .core.poke import PokeReplyPolicy, next_poke_streak
 from .core.context_retrieval import select_background, clip_text
 from .core.platform_bridge import (
     SendResult,
@@ -1640,7 +1640,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             if not force and revision == self._runtime_persist_saved_revision:
                 return
             try:
-                payload = export_runtime_state(self)
+                payload = await asyncio.to_thread(export_runtime_state, self)
                 result = writer(_KV_RUNTIME, payload)
                 if inspect.isawaitable(result):
                     result = await result
@@ -1890,6 +1890,10 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         parsed = parse_group_event(event, command_prefixes=extra_prefixes)
         if not parsed.group_id:
             return
+        if self._shutting_down:
+            return
+        if not self.is_group_takeover_enabled(parsed.group_id):
+            return
         narrative = getattr(self, 'narrative', None)
         if narrative is not None:
             await narrative.note_member_activity(event, parsed)
@@ -1945,10 +1949,6 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                     setattr(event, "_chat_dynamics_boundary_token", boundary_token)
                 except Exception:
                     pass
-        if not self.is_group_takeover_enabled(parsed.group_id):
-            return
-        if self._shutting_down:
-            return
 
         session_key = self._event_session_key(parsed)
         if not self._ensure_runtime_capacity(session_key):
@@ -1965,6 +1965,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
 
         fast_path_epoch = runtime.epoch
         is_fast_path = False
+        pending_ingest = False
+        wake_immediate = False
+        suppress_supersede = False
         async with runtime.state_lock:
             if self._shutting_down:
                 return
@@ -2143,35 +2146,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             else:
                 if self._is_filter_mode() and not self.shadow_mode:
                     self._suppress_native_llm(event)
-                try:
-                    try:
-                        buffered_event = preserve_event_media(event, archive=self.media_archive,
-                                                               session=parsed.unified_msg_origin or session_key)
-                        captured_snapshot = getattr(event, "_chat_dynamics_boundary_policy_snapshot", None)
-                        if captured_snapshot is not None:
-                            setattr(buffered_event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
-                    except Exception as exc:
-                        logger.warning("attachment copy failed; using text fallback type=%s", type(exc).__name__)
-                        buffered_event = without_event_media(event)
-                        buffered_event.message_str = str(event.message_str or "") + "\n[附件暂时不可读取]"
-                        self._metric("media_copy_failed")
-                    self._media_leases = {lease for lease in self._media_leases if lease.alive}
-                    lease = getattr(buffered_event, "_chat_dynamics_media_cleanup", None)
-                    if lease is not None:
-                        self._media_leases.add(lease)
-                    await self.debounce.ingest(
-                        session_id=session_key,
-                        user_id=parsed.sender_id,
-                        text=bounded_text,
-                        event=buffered_event,
-                        on_flush=self.on_turn_flushed,
-                        defer_callback=True,
-                        immediate=self._wake_kind(parsed, runtime) == "at",
-                        supersede_pending=not addressed_elsewhere,
-                    )
-                except RuntimeError:
-                    if not self._shutting_down:
-                        raise
+                pending_ingest = True
+                wake_immediate = self._wake_kind(parsed, runtime) == "at"
+                suppress_supersede = not addressed_elsewhere
         if is_fast_path:
             await self._flush_single_event(
                 parsed,
@@ -2180,6 +2157,41 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 native_pipeline=True,
                 epoch=fast_path_epoch,
             )
+        elif pending_ingest:
+            # Copy local attachments outside runtime.state_lock so disk I/O never stalls session state updates.
+            try:
+                try:
+                    buffered_event = preserve_event_media(
+                        event, archive=self.media_archive, session=parsed.unified_msg_origin or session_key
+                    )
+                    captured_snapshot = getattr(event, "_chat_dynamics_boundary_policy_snapshot", None)
+                    if captured_snapshot is not None:
+                        setattr(buffered_event, "_chat_dynamics_boundary_policy_snapshot", captured_snapshot)
+                except Exception as exc:
+                    logger.warning("attachment copy failed; using text fallback type=%s", type(exc).__name__)
+                    buffered_event = without_event_media(event)
+                    buffered_event.message_str = str(event.message_str or "") + "\n[附件暂时不可读取]"
+                    self._metric("media_copy_failed")
+                self._media_leases = {lease for lease in self._media_leases if lease.alive}
+                lease = getattr(buffered_event, "_chat_dynamics_media_cleanup", None)
+                if lease is not None:
+                    self._media_leases.add(lease)
+                if self._shutting_down or runtime.epoch != fast_path_epoch:
+                    release_event_media(buffered_event)
+                    return
+                await self.debounce.ingest(
+                    session_id=session_key,
+                    user_id=parsed.sender_id,
+                    text=bounded_text,
+                    event=buffered_event,
+                    on_flush=self.on_turn_flushed,
+                    defer_callback=True,
+                    immediate=wake_immediate,
+                    supersede_pending=suppress_supersede,
+                )
+            except RuntimeError:
+                if not self._shutting_down:
+                    raise
 
     @filter.event_message_type(_PRIVATE_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_private_message(self, event: AstrMessageEvent) -> None:
@@ -2273,9 +2285,12 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             setattr(event, "_chat_dynamics_scope_kind", "private")
         except Exception:
             pass
+        private_epoch = runtime.epoch
+        pending_private_ingest = False
         async with runtime.state_lock:
             if self._shutting_down or not self.is_runtime_scope_enabled(runtime):
                 return
+            private_epoch = runtime.epoch
             now = self.time_service.time()
             runtime.touch(now)
             if parsed.self_id and parsed.sender_id == parsed.self_id:
@@ -2334,6 +2349,8 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             self._metric("message_received")
             from .core.integrations import dynamics_horizons as horizons_observer
             horizons_observer.observe_member(self, event, parsed)
+            pending_private_ingest = True
+        if pending_private_ingest:
             try:
                 buffered_event = preserve_event_media(
                     event, archive=self.media_archive, session=session_key
@@ -2351,6 +2368,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             lease = getattr(buffered_event, "_chat_dynamics_media_cleanup", None)
             if lease is not None:
                 self._media_leases.add(lease)
+            if self._shutting_down or runtime.epoch != private_epoch:
+                release_event_media(buffered_event)
+                return
             await self.debounce.ingest(
                 session_id=session_key,
                 user_id=parsed.sender_id,
@@ -3988,4 +4008,56 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             await self._reply_text(event, "已重置本群的对话图谱与上下文状态。")
         else:
             await self._reply_text(event, "用法: /dynamics status | cool [分钟] | reset")
+
+    def get_series_shared_config(self) -> dict[str, Any]:
+        """Return a synchronous, read-only, secret-free summary of active series defaults."""
+        cfg = getattr(self, "_runtime_config", None)
+        takeover_all = bool(getattr(cfg, "takeover_all", getattr(self, "takeover_all", False)))
+        takeover_groups = sorted(getattr(cfg, "takeover_groups", getattr(self, "takeover_groups", ())) or ())
+        exclude_groups = sorted(getattr(cfg, "exclude_groups", getattr(self, "exclude_groups", ())) or ())
+        reply_provider = ""
+        llm = getattr(self, "llm", None)
+        if callable(getattr(llm, "configured_provider", None)):
+            try:
+                reply_provider = str(llm.configured_provider("reply") or "")
+            except Exception:
+                reply_provider = ""
+        if not reply_provider:
+            reply_provider = str(getattr(cfg, "reply_provider_id", "") or getattr(cfg, "provider_id", "") or "")
+        if getattr(cfg, "decision_backend", "jev") == "llm":
+            decision_provider = str(getattr(cfg, "decision_llm_provider", "") or "")
+        else:
+            decision_provider = str(getattr(cfg, "decision_provider_id", "") or "")
+
+        persona_id = ""
+        ui_language = ""
+        ctx = getattr(self, "context", None)
+        get_cfg = getattr(ctx, "get_config", None)
+        if callable(get_cfg):
+            try:
+                host_cfg = get_cfg() or {}
+                if isinstance(host_cfg, dict):
+                    provider_settings = host_cfg.get("provider_settings")
+                    if isinstance(provider_settings, dict):
+                        persona_id = str(provider_settings.get("default_personality") or "")
+                    ui_language = str(host_cfg.get("locale") or host_cfg.get("language") or "")
+            except Exception:
+                pass
+
+        return {
+            "takeover_all_groups": takeover_all,
+            "takeover_groups": takeover_groups,
+            "exclude_groups": exclude_groups,
+            "reply_provider": reply_provider,
+            "decision_provider": decision_provider,
+            "persona_id": persona_id,
+            "bot_names": list(getattr(cfg, "bot_names", getattr(self, "bot_names", ())) or ()),
+            "rhythm_timezone": str(getattr(cfg, "rhythm_timezone", "") or ""),
+            "quiet_hours": {
+                "daily_rhythm_enabled": bool(getattr(cfg, "daily_rhythm_enabled", True)),
+                "sleep_after_winddown": bool(getattr(cfg, "rhythm_sleep_after_winddown", True)),
+                "force_sleep": bool(getattr(cfg, "rhythm_force_sleep", False)),
+            },
+            "ui_language": ui_language,
+        }
 

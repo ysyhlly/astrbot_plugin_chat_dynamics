@@ -106,7 +106,8 @@ def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]
         elif relative == "core" and not any(path.glob("*.py")):
             errors.append("core must contain Python runtime modules")
 
-    errors.extend(check_page_assets(root / "pages"))
+    pages_root = root / "pages" / "app" if (root / "pages" / "app" / "shared").is_dir() else root / "pages"
+    errors.extend(check_page_assets(pages_root))
 
     try:
         version, repo = _read_metadata(root)
@@ -147,12 +148,11 @@ def iter_release_files(root: Path) -> Iterable[Path]:
         "RELEASE_NOTES.md",
         "LICENSE",
         "requirements.txt",
-        "pages",
+        "pages/app",
         ".astrbot-plugin",
         "i18n",
         "core",
         "logo.png",
-        "assets",
     )
     paths: list[Path] = []
     for relative in explicit:

@@ -230,10 +230,16 @@ def bound_request_with_optional(
     Required identities, quotes, boundaries and core questions are never removed.
     """
     items = list(optional.items())
+    core_overhead = request_size({}, questions) - 2
     for count in range(len(items), -1, -1):
         retained = dict(items[:count])
+        merged_questions = {**questions, **retained}
+        if (core_overhead if count == 0 else request_size({}, merged_questions) - 2) >= max_chars:
+            if count == 0:
+                raise StateBudgetExceeded("request_budget_exceeded")
+            continue
         try:
-            bounded = bound_request_state(deepcopy(state), {**questions, **retained}, max_chars=max_chars)
+            bounded = bound_request_state(deepcopy(state), merged_questions, max_chars=max_chars)
         except StateBudgetExceeded:
             if count == 0:
                 raise
@@ -385,18 +391,26 @@ def _drop_weakest(background: list) -> None:
 
 def _shrink(state: dict, max_chars: int) -> dict:
     """Drop the least load-bearing context first until the state fits its budget."""
-    if max_chars <= 0 or _size(state) <= max_chars:
+    current_size = _size(state)
+    if max_chars <= 0 or current_size <= max_chars:
         return state
     conversation = state["conversation"]
     nearby = conversation.get('nearby_context')
     if isinstance(nearby, list):
         # Optional scene context must never displace the current request or a
         # strong quote. Remove the oldest observations before any other cut.
-        while nearby and _size(state) > max_chars:
-            nearby.pop(0)
+        while nearby and current_size > max_chars:
+            removed = nearby.pop(0)
+            current_size -= _size(removed) + (2 if nearby else 0)
         if not nearby:
             conversation.pop('nearby_context', None)
             conversation.pop('nearby_context_policy', None)
+        elif _size(state) > max_chars:
+            while nearby and _size(state) > max_chars:
+                nearby.pop(0)
+            if not nearby:
+                conversation.pop('nearby_context', None)
+                conversation.pop('nearby_context_policy', None)
         if _size(state) <= max_chars:
             return state
     background = list(conversation.get("background") or ())

@@ -3,6 +3,7 @@
 .page-nav:empty, .wire-nav { display: none; }
 .plugin-nav-note.error { color: var(--ds-danger); }
 .plugin-side-item[aria-busy="true"] { opacity: .6; }
+.series-nav #btnUiTheme.plugin-theme-toggle { min-height: 44px; }
 .ui-theme-retry {
   padding: 6px 10px;
   min-height: 38px;

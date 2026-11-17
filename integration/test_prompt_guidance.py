@@ -65,8 +65,10 @@ async def test_managed_reply_gets_one_system_guidance_and_keeps_current_request(
     assert "Do not supply unsupported names, categories or alternatives in the question" in system
     assert 'reply_guidance' not in json.loads(prompt)
     assert persona.prompt in system
-    for expected in ('偏爱悬疑短篇', '想读完下一章', '刚被逗笑的轻松余韵', '小存档'):
+    for expected in ('偏爱悬疑短篇', '刚被逗笑的轻松余韵', '小存档'):
         assert expected in serialized
+    # reply_material(..., quiet=True) intentionally strips life goals from public reply prompts.
+    assert '想读完下一章' not in serialized
     assert '不应泄漏的昵称' not in serialized
     assert "interaction_understanding" in serialized and "corrects_previous" in serialized
 

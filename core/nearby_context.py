@@ -82,6 +82,7 @@ def decision_payload(turn):
         stamps = [m.timestamp for m in turn.messages if m.timestamp is not None]
         cutoff = max(stamps) if stamps else None
     rows = []
+    wire_chars = 2  # Account for enclosing JSON array brackets "[]"
     for message in reversed(turn.nearby_context):
         if message.message_id in excluded:
             continue
@@ -100,9 +101,12 @@ def decision_payload(turn):
             row['quoted_author_id'] = quoted
         if message.author == turn.bot_id:
             row['is_bot'] = True
-        if len(json.dumps([row,*rows],ensure_ascii=False,allow_nan=False)) > MAX_WIRE_CHARS:
+        row_chars = len(json.dumps(row, ensure_ascii=False, allow_nan=False))
+        sep = 2 if rows else 0  # Default json.dumps separates elements with ", "
+        if wire_chars + sep + row_chars > MAX_WIRE_CHARS:
             continue
-        rows.insert(0,row)
+        rows.insert(0, row)
+        wire_chars += sep + row_chars
         if len(rows)>=MAX_MESSAGES:
             break
     return rows

@@ -13,7 +13,8 @@ WEATHER_GUIDANCE = (
 def activity_text(snapshot):
     text=str(snapshot.get('activity',''))
     # Older providers without a structured field retain their legacy summary.
-    if isinstance(snapshot.get('environment'),dict):text=text.split('；环境参考（',1)[0]
+    if isinstance(snapshot.get('environment'),dict):
+        text=text.split('；环境参考（',1)[0]
     return text
 
 
@@ -22,46 +23,57 @@ def _number(value):
 
 
 def _point(value):
-    if not isinstance(value,dict):return None
-    temperature=_number(value.get('temperature'));stamp=_number(value.get('time'))
-    if temperature is None or stamp is None:return None
+    if not isinstance(value,dict):
+        return None
+    temperature=_number(value.get('temperature'))
+    stamp=_number(value.get('time'))
+    if temperature is None or stamp is None:
+        return None
     point={k:_number(value.get(k)) for k in ('temperature','apparent_temperature','wind_speed','precipitation','precipitation_probability','time')}
     point={k:v for k,v in point.items() if v is not None}
     point['condition']=str(value.get('label','未知'))[:40]
     point['is_day']=value.get('is_day') if type(value.get('is_day')) is bool else None
     hours=_number(value.get('precipitation_hours'))
-    if hours is not None and hours>0:point['precipitation_hours']=hours
+    if hours is not None and hours>0:
+        point['precipitation_hours']=hours
     return point
 
 
 def environment_context(snapshot,now=0,forecast_limit=4):
     env=snapshot.get('environment')
-    if not isinstance(env,dict):return None
+    if not isinstance(env,dict):
+        return None
     result={'available':False,'status':str(env.get('status','unknown'))[:24],
             'fact_kind':'fiction' if env.get('fact_kind')=='fiction' else 'external_weather',
             'source':str(env.get('source',''))[:60],'location_reference':str(env.get('location',''))[:100]}
-    if env.get('available') is not True or env.get('stale') or env.get('status')!='ready':return result
+    if env.get('available') is not True or env.get('stale') or env.get('status')!='ready':
+        return result
     current=_point(env.get('current'))
-    if current is None:return result
+    if current is None:
+        return result
     # A frozen bundle is evaluated at its capture time. Avoid retaining old
     # weather after source TTL when this function is used on a later snapshot.
     expires=_number(env.get('expires_at'))
-    if now and expires is not None and expires<=now:return dict(result,status='stale')
+    if now and expires is not None and expires<=now:
+        return dict(result,status='stale')
     result.update(available=True,current=current,timezone=str(env.get('timezone',''))[:80])
     result['units']={'temperature':'°C','wind_speed':'km/h','precipitation':'mm; period is precipitation_hours when supplied',
                      'precipitation_probability':'%','time':'Unix seconds'}
     for field in ('sunrise','sunset'):
         value=_number(env.get(field))
-        if value is not None:result[field]=value
+        if value is not None:
+            result[field]=value
     points=[_point(p) for p in (env.get('forecast') or [])[:48]]
     points=sorted([p for p in points if p and (not now or now<p['time']<=now+86400)],key=lambda p:p['time'])
     selected=[]
     if points:
         selected.append(points[0])
         wet=next((p for p in points if p['time']<=now+21600 and (p.get('precipitation',0)>.1 or p.get('precipitation_probability',0)>=60)),None)
-        if wet and wet not in selected:selected.append(wet)
+        if wet and wet not in selected:
+            selected.append(wet)
         for hours in (3,6,12,24):
             point=min(points,key=lambda p:abs(p['time']-(now+hours*3600)))
-            if point not in selected:selected.append(point)
+            if point not in selected:
+                selected.append(point)
     result['forecast']=sorted(selected[:forecast_limit],key=lambda p:p['time'])
     return result

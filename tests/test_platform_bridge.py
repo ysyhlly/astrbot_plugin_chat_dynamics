@@ -7,6 +7,7 @@ from typing import Any, List, Optional
 import pytest
 
 from astrbot_plugin_chat_dynamics.core.platform_bridge import (
+    as_send_result,
     build_plain_chain,
     chain_plain_text,
     collect_media_urls,
@@ -17,6 +18,7 @@ from astrbot_plugin_chat_dynamics.core.platform_bridge import (
     is_streaming_host_result,
     media_placeholder_text,
     parse_group_event,
+    send_onebot_chain,
     SendResult,
     send_plain,
 )
@@ -456,3 +458,52 @@ async def test_run_native_agent_forwards_image_and_audio_urls():
     assert text == "seen"
     assert captured.get("image_urls") == ["/tmp/pic.png"]
     assert captured.get("audio_urls") == ["/tmp/voice.wav"]
+
+
+def test_as_send_result_aggregates_onebot_partial_dispatch_receipt():
+    receipt = {
+        "_onebot_dispatch_receipt": True,
+        "parts": [
+            (0, {"status": "ok", "data": {"message_id": 101}}),
+            (1, {"status": "failed", "retcode": 100}),
+        ],
+    }
+    parsed = as_send_result(receipt, onebot=True)
+    assert parsed.success is True
+    assert parsed.message_id == "101"
+    assert parsed.message_ids == ("101",)
+    assert parsed.parts == ((0, ("101",)),)
+    assert parsed.error
+
+
+@pytest.mark.asyncio
+async def test_send_onebot_chain_partial_exception_attaches_receipt(tmp_path, monkeypatch):
+    pytest.importorskip("astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event")
+    from astrbot.api.message_components import File, Plain
+    from astrbot.core.message.message_event_result import MessageChain
+
+    document = tmp_path / "reply.txt"
+    document.write_text("file", encoding="utf-8")
+    chain = MessageChain([Plain("part-1"), File(name=document.name, file=str(document))])
+
+    class PartialFailureTransport:
+        async def send_group_msg(self, *, group_id, message):
+            if message[0]["type"] == "text":
+                return {"status": "ok", "data": {"message_id": 101}}
+            raise RuntimeError("upload timeout")
+
+    async def no_sleep(_seconds):
+        pass
+
+    monkeypatch.setattr("astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event.asyncio.sleep", no_sleep)
+    with pytest.raises(RuntimeError, match="upload timeout") as exc_info:
+        await send_onebot_chain(PartialFailureTransport(), chain, is_group=True, session_id="100")
+
+    receipt = getattr(exc_info.value, "onebot_dispatch_receipt", None)
+    assert receipt is not None
+    parsed = as_send_result(receipt, onebot=True)
+    assert parsed.success is True
+    assert parsed.message_id == "101"
+    assert parsed.message_ids == ("101",)
+    assert parsed.error == "upload timeout"
+    assert parsed.parts == ((0, ("101",)),)

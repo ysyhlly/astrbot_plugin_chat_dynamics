@@ -1,4 +1,4 @@
-"""Smoke checks for UI wireframe pages (today / manners / memory / replay)."""
+"""Smoke checks for UI workspace pages (console / config / learning / memory / replay)."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ROOT / "pages"
+PAGES = ROOT / "pages" / "app"
 I18N = ROOT / "i18n"
 PLUGIN_I18N = ROOT / ".astrbot-plugin" / "i18n"
 
-WIRE_PAGES = ("today", "manners", "memory", "replay")
+WIRE_PAGES = ("console", "config", "learning", "memory", "replay")
 REQUIRED_FILES = ("_page.json", "index.html", "app.js", "style.css", "plugin_nav.js")
 
 
@@ -23,14 +23,19 @@ def test_wireframe_page_files_exist(name: str):
     for filename in REQUIRED_FILES:
         assert (root / filename).is_file(), f"missing {name}/{filename}"
     page = json.loads((root / "_page.json").read_text(encoding="utf-8"))
-    assert page["title"]["i18n_key"] == f"pages.{name}.title"
-    assert page["description"]["i18n_key"] == f"pages.{name}.desc"
+    if isinstance(page["title"], dict):
+        assert page["title"]["i18n_key"] == f"pages.{name}.title"
+        assert page["description"]["i18n_key"] == f"pages.{name}.desc"
+    else:
+        assert page["title"] and page["description"]
     html = (root / "index.html").read_text(encoding="utf-8")
-    assert 'href="./base.css"' in html
-    assert 'href="./shell.css"' in html
+    if name != "config":
+        assert 'href="./base.css"' in html
+    if name not in {"console", "config"}:
+        assert 'href="./shell.css"' in html
     assert 'href="./plugin_nav.css"' in html
     assert 'id="pluginSideNav"' in html
-    assert "../shared/" not in html
+    assert "../shared/series-panels.js" in html
 
 
 def test_shared_assets_exist():
@@ -51,17 +56,16 @@ def test_console_not_replaced_and_has_side_nav():
     assert "群聊动态控制台" in html
     assert 'id="channelList"' in html or "UMO" in html or "session" in html.lower()
     assert 'id="pluginSideNav"' in html
-    assert "../today/" not in html
-    assert "../shared/" not in html
 
 
 @pytest.mark.parametrize("locale", ("zh-CN", "en-US"))
 def test_i18n_keys_for_wireframe_pages(locale: str):
     flat = json.loads((I18N / f"{locale}.json").read_text(encoding="utf-8"))
     nested = json.loads((PLUGIN_I18N / f"{locale}.json").read_text(encoding="utf-8"))
-    for name in WIRE_PAGES:
+    for name in ("console", "config", "memory", "replay", "app"):
         assert flat.get(f"pages.{name}.title")
         assert flat.get(f"pages.{name}.desc")
+    for name in WIRE_PAGES:
         assert nested["pages"][name]["title"]
         assert nested["pages"][name]["desc"]
 

@@ -4,31 +4,37 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "pages"
+ROOT = Path(__file__).resolve().parents[1] / "pages" / "app"
 PAGES = ("console", "config", "memory", "replay", "learning")
+
+
+def _asset_root(root: Path) -> Path:
+    return root / "app" if (root / "app" / "shared").is_dir() else root
 
 
 def asset_pairs(root: Path):
     """Yield canonical and published paths for assets managed by this script."""
+    base = _asset_root(root)
     for page in PAGES:
         assets = ["plugin_nav.js", "plugin_nav.css", "theme.js", "theme.css", "base.css", "errors.js"]
         if page != "console":
             assets += ["shell.css", "shell.js", "api.js"]
         for name in assets:
-            yield root / "shared" / name, root / page / name
+            yield base / "shared" / name, base / page / name
 
 
 def check_page_assets(root: Path) -> list[str]:
     """Report missing or divergent managed assets without writing files."""
+    base = _asset_root(root)
     errors = []
-    for source, target in asset_pairs(root):
+    for source, target in asset_pairs(base):
         try:
             matches = source.read_bytes() == target.read_bytes()
         except OSError as exc:
-            errors.append(f"cannot compare {target.relative_to(root)}: {type(exc).__name__}")
+            errors.append(f"cannot compare {target.relative_to(base)}: {type(exc).__name__}")
             continue
         if not matches:
-            errors.append(f"shared asset out of sync: {target.relative_to(root)}")
+            errors.append(f"shared asset out of sync: {target.relative_to(base)}")
     return errors
 
 

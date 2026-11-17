@@ -129,8 +129,8 @@ def test_release_archive_excludes_deployed_backups_and_editor_files(tmp_path):
         "core/jev_decision.py.bak",
         "core/config.py.orig",
         "core/config.py.rej",
-        "pages/config/.app.js.swp",
-        "pages/config/app.js~",
+        "pages/app/config/.app.js.swp",
+        "pages/app/config/app.js~",
     )
     for name in unwanted:
         target = copied / name

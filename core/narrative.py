@@ -12,6 +12,7 @@ import math
 import re
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -556,23 +557,34 @@ class TurnContextBundle:
     turn_id: str
     payload: str
 
+    def _wire_view(self):
+        cached = getattr(self, "_wire_cache", None)
+        if cached is None:
+            cached = json.loads(self.payload)
+            object.__setattr__(self, "_wire_cache", cached)
+        return cached
+
     def wire(self):
-        return json.loads(self.payload)
+        return copy.deepcopy(self._wire_view())
 
     @property
     def bundle_id(self):
-        return hashlib.sha256(self.payload.encode()).hexdigest()
+        cached = getattr(self, "_bundle_id_cache", None)
+        if cached is None:
+            cached = hashlib.sha256(self.payload.encode()).hexdigest()
+            object.__setattr__(self, "_bundle_id_cache", cached)
+        return cached
 
     @property
     def scope(self):
-        return self.wire()["scope"]
+        return copy.deepcopy(self._wire_view()["scope"])
 
     @property
     def snapshot(self):
-        return self.wire()["snapshot"]
+        return copy.deepcopy(self._wire_view()["snapshot"])
 
     def decision_context(self, budget=2400):
-        data = self.wire()
+        data = self._wire_view()
         snapshot = speaker_snapshot(data["snapshot"], data.get("speaker_id", ""), data.get("captured_at", 0))
         evidence = data.get("evidence_view")
         raw_slots = evidence.get("slots", {}) if isinstance(evidence, dict) and evidence.get("available") is True else {}
@@ -605,34 +617,42 @@ class TurnContextBundle:
         horizons_slot = data.get("horizons_decision_slot")
         if isinstance(horizons_slot, dict) and horizons_slot:
             base["horizons"] = copy.deepcopy(horizons_slot)
+
+        def _dump_len(obj):
+            return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+        base_empty_len = _dump_len({**base, "context_items": []})
+        item_lens = [_dump_len(row) for row in items]
+        items_overhead = sum(item_lens) + max(0, len(item_lens) - 1)
         while True:
-            skeleton = {**base, "context_items": items}
-            used = len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":")))
+            used = base_empty_len + items_overhead
             slot_budget = max(0, int(budget) - used)
             slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
-            result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
-            if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) <= budget or not items:
+            result = {**base, "context_items": list(items), "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
+            if _dump_len(result) <= budget or not items:
                 break
             items.pop()
+            popped = item_lens.pop()
+            items_overhead -= popped + (1 if item_lens else 0)
         # Snapshot summaries and external media hints are optional; current life
         # commitments and all current/boundary atoms are never truncated to satisfy the soft budget.
-        if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget and base.get("summary"):
+        if _dump_len(result) > budget and base.get("summary"):
             base["summary"] = ""
             skeleton = {**base, "context_items": items}
-            slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
+            slot_budget = max(0, int(budget) - _dump_len(skeleton))
             slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
             result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
-        if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget and "horizons" in base:
+        if _dump_len(result) > budget and "horizons" in base:
             if isinstance(base["horizons"], dict) and "open_question" in base["horizons"]:
                 base["horizons"].pop("open_question", None)
                 skeleton = {**base, "context_items": items}
-                slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
+                slot_budget = max(0, int(budget) - _dump_len(skeleton))
                 slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
                 result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
-            if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget:
+            if _dump_len(result) > budget:
                 base.pop("horizons", None)
                 skeleton = {**base, "context_items": items}
-                slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
+                slot_budget = max(0, int(budget) - _dump_len(skeleton))
                 slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
                 result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
         return result
@@ -640,6 +660,9 @@ class TurnContextBundle:
 
 class NarrativeCoordinator:
     """Own managed contexts and sends while life remains the state authority."""
+
+    _MAX_BUNDLES = 256
+    _MAX_SYNCED_FAILED_INTENTS = 512
 
     def __init__(self, plugin, path):
         self.plugin = plugin
@@ -652,7 +675,8 @@ class NarrativeCoordinator:
         self.task = None
         self._dispatch_lock = asyncio.Lock()
         self._intent_lock = asyncio.Lock()
-        self._bundles = {}
+        self._bundles = OrderedDict()
+        self._synced_failed_intents = set()
         self._shared_reads = SharedReads()
         self._read_memo = ExactMemo(ttl=10, capacity=64)
         self._rpc_timings = CallTimings()
@@ -662,6 +686,13 @@ class NarrativeCoordinator:
         self._social_opportunity_at = {}
         # (provider, method) -> [上次 WARNING 的 monotonic 时刻, 该窗口内被压制的条数]
         self._rpc_warn_at: dict[tuple[str, str], list] = {}
+
+    def _cache_bundle(self, umo: str, bundle: TurnContextBundle) -> None:
+        self._bundles[umo] = bundle
+        if isinstance(self._bundles, OrderedDict):
+            self._bundles.move_to_end(umo)
+            while len(self._bundles) > self._MAX_BUNDLES:
+                self._bundles.popitem(last=False)
 
     def enabled(self, umo):
         cfg = self.plugin._runtime_config
@@ -1664,7 +1695,7 @@ class NarrativeCoordinator:
             self.bind(item.events, bundle, persist=False)
         else:
             await self.bind_async(item.events, bundle)
-        self._bundles[umo] = bundle
+        self._cache_bundle(umo, bundle)
         return bundle
 
     async def supplement_context(self, item, query):
@@ -1908,7 +1939,7 @@ class NarrativeCoordinator:
         payload["snapshot"] = snapshot
         revised = TurnContextBundle(bundle.turn_id, json.dumps(payload, ensure_ascii=False, allow_nan=False))
         await self.bind_async(item.events, revised)
-        self._bundles[bundle.scope["umo"]] = revised
+        self._cache_bundle(bundle.scope["umo"], revised)
         return revised
 
     async def current(self, bundle, event=None):
@@ -2098,6 +2129,7 @@ class NarrativeCoordinator:
         except Exception as exc:
             logger.warning('Receipt recovery pending at shutdown code=CD_RECEIPT_PENDING type=%s', type(exc).__name__)
         await self._io.drain()
+        self.journal.close()
 
     def _tool_receipt_event(self, event, receipt):
         """Archive that a tool returned, without asserting its external effects."""
@@ -2415,18 +2447,29 @@ class NarrativeCoordinator:
                 return
             day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
             by_id = {i["intent_id"]: i for i in rows if isinstance(i, dict) and i.get("intent_id")}
-            for intent, status in await asyncio.to_thread(self.journal.intents):
+            for intent, status in await asyncio.to_thread(self.journal.intents, active_only=True):
                 iid, scope = intent["intent_id"], intent.get("scope", {})
+                if iid in self._synced_failed_intents and status == "failed":
+                    continue
                 auth_provider = self._intent_provider(iid, intent)
                 authority = await self.call(auth_provider, "get_intent", iid)
                 current_intent = self._unwrap_authority_intent(authority)
                 if current_intent is None:
                     continue
                 if current_intent.get("status") in {"sent", "failed", "uncertain", "cancelled", "expired"}:
-                    await self._io.call('intent_status', self.journal.intent_status, iid, current_intent["status"])
+                    if current_intent["status"] != status:
+                        await self._io.call('intent_status', self.journal.intent_status, iid, current_intent["status"])
+                    if current_intent["status"] == "failed":
+                        if len(self._synced_failed_intents) >= self._MAX_SYNCED_FAILED_INTENTS:
+                            self._synced_failed_intents.clear()
+                        self._synced_failed_intents.add(iid)
                     continue
                 if status == 'failed':
-                    await self.call(auth_provider, 'update_intent', iid, 'failed')
+                    updated = await self.call(auth_provider, 'update_intent', iid, 'failed')
+                    if updated is not None and not (isinstance(updated, dict) and updated.get("available") is False):
+                        if len(self._synced_failed_intents) >= self._MAX_SYNCED_FAILED_INTENTS:
+                            self._synced_failed_intents.clear()
+                        self._synced_failed_intents.add(iid)
                     continue
                 if status != "pending":
                     continue

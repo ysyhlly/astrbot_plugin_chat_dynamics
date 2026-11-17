@@ -4,9 +4,11 @@ import re
 from pathlib import PurePosixPath,PureWindowsPath
 
 def _local_reference_path(value):
-    if not isinstance(value,str) or len(value)>400:return False
+    if not isinstance(value,str) or len(value)>400:
+        return False
     posix,windows=PurePosixPath(value),PureWindowsPath(value)
-    if '..' in posix.parts or '..' in windows.parts:return False
+    if '..' in posix.parts or '..' in windows.parts:
+        return False
     return (posix.is_absolute() and not value.startswith('//')) or (windows.is_absolute() and not windows.drive.startswith('\\\\'))
 
 WORLD_VISUAL_BRIDGE_GUIDANCE=(
@@ -21,7 +23,8 @@ def _text(value,limit):return value[:limit] if isinstance(value,str) else ''
 
 def world_visual_context(snapshot,now=0,compact=False,include_rules=True):
     source=snapshot.get('visual_sharing')
-    if not isinstance(source,dict) or type(source.get('schema_version')) is not int or source['schema_version']!=1:return None
+    if not isinstance(source,dict) or type(source.get('schema_version')) is not int or source['schema_version']!=1:
+        return None
     until=_number(source.get('valid_until'))
     captured=_number(source.get('captured_at'))
     if until is None or captured is None or (now and not captured-5<=now<=until):
@@ -31,9 +34,11 @@ def world_visual_context(snapshot,now=0,compact=False,include_rules=True):
     current=source.get('current_scene')
     if isinstance(current,dict):
         scene={k:_text(current.get(k),100) for k in ('phase','map_kind','place','room','origin','destination','activity_in_progress') if current.get(k)}
-        if type(current.get('sheltered')) is bool:scene['sheltered']=current['sheltered']
+        if type(current.get('sheltered')) is bool:
+            scene['sheltered']=current['sheltered']
         weather=current.get('visual_weather')
-        if isinstance(weather,dict):scene['weather']={k:_text(v,80) if isinstance(v,str) else v for k,v in weather.items() if k in {'condition','is_day','basis'} and isinstance(v,(str,bool,type(None)))}
+        if isinstance(weather,dict):
+            scene['weather']={k:_text(v,80) if isinstance(v,str) else v for k,v in weather.items() if k in {'condition','is_day','basis'} and isinstance(v,(str,bool,type(None)))}
         if not compact:
             scene['visible_objects']=[{k:_text(v,60) if isinstance(v,str) else v for k,v in i.items() if k in {'name','kind','carried','powered','open','wet','servings','capacity'} and (isinstance(v,(str,bool)) or _number(v) is not None)}
                                       for i in (current.get('visible_objects') or [])[:6] if isinstance(i,dict)] if isinstance(current.get('visible_objects'),list) else []
@@ -44,9 +49,11 @@ def world_visual_context(snapshot,now=0,compact=False,include_rules=True):
     rows=source.get('recent_experiences')
     result['recent_experiences']=[]
     for row in rows[:3] if isinstance(rows,list) else []:
-        if not isinstance(row,dict):continue
+        if not isinstance(row,dict):
+            continue
         stamp=_number(row.get('occurred_at'))
-        if stamp is None or stamp>captured:continue
+        if stamp is None or stamp>captured:
+            continue
         result['recent_experiences'].append({**{k:_text(row.get(k),180) for k in ('kind','source_id','place','room','description','basis') if row.get(k)},'occurred_at':stamp})
     for key in (('rules','limitations') if include_rules else ('limitations',)):
         rows=source.get(key)
@@ -63,30 +70,39 @@ def world_visual_context(snapshot,now=0,compact=False,include_rules=True):
                    'references':[],'items':[],'remove_from_layout':[]}
         refs=design.get('references')
         for row in refs[:3] if isinstance(refs,list) else []:
-            if not isinstance(row,dict) or row.get('role') not in {'layout','style'}:continue
-            path=row.get('reference');digest=row.get('sha256')
-            if not _local_reference_path(path) or not re.fullmatch(r'[a-f0-9]{64}',str(digest)):continue
+            if not isinstance(row,dict) or row.get('role') not in {'layout','style'}:
+                continue
+            path=row.get('reference')
+            digest=row.get('sha256')
+            if not _local_reference_path(path) or not re.fullmatch(r'[a-f0-9]{64}',str(digest)):
+                continue
             projected['references'].append({k:_text(row.get(k),400) for k in ('reference','role','label','sha256')})
-        if isinstance(refs,list) and len(projected['references'])!=len(refs):projected['generation_ready']=False
+        if isinstance(refs,list) and len(projected['references'])!=len(refs):
+            projected['generation_ready']=False
         items=design.get('items')
         for row in items[:32] if isinstance(items,list) else []:
-            if isinstance(row,dict):projected['items'].append({k:_text(row.get(k),limit) for k,limit in [('name',60),('kind',24),('appearance',200),('placement',120)]})
+            if isinstance(row,dict):
+                projected['items'].append({k:_text(row.get(k),limit) for k,limit in [('name',60),('kind',24),('appearance',200),('placement',120)]})
         removed=design.get('remove_from_layout')
         projected['remove_from_layout']=[_text(v,60) for v in removed[:32] if isinstance(v,str)] if isinstance(removed,list) else []
         result['visual_design']=projected
         room_state=design.get('room_state')
-        if isinstance(room_state,dict):projected['room_state']={k:_text(v,80) if isinstance(v,str) else v for k,v in room_state.items() if k in {'revision','lighting','curtains','changed'} and (isinstance(v,(str,bool)) or _number(v) is not None)}
+        if isinstance(room_state,dict):
+            projected['room_state']={k:_text(v,80) if isinstance(v,str) else v for k,v in room_state.items() if k in {'revision','lighting','curtains','changed'} and (isinstance(v,(str,bool)) or _number(v) is not None)}
         result['references_default']=[r['reference'] for r in projected['references']]
     return result
 
 
 def world_visual_instructions(snapshot,now=0,*,tools_enabled=True,internal=False):
     source=snapshot.get('visual_sharing') or {}
-    if not isinstance(source,dict) or source.get('provider_id')!='astrbot_plugin_dynamics_world':return ''
+    if not isinstance(source,dict) or source.get('provider_id')!='astrbot_plugin_dynamics_world':
+        return ''
     context=world_visual_context(snapshot,now)
-    if not context or context.get('reason'):return ''
+    if not context or context.get('reason'):
+        return ''
     rules=context.get('rules',[])
-    if not rules:return ''
+    if not rules:
+        return ''
     prompt='\n[群间世界提供的画面分享条件与规则]\n'+'\n'.join(rules)
     if internal or not tools_enabled:
         prompt+='\n本轮没有获准使用生图工具，只能用文字回应。不要说已经画好、导出失败或后台生成中；没有受理任务，不能承诺稍后自动补发。'

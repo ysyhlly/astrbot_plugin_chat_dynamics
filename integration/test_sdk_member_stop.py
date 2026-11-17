@@ -37,7 +37,7 @@ from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFi
 from astrbot.core.star.star_handler import star_handlers_registry  # noqa: E402
 
 from astrbot_plugin_chat_dynamics.core.native_delivery import NativeDeliveryGuard  # noqa: E402
-from astrbot_plugin_chat_dynamics.core.platform_bridge import send_plain  # noqa: E402
+from astrbot_plugin_chat_dynamics.core.platform_bridge import send_onebot_chain, send_plain  # noqa: E402
 from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin  # noqa: E402
 
 
@@ -206,7 +206,7 @@ async def test_real_qq_partial_receipt_for_plain_text_and_rejected_file(tmp_path
             return {"status": "failed", "retcode": 100}
 
     async def send(message):
-        return await AiocqhttpMessageEvent._send_chain(LocalTransport(), message, None, True, "100", None)
+        return await send_onebot_chain(LocalTransport(), message, is_group=True, session_id="100")
 
     async def no_sleep(_seconds):
         pass

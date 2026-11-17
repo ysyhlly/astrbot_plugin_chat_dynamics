@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 import gzip
 import hashlib
 import re
 import shutil
 import time
-from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -20,7 +21,9 @@ class NarrativeJournal:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as db, db:
+        self._conn_lock = threading.RLock()
+        self._db: sqlite3.Connection | None = None
+        with self._tx(write=True) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS events (
@@ -58,9 +61,44 @@ class NarrativeJournal:
         db.execute("PRAGMA synchronous=NORMAL")
         return db
 
+    def _shared_connection(self) -> sqlite3.Connection:
+        if self._db is None:
+            db = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=5000")
+            db.execute("PRAGMA synchronous=NORMAL")
+            self._db = db
+        return self._db
+
+    @contextmanager
+    def _tx(self, *, write: bool = False, immediate: bool = False):
+        with self._conn_lock:
+            db = self._shared_connection()
+            if immediate:
+                db.execute("BEGIN IMMEDIATE")
+                try:
+                    yield db
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+            elif write:
+                with db:
+                    yield db
+            else:
+                yield db
+
+    def close(self):
+        with self._conn_lock:
+            if self._db is not None:
+                try:
+                    self._db.close()
+                finally:
+                    self._db = None
+
     def ensure_indexes(self):
         """Build additive indexes in the maintenance worker, including legacy databases."""
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             db.executescript("""
                 CREATE INDEX IF NOT EXISTS pending_event_created ON events(created_at) WHERE recipients!='[]';
                 CREATE INDEX IF NOT EXISTS bundle_scope_capture ON bundles(umo,captured_at DESC);
@@ -76,27 +114,27 @@ class NarrativeJournal:
             recipients: Named public API providers to notify.
             now: Civil timestamp.
         """
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             db.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?)",
                        (event["event_id"], json.dumps(event, ensure_ascii=False),
                         json.dumps(list(recipients)), now))
 
     def pending(self, limit=100):
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             return [(json.loads(row["payload"]), json.loads(row["recipients"]))
                     for row in db.execute("SELECT * FROM events WHERE recipients!='[]' ORDER BY created_at LIMIT ?",
                                           (limit,))]
 
     def pending_for(self, recipient, limit=100):
         """Read an independent recipient queue, keeping original event order."""
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             return [json.loads(row["payload"]) for row in db.execute(
                 "SELECT payload FROM events WHERE recipients!='[]' AND EXISTS "
                 "(SELECT 1 FROM json_each(recipients) WHERE value=?) ORDER BY created_at LIMIT ?",
                 (recipient, limit))]
 
     def pending_recipients(self):
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             return [row[0] for row in db.execute(
                 "SELECT DISTINCT j.value FROM events e, json_each(e.recipients) j WHERE e.recipients!='[]'")]
 
@@ -107,7 +145,7 @@ class NarrativeJournal:
                        character_fingerprint=data.get('character', {}).get('fingerprint'),
                        completed=data.get('completed', {}), availability=data.get('availability', {}))
         raw = payload.encode('utf-8')
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             db.execute("INSERT OR IGNORE INTO context_archive VALUES (?,?,?)",
                        (bundle_id, hashlib.sha256(raw).hexdigest(), gzip.compress(raw, compresslevel=3)))
             db.execute("INSERT OR IGNORE INTO bundles VALUES (?,?,?,?,?)",
@@ -316,7 +354,7 @@ class NarrativeJournal:
 
     def full_bundle(self, bundle_id):
         """Read complete local evidence, checking the archive before returning it."""
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             row = db.execute('SELECT * FROM context_archive WHERE bundle_id=?', (bundle_id,)).fetchone()
             if row:
                 raw = gzip.decompress(row['payload'])
@@ -344,14 +382,10 @@ class NarrativeJournal:
         }
 
     def maintain(self, now, retention_days=7, limit=40):
-        """Compress legacy bundles in bounded transactions; never discard receipts.
-
-        After the configured window, only the indexed trace stays online. Full
-        contexts stay in the checksum-verified compressed local archive. Event
-        IDs, pending notifications, uncertain attempts and intents are retained.
-        """
+        """Compress legacy bundles in bounded transactions and prune expired terminal logs."""
         from .narrative_projection import reply_material
-        with closing(self._connect()) as db, db:
+        cutoff = now - max(1, retention_days) * 86400
+        with self._tx(write=True) as db:
             rows = db.execute('SELECT * FROM bundles WHERE bundle_id NOT IN '
                               '(SELECT bundle_id FROM context_archive) LIMIT ?', (limit,)).fetchall()
             for row in rows:
@@ -366,7 +400,7 @@ class NarrativeJournal:
                            (json.dumps(compact, ensure_ascii=False), row['bundle_id']))
             old = db.execute("SELECT bundle_id,payload FROM bundles WHERE captured_at<? "
                              "AND json_extract(payload,'$.archive_only') IS NULL LIMIT ?",
-                             (now - max(1, retention_days) * 86400, limit)).fetchall()
+                             (cutoff, limit)).fetchall()
             for row in old:
                 brief = json.loads(row['payload'])
                 brief = {k:v for k,v in brief.items() if k in
@@ -374,11 +408,36 @@ class NarrativeJournal:
                 brief['archive_only'] = True
                 db.execute('UPDATE bundles SET payload=? WHERE bundle_id=?',
                            (json.dumps(brief, ensure_ascii=False), row['bundle_id']))
-        return {'compressed': len(rows), 'archived': len(old)}
+            pruned_events = db.execute(
+                "DELETE FROM events WHERE event_id IN ("
+                "SELECT event_id FROM events WHERE recipients='[]' AND created_at<? "
+                "AND COALESCE(json_extract(payload,'$.data.effect_kind'),'')!='reminder.created' LIMIT ?)",
+                (cutoff, limit * 5),
+            ).rowcount
+            pruned_attempts = db.execute(
+                "DELETE FROM attempts WHERE attempt_id IN ("
+                "SELECT attempt_id FROM attempts WHERE status IN ('success','failed','cancelled') "
+                "AND COALESCE(finished_at, started_at)<? LIMIT ?)",
+                (cutoff, limit * 5),
+            ).rowcount
+            pruned_intents = db.execute(
+                "DELETE FROM intents WHERE intent_id IN ("
+                "SELECT intent_id FROM intents WHERE status IN ('sent','failed','cancelled','expired') "
+                "AND COALESCE(attempted_at, 0)<? LIMIT ?)",
+                (cutoff, limit * 5),
+            ).rowcount
+            db.execute("DELETE FROM intent_retries WHERE intent_id NOT IN (SELECT intent_id FROM intents)")
+        return {
+            'compressed': len(rows),
+            'archived': len(old),
+            'pruned_events': pruned_events,
+            'pruned_attempts': pruned_attempts,
+            'pruned_intents': pruned_intents,
+        }
 
     def backfill_portraits(self, limit=100):
         """Queue public replay once per source; no companion database access."""
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             last = db.execute("SELECT value FROM maintenance WHERE name='portraits_cursor'").fetchone()
             cursor = int(last[0]) if last else 0
             rows = db.execute("SELECT rowid,payload,recipients FROM events WHERE rowid>? ORDER BY rowid LIMIT ?",
@@ -396,7 +455,7 @@ class NarrativeJournal:
                            (str(rows[-1]['rowid']),))
 
     def ack(self, event_id: str, recipient: str):
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             row = db.execute("SELECT recipients FROM events WHERE event_id=?", (event_id,)).fetchone()
             if row:
                 remaining = [name for name in json.loads(row[0]) if name != recipient]
@@ -416,7 +475,7 @@ class NarrativeJournal:
             The new attempt identifier.
         """
         attempt = uuid.uuid4().hex
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             db.execute("INSERT INTO attempts VALUES (?,?,?,?,?,'sending',?,NULL,NULL)",
                        (attempt, scope["umo"], turn_id, intent_id, segment, now))
             if intent_id:
@@ -424,7 +483,7 @@ class NarrativeJournal:
         return attempt
 
     def finish(self, attempt: str, status: str, now: float, message_id=None, event=None, recipients=()):
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             prior = db.execute('SELECT status FROM attempts WHERE attempt_id=?', (attempt,)).fetchone()
             if prior is not None and prior['status'] == 'success' and status != 'success':
                 return
@@ -435,28 +494,32 @@ class NarrativeJournal:
                            json.dumps(event, ensure_ascii=False), json.dumps(list(recipients)), now))
 
     def add_intent(self, intent: dict):
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             changed = db.execute("INSERT OR IGNORE INTO intents VALUES (?,?,'pending',NULL)",
                                  (intent["intent_id"], json.dumps(intent, ensure_ascii=False))).rowcount
         return bool(changed)
 
-    def intents(self):
-        with closing(self._connect()) as db:
-            return [(json.loads(row["payload"]), row["status"]) for row in db.execute("SELECT * FROM intents")]
+    def intents(self, *, active_only: bool = False):
+        sql = (
+            "SELECT payload, status FROM intents WHERE status IN ('pending','sending','uncertain','failed')"
+            if active_only
+            else "SELECT payload, status FROM intents"
+        )
+        with self._tx() as db:
+            return [(json.loads(row["payload"]), row["status"]) for row in db.execute(sql)]
 
     def intent_status(self, intent_id: str, status: str):
-        with closing(self._connect()) as db, db:
+        with self._tx(write=True) as db:
             db.execute("UPDATE intents SET status=? WHERE intent_id=?", (status, intent_id))
 
     def intent_retry_ready(self, intent_id: str, now: float) -> bool:
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             row = db.execute('SELECT next_retry FROM intent_retries WHERE intent_id=?', (intent_id,)).fetchone()
             return row is None or row[0] <= now
 
     def record_intent_failure(self, intent_id: str, now: float, error_code: str):
         """Retry only pre-send failures; never reopen sent/claimed uncertainty."""
-        with closing(self._connect()) as db, db:
-            db.execute('BEGIN IMMEDIATE')
+        with self._tx(write=True, immediate=True) as db:
             current = db.execute('SELECT status FROM intents WHERE intent_id=?', (intent_id,)).fetchone()
             if current is None or current[0] != 'pending':
                 return None
@@ -474,7 +537,7 @@ class NarrativeJournal:
             return {'attempts': attempts, 'next_retry': now + delay, 'exhausted': exhausted}
 
     def reminder_scope(self, umo, reminder_id):
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             row = db.execute("SELECT payload FROM events WHERE json_extract(payload,'$.scope.umo')=? "
                              "AND json_extract(payload,'$.data.reminder_id')=? "
                              "AND json_extract(payload,'$.data.effect_kind')='reminder.created' LIMIT 1",
@@ -484,7 +547,7 @@ class NarrativeJournal:
     def delivered_reply(self, scope, message_id):
         if not message_id:
             return None
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             rows = db.execute("SELECT payload FROM events WHERE json_extract(payload,'$.type')='delivery.success' "
                 "AND json_extract(payload,'$.scope.umo')=? AND json_extract(payload,'$.data.message_id')=? "
                 "ORDER BY created_at DESC LIMIT 4", (scope['umo'], str(message_id)))
@@ -498,7 +561,7 @@ class NarrativeJournal:
         """Bound confirmed system notices to the same scope and recipient."""
         from .reply_failure import unavailable_reply
         notices={unavailable_reply('provider_content_blocked'),unavailable_reply('provider_reply_failed')}
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             rows=db.execute("SELECT payload FROM events WHERE json_extract(payload,'$.type')='delivery.success' "
                 "AND json_extract(payload,'$.scope.umo')=? AND created_at>=? ORDER BY created_at DESC LIMIT 40",
                 (scope['umo'],now-21600)).fetchall()
@@ -521,7 +584,7 @@ class NarrativeJournal:
 
     def expression_context(self, scope):
         """Observed syntax of confirmed replies in this exact character scope."""
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             rows = db.execute("SELECT payload FROM events WHERE json_extract(payload,'$.type')='delivery.success' "
                 "AND json_extract(payload,'$.scope.umo')=? ORDER BY created_at DESC LIMIT 20", (scope['umo'],)).fetchall()
         events=[]
@@ -541,14 +604,14 @@ class NarrativeJournal:
         return result
 
     def quota(self, umo: str, day_start: float):
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             rows = db.execute("SELECT started_at FROM attempts WHERE umo=? AND intent_id IS NOT NULL "
                               "AND status IN ('success','uncertain','sending') AND started_at>=? ORDER BY started_at DESC",
                               (umo, day_start)).fetchall()
         return len(rows), (rows[0][0] if rows else None)
 
     def snapshot(self, umo: str):
-        with closing(self._connect()) as db:
+        with self._tx() as db:
             attempts = [dict(row) for row in db.execute("SELECT * FROM attempts WHERE umo=? ORDER BY started_at DESC LIMIT 80", (umo,))]
             pending = db.execute("SELECT count(*) FROM events WHERE recipients!='[]' AND json_extract(payload,'$.scope.umo')=?", (umo,)).fetchone()[0]
             contexts = [dict(row) for row in db.execute(

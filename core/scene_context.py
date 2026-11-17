@@ -17,17 +17,21 @@ SCENE_GUIDANCE=(
 
 def scene_context(snapshot):
     source=snapshot.get('scene')
-    if not isinstance(source,dict) or not source.get('available'):return None
+    if not isinstance(source,dict) or not source.get('available'):
+        return None
     result={'fact_kind':'fiction','tracked_item_types':['book','umbrella','water','notebook','computer'],'location':{'place':str(source.get('place_name') or '待定位')[:60],
              'room':str(source.get('room_name') or '待确认')[:60],'sheltered':source.get('sheltered')},'inventory':[],'visible_items':[]}
     wet=source.get('wetness')
-    if type(wet) in (int,float) and math.isfinite(wet):result['clothing_wetness_percent']=wet
+    if type(wet) in (int,float) and math.isfinite(wet):
+        result['clothing_wetness_percent']=wet
     for item in source.get('items',[])[:32]:
-        if not item.get('carried') and not item.get('visible'):continue
+        if not item.get('carried') and not item.get('visible'):
+            continue
         row={k:item[k] for k in ('name','kind','open','wet','page','pages','servings','capacity','powered','note_count','document_count','gaming_minutes','organize_count','completed_sessions','placement') if k in item}
         for key in ('notes','documents'):
             entries=item.get(key) or []
-            if entries:row['latest_'+key]={'title':str(entries[-1].get('title',''))[:60],'text':str(entries[-1].get('text',''))[:240]}
+            if entries:
+                row['latest_'+key]={'title':str(entries[-1].get('title',''))[:60],'text':str(entries[-1].get('text',''))[:240]}
         result['inventory' if item.get('carried') else 'visible_items'].append(row)
     designs=source.get('room_designs')
     current=next((d for d in designs[:32] if isinstance(d,dict) and d.get('room_id')==source.get('room_id')),None) if isinstance(designs,list) else None
@@ -44,17 +48,21 @@ def scene_context(snapshot):
         result['action']={k:action.get(k) for k in ('status','label','index','step_ends_at')}
         result['action']['total_steps']=len(action.get('steps',[]))
     last=source.get('last_action')
-    if last:result['last_action']={k:last.get(k) for k in ('status','reason','finished_at')}
+    if last:
+        result['last_action']={k:last.get(k) for k in ('status','reason','finished_at')}
     result['receipts']=[]
     for receipt in source.get('receipts',[])[:6]:
-        if receipt.get('kind') not in {'step.completed','action.completed','action.failed','action.cancelled'}:continue
+        if receipt.get('kind') not in {'step.completed','action.completed','action.failed','action.cancelled'}:
+            continue
         row={k:receipt.get(k) for k in ('event_id','kind','operation','occurred_at','reason','step','origin') if receipt.get(k) is not None}
         if isinstance(receipt.get('result'),dict):
             row['result']={k:v for k,v in receipt['result'].items() if k in {'name','kind','page','pages','servings','capacity','carried','open','wetness','powered','note_count','document_count','gaming_minutes','organize_count','completed_sessions','last_mode','before','after','project_id','project_title','project_stage','project_status','draft_parts','revised_parts','target_parts','section'}}
             saved=receipt['result'].get('saved_record')
-            if isinstance(saved,dict):row['result']['saved_record']={'title':str(saved.get('title',''))[:60],'text':str(saved.get('text',''))[:240]}
+            if isinstance(saved,dict):
+                row['result']['saved_record']={'title':str(saved.get('title',''))[:60],'text':str(saved.get('text',''))[:240]}
         result['receipts'].append(row)
-        if len(result['receipts'])>=3:break
+        if len(result['receipts'])>=3:
+            break
     causal=snapshot.get('causal_life')
     if isinstance(causal,dict) and causal.get('viewer')=='actor':
         ecology=snapshot.get('ecology') or {}

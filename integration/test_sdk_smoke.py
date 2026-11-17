@@ -178,6 +178,9 @@ async def test_real_sdk_plugin_contract_smoke():
         "providers",
         "replay",
         "topic_annotations",
+        "series_presence",
+        "narrative",
+        "integrations",
     }
     assert not any("/learning/" in route for route, *_ in context.routes)
     assert {route.split("/decision/", 1)[1] for route, *_ in context.routes if "/decision/" in route} == {"status", "history"}

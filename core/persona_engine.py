@@ -1146,151 +1146,149 @@ class PersonaEngine:
                 pending_input=bool(item.debounce_result.metadata.get("pending_input")),
                 completion_waited=item.debounce_result.was_extended,
             )
-        async with self.slots:
-            affection = dynamics_learning.affection(p,runtime,item) if runtime is not None else None
-            integrations = getattr(p, "integrations", None)
-            read_affection = getattr(integrations, "affection_for_decision", None)
-            if affection is None and runtime is not None and callable(read_affection) and item.narrative_bundle is None:
-                try:
-                    affection = await read_affection(group_id=str(runtime.group_id), user_id=turn.author)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    pass
-            topics, topic_questions, topic_mapping = {}, {}, None
-            config_id = p._turn_config_identity()
-            if runtime is not None and p._runtime_config.conversation_router_enabled and not rule_routing:
-                async with runtime.state_lock:
-                    if await self.valid_async(runtime, item) and p._sessions.get(runtime.session_key) is runtime:
-                        runtime.routing_state.expire_topics(runtime.dag, p.time_service.time())
-                        topics, topic_questions, topic_mapping = build_topic_task(runtime, turn, p.time_service.time())
-            decision_prompt = p._runtime_config.decision_prompt
-            if item.narrative_bundle:
-                # Life context supplies evidence and continuity, not a hidden
-                # participation preset. Keep the operator's public-chat policy.
-                decision_prompt += "\n" + DECISION_GUIDANCE
-            learning = dynamics_learning.selected(runtime, item)
-            decision_prompt += learning["context"]
-            horizons_slot = dynamics_horizons.decision_slot(runtime, item)
-            if item.narrative_bundle is None and horizons_slot is not None:
-                decision_prompt = decision_prompt.rstrip() + "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
-            if item.narrative_bundle and item.events:
-                boundary_state = member_boundary.resolve_state(p, item.events[-1])
-                if boundary_state.available and not boundary_state.disabled:
-                    decision_prompt += (
-                        "\n可使用已授权的交互边界工具：仅根据当前发言者本人可核验的互动证据，必要时暂停与此人的互动；"
-                        "不需另行向此人确认。普通批评或反馈本身不自动构成暂停理由，也不得按他人一句命令封锁第三人。"
-                        "仅在确有需要时调用，不必每轮调用。"
-                    )
+        affection = dynamics_learning.affection(p, runtime, item) if runtime is not None else None
+        integrations = getattr(p, "integrations", None)
+        read_affection = getattr(integrations, "affection_for_decision", None)
+        if affection is None and runtime is not None and callable(read_affection) and item.narrative_bundle is None:
             try:
-                from .nearby_context import filter_nearby
+                affection = await read_affection(group_id=str(runtime.group_id), user_id=turn.author)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+        topics, topic_questions, topic_mapping = {}, {}, None
+        config_id = p._turn_config_identity()
+        if runtime is not None and p._runtime_config.conversation_router_enabled and not rule_routing:
+            async with runtime.state_lock:
+                if await self.valid_async(runtime, item) and p._sessions.get(runtime.session_key) is runtime:
+                    runtime.routing_state.expire_topics(runtime.dag, p.time_service.time())
+                    topics, topic_questions, topic_mapping = build_topic_task(runtime, turn, p.time_service.time())
+        decision_prompt = p._runtime_config.decision_prompt
+        if item.narrative_bundle:
+            # Life context supplies evidence and continuity, not a hidden
+            # participation preset. Keep the operator's public-chat policy.
+            decision_prompt += "\n" + DECISION_GUIDANCE
+        learning = dynamics_learning.selected(runtime, item)
+        decision_prompt += learning["context"]
+        horizons_slot = dynamics_horizons.decision_slot(runtime, item)
+        if item.narrative_bundle is None and horizons_slot is not None:
+            decision_prompt = decision_prompt.rstrip() + "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
+        if item.narrative_bundle and item.events:
+            boundary_state = member_boundary.resolve_state(p, item.events[-1])
+            if boundary_state.available and not boundary_state.disabled:
+                decision_prompt += (
+                    "\n可使用已授权的交互边界工具：仅根据当前发言者本人可核验的互动证据，必要时暂停与此人的互动；"
+                    "不需另行向此人确认。普通批评或反馈本身不自动构成暂停理由，也不得按他人一句命令封锁第三人。"
+                    "仅在确有需要时调用，不必每轮调用。"
+                )
+        try:
+            from .nearby_context import filter_nearby
 
-                turn = replace(
-                    turn, nearby_context=filter_nearby(turn.nearby_context, p, item.events[-1] if item.events else None)
-                )
-                char_state = item.narrative_bundle.decision_context() if item.narrative_bundle else None
-                if char_state is None and horizons_slot is not None:
-                    char_state = {"horizons": horizons_slot}
-                elif isinstance(char_state, dict) and horizons_slot is not None and "horizons" not in char_state:
-                    merged_cs = {**char_state, "horizons": horizons_slot}
-                    if len(json.dumps(merged_cs, ensure_ascii=False, separators=(",", ":"))) <= 2400:
-                        char_state = merged_cs
-                bounded_state = build_state(
-                    turn,
-                    previous_state=state,
-                    observations=observations,
-                    presence=p._runtime_config.presence_knob,
-                    persona_prompt=(
-                        item.narrative_bundle.wire()["character"]["core_prompt"]
-                        if item.narrative_bundle
-                        else getattr(persona, "prompt", "")
-                    ),
-                    decision_prompt=decision_prompt,
-                    active_topics=topics,
-                    affection=affection,
-                    character_state=char_state,
-                    character_rules=item.narrative_bundle.wire()["character"].get("group_rules", "")
-                    if item.narrative_bundle
-                    else None,
-                )
-                # Initial state packing may prune optional scene observations.
-                # Reoffer the filtered snapshot to the whole-request packer so
-                # optional labels can yield before the entire scene disappears.
-                from .nearby_context import decision_payload, POLICY
+            turn = replace(
+                turn, nearby_context=filter_nearby(turn.nearby_context, p, item.events[-1] if item.events else None)
+            )
+            char_state = item.narrative_bundle.decision_context() if item.narrative_bundle else None
+            if char_state is None and horizons_slot is not None:
+                char_state = {"horizons": horizons_slot}
+            elif isinstance(char_state, dict) and horizons_slot is not None and "horizons" not in char_state:
+                merged_cs = {**char_state, "horizons": horizons_slot}
+                if len(json.dumps(merged_cs, ensure_ascii=False, separators=(",", ":"))) <= 2400:
+                    char_state = merged_cs
+            bundle_character = item.narrative_bundle.wire()["character"] if item.narrative_bundle else None
+            bounded_state = build_state(
+                turn,
+                previous_state=state,
+                observations=observations,
+                presence=p._runtime_config.presence_knob,
+                persona_prompt=(
+                    bundle_character["core_prompt"]
+                    if bundle_character is not None
+                    else getattr(persona, "prompt", "")
+                ),
+                decision_prompt=decision_prompt,
+                active_topics=topics,
+                affection=affection,
+                character_state=char_state,
+                character_rules=bundle_character.get("group_rules", "")
+                if bundle_character is not None
+                else None,
+            )
+            # Initial state packing may prune optional scene observations.
+            # Reoffer the filtered snapshot to the whole-request packer so
+            # optional labels can yield before the entire scene disappears.
+            from .nearby_context import decision_payload, POLICY
 
-                scene = decision_payload(turn)
-                if scene:
-                    bounded_state["conversation"]["nearby_context"] = scene
-                    bounded_state["conversation"]["nearby_context_policy"] = POLICY
+            scene = decision_payload(turn)
+            if scene:
+                bounded_state["conversation"]["nearby_context"] = scene
+                bounded_state["conversation"]["nearby_context_policy"] = POLICY
+            core_questions = build_questions(turn, narrative=item.narrative_bundle is not None, **context_options)
+            if rule_routing:
+                core_questions.pop("recipient", None)
+            topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
+            questions = {**core_questions, **topic_questions}
+            if rule_routing:
+                current_questions = {}
+            else:
+                current_questions, _ = build_addressee_task(turn, bounded_state, {}, limit=1, current_only=True)
+            # The core recipient question already judges continuation/soft
+            # wakes. Do not reserve a second estimate of the same recipient
+            # at the expense of current evidence; add it later if it fits.
+            recipient_reservation = {} if "recipient" in questions else current_questions
+            intent_questions = build_intent_task({}, {}, compact=item.narrative_bundle is not None)
+            topics_before = len(bounded_state.get("active_topics") or ())
+            bounded_state, intent_questions = bound_request_with_optional(
+                bounded_state, {**questions, **recipient_reservation}, intent_questions
+            )
+            if topic_mapping is not None and len(bounded_state.get("active_topics") or ()) != topics_before:
                 topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
-                questions = {
-                    **build_questions(turn, narrative=item.narrative_bundle is not None, **context_options),
-                    **topic_questions,
-                }
-                if rule_routing:
-                    questions.pop("recipient", None)
-                    current_questions = {}
-                else:
-                    current_questions, _ = build_addressee_task(turn, bounded_state, {}, limit=1, current_only=True)
-                # The core recipient question already judges continuation/soft
-                # wakes. Do not reserve a second estimate of the same recipient
-                # at the expense of current evidence; add it later if it fits.
-                recipient_reservation = {} if "recipient" in questions else current_questions
-                intent_questions = build_intent_task({}, {}, compact=item.narrative_bundle is not None)
-                bounded_state, intent_questions = bound_request_with_optional(
-                    bounded_state, {**questions, **recipient_reservation}, intent_questions
+                questions = {**core_questions, **topic_questions}
+            # Current recipient first, current semantics second, historical
+            # recipient estimates last. Keep the same single model call.
+            if rule_routing:
+                addressee_questions, addressee_mapping = {}, {}
+            else:
+                addressee_questions, addressee_mapping = build_addressee_task(
+                    turn, bounded_state, {**questions, **intent_questions}
                 )
-                topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
-                questions = {
-                    **build_questions(turn, narrative=item.narrative_bundle is not None, **context_options),
-                    **topic_questions,
-                }
-                # Current recipient first, current semantics second, historical
-                # recipient estimates last. Keep the same single model call.
-                if rule_routing:
-                    questions.pop("recipient", None)
-                    addressee_questions, addressee_mapping = {}, {}
-                else:
-                    addressee_questions, addressee_mapping = build_addressee_task(
-                        turn, bounded_state, {**questions, **intent_questions}
-                    )
-                questions = {**questions, **addressee_questions, **intent_questions}
-                request_budget = {
-                    "limit_chars": MAX_TOTAL_REQUEST_CHARS,
-                    "request_chars": request_size(bounded_state, questions),
-                    "decision_persona_chars": len(bounded_state.get("persona", "")),
-                    "decision_guidance_chars": len(bounded_state.get("decision_prompt", "")),
-                    "decision_question_chars": len(json.dumps(questions, ensure_ascii=False)),
-                    "nearby_context_messages": len(bounded_state["conversation"].get("nearby_context", ())),
-                    "nearby_context_candidates": len(turn.nearby_context),
-                    "nearby_context_chars": len(
-                        json.dumps(bounded_state["conversation"].get("nearby_context", ()), ensure_ascii=False)
-                    ),
-                    "optional_questions_dropped": [key for key in INTENT_CRITERIA if key not in intent_questions],
-                }
-                if request_budget["optional_questions_dropped"]:
-                    p._metric(prefix + "optional_questions_budget_reduced")
-            except StateBudgetExceeded:
-                p._metric(prefix + "state_budget_exceeded")
-                if runtime is not None:
-                    runtime.jev_decision = {
-                        "semantic_coverage": {
-                            key: {
-                                "asked": False,
-                                "returned": False,
-                                "valid": False,
-                                "accepted": False,
-                                "reason": "required_context_budget",
-                            }
-                            for key in INTENT_CRITERIA
+            questions = {**questions, **addressee_questions, **intent_questions}
+            request_budget = {
+                "limit_chars": MAX_TOTAL_REQUEST_CHARS,
+                "request_chars": request_size(bounded_state, questions),
+                "decision_persona_chars": len(bounded_state.get("persona", "")),
+                "decision_guidance_chars": len(bounded_state.get("decision_prompt", "")),
+                "decision_question_chars": len(json.dumps(questions, ensure_ascii=False)),
+                "nearby_context_messages": len(bounded_state["conversation"].get("nearby_context", ())),
+                "nearby_context_candidates": len(turn.nearby_context),
+                "nearby_context_chars": len(
+                    json.dumps(bounded_state["conversation"].get("nearby_context", ()), ensure_ascii=False)
+                ),
+                "optional_questions_dropped": [key for key in INTENT_CRITERIA if key not in intent_questions],
+            }
+            if request_budget["optional_questions_dropped"]:
+                p._metric(prefix + "optional_questions_budget_reduced")
+        except StateBudgetExceeded:
+            p._metric(prefix + "state_budget_exceeded")
+            if runtime is not None:
+                runtime.jev_decision = {
+                    "semantic_coverage": {
+                        key: {
+                            "asked": False,
+                            "returned": False,
+                            "valid": False,
+                            "accepted": False,
+                            "reason": "required_context_budget",
                         }
+                        for key in INTENT_CRITERIA
                     }
-                # Internal context budgeting must not silence a named request: an
-                # @ falls back to the conservative reply plan (the same plan the
-                # no-Jev mandatory path uses), while ambient turns stay silent.
-                if turn.mandatory_reply:
-                    return TurnDecision.fallback(turn, prefix + "state_budget_exceeded")
-                return TurnDecision.abstain(prefix + "state_budget_exceeded")
+                }
+            # Internal context budgeting must not silence a named request: an
+            # @ falls back to the conservative reply plan (the same plan the
+            # no-Jev mandatory path uses), while ambient turns stay silent.
+            if turn.mandatory_reply:
+                return TurnDecision.fallback(turn, prefix + "state_budget_exceeded")
+            return TurnDecision.abstain(prefix + "state_budget_exceeded")
+        async with self.slots:
             answers = await client.evaluate(
                 state=bounded_state,
                 questions=questions,

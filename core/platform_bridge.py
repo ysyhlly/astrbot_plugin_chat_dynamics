@@ -821,6 +821,123 @@ async def maybe_attach_voice(
         return chain
 
 
+class _OneBotSegmentAborted(Exception):
+    def __init__(self, reason: str, receipt: dict[str, Any]) -> None:
+        super().__init__(reason)
+        self.onebot_dispatch_receipt = receipt
+
+
+def _attach_onebot_receipt(exc: BaseException, receipt: dict[str, Any]) -> BaseException:
+    try:
+        setattr(exc, "onebot_dispatch_receipt", receipt)
+        return exc
+    except Exception:
+        return _OneBotSegmentAborted(str(exc), receipt)
+
+
+def _uses_native_aiocqhttp_send(event: Any) -> bool:
+    try:
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+    except ImportError:
+        return False
+    return isinstance(event, AiocqhttpMessageEvent) and getattr(type(event), "send", None) is AiocqhttpMessageEvent.send
+
+
+async def send_onebot_chain(
+    bot: Any,
+    message_chain: Any,
+    raw_event: Any = None,
+    is_group: bool = True,
+    session_id: Optional[str] = None,
+    *,
+    before_dispatch: Callable[[], Awaitable[bool]] | None = None,
+) -> Any:
+    """Send an OneBot MessageChain via AstrBot 4.29.4 AiocqhttpMessageEvent.send_message while preserving segment receipts."""
+    from astrbot.core.platform.sources.aiocqhttp import aiocqhttp_message_event as _aiocq_mod
+
+    AiocqhttpMessageEvent = _aiocq_mod.AiocqhttpMessageEvent
+    components = list(getattr(message_chain, "chain", ()) or ())
+    if not components:
+        return None
+    segmented = any(
+        _comp_type_name(seg).lower() in {"node", "nodes", "file"}
+        for seg in components
+    )
+    parts: list[tuple[int, Any]] = []
+    raw_responses: list[Any] = []
+    current_index = 0
+    dispatched_current = False
+
+    class _RecordingTransport:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(bot, name)
+
+        async def _dispatch(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+            nonlocal dispatched_current
+            if before_dispatch is not None and not await before_dispatch():
+                raise _OneBotSegmentAborted(
+                    "native_memory_source_invalidated",
+                    {
+                        "_onebot_dispatch_receipt": True,
+                        "parts": list(parts),
+                        "error": "native_memory_source_invalidated",
+                    },
+                )
+            method = getattr(bot, method_name)
+            try:
+                response = await method(*args, **kwargs)
+            except Exception as exc:
+                if parts:
+                    raise _attach_onebot_receipt(
+                        exc, {"_onebot_dispatch_receipt": True, "parts": list(parts), "error": str(exc)}
+                    ) from exc
+                raise
+            dispatched_current = True
+            parts.append((current_index, response))
+            raw_responses.append(response)
+            return response
+
+        async def send_group_msg(self, *args: Any, **kwargs: Any) -> Any:
+            return await self._dispatch("send_group_msg", *args, **kwargs)
+
+        async def send_private_msg(self, *args: Any, **kwargs: Any) -> Any:
+            return await self._dispatch("send_private_msg", *args, **kwargs)
+
+        async def send(self, *args: Any, **kwargs: Any) -> Any:
+            return await self._dispatch("send", *args, **kwargs)
+
+        async def call_action(self, *args: Any, **kwargs: Any) -> Any:
+            return await self._dispatch("call_action", *args, **kwargs)
+
+    transport = _RecordingTransport()
+    if not segmented:
+        await AiocqhttpMessageEvent.send_message(
+            transport,
+            message_chain,
+            event=raw_event,
+            is_group=is_group,
+            session_id=session_id,
+        )
+        return raw_responses[0] if len(raw_responses) == 1 else (raw_responses or None)
+
+    chain_cls = type(message_chain) if callable(type(message_chain)) else MessageChain
+    last_index = len(components) - 1
+    for idx, seg in enumerate(components):
+        current_index = idx
+        dispatched_current = False
+        sub_chain = chain_cls(chain=[seg]) if hasattr(message_chain, "chain") else MessageChain([seg])
+        await AiocqhttpMessageEvent.send_message(
+            transport,
+            sub_chain,
+            event=raw_event,
+            is_group=is_group,
+            session_id=session_id,
+        )
+        if dispatched_current and idx < last_index and _comp_type_name(seg).lower() not in {"node", "nodes", "file"}:
+            await _aiocq_mod.asyncio.sleep(0.5)
+    return {"_onebot_dispatch_receipt": True, "parts": parts}
+
+
 async def send_plain(
     event: Any,
     context: Any,
@@ -884,6 +1001,30 @@ async def send_plain(
             result = call_action("send_poke", **payload)
             if inspect.isawaitable(result):
                 result = await result
+        elif (
+            onebot
+            and event is not None
+            and getattr(event, "bot", None) is not None
+            and "send" not in getattr(event, "__dict__", {})
+            and _uses_native_aiocqhttp_send(event)
+        ):
+            raw_event = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            group_id = str(_safe_call(event, "get_group_id", "") or "")
+            sender_id = str(_safe_call(event, "get_sender_id", "") or "")
+            is_group = bool(group_id)
+            result = await send_onebot_chain(
+                event.bot,
+                chain,
+                raw_event=raw_event,
+                is_group=is_group,
+                session_id=(group_id if is_group else sender_id) or None,
+                before_dispatch=before_dispatch,
+            )
+            try:
+                from astrbot.core.platform.astr_message_event import AstrMessageEvent
+                await AstrMessageEvent.send(event, chain)
+            except Exception:
+                pass
         elif event is not None and hasattr(event, "send"):
             if before_dispatch is not None and onebot and getattr(event, "_supports_before_dispatch", False) is True:
                 result = event.send(chain, _before_dispatch=before_dispatch)

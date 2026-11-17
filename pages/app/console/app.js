@@ -1074,7 +1074,7 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
         : null;
       if (matched) {
         await selectSession(sessionKey(matched), { silent: false });
-      } else if (data.sessions.length === 1 && !new URLSearchParams(window.location.search).has("umo") && !window.DynamicsUI?.getSharedScope) {
+      } else if (data.sessions.length === 1 && !new URLSearchParams(window.location.search).has("umo") && !preferred) {
         await selectSession(sessionKey(data.sessions[0]), { silent: false });
       }
     }

@@ -167,18 +167,22 @@ async def test_shared_memory_rpc_failure_reports_both_waiters_and_preserves_prep
 
     manager = coordinator(tmp_path, {"worldbook": CharacterProvider(), "dynamic_life_state": LifeProvider(),
                                      "livingmemory": Memory()})
+    joined = asyncio.Event()
+    original_read = manager._shared_reads.read
+
+    async def tracked_read(key, factory):
+        if key in manager._shared_reads.pending:
+            joined.set()
+        return await original_read(key, factory)
+
+    manager._shared_reads.read = tracked_read
     creator = asyncio.create_task(prepare(manager))
     waiter = None
     try:
         await asyncio.wait_for(entered.wait(), 2)
         other = replace(turn(), messages=(replace(turn().messages[0], message_id="second-message"),))
         waiter = asyncio.create_task(prepare(manager, context=other))
-
-        async def wait_for_join():
-            while not manager.call_diagnostics()["shared_read_joins"]:
-                await asyncio.sleep(0)
-
-        await asyncio.wait_for(wait_for_join(), 2)
+        await asyncio.wait_for(joined.wait(), 2)
         release.set()
         prepares = await asyncio.gather(creator, waiter)
     finally:

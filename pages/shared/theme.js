@@ -104,9 +104,7 @@
       const result = await request("apiGet", {});
       if (revision !== ownRevision) return; // An in-flight restore must never undo a click.
       const hostContext = window.AstrBotPluginPage?.getContext?.() || {};
-      const inheritedUi = hostContext.uiOverride === true ||
-        (hostContext.uiOverride === undefined && valid(new URLSearchParams(location.search).get("ui")));
-      if (inheritedUi) {
+      if (hostContext.uiOverride === true) {
         renderStatus("");
         return;
       }

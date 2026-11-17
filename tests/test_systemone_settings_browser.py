@@ -42,7 +42,7 @@ def test_native_jev_selection_refresh_and_save(browser, page_server, width, them
         decision.select_option('commandcode/jev')
         assert "typesafe/jev" in page.locator('#configDecisionHeadline').inner_text()
         assert "@必回" in page.locator('#configModelHeadline').inner_text()
-        assert "确认对象是机器人即可接话" in page.locator('#configModelStatus').inner_text()
+        assert "引用机器人仍需确认接话对象" in page.locator('#configModelStatus').inner_text()
         assert page.evaluate("window.__stored.decision_backend") == "kev"
         assert page.locator('#configConflicts').is_hidden()
         page.locator('#btnRefreshModels').click()

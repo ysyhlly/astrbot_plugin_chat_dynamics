@@ -12,6 +12,7 @@ from .test_plugin_lifecycle import At, MockEvent, _plugin
 from .test_member_stop import NativeEvent, _stop_event, _bot_texts
 from .test_paragraph_sending import prepare_poke
 from .test_topic_annotations import fixture_plugin, label
+from astrbot_plugin_chat_dynamics import main as plugin_main
 from astrbot_plugin_chat_dynamics.core.platform_bridge import build_plain_chain, chain_plain_text
 from astrbot_plugin_chat_dynamics.core.mood_memory import MoodMemoryStore
 from astrbot_plugin_chat_dynamics.core import mood_memory
@@ -524,3 +525,102 @@ async def test_annotation_revision_survives_web_redaction(monkeypatch, offline_w
     await api.topic_annotations.save(label(expected_revision=data["revisions"]["m"]))
     with pytest.raises(ValueError, match="修改"):
         await api.topic_annotations.save(label(expected_revision=data["revisions"]["m"]))
+
+
+@pytest.mark.asyncio
+async def test_series_shared_config_contract_is_secret_free_and_matches_runtime():
+    p = _plugin({
+        "takeover_all": False,
+        "takeover_groups": ["g2", "g1"],
+        "exclude_groups": ["g9"],
+        "reply_provider": "rp1",
+        "decision_provider": "dp1",
+        "bot_names": ["安安"],
+        "rhythm_timezone": "Asia/Shanghai",
+        "daily_rhythm_enabled": True,
+        "rhythm_sleep_after_winddown": False,
+        "rhythm_force_sleep": True,
+        "api_key": "secret-token",
+    })
+    p.context.get_config = lambda: {
+        "provider_settings": {"default_personality": "alice"},
+        "locale": "zh-CN",
+        "token": "host-secret",
+    }
+    try:
+        shared = p.get_series_shared_config()
+        assert set(shared.keys()) == {
+            "takeover_all_groups",
+            "takeover_groups",
+            "exclude_groups",
+            "reply_provider",
+            "decision_provider",
+            "persona_id",
+            "bot_names",
+            "rhythm_timezone",
+            "quiet_hours",
+            "ui_language",
+        }
+        assert shared["takeover_all_groups"] is False
+        assert shared["takeover_groups"] == ["g1", "g2"]
+        assert shared["exclude_groups"] == ["g9"]
+        assert shared["reply_provider"] == "rp1"
+        assert shared["decision_provider"] == "dp1"
+        assert shared["persona_id"] == "alice"
+        assert shared["bot_names"] == ["安安"]
+        assert shared["rhythm_timezone"] == "Asia/Shanghai"
+        assert shared["quiet_hours"] == {
+            "daily_rhythm_enabled": True,
+            "sleep_after_winddown": False,
+            "force_sleep": True,
+        }
+        assert shared["ui_language"] == "zh-CN"
+        serialized = json.dumps(shared, ensure_ascii=False)
+        assert "secret-token" not in serialized and "host-secret" not in serialized
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_non_taken_over_group_skips_member_activity_and_boundary(jev_plugin, monkeypatch):
+    p, _ = jev_plugin
+    p.config["takeover_all"] = True
+    p.config["exclude_groups"] = ["ignored"]
+    p._sync_runtime_from_config()
+
+    async def fail_note(*_args, **_kwargs):
+        raise AssertionError("note_member_activity must not run for excluded group")
+
+    def fail_boundary(*_args, **_kwargs):
+        raise AssertionError("_member_boundary must not run for excluded group")
+
+    monkeypatch.setattr(p.narrative, "note_member_activity", fail_note)
+    monkeypatch.setattr(plugin_main._member_boundary, "resolve_state", fail_boundary)
+    try:
+        await p.on_group_message(MockEvent("hello", group_id="ignored", message_id="ignored-1"))
+        assert "mock:GroupMessage:ignored" not in p._sessions
+    finally:
+        await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_preserve_event_media_runs_outside_runtime_state_lock(jev_plugin, monkeypatch):
+    p, _ = jev_plugin
+    runtime = p._get_or_create_runtime(
+        "mock:GroupMessage:room",
+        group_id="room",
+        umo="mock:GroupMessage:room",
+        bot_id="bot_42",
+    )
+    lock_states = []
+
+    def spy_preserve(event, **_kwargs):
+        lock_states.append(runtime.state_lock.locked())
+        return event
+
+    monkeypatch.setattr(plugin_main, "preserve_event_media", spy_preserve)
+    try:
+        await p.on_group_message(MockEvent("聊一聊今天的事情", group_id="room", message_id="media-lock-1"))
+        assert lock_states == [False]
+    finally:
+        await p.terminate()

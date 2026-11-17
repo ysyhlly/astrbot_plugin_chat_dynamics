@@ -1,16 +1,20 @@
 import json
+from types import SimpleNamespace as NS
+
 import pytest
-from astrbot_plugin_chat_dynamics.core.world_visual_context import _local_reference_path
+from astrbot_plugin_chat_dynamics.core.media_reply_policy import media_reply_instructions
+from astrbot_plugin_chat_dynamics.core.narrative import REPLY_GUIDANCE, TurnContextBundle
+from astrbot_plugin_chat_dynamics.core.narrative_projection import reply_material
+from astrbot_plugin_chat_dynamics.core.world_visual_context import (
+    WORLD_VISUAL_BRIDGE_GUIDANCE,
+    _local_reference_path,
+    world_visual_context,
+    world_visual_instructions,
+)
 
 @pytest.mark.parametrize('path,allowed',[('/AstrBot/data/a.png',True),('C:\\AstrBot\\data\\a.png',True),('C:/AstrBot/data/a.png',True),('C:\\AstrBot\\..\\secret.png',False),('/tmp/../secret.png',False),('https://host/image.png',False),('\\\\server\\share\\a.png',False),('relative.png',False)])
 def test_cross_platform_local_reference_paths(path,allowed):
     assert _local_reference_path(path) is allowed
-
-from astrbot_plugin_chat_dynamics.core.world_visual_context import world_visual_context,world_visual_instructions,WORLD_VISUAL_BRIDGE_GUIDANCE
-from astrbot_plugin_chat_dynamics.core.narrative_projection import reply_material
-from astrbot_plugin_chat_dynamics.core.narrative import TurnContextBundle,REPLY_GUIDANCE
-from astrbot_plugin_chat_dynamics.core.media_reply_policy import media_reply_instructions
-from types import SimpleNamespace as NS
 
 def material():
     return {'scope':{'platform':'qq','umo':'qq:GroupMessage:test','persona_id':'p','instance_id':'p'},'captured_at':100,'speaker_id':'u','context_items':[],'character':{},
@@ -22,7 +26,9 @@ def material():
 
 
 def test_world_rules_and_conditions_reach_reply_while_decision_stays_compact():
-    data=material();reply=reply_material(data)['world_visual'];decision=TurnContextBundle('t',json.dumps(data)).decision_context()['world_visual']
+    data=material()
+    reply=reply_material(data)['world_visual']
+    decision=TurnContextBundle('t',json.dumps(data)).decision_context()['world_visual']
     assert reply['scene']['room']=='房间' and reply['scene']['visible_objects'][0]['powered'] is False
     instructions=world_visual_instructions(data['snapshot'],100)
     assert all(rule in instructions for rule in data['snapshot']['visual_sharing']['rules']) and reply['recent_experiences']
@@ -47,7 +53,8 @@ def test_expired_and_malformed_context_is_safe_and_no_tool_permission_is_granted
 
 
 def test_registered_design_references_reach_reply_without_leaking_to_decision():
-    data=material();source=data['snapshot']['visual_sharing']
+    data=material()
+    source=data['snapshot']['visual_sharing']
     source['rules'] += ['固定布局和当前状态优先']*7
     source['visual_design']={'revision':3,'generation_ready':True,'layout':'床在左，桌在右',
         'references':[{'reference':'/AstrBot/data/plugin_data/astrbot_plugin_dynamics_world/visual-assets/room.png','role':'layout','sha256':'a'*64,'label':'房间底图'}],

@@ -198,7 +198,7 @@ def export_runtime_state(plugin) -> dict:
               'plugin_version': host_version(),
               'saved_clock': plugin.time_service.time(),
               'occasion_cool': _occasion_cool(plugin),
-              'metrics': _json(plugin._metrics),
+              'metrics': _json(dict(plugin._metrics)),
               'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
                                    for row in list(plugin._shadow_decisions)[-50:]]}
     extras.update(dropped_nodes=0, dropped_sessions=0, truncated=False)
@@ -207,7 +207,7 @@ def export_runtime_state(plugin) -> dict:
     # Newest first, so running out of budget drops the least recently active
     # sessions; the list is reversed back to chronological order below because
     # restore() reads the end of it.
-    runtimes = sorted(plugin._registry.runtimes.values(), key=lambda r: r.last_activity, reverse=True)
+    runtimes = sorted(list(plugin._registry.runtimes.values()), key=lambda r: r.last_activity, reverse=True)
     extras['dropped_sessions'] = max(0, len(runtimes) - MAX_SESSIONS)
     for runtime in runtimes[:MAX_SESSIONS]:
         item = _fields(runtime, RUNTIME_FIELDS)
@@ -217,22 +217,22 @@ def export_runtime_state(plugin) -> dict:
         item['group_events'] = export_group_events(runtime, plugin.time_service.time())
         item['nodes'] = []
         if runtime.dag:
-            for node in runtime.dag.get_recent_nodes(MAX_NODES):
+            for node in list(runtime.dag.get_recent_nodes(MAX_NODES)):
                 saved = _fields(node, NODE_FIELDS)
-                saved['metadata'] = _json({k: v for k, v in node.metadata.items() if k in META_FIELDS})
+                saved['metadata'] = _json({k: v for k, v in list(node.metadata.items()) if k in META_FIELDS})
                 item['nodes'].append(saved)
         item['last_bot_id'] = runtime.last_bot_node.msg_id if runtime.last_bot_node else None
         owners = {n['user_id'] for n in item['nodes']}
         owners.update(n['metadata']['trigger_user_id'] for n in item['nodes']
                       if isinstance(n['metadata'].get('trigger_user_id'), str))
-        item['topic_stop_revisions'] = {uid: rev for uid, rev in runtime.topic_stop_revisions.items() if uid in owners}
+        item['topic_stop_revisions'] = {uid: rev for uid, rev in list(runtime.topic_stop_revisions.items()) if uid in owners}
         item['topics'] = [_fields(topic, TOPIC_FIELDS) for topic in list(runtime.routing_state.topics.values())[-80:]]
         item['archive'] = [_fields(topic, ('topic_id', 'summary', 'exemplars', 'participants', 'updated_at', 'archived_at', 'title'))
                            for topic in list(runtime.routing_state.archive.entries.values())[-32:]]
         item['last_topic_id'] = runtime.routing_state.last_topic_id
         item['last_bot_topic_id'] = runtime.routing_state.last_bot_topic_id
         for name in ('last_occasion', 'last_manners'):
-            item[name] = _json(getattr(runtime, name, {}))
+            item[name] = _json(dict(getattr(runtime, name, {}) or {}))
         vibe = getattr(plugin, 'vibe_analyzer', None)
         if vibe is not None:
             mode = vibe._current_modes.get(runtime.session_key)

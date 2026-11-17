@@ -14,7 +14,6 @@ from collections import deque
 from dataclasses import dataclass
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from .platform_bridge import chain_plain_text
 from .session_runtime import FollowupBatch
 from .turn_limits import MAX_TURN_CHARS as _MAX_TURN_CHARS
 from .vibe_analyzer import GroupChatMode

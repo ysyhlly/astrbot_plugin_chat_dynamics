@@ -16,19 +16,26 @@ def dispatcher(harness):
     item['target_umo']=item['scope']['umo']
     items={item['intent_id']:item}
     async def rpc(provider,method,*args,**kwargs):
-        if method=='list_due_intents':return [copy.deepcopy(i) for i in items.values() if i['status']=='pending']
-        if method=='get_intent':return {'item':copy.deepcopy(items[args[0]])}
-        if method=='update_intent':items[args[0]]['status']=args[1];return {'changed':True}
+        if method=='list_due_intents':
+            return [copy.deepcopy(i) for i in items.values() if i['status']=='pending']
+        if method=='get_intent':
+            return {'item':copy.deepcopy(items[args[0]])}
+        if method=='update_intent':
+            items[args[0]]['status']=args[1]
+            return {'changed':True}
     manager.call=AsyncMock(side_effect=rpc)
     return manager,p,event,item,items
 
 @pytest.mark.asyncio
 async def test_failed_head_does_not_block_later_candidate(harness):
     manager,p,event,item,items=dispatcher(harness)
-    other=dict(item,intent_id='second',recipient_user_id='456');items['second']=other
+    other=dict(item,intent_id='second',recipient_user_id='456')
+    items['second']=other
     async def send(candidate):
-        if candidate['intent_id']==item['intent_id']:raise RuntimeError('synthetic outage')
-        manager.journal.intent_status('second','sent');other['status']='sent'
+        if candidate['intent_id']==item['intent_id']:
+            raise RuntimeError('synthetic outage')
+        manager.journal.intent_status('second','sent')
+        other['status']='sent'
     manager.send_intent=AsyncMock(side_effect=send)
     await manager.dispatch_intents()
     assert manager.send_intent.await_count==2
@@ -41,7 +48,8 @@ async def test_failed_head_does_not_block_later_candidate(harness):
 async def test_retry_survives_restart_and_exhausts_without_new_send(harness):
     manager,p,event,item,_=dispatcher(harness)
     manager.send_intent=AsyncMock(side_effect=RuntimeError('synthetic outage'))
-    now=[10000.0];p.time_service.wall_time=lambda:now[0]
+    now=[10000.0]
+    p.time_service.wall_time=lambda:now[0]
     await manager.dispatch_intents()
     manager.journal=NarrativeJournal(manager.journal.path)
     await manager.dispatch_intents()
@@ -76,6 +84,7 @@ async def test_success_then_history_error_never_reopens_sent_candidate(harness):
 async def test_task_cancellation_is_not_a_provider_retry(harness):
     manager,p,event,item,_=dispatcher(harness)
     manager.send_intent=AsyncMock(side_effect=asyncio.CancelledError())
-    with pytest.raises(asyncio.CancelledError):await manager.dispatch_intents()
+    with pytest.raises(asyncio.CancelledError):
+        await manager.dispatch_intents()
     assert manager.journal.intent_retry_ready(item['intent_id'],10000)
     event.send.assert_not_awaited()

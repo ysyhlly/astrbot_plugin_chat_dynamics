@@ -3,6 +3,8 @@
 import json
 from dataclasses import replace
 
+import pytest
+
 from astrbot_plugin_chat_dynamics.core.conversation_map import (
     MAX_ADDRESSEE_QUESTIONS, build_addressee_task, conversation_map, resolve_addressees,
 )
@@ -12,6 +14,9 @@ from astrbot_plugin_chat_dynamics.core.jev_decision import (
 from astrbot_plugin_chat_dynamics.core.message_semantics import MessageSemantics
 from astrbot_plugin_chat_dynamics.core.topic_jev import TopicCandidateSnapshot
 from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, TurnDecision, reply_prompt
+from .test_jev_decision_layer import JevDouble, answers as layer_answers, jev_plugin  # noqa: F401
+from .test_persona_model import drain, flush
+from .test_plugin_lifecycle import MockEvent
 
 BOT = "900"
 
@@ -140,12 +145,6 @@ def test_bot_messages_are_not_asked_and_are_marked_as_bot():
     assert "b5" not in {spec["message_id"] for spec in mapping.values()}
     rows = {row["message_id"]: row for row in conversation_map(turn, {})["messages"]}
     assert rows["b5"]["speaker"] == {"user_id": BOT, "is_bot": True}
-
-import pytest
-
-from .test_jev_decision_layer import JevDouble, answers as layer_answers, jev_plugin  # noqa: F401
-from .test_persona_model import drain, flush
-from .test_plugin_lifecycle import MockEvent
 
 
 @pytest.mark.asyncio
