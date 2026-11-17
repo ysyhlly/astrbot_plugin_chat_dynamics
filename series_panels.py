@@ -195,36 +195,50 @@ def _sanitize_shared_config(raw: dict) -> dict:
     return cleaned
 
 
+def _iter_registered_entries(context) -> list[tuple[set[str], object]]:
+    if context is None:
+        return []
+    get_all_stars = getattr(context, "get_all_stars", None)
+    if not callable(get_all_stars) or inspect.iscoroutinefunction(get_all_stars):
+        return []
+    try:
+        raw = get_all_stars()
+    except Exception:
+        return []
+    if inspect.isawaitable(raw):
+        if inspect.iscoroutine(raw):
+            raw.close()
+        return []
+    if not raw or isinstance(raw, (str, bytes)):
+        return []
+    if isinstance(raw, dict):
+        entries = list(raw.items())
+    else:
+        try:
+            entries = [("", row) for row in raw]
+        except TypeError:
+            return []
+    return [(registered_names(key, row), row) for key, row in entries]
+
+
 def _find_chat_dynamics_owner(context):
     if context is None:
         return None
-    get_all_stars = getattr(context, "get_all_stars", None)
-    if callable(get_all_stars) and not inspect.iscoroutinefunction(get_all_stars):
-        try:
-            raw = get_all_stars()
-        except Exception:
-            raw = None
-        if inspect.isawaitable(raw):
-            if inspect.iscoroutine(raw):
-                raw.close()
-            raw = None
-        if raw:
-            entries = (
-                list(raw.items()) if isinstance(raw, dict) else [("", r) for r in raw]
-            )
-            matches = []
-            for key, row in entries:
-                if CHAT_DYNAMICS_ID in registered_names(key, row) and all(
-                    existing is not row for existing in matches
-                ):
-                    matches.append(row)
-            if len(matches) == 1:
-                row = matches[0]
-                if value(row, "activated", False) is not True:
-                    return None
-                return _extract_owner(row)
-            if len(matches) > 1:
+    registered_entries = _iter_registered_entries(context)
+    if registered_entries:
+        matches = []
+        for names, row in registered_entries:
+            if CHAT_DYNAMICS_ID in names and all(
+                existing is not row for existing in matches
+            ):
+                matches.append(row)
+        if len(matches) == 1:
+            row = matches[0]
+            if value(row, "activated", False) is not True:
                 return None
+            return _extract_owner(row)
+        if len(matches) > 1:
+            return None
 
     get_star = getattr(context, "get_registered_star", None)
     if callable(get_star) and not inspect.iscoroutinefunction(get_star):
@@ -302,11 +316,7 @@ def inherit_provider(explicit, context, role: str = "reply") -> str:
 
 def presence(context, current, root=None):
     root = Path(root) if root else Path(__file__).resolve().parent.parent
-    raw = context.get_all_stars()
-    entries = (
-        list(raw.items()) if isinstance(raw, dict) else [("", r) for r in raw or []]
-    )
-    registered_entries = [(registered_names(key, row), row) for key, row in entries]
+    registered_entries = _iter_registered_entries(context)
     output = []
     for identity, label, page, role in CATALOG:
         matches = []
