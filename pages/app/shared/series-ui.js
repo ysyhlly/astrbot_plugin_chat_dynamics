@@ -1,8 +1,9 @@
 /* Shared UI contract. Translates declared interface copy only, never record bodies. */
 import {messages} from './series-messages.js';
 const languages=['zh','en','ja','ru'],bindings=new Map();
+const LANG_KEY='dynamics_series_lang',LEGACY_LANG_KEY='lmem_lang';
 const normalize=value=>String(value||'').toLowerCase().split(/[-_]/)[0];
-const stored=()=>{try{return localStorage.getItem('lmem_lang');}catch{return null;}};
+const stored=()=>{try{return localStorage.getItem(LANG_KEY)||localStorage.getItem(LEGACY_LANG_KEY);}catch{return null;}};
 const query=new URLSearchParams(location.search);
 const queryLanguage=normalize(query.get('lang'));
 const bridge=()=>window.AstrBotPluginPage||window.AstrBotPluginView;
@@ -46,7 +47,7 @@ export function setLanguage(value,{persist=true}={}){
  if(persist){localOverride=true;updateHostContext({locale:value});}
  if(nativeLanguage&&getLanguage()!==value){originalSet(value,{persist});return;}
  if(!nativeLanguage)language=value;
- if(persist&&!bridge()?.setNavigationContext)try{localStorage.setItem('lmem_lang',value);}catch{}
+ if(persist&&!bridge()?.setNavigationContext)try{localStorage.setItem(LANG_KEY,value);}catch{}
  repaint();
 }
 if(!nativeLanguage){window.getLanguage=getLanguage;window.setLanguage=setLanguage;}
@@ -58,7 +59,7 @@ window.addEventListener('languagechange',event=>{
  }
  repaint();
 });
-window.addEventListener('storage',event=>{if(event.key==='lmem_lang'&&languages.includes(event.newValue))setLanguage(event.newValue,{persist:false});});
+window.addEventListener('storage',event=>{if((event.key===LANG_KEY||event.key===LEGACY_LANG_KEY)&&languages.includes(event.newValue))setLanguage(event.newValue,{persist:false});});
 function start(){
  if(nativeLanguage&&getLanguage()!==language)originalSet(language,{persist:false});
  apply();repaint();

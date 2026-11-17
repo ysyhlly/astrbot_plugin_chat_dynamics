@@ -1,8 +1,9 @@
-"""Read-only companion presence. Navigation is handled by the host bridge."""
+"""Read-only companion presence and series defaults. Navigation is handled by the host bridge."""
 
 from __future__ import annotations
 
 import inspect
+import sys
 from pathlib import Path
 
 from astrbot.api.web import json_response, request
@@ -53,6 +54,17 @@ LEGACY_GAME_IDS = frozenset(
     if owner == "astrbot_plugin_dynamics_games"
 )
 
+CHAT_DYNAMICS_ID = "astrbot_plugin_chat_dynamics"
+_SHARED_BOOL_KEYS = ("takeover_all_groups",)
+_SHARED_LIST_KEYS = ("takeover_groups", "exclude_groups", "bot_names")
+_SHARED_STR_KEYS = (
+    "reply_provider",
+    "decision_provider",
+    "persona_id",
+    "rhythm_timezone",
+    "ui_language",
+)
+
 
 def value(row, key, default=None):
     return (
@@ -71,6 +83,221 @@ def registered_names(key, row):
         if isinstance(item, str):
             names.update(item.split("."))
     return names
+
+
+def _extract_owner(row):
+    return next(
+        (
+            value(row, k)
+            for k in ("star_cls", "star", "plugin")
+            if value(row, k) is not None and not isinstance(value(row, k), type)
+        ),
+        None,
+    )
+
+
+def _safe_dir_segment(name) -> str | None:
+    if not isinstance(name, str):
+        return None
+    clean = name.strip()
+    if not clean or clean in {".", ".."} or "/" in clean or "\\" in clean:
+        return None
+    return clean
+
+
+def _owner_plugin_dirs(owner) -> tuple[Path, ...]:
+    if owner is None:
+        return ()
+    mod_name = getattr(type(owner), "__module__", "") or ""
+    if not mod_name or mod_name == "builtins":
+        return ()
+    top_pkg = mod_name.split(".", 1)[0]
+    if top_pkg in sys.stdlib_module_names:
+        return ()
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for mod in (sys.modules.get(top_pkg), sys.modules.get(mod_name)):
+        probe = getattr(mod, "__file__", None)
+        if not probe:
+            continue
+        try:
+            resolved = Path(probe).resolve()
+        except OSError:
+            continue
+        parent = resolved.parent if resolved.is_file() else resolved
+        for ancestor in (parent, parent.parent, parent.parent.parent):
+            if ancestor in seen or ancestor == ancestor.parent:
+                continue
+            if (
+                (ancestor / "pages").is_dir()
+                or (ancestor / "views").is_dir()
+                or (ancestor / "metadata.yaml").is_file()
+            ):
+                seen.add(ancestor)
+                candidates.append(ancestor)
+                break
+    return tuple(candidates)
+
+
+def _normalize_str_list(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.replace("\r", "\n").replace("\n", ",").split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (str, int)):
+            clean = str(item).strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+    return out
+
+
+def _safe_json_value(raw, *, depth: int = 2):
+    if raw is None or isinstance(raw, (bool, int, float, str)):
+        return raw.strip() if isinstance(raw, str) else raw
+    if depth <= 0:
+        return None
+    if isinstance(raw, (list, tuple)):
+        items = [_safe_json_value(v, depth=depth - 1) for v in raw]
+        return [item for item in items if item is not None]
+    if isinstance(raw, dict):
+        cleaned: dict[str, object] = {}
+        for k, v in raw.items():
+            if isinstance(k, str):
+                safe_v = _safe_json_value(v, depth=depth - 1)
+                if safe_v is not None:
+                    cleaned[k] = safe_v
+        return cleaned
+    return None
+
+
+def _sanitize_shared_config(raw: dict) -> dict:
+    cleaned: dict[str, object] = {}
+    for key in _SHARED_BOOL_KEYS:
+        val = raw.get(key)
+        cleaned[key] = val if isinstance(val, bool) else False
+    for key in _SHARED_LIST_KEYS:
+        cleaned[key] = _normalize_str_list(raw.get(key))
+    for key in _SHARED_STR_KEYS:
+        val = raw.get(key)
+        cleaned[key] = val.strip() if isinstance(val, str) else ""
+    quiet = _safe_json_value(raw.get("quiet_hours"))
+    cleaned["quiet_hours"] = quiet if quiet is not None else ""
+    return cleaned
+
+
+def _find_chat_dynamics_owner(context):
+    if context is None:
+        return None
+    get_all_stars = getattr(context, "get_all_stars", None)
+    if callable(get_all_stars) and not inspect.iscoroutinefunction(get_all_stars):
+        try:
+            raw = get_all_stars()
+        except Exception:
+            raw = None
+        if inspect.isawaitable(raw):
+            if inspect.iscoroutine(raw):
+                raw.close()
+            raw = None
+        if raw:
+            entries = (
+                list(raw.items()) if isinstance(raw, dict) else [("", r) for r in raw]
+            )
+            matches = []
+            for key, row in entries:
+                if CHAT_DYNAMICS_ID in registered_names(key, row) and all(
+                    existing is not row for existing in matches
+                ):
+                    matches.append(row)
+            if len(matches) == 1:
+                row = matches[0]
+                if value(row, "activated", False) is not True:
+                    return None
+                return _extract_owner(row)
+            if len(matches) > 1:
+                return None
+
+    get_star = getattr(context, "get_registered_star", None)
+    if callable(get_star) and not inspect.iscoroutinefunction(get_star):
+        try:
+            star = get_star(CHAT_DYNAMICS_ID)
+        except Exception:
+            return None
+        if inspect.isawaitable(star):
+            if inspect.iscoroutine(star):
+                star.close()
+            return None
+        if star is None:
+            return None
+        if value(star, "activated", True) is False:
+            return None
+        owner = _extract_owner(star)
+        if owner is not None:
+            return owner
+        if callable(getattr(star, "get_series_shared_config", None)):
+            return star
+    return None
+
+
+def get_series_defaults(context) -> dict:
+    """Read allowlisted non-secret shared defaults published by chat_dynamics.
+
+    Strictly synchronous, read-only, and side-effect free. Returns ``{}`` when
+    ``astrbot_plugin_chat_dynamics`` is absent, unloaded, disabled, or fails.
+    """
+    owner = _find_chat_dynamics_owner(context)
+    if owner is None:
+        return {}
+    getter = getattr(owner, "get_series_shared_config", None)
+    if not callable(getter) or inspect.iscoroutinefunction(getter):
+        return {}
+    try:
+        raw = getter()
+    except Exception:
+        return {}
+    if inspect.isawaitable(raw):
+        if inspect.iscoroutine(raw):
+            raw.close()
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    if raw.get("enabled") is False:
+        return {}
+    return _sanitize_shared_config(raw)
+
+
+def inherit_umos(explicit, context) -> list[str]:
+    """Return normalized explicit UMOs, or fall back to chat_dynamics shared groups."""
+    own = _normalize_str_list(explicit)
+    if own:
+        return own
+    defaults = get_series_defaults(context)
+    groups = defaults.get("takeover_groups")
+    return list(groups) if isinstance(groups, list) else []
+
+
+def inherit_provider(explicit, context, role: str = "reply") -> str:
+    """Return explicit provider ID if configured, else chat_dynamics default provider."""
+    own = explicit.strip() if isinstance(explicit, str) else ""
+    if own:
+        return own
+    defaults = get_series_defaults(context)
+    if not defaults:
+        return ""
+    if role == "decision":
+        return str(
+            defaults.get("decision_provider") or defaults.get("reply_provider") or ""
+        )
+    return str(defaults.get("reply_provider") or "")
 
 
 def presence(context, current, root=None):
@@ -110,21 +337,20 @@ def presence(context, current, root=None):
             row = matches[0]
             data["activated"] = value(row, "activated", False) is True
             data["version"] = str(value(row, "version", "") or "")[:128]
-            owner = next(
-                (
-                    value(row, k)
-                    for k in ("star_cls", "star", "plugin")
-                    if value(row, k) is not None and not isinstance(value(row, k), type)
-                ),
-                None,
-            )
+            owner = _extract_owner(row)
             data["loaded"] = owner is not None
+            candidate_dirs = [root / identity]
+            custom_dir = _safe_dir_segment(value(row, "root_dir_name"))
+            if custom_dir and custom_dir != identity:
+                candidate_dirs.append(root / custom_dir)
+            candidate_dirs.extend(_owner_plugin_dirs(owner))
             data["can_open"] = bool(
                 data["activated"]
                 and data["loaded"]
                 and page
                 and any(
-                    (root / identity / folder / page / "index.html").is_file()
+                    (base_dir / folder / page / "index.html").is_file()
+                    for base_dir in candidate_dirs
                     for folder in ("pages", "views")
                 )
             )
@@ -187,6 +413,7 @@ def presence(context, current, root=None):
         "plugins": output,
         "legacy_conflict": bool(conflicts),
         "legacy_conflicts": conflicts,
+        "series_defaults": get_series_defaults(context),
     }
 
 

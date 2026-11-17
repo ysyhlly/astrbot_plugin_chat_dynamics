@@ -3,13 +3,39 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 RELOAD_BOOTSTRAP_VERSION = 2
 
+_VERSION_LINE_RE = re.compile(
+    r"""^\s*version\s*:\s*(?:"([^"#\r\n]+)"|'([^'#\r\n]+)'|([^\s#\r\n]+))"""
+)
 
-def ensure_current(package: str, main_module: str, entry_path: str, checks=(), version=None):
+
+def _read_metadata_version(root: Path) -> str | None:
+    """Read the declared plugin version from metadata.yaml without YAML dependency."""
+    meta_path = root / "metadata.yaml"
+    try:
+        if not meta_path.is_file():
+            return None
+        text = meta_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        match = _VERSION_LINE_RE.match(line)
+        if match:
+            ver = next((group.strip() for group in match.groups() if group), "")
+            if ver:
+                return ver
+    return None
+
+
+def ensure_current(
+    package: str, main_module: str, entry_path: str, checks=(), version=None
+):
     """Drop stale owned imports before the main module imports its dependencies.
 
     Args:
@@ -17,7 +43,7 @@ def ensure_current(package: str, main_module: str, entry_path: str, checks=(), v
         main_module: Currently executing entry module, retained throughout.
         entry_path: Current plugin main file.
         checks: Existing module/class/field signatures that distinguish old code.
-        version: Optional package version used by its own main registration.
+        version: Optional package version; falls back to metadata.yaml when omitted.
     """
     parent = sys.modules.get(package)
     if parent is None or not package:
@@ -51,9 +77,11 @@ def ensure_current(package: str, main_module: str, entry_path: str, checks=(), v
     for module_name, class_name, attribute in checks:
         module = sys.modules.get(package + "." + module_name)
         candidate = getattr(module, class_name, None)
-        if candidate is not None and not (hasattr(candidate, attribute)
-                or attribute in getattr(candidate, "__dataclass_fields__", {})
-                or attribute in getattr(candidate, "model_fields", {})):
+        if candidate is not None and not (
+            hasattr(candidate, attribute)
+            or attribute in getattr(candidate, "__dataclass_fields__", {})
+            or attribute in getattr(candidate, "model_fields", {})
+        ):
             incompatible = True
     if incompatible or previous is not None and previous != stamp:
         prefix = package + "."
@@ -66,6 +94,8 @@ def ensure_current(package: str, main_module: str, entry_path: str, checks=(), v
             owner = sys.modules.get(owner_name)
             if owner is not None and getattr(owner, attribute, None) is module:
                 delattr(owner, attribute)
-    parent._narrative_loaded_source_fingerprint = stamp
-    if version is not None:
-        parent.__version__ = version
+    parent_obj: Any = parent
+    parent_obj._narrative_loaded_source_fingerprint = stamp
+    resolved_version = version if version is not None else _read_metadata_version(root)
+    if resolved_version is not None:
+        parent_obj.__version__ = resolved_version
