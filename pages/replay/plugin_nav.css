@@ -1,0 +1,15 @@
+/* Plugin route buttons are mounted by plugin_nav.js into the shared top bar. */
+.plugin-main { min-width: 0; }
+.page-nav:empty, .wire-nav { display: none; }
+.plugin-nav-note.error { color: var(--ds-danger); }
+.plugin-side-item[aria-busy="true"] { opacity: .6; }
+.ui-theme-retry {
+  padding: 6px 10px;
+  min-height: 38px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-pill);
+  color: var(--ds-accent);
+  background: var(--ds-surface);
+  font: inherit;
+  cursor: pointer;
+}

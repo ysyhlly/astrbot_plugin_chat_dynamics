@@ -295,6 +295,13 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         host._metric("boundary_silence_observed")
         return None
 
+    if host._persona_mode() and not host.shadow_mode and runtime.scope_kind == "group":
+        for source_node, source_event in zip(turn_nodes, result.raw_events):
+            try:
+                runtime.recent_images.remember(source_event, source_node, host.media_archive, now)
+            except Exception as exc:
+                logger.warning("recent image copy unavailable type=%s", type(exc).__name__)
+
     if not turn_nodes:
         node = dag.add_message(
             msg_id=f"{turn_id}_0",

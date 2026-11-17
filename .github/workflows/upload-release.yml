@@ -48,7 +48,7 @@ jobs:
           from scripts.check_release import plugin_version
 
           tag, commit = os.environ["RELEASE_TAG"], os.environ["RELEASE_COMMIT"]
-          assert re.fullmatch(r"v\d+\.\d+\.\d+", tag), "Invalid release tag"
+          assert re.fullmatch(r"v\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?", tag), "Invalid release tag"
           assert re.fullmatch(r"[0-9a-f]{40}", commit), "A full commit SHA is required"
           assert plugin_version(Path.cwd()) == tag, "Source version differs from release tag"
           release = json.loads(Path("release.json").read_text())
@@ -61,13 +61,10 @@ jobs:
           PY
       - run: python scripts/check_release.py
       - run: python scripts/build_release.py
-      - run: python scripts/build_compat_release.py
       - name: Upload runtime package and verification files
         run: |
           for suffix in '' '.manifest.json' '.sha256'; do
             gh release upload "$RELEASE_TAG" "dist/astrbot_plugin_chat_dynamics-$RELEASE_TAG.zip$suffix" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-            gh release upload "$RELEASE_TAG" "dist/chat-dynamics-compat-$RELEASE_TAG.zip$suffix" \
               --repo "$GITHUB_REPOSITORY" --clobber
           done
       - name: Verify uploaded bytes

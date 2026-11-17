@@ -91,6 +91,10 @@ html[data-ui-theme="night"] .replay-block { color: #14252b; }
 .decision-trace { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; font-size: 12px; }
 
 /* Replay workspace: compact controls, a broad reading surface, and a focused inspector. */
+.app.wire-app.series-workspace {
+  /* The timeline needs the series workspace width, not the legacy form shell cap. */
+  width: min(100%, var(--ds-max-width, 1680px));
+}
 .plugin-main { min-width: 0; }
 .topbar { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom:24px; }
 .brand-copy h1 { margin:6px 0 8px; font-size:28px; letter-spacing:-.04em; }
@@ -155,4 +159,24 @@ html[data-ui-theme="night"] .replay-block { color: #14252b; }
 .recipient-editor { background:var(--surface-soft); }
 .recipient-editor summary { min-height:44px; display:flex; align-items:center; }
 .decision-trace { padding:14px; border-radius:6px; background:var(--surface-soft); line-height:1.8; }
+.replay-workbench { display:grid; grid-template-columns:minmax(0,1fr); gap:20px; align-items:start; min-width:0; }
+.replay-main-col, .replay-main-col > .wire-card, .replay-inspector { min-width:0; }
+@media(min-width:1180px) {
+  .replay-workbench { grid-template-columns:minmax(0,1fr) 320px; }
+  .replay-inspector { position:sticky; top:16px; margin-bottom:0; }
+}
+.inspector-silence-tags { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 14px; }
+.silence-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:999px; border:1px solid var(--line); background:var(--surface-soft); color:var(--text); font-size:11px; }
+.silence-chip b { color:var(--cyan); font-variant-numeric:tabular-nums; }
+.inspector-waterfall { display:grid; gap:8px; }
+.wf-stage { display:grid; gap:4px; padding:10px 12px; border:1px solid var(--line); border-radius:7px; background:var(--surface-soft); }
+.wf-stage-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+.wf-stage-head strong { font-size:12px; font-weight:600; }
+.wf-stage-head span { font:11px var(--mono); color:var(--muted); }
+.wf-stage p { margin:0; font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.wf-bar { height:4px; border-radius:999px; background:var(--line); overflow:hidden; }
+.wf-bar > i { display:block; height:100%; background:var(--cyan); border-radius:999px; }
+.jev-waterfall-strip { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 6px; }
+.jev-wf-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:5px; border:1px solid var(--line); background:var(--surface-soft); font-size:11px; color:var(--text); }
+.jev-wf-badge[data-tone="speak"] { border-color:var(--cyan); color:var(--cyan); }
 @media(max-width:700px) { .replay-summary strong { font-size:22px; } .scene-dialog .card-heading { flex-wrap:wrap; } }

@@ -9,7 +9,7 @@ Exclusive mode may still stop_event(); filter mode does not.
 from __future__ import annotations
 
 from .reload_bootstrap import ensure_current
-ensure_current(__package__, __name__, __file__, checks=[('core.config', 'RuntimeConfig', 'decision_llm_provider'), ('core.integrations.registry', 'IntegrationRegistry', '_ownership_catalog_v1'), ('core.agent_bridge', 'AgentOutput', 'stream_prefix'),('core.native_memory_bridge', '_NativeMemoryValidationProvider', '_source_failure_diagnostics_v1'),('core.pipeline_telemetry', 'PipelineTelemetry', 'record_delivery'), ('core.config', 'RuntimeConfig', 'narrative_all_groups'), ('core.web_api', 'ConsoleWebAPI', 'narrative_get'), ('core.integrations.registry', 'IntegrationRegistry', 'narrative_provider'), ('core.systemone.provider', 'SystemOneProvider', 'is_native_decision_provider'), ('core.systemone.service', 'SystemOneService', 'native_decision_refresh'), ('core.persona_engine', 'PersonaEngine', '_recipient_guard_release'), ('core.narrative', 'NarrativeCoordinator', 'finish_send_async'), ('core.persona_engine', 'PersonaEngine', '_decision_nearby_context_release'), ('core.persona_engine', 'PersonaEngine', '_decision_compaction_release')])
+ensure_current(__package__, __name__, __file__, checks=[('core.persona_engine', 'PersonaEngine', '_dynamics_horizons_v1'), ('core.narrative', 'NarrativeCoordinator', '_intent_provider'), ('core.persona_engine', 'PersonaEngine', '_dynamics_learning_v1'), ('core.integrations.registry', 'IntegrationRegistry', '_dynamics_memory_capabilities_v1'), ('core.integrations.registry', 'IntegrationRegistry', '_dynamics_world_capabilities_v1'), ('core.config', 'RuntimeConfig', 'decision_llm_provider'), ('core.integrations.registry', 'IntegrationRegistry', '_ownership_catalog_v1'), ('core.agent_bridge', 'AgentOutput', 'stream_prefix'),('core.native_memory_bridge', '_NativeMemoryValidationProvider', '_source_failure_diagnostics_v1'),('core.pipeline_telemetry', 'PipelineTelemetry', 'record_delivery'), ('core.config', 'RuntimeConfig', 'narrative_all_groups'), ('core.web_api', 'ConsoleWebAPI', 'narrative_get'), ('core.integrations.registry', 'IntegrationRegistry', 'narrative_provider'), ('core.systemone.provider', 'SystemOneProvider', 'is_native_decision_provider'), ('core.systemone.service', 'SystemOneService', 'native_decision_refresh'), ('core.persona_engine', 'PersonaEngine', '_recipient_guard_release'), ('core.narrative', 'NarrativeCoordinator', 'finish_send_async'), ('core.persona_engine', 'PersonaEngine', '_decision_nearby_context_release'), ('core.persona_engine', 'PersonaEngine', '_decision_compaction_release'), ('core.plugin_web_mixin', 'PluginWebAndAdminMixin', 'web_api_overview')], version='v1.18.3-learning.1-weather.1-reply.1-media.1-world.2-private.1-visual.5.outreach.3-scenes.2-horizons.2.memory.1.reliability.1.prepare.1.grounding.1.imagecontext.1.memenotes.1.warnfix.1.expression.1.allchats.1.quietcontext.1.actions.2.discussion.1')
 
 
 import asyncio
@@ -106,6 +106,7 @@ from .core.time_service import SystemClock, TimeService
 from .core.vibe_analyzer import GroupChatMode, VibeAnalyzer
 from .core.web_api import ConsoleWebAPI, PLUGIN_NAME  # noqa: F401
 from .core.decision_status import DecisionStatusWebAPI
+from .core.plugin_web_mixin import PluginWebAndAdminMixin
 from pathlib import Path as _PluginPath
 
 try:
@@ -255,6 +256,11 @@ _METRIC_NAMES = (
     "unattributed_proactive_dispatch",
     "deferred_media_failed",
     "deferred_media_sent",
+    "peer_bot_round_limit",
+    "poke_native_source_invalidated",
+    "first_sentence_before_agent_finalize",
+    "agent_finalize_failed_after_output",
+    "routing_embedding_wait_skipped",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -322,11 +328,21 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
     "astrbot_plugin_chat_dynamics",
     "ysyhlly",
     "群间 · Chat Dynamics",
-    "v1.18.1",
+    "v1.19.0-rc.1",
     "",
 )
-class ChatDynamicsPlugin(Star):
+class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
+    def get_world_integration_capabilities(self):
+        """Stable native World contract; no model calls or settings disclosure."""
+        return {'schema_version':1,'features':{'character':1,'life':1,'environment':1,'scene':1,'visual_sharing':1,'room_design':1,'creative_projects':1}}
+
     """Main Star class orchestrating group chat dynamics state machine."""
+
+    async def preview_learning_material(self,scope,persona,member,query=''):
+        """Public read-only learning preview for the authenticated companion console."""
+        from .core.reply_adaptation import preview_learning_material
+        return await preview_learning_material(self,scope,persona,member,query)
+
 
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
@@ -829,195 +845,6 @@ class ChatDynamicsPlugin(Star):
         digest = hashlib.sha256(str(session_id or "").encode("utf-8", "ignore")).hexdigest()
         return digest[:12]
 
-    def preset_catalog(self) -> dict[str, Any]:
-        return ConfigPanel(self).preset_catalog()
-
-    async def apply_preset(self, name: str) -> dict[str, Any]:
-        return await ConfigPanel(self).apply_preset(name)
-
-    def _config_schema(self) -> dict[str, Any]:
-        return ConfigPanel(self)._config_schema()
-
-    def _config_stored_values(self) -> dict[str, Any]:
-        return ConfigPanel(self)._config_stored_values()
-
-    def get_effective_config(self) -> dict[str, Any]:
-        return ConfigPanel(self).get_effective_config()
-
-
-    def notebook_list(self, umo: str) -> dict[str, Any]:
-        store = getattr(self, "group_memory", None)
-        if store is None:
-            return {"anniversaries": [], "reminders": [], "slang_trials": [], "mute_until": 0.0}
-        return store.list_all(str(umo or ""))
-
-    async def notebook_mutate_async(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        # Deliberately not offloaded to a worker thread: the notebook keeps an
-        # in-process cache that the message path (reminder popping, memory
-        # lines) reads and writes on the event loop, so a second thread would
-        # add read-modify-write races for a small blocking-IO gain.
-        if action != "add_slang":
-            return self.notebook_mutate(action, payload)
-        umo = str(payload.get("umo") or payload.get("session_key") or "").strip()
-        if not umo:
-            raise ValueError("umo required")
-        item = await self.group_memory.add_slang_trial_async(
-            umo, phrase=str(payload.get("phrase") or ""), approved=payload.get("approved") is True
-        )
-        return {"item": item}
-
-    @staticmethod
-    def _notebook_number(
-        payload: dict[str, Any],
-        key: str,
-        *,
-        default: Optional[float] = None,
-        minimum: Optional[float] = None,
-        maximum: Optional[float] = None,
-    ) -> float:
-        """Strict numeric field for notebook payloads.
-
-        The panel and the HTTP API share this path, and ``json`` accepts
-        ``Infinity``/``NaN`` literals, so a float() coercion alone would let a
-        request store a non-finite deadline such as a permanent mute.
-        """
-        raw = payload.get(key)
-        if raw is None or raw == "":
-            if default is None:
-                raise ValueError(f"{key} required")
-            return float(default)
-        if isinstance(raw, bool) or isinstance(raw, (dict, list, tuple, set)):
-            raise ValueError(f"{key} must be a number")
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            raise ValueError(f"{key} must be a number") from None
-        if not math.isfinite(value):
-            raise ValueError(f"{key} must be finite")
-        if minimum is not None and value < minimum:
-            raise ValueError(f"{key} must be >= {minimum:g}")
-        if maximum is not None and value > maximum:
-            raise ValueError(f"{key} must be <= {maximum:g}")
-        return value
-
-    def notebook_mutate(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """CRUD-lite for group notebook. Raises ValueError on bad input."""
-        store = getattr(self, "group_memory", None)
-        mood = getattr(self, "mood_memory", None)
-        if store is None:
-            raise RuntimeError("group memory unavailable")
-        if not isinstance(payload, dict):
-            raise ValueError("payload must be an object")
-        action = str(action or "").strip()
-        umo = str(payload.get("umo") or payload.get("session_key") or "").strip()
-        if not umo:
-            raise ValueError("umo required")
-        if len(umo) > 256:
-            raise ValueError("umo too long")
-        if action == "list":
-            return self.notebook_list(umo)
-        if action == "mute_tonight":
-            # Bounded so a bad request cannot silence a group indefinitely.
-            # Zero is the documented way to end a mute early, so it stays
-            # inside the accepted range.
-            hours = self._notebook_number(payload, "hours", default=10.0, minimum=0.0, maximum=720.0)
-            until = store.mute_tonight(umo, hours=hours)
-            if hours > 0:
-                self.reminders.cancel(umo)
-            if mood is not None:
-                mood.mute_tonight(umo, hours=hours)
-            return {"mute_until": until}
-        if action == "forget":
-            peer = str(payload.get("peer_id") or "")[:128]
-            tag = str(payload.get("tag") or "")[:64]
-            ok = bool(mood and mood.forget(umo, peer, tag=tag))
-            return {"forgotten": ok}
-        if action == "add_anniversary":
-            month = self._notebook_number(payload, "month", default=0, minimum=1, maximum=12)
-            day = self._notebook_number(payload, "day", default=0, minimum=1, maximum=31)
-            if not month.is_integer() or not day.is_integer():
-                raise ValueError("month and day must be integers")
-            item = store.add_anniversary(
-                umo,
-                title=self._bounded_text(payload.get("title") or "", 200),
-                month=int(month),
-                day=int(day),
-                note=self._bounded_text(payload.get("note") or "", 500),
-            )
-            return {"item": item}
-        if action == "remove_anniversary":
-            return {"removed": store.remove_anniversary(umo, str(payload.get("id") or "")[:128])}
-        if action == "add_reminder":
-            item = store.add_reminder(
-                umo,
-                text=self._bounded_text(payload.get("text") or "", 500),
-                # Finiteness is what matters here (json parses Infinity); the
-                # ceiling only rules out nonsense beyond year 9999.
-                due_at=self._notebook_number(payload, "due_at", minimum=0.0, maximum=253402300800.0),
-                created_by=str(payload.get("created_by") or "")[:128],
-            )
-            self.reminders.start()
-            narrative = getattr(self, "narrative", None)
-            if narrative is not None:
-                effect = getattr(narrative, 'queue_reminder_effect', None) or narrative.reminder_effect
-                effect(umo, item['id'], 'created')
-            return {"item": item}
-        if action in {'remove_reminder', 'mark_done', 'done_reminder'}:
-            item_id = str(payload.get('id') or '')[:128]
-            removed = store.remove_reminder(umo, item_id)
-            if removed:
-                self.reminders.cancel(umo, item_id)
-                narrative = getattr(self, "narrative", None)
-                if narrative is not None:
-                    effect = getattr(narrative, 'queue_reminder_effect', None) or narrative.reminder_effect
-                    effect(umo, item_id, 'cancelled')
-            return {'removed': removed}
-        if action == "add_slang":
-            item = store.add_slang_trial(
-                umo,
-                phrase=self._bounded_text(payload.get("phrase") or "", 64),
-                approved=payload.get("approved") is True,
-            )
-            return {"item": item}
-        if action == "remove_slang":
-            return {"removed": store.remove_slang(umo, str(payload.get("id") or "")[:128])}
-        if action == "due_reminders":
-            return {"items": store.due_reminders(umo)}
-        if action == "due_anniversaries":
-            return {"items": store.due_anniversaries(umo)}
-        raise ValueError(f"unknown notebook action: {action}")
-
-    def is_narrative_session_enabled(self, umo: str) -> bool:
-        """Public early-hook ownership check; character binding is resolved separately."""
-        narrative = getattr(self, 'narrative', None)
-        return bool(narrative and narrative.enabled(umo))
-
-
-    def get_config_panel(self, *, refresh: bool = True) -> dict[str, Any]:
-        return ConfigPanel(self).get_config_panel(refresh=refresh)
-
-    def _normalize_config_update_value(self, key: str, value: Any, field_schema: dict[str, Any]) -> Any:
-        return ConfigPanel(self)._normalize_config_update_value(key, value, field_schema)
-
-    async def save_config_values(
-        self, updates: dict[str, Any], *, baseline: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        return await ConfigPanel(self).save_config_values(updates, baseline=baseline)
-
-
-    def _serialize_provider(self, provider: Any) -> dict[str, Any]:
-        return ConfigPanel(self)._serialize_provider(provider)
-
-    def list_available_providers(self) -> dict[str, Any]:
-        return ConfigPanel(self).list_available_providers()
-
-    async def apply_stored_config(self) -> dict[str, Any]:
-        return await ConfigPanel(self).apply_stored_config()
-
-
-    async def _apply_preset_locked(self, name: str) -> dict[str, Any]:
-        return await ConfigPanel(self)._apply_preset_locked(name)
-
     def _record_shadow_decision(
         self,
         session_id: str,
@@ -1195,8 +1022,10 @@ class ChatDynamicsPlugin(Star):
         text: str,
         *,
         reply_to_id: Optional[str] = None,
+        boundary_target_uid: Optional[str] = None,
         native_source_validator=None,
         send_effect=None,
+        guarded_send_effect=None,
     ):
         peer_locked = False
         parsed_peer = parse_group_event(event)
@@ -1224,76 +1053,131 @@ class ChatDynamicsPlugin(Star):
         except Exception:
             pass
         runtime.owned_send_depth += 1
-        narrative = (None if runtime.scope_kind == "private"
-                     else getattr(self, "narrative", None))
+        extras = getattr(event, "_extras", {})
+        nonverbal_send = extras.get("_chat_dynamics_nonverbal_send_v1") if isinstance(extras, dict) else None
+        narrative = getattr(self, "narrative", None)
+        if runtime.scope_kind == "private" and not extras.get("_narrative_internal_v1"):
+            narrative = None
         attempt = None
         result = None
+        dispatch_started = False
+        dispatch_error = "native_memory_source_invalidated"
+
+        async def sources_current() -> bool:
+            if native_source_validator is None:
+                return True
+            if not callable(native_source_validator):
+                return False
+            try:
+                check = native_source_validator(event)
+                return inspect.isawaitable(check) and await check is True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False
+
+        async def before_dispatch() -> bool:
+            nonlocal dispatch_started, dispatch_error
+            if managed:
+                # Revision reads can wait on the Memory sidecar's writer.
+                evidence_check = getattr(narrative, "evidence_current_async", None)
+                if not callable(evidence_check) or not await evidence_check(managed):
+                    try:
+                        event._chat_dynamics_evidence_failed_closed = True
+                    except Exception:
+                        pass
+                    dispatch_error = "boundary_policy_cancelled"
+                    return False
+            if not await sources_current():
+                return False
+            if callable(media_check) and not media_check():
+                dispatch_error = "joint_meme_candidate_unavailable"
+                return False
+            if not _member_boundary.dispatch_targets_current(self, event, recipient_ids, captured_snapshot):
+                dispatch_error = "boundary_policy_cancelled"
+                return False
+            dispatch_started = True
+            return True
+
         try:
             uid = str(getattr(event, "_chat_dynamics_boundary_uid", "") or "")
             boundary_token = getattr(event, "_chat_dynamics_boundary_token", None)
             async with _member_boundary.send_lease(self, event, uid, boundary_token):
                 managed = getattr(event, "_extras", {}).get("_narrative_managed_v1")
-                if managed:
-                    # 走异步包装器：evidence_current 的同步读会取 LM 侧 sidecar 锁，
-                    # 后台写入线程持锁时会拖住事件循环（本处处于发送路径）。
-                    evidence_check = getattr(narrative, "evidence_current_async", None)
-                    evidence_ok = (
-                        await evidence_check(managed) if callable(evidence_check) else False
-                    )
-                    if not evidence_ok:
-                        try:
-                            setattr(event, "_chat_dynamics_evidence_failed_closed", True)
-                        except Exception:
-                            pass
-                        raise _member_boundary.BoundaryCancelled("evidence_revision_changed")
-                recipient_ids = sorted(self._outgoing_target_uids(runtime, text, reply_to_id) - {uid})
+                targets = self._outgoing_target_uids(runtime, text, reply_to_id)
+                if boundary_target_uid:
+                    targets.add(boundary_target_uid)
+                recipient_ids = sorted(targets - {uid})
                 captured_snapshot = getattr(event, "_chat_dynamics_boundary_policy_snapshot", None)
                 if not _member_boundary.dispatch_targets_current(self, event, recipient_ids, captured_snapshot):
                     raise _member_boundary.BoundaryCancelled("recipient_boundary_changed")
                 media_check = getattr(text, "_cd_media_validate_v1", None)
                 if callable(media_check) and not media_check():
                     return SendResult(False, error="joint_meme_candidate_unavailable")
-                if narrative is not None:
+                if narrative is not None and not nonverbal_send:
                     begin = getattr(narrative, 'begin_send_async', None) or getattr(narrative, 'begin_send')
                     if inspect.iscoroutinefunction(begin):
                         attempt = await begin(event, text)
                     else:
                         attempt = await asyncio.to_thread(begin, event, text)
-                if send_effect is not None:
+                if guarded_send_effect is not None:
+                    result = await guarded_send_effect(event, before_dispatch=before_dispatch)
+                    if result.error == "native_memory_source_invalidated":
+                        result = replace(result, error=dispatch_error)
+                elif send_effect is None and (managed or native_source_validator is not None or callable(media_check)):
+                    result = await send_plain(
+                        event, self.context, runtime.umo, text, reply_to_id=reply_to_id,
+                        before_dispatch=before_dispatch)
+                    if result.error == "native_memory_source_invalidated":
+                        result = replace(result, error=dispatch_error)
+                elif not await before_dispatch():
+                    result = SendResult(False, error=dispatch_error)
+                elif send_effect is not None:
                     result = await send_effect(event)
                 else:
                     result = await send_plain(
                         event, self.context, runtime.umo, text, reply_to_id=reply_to_id)
+            if result.error == "boundary_policy_cancelled":
+                try:
+                    event._chat_dynamics_boundary_failed_closed = True
+                except Exception:
+                    pass
             if result.success:
+                for mid in result.message_ids:
+                    runtime.remember_sent(mid)
                 self._peer_reply_allowed(runtime, event, delivered=True)
                 media_confirmed = getattr(text, "_cd_media_success_v1", None)
-                if callable(media_confirmed):
+                if callable(media_confirmed) and not result.error:
                     try:
                         await media_confirmed()
                     except Exception:
                         logger.warning("[ChatDynamics] delivered media bookkeeping failed", exc_info=True)
-            if result.success and not attempt:
-                source_current = True
-                if native_source_validator is not None:
-                    source_current = False
-                    if callable(native_source_validator):
-                        try:
-                            check = native_source_validator(event)
-                            if inspect.isawaitable(check):
-                                source_current = await check is True
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception:
-                            source_current = False
-                if source_current:
+            if (result.success and not attempt and not result.error and not nonverbal_send
+                    and await sources_current()):
+                if result.parts is None:
                     self.selflearning.note_delivered(event, text)
+                else:
+                    self.selflearning.note_delivered(event, result.delivered_text(text))
             return result
+        except asyncio.CancelledError as exc:
+            if result is None:
+                result = getattr(exc, "chat_dynamics_send_result", None)
+            if result is not None and result.success:
+                for mid in result.message_ids:
+                    runtime.remember_sent(mid)
+                self._peer_reply_allowed(runtime, event, delivered=True)
+                exc.chat_dynamics_send_result = result
+            elif result is None and not dispatch_started:
+                result = SendResult(False, error="send_cancelled")
+                exc.chat_dynamics_send_result = result
+            raise
         except _member_boundary.BoundaryCancelled:
             try:
                 setattr(event, "_chat_dynamics_boundary_failed_closed", True)
             except Exception:
                 pass
-            return SendResult(False, error="boundary_policy_cancelled")
+            result = SendResult(False, error="boundary_policy_cancelled")
+            return result
         finally:
             try:
                 if narrative is not None and attempt:
@@ -1313,6 +1197,9 @@ class ChatDynamicsPlugin(Star):
                 runtime.owned_send_depth = max(0, runtime.owned_send_depth - 1)
                 self._owned_send_events.discard(marker)
                 _OWNED_SEND_CONTEXT.reset(token)
+                if (not dispatch_started or result is not None
+                        and not result.success and not result.delivery_uncertain):
+                    self._is_owned_send(event, runtime.session_key)
                 if peer_locked:
                     runtime.peer_bot_send_lock.release()
 
@@ -1352,8 +1239,9 @@ class ChatDynamicsPlugin(Star):
 
     @staticmethod
     def _outgoing_target_uids(runtime: SessionRuntime, text: Any, reply_to_id: Optional[str]) -> Set[str]:
-        """Resolve only actual outgoing At/Poke/Reply payload targets by trusted UID."""
+        """Resolve actual outgoing At/Poke/Reply payload targets by trusted UID."""
         targets: Set[str] = set()
+        reply_ids = {reply_to_id}
         components = getattr(text, "chain", ()) if not isinstance(text, str) else ()
         for component in components or ():
             kind = type(component).__name__.lower()
@@ -1366,10 +1254,12 @@ class ChatDynamicsPlugin(Star):
                 if uid is not None and str(uid).strip():
                     targets.add(str(uid).strip())
             if kind == "reply" or type_name == "reply":
-                reply_to_id = str(getattr(component, "id", "") or reply_to_id or "")
-        if reply_to_id:
+                reply_ids.add(str(getattr(component, "id", "") or ""))
+        for message_id in reply_ids:
+            if not message_id:
+                continue
             try:
-                node = runtime.dag.get_node(str(reply_to_id)) if runtime.dag is not None else None
+                node = runtime.dag.get_node(str(message_id)) if runtime.dag is not None else None
             except Exception:
                 node = None
             target_uid = str(getattr(node, "user_id", "") or "")
@@ -1387,9 +1277,18 @@ class ChatDynamicsPlugin(Star):
                 return
             exc = done.exception()
             if exc is not None:
+                frames = []
+                trace = exc.__traceback__
+                while trace is not None:
+                    code = trace.tb_frame.f_code
+                    source = str(code.co_filename).replace('\\', '/').split('/')[-2:]
+                    frames.append(('/'.join(source), code.co_name, trace.tb_lineno))
+                    trace = trace.tb_next
+                field_hash = hashlib.sha256(str(exc.args[0]).encode()).hexdigest()[:12] if isinstance(exc, KeyError) and exc.args else ''
                 logger.error(
-                    "[ChatDynamics] Background task failed code=CD_BG_TASK type=%s",
+                    "[ChatDynamics] Background task failed code=CD_BG_TASK type=%s frames=%s field_hash=%s",
                     type(exc).__name__,
+                    json.dumps(frames[-8:], ensure_ascii=True), field_hash,
                 )
 
         task.add_done_callback(_on_done)
@@ -1414,6 +1313,9 @@ class ChatDynamicsPlugin(Star):
                 self._hook_tasks_by_session.pop(sid, None)
 
         task.add_done_callback(_cleanup)
+
+    def horizons_integration_capabilities(self):
+        return {'schema_version':1,'verified_feedback':2,'all_managed_groups':1,'ready':not self._shutting_down}
 
     def is_group_takeover_enabled(self, group_id: str) -> bool:
         """Read applied scope only; an empty whitelist never captures every group."""
@@ -1646,6 +1548,9 @@ class ChatDynamicsPlugin(Star):
         return getattr(self, "decision_mode", "legacy") == "persona_model"
 
     async def initialize(self) -> None:
+        from importlib import reload
+        from . import series_panels
+        reload(series_panels).register_series_panels(self,'astrbot_plugin_chat_dynamics')
         self._sync_runtime_from_config()
         await self._systemone_service.refresh_providers()
         if self._runtime_config.selflearning_hub_url:
@@ -1851,6 +1756,9 @@ class ChatDynamicsPlugin(Star):
             )
 
     async def terminate(self) -> None:
+        panel=getattr(self,'_series_panels',None)
+        if panel:
+            panel.close()
         self._shutting_down = True
         self._runtime_persist_stop.set()
         try:
@@ -1906,6 +1814,7 @@ class ChatDynamicsPlugin(Star):
             self._runtime_persist_task = None
         self._clear_all_native_contexts()
         for runtime in self._sessions.values():
+            runtime.recent_images.clear()
             runtime.clear_active_followup_batches()
         try:
             await self.debounce.close(flush=False)
@@ -2050,6 +1959,8 @@ class ChatDynamicsPlugin(Star):
             umo=parsed.unified_msg_origin or session_key,
             bot_id=parsed.self_id,
         )
+        from .core.integrations import dynamics_horizons as horizons_observer
+        horizons_observer.observe_member(self,event,parsed)
         self._metric("takeover_considered")
 
         fast_path_epoch = runtime.epoch
@@ -2300,6 +2211,10 @@ class ChatDynamicsPlugin(Star):
         if not bounded_text.strip() and not parsed.has_media:
             return
 
+        narrative = getattr(self, "narrative", None)
+        if narrative is not None:
+            await narrative.note_member_activity(event, parsed)
+
         boundary_state = _member_boundary.resolve_state(self, event)
         if not boundary_state.available and _member_boundary.fail_closed(boundary_state):
             logger.warning(
@@ -2417,6 +2332,8 @@ class ChatDynamicsPlugin(Star):
                                    type(exc).__name__)
                     return
             self._metric("message_received")
+            from .core.integrations import dynamics_horizons as horizons_observer
+            horizons_observer.observe_member(self, event, parsed)
             try:
                 buffered_event = preserve_event_media(
                     event, archive=self.media_archive, session=session_key
@@ -2772,13 +2689,14 @@ class ChatDynamicsPlugin(Star):
                         else:
                             result = await self._send_owned(runtime, raw_event, fragment)
                     if not result.success:
-                        self._metric("send_failed")
+                        self._metric("poke_native_source_invalidated"
+                                     if result.error == "native_memory_source_invalidated" else "send_failed")
                         break
-                    text = fragment if isinstance(fragment, str) else "".join(
-                        getattr(component, "text", "[已发送媒体]") for component in fragment.chain
-                    )
+                    text = result.delivered_text(fragment)
                     delivered.append(text)
                     await remember(result, text)
+                    if result.error:
+                        break
             finally:
                 # Keep the host lock through persistence, including partial delivery on cancellation.
                 if delivered:
@@ -3065,7 +2983,6 @@ class ChatDynamicsPlugin(Star):
             return
 
         previous_bot_msg_id: Optional[str] = None
-        previous_platform_msg_id: Optional[str] = None
         trigger_platform_msg_id: Optional[str] = None
         trigger_metadata = getattr(trigger_node, "metadata", None)
         if isinstance(trigger_metadata, dict) and trigger_metadata.get("platform_message_id") is True:
@@ -3074,6 +2991,18 @@ class ChatDynamicsPlugin(Star):
             parsed_trigger = parse_group_event(raw_event)
             if parsed_trigger.message_id and parsed_trigger.message_id == trigger_node.msg_id:
                 trigger_platform_msg_id = parsed_trigger.message_id
+        first_quote_id = None
+        if (
+            runtime.scope_kind != "private"
+            and trigger_node.user_id
+            and trigger_node.user_id != runtime.bot_id
+            and trigger_node.reply_to_id
+            and trigger_node.reply_to_id != trigger_node.msg_id
+        ):
+            first_quote_id = trigger_platform_msg_id
+        send_options = {}
+        if trigger_node.user_id and trigger_node.user_id not in {owner_user_id, runtime.bot_id}:
+            send_options["boundary_target_uid"] = trigger_node.user_id
         for idx, fragment in enumerate(fragments):
             is_first = idx == 0
             typing_delay = self.pacer.calculate_typing_delay(
@@ -3153,7 +3082,8 @@ class ChatDynamicsPlugin(Star):
                     runtime,
                     raw_event,
                     fragment,
-                    reply_to_id=trigger_platform_msg_id if is_first else previous_platform_msg_id,
+                    reply_to_id=first_quote_id if is_first else None,
+                    **send_options,
                 )
             if not send_result.success:
                 self._metric("send_failed")
@@ -3187,7 +3117,6 @@ class ChatDynamicsPlugin(Star):
                 )
                 bot_node.metadata["platform_message_id"] = bool(platform_msg_id)
                 previous_bot_msg_id = bot_msg_id
-                previous_platform_msg_id = platform_msg_id
                 self._observe_routed_bot(runtime, bot_node)
                 runtime.last_bot_node = bot_node
                 runtime.touch(self.time_service.time())
@@ -3333,6 +3262,10 @@ class ChatDynamicsPlugin(Star):
 
     def _observe_routed_bot(self, runtime, node):
         self._mark_panel_runtime_dirty()
+        # Private turns intentionally have no group recipient/topic routing.
+        # Their delivered nodes still participate in history and dialogue state.
+        if getattr(runtime, "scope_kind", "group") == "private":
+            return
         if getattr(self._runtime_config, "conversation_router_enabled", True):
             self.thread_router.observe_bot_message(runtime, node)
 
@@ -3456,369 +3389,6 @@ class ChatDynamicsPlugin(Star):
         finally:
             if ready is not None:
                 ready.set()
-
-
-    def _cancel_embedding_tasks(self, session_id: str) -> list[asyncio.Task]:
-        tasks = list(self._embedding_tasks_by_session.pop(session_id, set()))
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        return tasks
-
-    def _cancel_hook_tasks(self, session_id: str) -> list[asyncio.Task]:
-        tasks = list(self._hook_tasks_by_session.pop(session_id, set()))
-        try:
-            current = asyncio.current_task()
-        except RuntimeError:
-            current = None
-        for task in tasks:
-            if task is not current and not task.done():
-                task.cancel()
-        return tasks
-
-    def _drop_native_context(self, key: tuple[str, int]) -> Optional[_NativeEventContext]:
-        """Drop one native callback context and restore its event wrapper."""
-        context = self._native_context_by_event.pop(key, None)
-        if context is None:
-            return None
-        guard = context.guard
-        if guard is not None:
-            try:
-                guard.restore()
-            except Exception as exc:
-                logger.debug(
-                    "[ChatDynamics] Native guard restore skipped code=CD_NATIVE_GUARD_RESTORE type=%s",
-                    type(exc).__name__,
-                )
-        event = context.event
-        if event is not None:
-            try:
-                delattr(event, "_chat_dynamics_native_platform_message_id")
-            except Exception:
-                pass
-        return context
-
-    def _clear_native_context(self, session_id: str) -> None:
-        for key in [key for key in self._native_context_by_event if key[0] == session_id]:
-            self._drop_native_context(key)
-
-    def _clear_all_native_contexts(self) -> None:
-        for key in list(self._native_context_by_event):
-            self._drop_native_context(key)
-
-    def _prune_native_contexts(self) -> None:
-        """Remove contexts whose UMO was dropped or whose epoch was reset."""
-        stale: list[tuple[str, int]] = []
-        for key, context in list(self._native_context_by_event.items()):
-            runtime = self._sessions.get(key[0])
-            if runtime is None or context.epoch != runtime.epoch:
-                stale.append(key)
-        for key in stale:
-            self._drop_native_context(key)
-
-    def _set_native_context(
-        self,
-        key: tuple[str, int],
-        value: _NativeEventContext | tuple[Any, Any],
-        *,
-        overwrite: bool = False,
-    ) -> None:
-        if key not in self._native_context_by_event and len(self._native_context_by_event) >= 4096:
-            self._drop_native_context(next(iter(self._native_context_by_event)))
-            self._metric("native_context_evicted")
-        if overwrite or key not in self._native_context_by_event:
-            if isinstance(value, _NativeEventContext):
-                context = value
-            else:
-                trigger_node, vibe_mode = value
-                context = _NativeEventContext(
-                    trigger_node=trigger_node,
-                    vibe_mode=vibe_mode,
-                )
-            self._native_context_by_event[key] = context
-
-
-
-
-
-
-
-
-
-
-
-    def _session_last_activity(self, session_id: str, *, debounce_activity: dict[str, float] | None = None) -> float:
-        last = 0.0
-        runtime = self._sessions.get(session_id)
-        if runtime is not None:
-            last = max(last, runtime.last_activity)
-        dag = self.dags.get(session_id)
-        if dag is not None:
-            last = max(last, dag.last_timestamp())
-        last = max(last, self.telemetrics.last_timestamp(session_id))
-        last = max(last, self.arbiter.last_spoke_time(session_id))
-        last = max(last, self.debounce.last_activity(session_id) if debounce_activity is None
-                   else debounce_activity.get(session_id, 0.0))
-        return last
-
-    def _drop_session(self, session_id: str, *, debounce_active: bool | None = None) -> None:
-        with self._capacity_lock:
-            runtime = self._sessions.get(session_id)
-            if runtime is not None:
-                # Drop is synchronous for compatibility with the registry API, so
-                # callers must never mutate a runtime while a state/send critical
-                # section is active. The sweeper and capacity selector already
-                # skip these sessions; this guard protects direct callers too.
-                if (
-                    runtime.state_lock.locked()
-                    or runtime.send_lock.locked()
-                    or runtime.active_followup_batches
-                    or (self.debounce.has_active_session(session_id) if debounce_active is None else debounce_active)
-                ):
-                    return
-                runtime.epoch += 1
-                runtime.latest_pending = None
-                runtime.clear_active_followup_batches()
-                runtime.followup_queue.clear()
-            self._cancel_embedding_tasks(session_id)
-            self._cancel_hook_tasks(session_id)
-            self._clear_native_context(session_id)
-            self._registry.drop(session_id)
-            self._last_bot_nodes.pop(session_id, None)
-            self._umo_by_session.pop(session_id, None)
-            self._vibe_msg_counts.pop(session_id, None)
-            self.vibe_analyzer.reset_session(session_id)
-            self.arbiter.reset_session(session_id, keep_cooling=True)
-            try:
-                # Idle eviction frees memory, it does not revoke an instruction:
-                # "今天别闹" lasts six hours and must outlive a one-hour silence.
-                self.decision_gate.reset_session(session_id, keep_cool=True)
-            except Exception:
-                pass
-
-    def _prune_idle_sessions_after_generation(self, now: float) -> None:
-        last = getattr(self, "_last_idle_sweep_at", None)
-        if last is None or now < last or now - last >= 30.0:
-            self._prune_idle_sessions(now)
-
-    def _prune_idle_sessions(self, now: float) -> None:
-        self._prune_native_contexts()
-        self.arbiter.prune_cooling(current_time=now)
-        topics_changed = False
-        for runtime in self._sessions.values():
-            if not runtime.state_lock.locked():
-                topics_changed = runtime.routing_state.expire_topics(runtime.dag, now) or topics_changed
-        if topics_changed:
-            self._mark_panel_runtime_dirty()
-        debounce_activity, debounce_active = self.debounce.session_activity_snapshot()
-        active_telemetry_sessions = set(self._in_flight)
-        for session_id, runtime in self._sessions.items():
-            if (
-                (runtime.generation_task is not None and not runtime.generation_task.done())
-                or bool(runtime.owned_turn_tasks)
-                or runtime.state_lock.locked()
-                or runtime.send_lock.locked()
-                or bool(runtime.followup_queue)
-                or bool(runtime.active_followup_batches)
-                or bool(self._hook_tasks_by_session.get(session_id))
-                or any(
-                    task is not None and not task.done()
-                    for task in self._embedding_tasks_by_session.get(session_id, set())
-                )
-                or session_id in debounce_active
-            ):
-                active_telemetry_sessions.add(session_id)
-        try:
-            self.telemetrics.prune_stale_sessions(
-                current_time=now,
-                max_idle=_SESSION_IDLE_SECONDS,
-                exclude_sessions=active_telemetry_sessions,
-            )
-        except TypeError:
-            # Preserve compatibility with a host/test tracker that still has
-            # the pre-v1.2 two-argument method.
-            self.telemetrics.prune_stale_sessions(
-                current_time=now,
-                max_idle=_SESSION_IDLE_SECONDS,
-            )
-        self.debounce.prune_idle_slots(max_idle_seconds=_SESSION_IDLE_SECONDS)
-        known = self._registry.known_ids() | set(self._umo_by_session) | set(self._vibe_msg_counts) | set(self._last_bot_nodes)
-        for session_id in list(known):
-            if session_id in self._in_flight:
-                continue
-            runtime = self._sessions.get(session_id)
-            if runtime is not None and runtime.generation_task is not None and not runtime.generation_task.done():
-                continue
-            if runtime is not None and runtime.owned_turn_tasks:
-                continue
-            if any(
-                task is not None and not task.done()
-                for task in self._embedding_tasks_by_session.get(session_id, set())
-            ):
-                continue
-            if runtime is not None and (
-                runtime.followup_queue or runtime.active_followup_batches
-            ):
-                continue
-            if self._hook_tasks_by_session.get(session_id):
-                continue
-            if runtime is not None and runtime.state_lock.locked():
-                continue
-            if runtime is not None and runtime.send_lock.locked():
-                continue
-            if session_id in debounce_active:
-                continue
-            last = self._session_last_activity(session_id, debounce_activity=debounce_activity)
-            if last <= 0.0:
-                dag = self.dags.get(session_id)
-                if dag is not None and not dag.nodes:
-                    self._drop_session(session_id, debounce_active=False)
-                continue
-            if (now - last) >= _SESSION_IDLE_SECONDS:
-                # Keep bounded archived labels available to replay for their
-                # existing one-day TTL, including a completely quiet group.
-                if runtime is not None and (runtime.routing_state.topics or runtime.routing_state.archive.entries):
-                    continue
-                self._drop_session(session_id, debounce_active=False)
-        self._last_idle_sweep_at = now
-
-    def _reset_session_state(
-        self,
-        session_id: str,
-        *,
-        invalidate: bool = True,
-        cancel_background: bool = True,
-    ) -> None:
-        key = self._resolve_session_key(session_id) or session_id
-        self._clear_native_context(key)
-        if cancel_background:
-            self._cancel_embedding_tasks(key)
-            self._cancel_hook_tasks(key)
-        if invalidate:
-            self._invalidate_pending_generation(key)
-        if key in self.dags:
-            self.dags[key].reset()
-        self.vibe_analyzer.reset_session(key)
-        self.arbiter.reset_session(key)
-        try:
-            self.decision_gate.reset_session(key)
-        except Exception:
-            pass
-        self._last_bot_nodes.pop(key, None)
-        self._vibe_msg_counts.pop(key, None)
-        drop_poke_streaks(self._poke_streaks, key)
-        self._poke_replied_ids = {item for item in self._poke_replied_ids if item[0] != key}
-        runtime = self._sessions.get(key)
-        if runtime is not None:
-            runtime.reset_conversation_state()
-
-    async def _reset_session_state_async(self, session_id: str) -> None:
-        """Atomically invalidate in-flight work and discard buffered old input."""
-        self._metric("reset_triggered")
-        key = self._resolve_session_key(session_id) or session_id
-        runtime = self._sessions.get(key)
-        if runtime is None:
-            embedding_tasks = self._cancel_embedding_tasks(key)
-            hook_tasks = self._cancel_hook_tasks(key)
-            await self.debounce.discard(key)
-            self._reset_session_state(key, cancel_background=False)
-            current = asyncio.current_task()
-            tasks = [
-                task
-                for task in [*embedding_tasks, *hook_tasks]
-                if task is not None and task is not current
-            ]
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            await self._save_panel_runtime()
-            return
-        task = None
-        embedding_tasks: list[asyncio.Task] = []
-        hook_tasks: list[asyncio.Task] = []
-        async with runtime.state_lock:
-            task = runtime.generation_task
-            self._invalidate_pending_generation(key)
-            embedding_tasks = self._cancel_embedding_tasks(key)
-            hook_tasks = self._cancel_hook_tasks(key)
-            await self.debounce.discard(key)
-            self._reset_session_state(key, invalidate=False, cancel_background=False)
-            runtime.touch(self.time_service.time())
-        tasks = [candidate for candidate in [task, *embedding_tasks, *hook_tasks] if candidate is not None]
-        tasks = [candidate for candidate in tasks if candidate is not asyncio.current_task()]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await self._save_panel_runtime()
-
-    async def _cool_session_async(self, session_id: str, minutes: float) -> bool:
-        key = self._resolve_session_key(session_id) or session_id
-        runtime = self._sessions.get(key)
-        if runtime is None:
-            return False
-        task = None
-        hook_tasks: list[asyncio.Task] = []
-        async with runtime.state_lock:
-            task = runtime.generation_task
-            self._invalidate_pending_generation(key)
-            await self.debounce.discard(key)
-            hook_tasks = self._cancel_hook_tasks(key)
-            now = self.time_service.time()
-            self.arbiter.trigger_cooling(key, duration_seconds=minutes * 60.0, current_time=now)
-            runtime.touch(now)
-            self._metric("cooling_triggered")
-        tasks = [candidate for candidate in [task, *hook_tasks] if candidate is not None]
-        tasks = [candidate for candidate in tasks if candidate is not asyncio.current_task()]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        return True
-
-    def _clear_pending_gate(self, runtime: Any) -> None:
-        if runtime is None:
-            return
-        runtime._pending_gate_skin = None
-        runtime._pending_gate_proactive = None
-        runtime._pending_gate_rhythm = None
-
-    def _commit_pending_gate_spoke(self, runtime: Any, session_id: str) -> None:
-        """Record quotas after a real send; the gate owns the bookkeeping clock."""
-        if runtime is None:
-            return
-        skin = getattr(runtime, "_pending_gate_skin", None)
-        if skin is None:
-            return
-        try:
-            self.decision_gate.note_spoke(
-                session_id,
-                skin=skin,
-                proactive=getattr(runtime, "_pending_gate_proactive", None),
-                rhythm=getattr(runtime, "_pending_gate_rhythm", None),
-            )
-        except Exception:
-            pass
-        finally:
-            self._clear_pending_gate(runtime)
-
-    def _invalidate_pending_generation(self, session_id: str) -> None:
-        """Prevent an already-approved response from sending after an admin action."""
-        runtime = self._sessions.get(session_id)
-        if runtime is None:
-            return
-        runtime.epoch += 1
-        runtime.revision += 1
-        runtime.cancel_owned_turns()
-        runtime.clear_model_queue()
-        runtime.latest_pending = None
-        runtime.clear_active_followup_batches()
-        runtime.followup_queue.clear()
-        runtime.native_trigger_node = None
-        runtime.native_vibe_mode = None
-        self._clear_native_context(session_id)
-        task = runtime.generation_task
-        # Detach before cancellation so a new turn can own the runtime without
-        # the cancelled task's finally block clearing the new task's state.
-        runtime.generation_task = None
-        self._in_flight.discard(session_id)
-        if task is not None and not task.done():
-            task.cancel()
 
     def _event_in_scope(self, event: Any) -> Optional[str]:
         self.refresh_config()
@@ -4225,7 +3795,22 @@ class ChatDynamicsPlugin(Star):
             # through a native guard without becoming its observed outcome.
             return self._is_owned_send(event, session_key) or self._is_command_event(event)
 
-        guard = NativeDeliveryGuard(event, bound_result, is_current, bypass)
+        strip_automatic_quote_to = None
+        if parsed_event.platform == "aiocqhttp" and (
+            not parsed_event.message_id
+            or not parsed_event.reply_to_id
+            or parsed_event.reply_to_id == parsed_event.message_id
+            or parsed_event.sender_id == runtime.bot_id
+        ):
+            # AstrBot inserts its configured quote after this hook.
+            strip_automatic_quote_to = str(parsed_event.message_id or "")
+        guard = NativeDeliveryGuard(
+            event,
+            bound_result,
+            is_current,
+            bypass,
+            strip_automatic_quote_to=strip_automatic_quote_to,
+        )
         context.guard = guard
         try:
             context.installed = bool(guard.install())
@@ -4404,27 +3989,3 @@ class ChatDynamicsPlugin(Star):
         else:
             await self._reply_text(event, "用法: /dynamics status | cool [分钟] | reset")
 
-    def _register_web_apis(self) -> None:
-        self._web.register()
-        self._web_apis_registered = self._web.registered
-
-    async def web_api_overview(self):
-        return await self._web.overview()
-
-    async def web_api_sessions(self):
-        return await self._web.sessions()
-
-    async def web_api_session(self):
-        return await self._web.session()
-
-    async def web_api_cool(self):
-        return await self._web.cool()
-
-    async def web_api_reset(self):
-        return await self._web.reset()
-
-    async def web_api_presets(self):
-        return await self._web.presets()
-
-    async def web_api_apply_preset(self):
-        return await self._web.apply_preset()

@@ -6,6 +6,8 @@ import hashlib
 import sys
 from pathlib import Path
 
+RELOAD_BOOTSTRAP_VERSION = 2
+
 
 def ensure_current(package: str, main_module: str, entry_path: str, checks=(), version=None):
     """Drop stale owned imports before the main module imports its dependencies.

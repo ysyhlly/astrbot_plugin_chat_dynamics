@@ -180,6 +180,7 @@ class ConfigPanel:
             "presence_knob": getattr(cfg, "presence_knob", "sensible"),
             "narrative_enabled": getattr(cfg, "narrative_enabled", False),
             "narrative_all_groups": getattr(cfg, "narrative_all_groups", False),
+            "narrative_private_chat_enabled": getattr(cfg, "narrative_private_chat_enabled", False),
             "narrative_sessions": sorted(getattr(cfg, "narrative_sessions", ())),
             "narrative_outreach_enabled": getattr(cfg, "narrative_outreach_enabled", False),
             "narrative_outreach_sessions": sorted(getattr(cfg, "narrative_outreach_sessions", ())),

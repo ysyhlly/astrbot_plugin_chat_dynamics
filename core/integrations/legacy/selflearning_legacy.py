@@ -53,7 +53,7 @@ def _get(obj, key, default=None):
 def _matches(name):
     value = "".join(c for c in str(name).lower() if c.isalnum())
     return any(
-        hint in value for hint in ("selflearning", "livingmemory", "liveingmemory")
+        hint in value for hint in ("selflearning", "livingmemory", "liveingmemory", "dynamicsmemory")
     )
 
 

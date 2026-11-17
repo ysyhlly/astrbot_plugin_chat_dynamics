@@ -2,11 +2,10 @@
 
 import asyncio
 from dataclasses import replace
-from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from astrbot_plugin_chat_dynamics.core.agent_bridge import AgentOutput
 from astrbot_plugin_chat_dynamics.core.pacer import PacingShaper, scale_delay
 from astrbot_plugin_chat_dynamics.core.persona_engine import delivery_fragments
 from astrbot_plugin_chat_dynamics.core.platform_bridge import SendResult, build_plain_chain, chain_plain_text
@@ -47,16 +46,20 @@ def test_tool_caption_is_removed_before_merging_remaining_prose(limit):
 def test_only_blank_lines_split_action_and_dialogue(separator):
     action_and_dialogue = "（靠在椅背上）\n……只能抱一小会儿。"
     assert PacingShaper.persona_fragments("\n " + action_and_dialogue + separator + "晚点再聊。\n") == [
-        action_and_dialogue, "晚点再聊。",
+        action_and_dialogue,
+        "晚点再聊。",
     ]
 
 
-@pytest.mark.parametrize("limit, expected", [
-    (1, ["第一段\n\n第二段\n\n第三段\n\n第四段\n\n第五段"]),
-    (2, ["第一段", "第二段\n\n第三段\n\n第四段\n\n第五段"]),
-    (3, ["第一段", "第二段", "第三段\n\n第四段\n\n第五段"]),
-    (10, ["第一段", "第二段", "第三段", "第四段", "第五段"]),
-])
+@pytest.mark.parametrize(
+    "limit, expected",
+    [
+        (1, ["第一段\n\n第二段\n\n第三段\n\n第四段\n\n第五段"]),
+        (2, ["第一段", "第二段\n\n第三段\n\n第四段\n\n第五段"]),
+        (3, ["第一段", "第二段", "第三段\n\n第四段\n\n第五段"]),
+        (10, ["第一段", "第二段", "第三段", "第四段", "第五段"]),
+    ],
+)
 def test_segment_limit_merges_excess_paragraphs_without_losing_text(limit, expected):
     text = "第一段\n\n第二段\n\n第三段\n\n第四段\n\n第五段"
     assert delivery_fragments((), text, PacingShaper(), max_fragments=limit) == expected
@@ -64,15 +67,18 @@ def test_segment_limit_merges_excess_paragraphs_without_losing_text(limit, expec
         assert PacingShaper().shape_and_fragment(text, mode, max_fragments=limit) == expected
 
 
-@pytest.mark.parametrize("text", [
-    "运行这段代码：\n\n```python\nprint('first')\n\nprint('second')\n```\n\n完成。",
-    "请先运行 `python -m pytest`。\n\n然后检查结果。",
-    "推导过程：\n\n$$x^2 + y^2 = 1$$\n\n以上是公式。",
-    "操作步骤：\n\n- 安装依赖\n- 保存配置\n\n完成后重启。",
-    "操作步骤：\n\n1. 安装依赖\n2. 保存配置\n\n完成后重启。",
-    "比较：\n\n| 方案 | 时间 |\n| --- | --- |\n| A | 1 秒 |\n\n选择 A。",
-    "打开 https://example.invalid/guide 。\n\n按页面说明操作。",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "运行这段代码：\n\n```python\nprint('first')\n\nprint('second')\n```\n\n完成。",
+        "请先运行 `python -m pytest`。\n\n然后检查结果。",
+        "推导过程：\n\n$$x^2 + y^2 = 1$$\n\n以上是公式。",
+        "操作步骤：\n\n- 安装依赖\n- 保存配置\n\n完成后重启。",
+        "操作步骤：\n\n1. 安装依赖\n2. 保存配置\n\n完成后重启。",
+        "比较：\n\n| 方案 | 时间 |\n| --- | --- |\n| A | 1 秒 |\n\n选择 A。",
+        "打开 https://example.invalid/guide 。\n\n按页面说明操作。",
+    ],
+)
 def test_structured_answers_stay_intact_in_persona_and_native_modes(text):
     assert PacingShaper.persona_fragments(text) == [text]
     for mode in GroupChatMode:
@@ -111,14 +117,14 @@ async def test_persona_sends_actual_paragraphs_and_chains_reply_identity(jev_plu
     monkeypatch.setattr(p.arbiter, "record_bot_spoke", record)
     p.time_service.sleep = sleep
     p._send_owned = send
-    expected = (paragraphs if len(paragraphs) <= limit else
-                [*paragraphs[:limit - 1], "\n\n".join(paragraphs[limit - 1:])])
+    expected = (
+        paragraphs if len(paragraphs) <= limit else [*paragraphs[: limit - 1], "\n\n".join(paragraphs[limit - 1 :])]
+    )
     try:
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        assert network == [(text, "roleplay" if index == 0 else f"delivered-{index}")
-                           for index, text in enumerate(expected)]
+        assert network == [(text, None) for text in expected]
         runtime = p._sessions[event.unified_msg_origin]
         # The same clock also serves zero-delay ingress and the 30s topic timer.
         assert [delay for delay in delays if 0 < delay < 10] == [
@@ -128,7 +134,9 @@ async def test_persona_sends_actual_paragraphs_and_chains_reply_identity(jev_plu
         assert len(bridge.requests) == 1 and bridge.commits == [reply]
         nodes = [node for node in runtime.dag.nodes.values() if node.user_id == runtime.bot_id]
         assert [node.text for node in nodes] == expected
-        assert [node.reply_to_id for node in nodes] == [parent for _, parent in network]
+        assert [node.reply_to_id for node in nodes] == [
+            "roleplay" if index == 0 else f"delivered-{index}" for index in range(len(expected))
+        ]
         assert all(node.metadata["trigger_user_id"] == event.sender_id for node in nodes)
         assert runtime.model_admission._value == 9 and not runtime.owned_turn_tasks
     finally:
@@ -136,11 +144,8 @@ async def test_persona_sends_actual_paragraphs_and_chains_reply_identity(jev_plu
 
 
 def prepare_poke(p, bridge, reply=REPLY):
-    async def generate(*args, **kwargs):
-        return AgentOutput(reply, "conv", "[]", [])
-
-    bridge.generate = generate
-    p.poke_policy = SimpleNamespace(decide=lambda **kwargs: SimpleNamespace(speak=True, poke_back=False))
+    bridge.response = reply
+    p.poke_policy.decide = Mock(side_effect=AssertionError("Persona pokes must use the shared decision backend"))
     return MockEvent("", message_id="paragraph-poke", components=[Poke("bot_42")])
 
 
@@ -155,7 +160,9 @@ async def test_poke_sends_paragraphs_with_shared_limit_and_interval(jev_plugin, 
     delays = []
 
     async def sleep(delay):
-        delays.append(delay)
+        # Ingress and topic timers share this clock with the reply pacer.
+        if event.replies_sent and 0 < delay < 10:
+            delays.append(delay)
         await asyncio.sleep(0)
 
     p.time_service.sleep = sleep
@@ -163,15 +170,17 @@ async def test_poke_sends_paragraphs_with_shared_limit_and_interval(jev_plugin, 
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        expected = (paragraphs if len(paragraphs) <= limit else
-                    [*paragraphs[:limit - 1], "\n\n".join(paragraphs[limit - 1:])])
-        assert event.replies_sent == expected
+        expected = (
+            paragraphs if len(paragraphs) <= limit else [*paragraphs[: limit - 1], "\n\n".join(paragraphs[limit - 1 :])]
+        )
         runtime = p._sessions[event.unified_msg_origin]
-        assert [delay for delay in delays if 0 < delay < 10] == [
-            pytest.approx(scale_delay(1.2, runtime.last_delay_scale)),
-        ] * (len(expected) - 1)
+        assert event.replies_sent == expected
+        assert delays == [pytest.approx(scale_delay(1.2, runtime.last_delay_scale))] * (len(expected) - 1)
+        assert len(p.jev.calls) == len(bridge.requests) == 1
+        p.poke_policy.decide.assert_not_called()
         assert bridge.commits == [reply]
-        assert _bot_texts(p._sessions[event.unified_msg_origin]) == expected
+        assert _bot_texts(runtime) == expected
+        assert runtime.model_admission._value == 9 and not runtime.owned_turn_tasks
     finally:
         await p.terminate()
 
@@ -181,8 +190,11 @@ async def test_poke_sends_paragraphs_with_shared_limit_and_interval(jev_plugin, 
 async def test_member_stop_during_paragraph_pause_commits_only_sent_head(jev_plugin, path):
     p, bridge = jev_plugin
     bridge.response = REPLY
-    event = (prepare_poke(p, bridge) if path == "poke" else
-             MockEvent("抱一下", message_id="stop-paragraphs", components=[At("bot_42")]))
+    event = (
+        prepare_poke(p, bridge)
+        if path == "poke"
+        else MockEvent("抱一下", message_id="stop-paragraphs", components=[At("bot_42")])
+    )
     paused, release = asyncio.Event(), asyncio.Event()
     task = None
 
@@ -224,9 +236,13 @@ async def test_member_stop_during_paragraph_pause_commits_only_sent_head(jev_plu
 async def test_poke_persona_change_during_pause_cancels_unsent_paragraphs(jev_plugin):
     p, bridge = jev_plugin
     event = prepare_poke(p, bridge)
+    original_persona = bridge.persona
+    pauses = []
 
-    async def switch_persona(_delay):
-        if event.replies_sent and _delay > 0:
+    async def switch_persona(delay):
+        # Switch only after the first paragraph was delivered, not at ingress.
+        if event.replies_sent and 0 < delay < 10:
+            pauses.append(delay)
             bridge.persona = replace(bridge.persona, persona_id="switched")
         await asyncio.sleep(0)
 
@@ -235,8 +251,16 @@ async def test_poke_persona_change_during_pause_cancels_unsent_paragraphs(jev_pl
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
+        runtime = p._sessions[event.unified_msg_origin]
+        assert len(p.jev.calls) == len(bridge.requests) == 1
+        assert bridge.requests[0][1] == original_persona
+        assert bridge.persona.persona_id == "switched"
+        assert pauses == [pytest.approx(scale_delay(1.2, runtime.last_delay_scale))]
+        p.poke_policy.decide.assert_not_called()
         assert event.replies_sent == [PARAGRAPHS[0]]
         assert bridge.commits == [PARAGRAPHS[0]]
+        assert _bot_texts(runtime) == [PARAGRAPHS[0]]
+        assert runtime.model_admission._value == 9 and not runtime.owned_turn_tasks
     finally:
         await p.terminate()
 
@@ -254,8 +278,12 @@ async def test_native_host_head_and_owned_tails_send_natural_paragraphs(limit, p
         return f"native-{len(network)}"
 
     try:
-        event = NativeEvent("小助手帮我看下这段回复", group_id=f"natural-paragraphs-{limit}",
-                            message_id="native-trigger", is_at_or_wake_command=True)
+        event = NativeEvent(
+            "小助手帮我看下这段回复",
+            group_id=f"natural-paragraphs-{limit}",
+            message_id="native-trigger",
+            is_at_or_wake_command=True,
+        )
         await p.on_group_message(event)
         runtime = p._sessions[event.unified_msg_origin]
         assert runtime.native_trigger_node is not None
@@ -265,8 +293,9 @@ async def test_native_host_head_and_owned_tails_send_natural_paragraphs(limit, p
         await event.send(event.get_result())
         await p.after_message_sent(event)
         await _drain(p)
-        expected = (paragraphs if len(paragraphs) <= limit else
-                    [*paragraphs[:limit - 1], "\n\n".join(paragraphs[limit - 1:])])
+        expected = (
+            paragraphs if len(paragraphs) <= limit else [*paragraphs[: limit - 1], "\n\n".join(paragraphs[limit - 1 :])]
+        )
         assert network == expected
         assert _bot_texts(runtime) == expected
         assert not runtime.followup_queue

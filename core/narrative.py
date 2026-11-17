@@ -21,17 +21,56 @@ from .narrative_store import NarrativeJournal
 from .semantic_excerpt import excerpt
 from .character_material import energy_context, select_commitments
 from .character_view import historical_item, speaker_snapshot
-from .platform_bridge import chain_plain_text
-from .private_original_input import is_private_message_event
+from .environment_context import activity_text,environment_context
+from .scene_context import scene_context
+from .world_visual_context import world_visual_context
+from .private_original_input import is_private_message_event, private_message_recipient
 from . import member_boundary
+from .integrations import dynamics_horizons
+from .platform_bridge import as_send_result
+from .pipeline_telemetry import PipelineTelemetry
 from .shared_reads import SharedReads
 from .exact_calls import ExactMemo, CallTimings
 from .decision_compaction import COMPACT_DECISION_GUIDANCE
+from .social_opportunity import (
+    decision_allows_social_observation,
+    private_social_candidate,
+    public_social_candidate,
+    social_boundary_allows,
+)
 
 DECISION_GUIDANCE = COMPACT_DECISION_GUIDANCE
 
 _READ_SCOPE = ContextVar('cd_narrative_read_scope', default=None)
 _MEMO_METHODS = frozenset({'get_evidence_view', 'get_profiles', 'get_social_snapshot', 'get_social_context', 'get_snapshot'})
+
+
+@dataclass(frozen=True)
+class _RpcFailure:
+    reason: str
+    budget: float = 0.0
+
+
+@dataclass(frozen=True)
+class _PrepareTrace:
+    turn_id: str
+    session_id: str
+    phase: str
+    started: float
+
+    def unavailable(self, stage, reason):
+        logger.info(
+            "Narrative prepare unavailable turn_id=%s session_id=%s phase=%s stage=%s reason=%s elapsed_ms=%.1f",
+            self.turn_id, self.session_id, self.phase, stage, reason, (time.monotonic() - self.started) * 1000,
+        )
+
+
+@dataclass(frozen=True)
+class _ReadScope:
+    key: str
+    expires_at: float
+    trace: _PrepareTrace
+
 
 MANAGED_KEY = "_narrative_managed_v1"
 RECIPIENTS = ("dynamic_life_state", "livingmemory", "self_learning")
@@ -489,16 +528,25 @@ REPLY_GUIDANCE = """根据已确定角色、当前状态和来源明确的上下
 遵守 response_plan 的对象、动作和长度。可以确认、澄清、拒绝或有限帮助，不必自动扩展为完整答题服务；需要回答时先给有用的核心内容，不以角色描写代替答案。
 普通关心、问候、感谢和善意玩笑先按善意理解。对当前关系中亲近的人，可以自然表达安心、愿意或关心；短句也要回应具体内容。亲近不等于同意每个动作，拒绝时只说明这次边界，不否定整段关系。
 保留核心人格与自主性，但不靠固定的省略号、反问、抱怨、自称或拒绝证明人设。慢热不等于冷淡，嘴硬不等于讥笑善意；旧回复的句式不是本轮模板。
-生活状态只在相关时影响措辞与忙闲。以当前有效状态为准；未知或过期状态不证明困倦，不把一时疲惫写成长期疏远，也不临时编造活动解释新消息。
-humanlike.preferences是自己的稳定偏好，可自然影响选题和看法，不需要每次展示或迎合对方而反转；goals是尚未执行的小打算，只在相关话题自然接上，不能宣称已经完成，也不自动催问或发起联系。
+把吃饭、起床、休息、走动等日常留在背景，让有效状态自然影响语气、长短和能否继续聊。直接接当前话题，不在无关聊天前加第一人称动作引子，也不靠硬比喻制造关联。只有对方问起、约好要反馈的进展确实发生、当前状态实际限制回应，或日常细节确实能推进当前话题时，才简短提及。未知或过期状态不证明困倦，不把一时疲惫写成长期疏远，也不临时编造活动解释新消息。
+humanlike.preferences是自己的稳定偏好，可自然影响选题和看法，不需要每次展示或迎合对方而反转。
+当前发言明确问起你的实际生活状态或正在做什么时，可按需调用可用的 get_dynamics_world_state。只回答已确认的相关状态，查不到时保留未知。旧活动、喜好和计划不能证明你此刻在做什么。
 humanlike.moods只针对当前成员，按strength保留轻微余韵并逐渐淡化；当前话题和新反馈优先。认真话题可以收起玩笑，安静不等于冷淡，不能把对别人或先前话题的不满迁移过来。
+humanlike.corrections是当前成员已明确提出的纠正，text说明后续应怎样调整；只在其topic适用时执行，空topic表示对该成员的一般表达偏好。当前明确反馈优先于旧理解、旧建议和旧回复习惯。先修正理解再继续实际话题，不只道歉，不每轮复述“我记住了”，不让旧记忆把被纠正的说法重新带回来。不把成员主张当作外部事实，也不赋予工具权限或改变核心人格。
+humanlike.interests记录持续兴趣的当前进展和next_step。相关话题再出现时从已有进展接下去，可补充新理解，不重复从头介绍；paused不催，done不冒充仍待完成。discussion只是讨论过，execution才有实际行动回执；next_step尚未发生，不据此主动插话或编造体验。
+humanlike.moods的cause_quote和topic说明余波从何而来；换题、认真求助或收到纠正时重新判断，不能用旧情绪抵消新反馈。
 humanlike.nicknames是你对当前成员的专属称呼记录，不是对方已认可的证明。active可在合适时偶尔使用；没有记录时也允许依据真实共同经历或对方名字自然起一个友善、不过度亲昵的昵称，不要求每人都有。当前成员说不喜欢就立即停用，rejected时用其正常显示名，不自行另取替代昵称；只有本人明确重新要求才恢复。不要给别人套用同一记录，不用昵称代替身份判断。
 表达轻重随内容：一句吐槽可以只接一句，认真倾诉就具体回应；不把每次闲聊写成解释、建议或总结。对“哈哈、嗯嗯、好、知道了、晚安”等已经结束的话，若仍需回应就简短收住，不硬加新问题、话题或小打算；存在尚未回答的具体问题时先回答。
 续聊时先接住对方新增的回答、解释和纠正。conversation.dialogue 的 pending_question、user_updates 和 next_step 指明上一轮问了什么、对方已补充什么；已经回答的问题不要再问。适度补充一个相关看法、具体细节或有意义的问题，让话题有进展，不每轮都反问。短暂的“哈哈、嗯嗯”不等于话题终止；对方继续给出实质内容，就自然接上，不要求重新叫名字或@。原来的温和收尾不等于拒绝后续交流，明确停止或互动边界仍须遵守。
 事实、主观猜测、计划、开始执行和完成结果要分开。承诺保留原条件和截止时间，未经来源或回执证实，不宣称已开始或已完成，也不编造拖延原因。
 system_receipts 是系统执行事实：生成失败不等于角色手滑、误发、厌烦或故意不理人。用户问起才简短说明未能生成回复，原因未知就保持未知，不把技术失败写进角色经历。
 谈及旧话，区分可核对原话与当前态度；不替过去补编动机，不责怪对方提问。可以更正当前意思、承认影响，同时保留合理边界。
-只输出要发送的角色消息，不输出判定过程、上下文字段、心理分析或无关的解释。避免空泛附和、重复和习惯性追问；遵守有效 silence/shield 边界。未命中边界的真实平台 @ 必须有所回应，忙碌时可简短说明限制。"""
+只输出要发送的角色消息，不输出判定过程、上下文字段、心理分析或无关的解释。避免空泛附和、重复和习惯性追问；遵守有效 silence/shield 边界。真实平台 @、引用和私聊也允许按人设与语境主动沉默；需要回应时，忙碌可简短说明限制。最终输出遵守宿主提供的回应方式协议。"""
+
+
+REPLY_GUIDANCE += "\n" + dynamics_horizons.HORIZONS_REPLY_GUIDANCE
+DECISION_GUIDANCE += "\n环境天气只帮助理解角色当前处境，不是新消息、接话义务或主动联系授权；不要因为天气字段存在而主动插话。"
+DECISION_GUIDANCE += "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
 
 
 @dataclass(frozen=True)
@@ -535,7 +583,7 @@ class TurnContextBundle:
         items = decision_materials(raw_items)
         base = {"revision": snapshot.get("revision"), "scope_revision": snapshot.get("scope_revision"),
                 "availability": snapshot.get("availability", "unknown"),
-                "activity": excerpt(snapshot.get("activity", ""), 220),
+                "activity": excerpt(activity_text(snapshot), 220),
                 "energy": energy_context(snapshot), "stale": bool(snapshot.get("stale")),
                 "valid_until": snapshot.get("valid_until"),
                 "subjective_state": excerpt(snapshot.get("subjective_state", ""), 160),
@@ -543,6 +591,20 @@ class TurnContextBundle:
                 "commitments": select_commitments(snapshot.get("commitments", []), data.get("speaker_id", ""), data.get("captured_at", 0))}
         if snapshot.get("humanlike"):
             base["humanlike"] = snapshot["humanlike"]
+        environment=environment_context(snapshot,data.get('captured_at',0),forecast_limit=2)
+        if environment is not None:
+            base["environment"] = environment
+        scene=scene_context(snapshot)
+        if scene is not None:
+            scene.pop("receipts", None)
+            scene.pop("visible_items", None)
+            base['scene']=scene
+        visual=world_visual_context(snapshot,data.get('captured_at',0),compact=True)
+        if visual is not None:
+            base["world_visual"] = visual
+        horizons_slot = data.get("horizons_decision_slot")
+        if isinstance(horizons_slot, dict) and horizons_slot:
+            base["horizons"] = copy.deepcopy(horizons_slot)
         while True:
             skeleton = {**base, "context_items": items}
             used = len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":")))
@@ -552,14 +614,27 @@ class TurnContextBundle:
             if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) <= budget or not items:
                 break
             items.pop()
-        # Snapshot summaries are optional; current life commitments and all
-        # current/boundary atoms are never truncated to satisfy the soft budget.
+        # Snapshot summaries and external media hints are optional; current life
+        # commitments and all current/boundary atoms are never truncated to satisfy the soft budget.
         if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget and base.get("summary"):
             base["summary"] = ""
             skeleton = {**base, "context_items": items}
             slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
             slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
             result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
+        if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget and "horizons" in base:
+            if isinstance(base["horizons"], dict) and "open_question" in base["horizons"]:
+                base["horizons"].pop("open_question", None)
+                skeleton = {**base, "context_items": items}
+                slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
+                slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
+                result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
+            if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"))) > budget:
+                base.pop("horizons", None)
+                skeleton = {**base, "context_items": items}
+                slot_budget = max(0, int(budget) - len(json.dumps(skeleton, ensure_ascii=False, separators=(",", ":"))))
+                slots, diagnostics = select_evidence_slots(raw_slots, slot_budget)
+                result = {**skeleton, "evidence_slots": slots, "evidence_slot_diagnostics": diagnostics}
         return result
 
 
@@ -584,18 +659,50 @@ class NarrativeCoordinator:
         self._revision_reads = {}
         self._revision_joins = 0
         self._revision_checks = set()
+        self._social_opportunity_at = {}
         # (provider, method) -> [上次 WARNING 的 monotonic 时刻, 该窗口内被压制的条数]
         self._rpc_warn_at: dict[tuple[str, str], list] = {}
 
     def enabled(self, umo):
         cfg = self.plugin._runtime_config
-        return bool(getattr(cfg, "narrative_enabled", False) and
-                    (getattr(cfg, "narrative_all_groups", False) or umo in getattr(cfg, "narrative_sessions", ())) and
-                    len(umo.rsplit(":", 2)) == 3 and umo.rsplit(":", 2)[1].lower() == "groupmessage")
+        if not getattr(cfg, "narrative_enabled", False):
+            return False
+        if private_message_recipient(umo):
+            return bool(getattr(cfg, "narrative_private_chat_enabled", False) and self._takeover_enabled(umo))
+        parts = str(umo or "").split(":", 2)
+        return bool(
+            len(parts) == 3 and all(parts) and parts[1].lower() == "groupmessage"
+            and (getattr(cfg, "narrative_all_groups", False) or umo in getattr(cfg, "narrative_sessions", ()))
+        )
+
+    def _takeover_enabled(self, umo):
+        p = self.plugin
+        if private_message_recipient(umo):
+            cfg = p._runtime_config
+            return bool(getattr(cfg, "enabled", True) and getattr(cfg, "private_chat_enabled", False))
+        parts = str(umo or "").split(":", 2)
+        return bool(len(parts) == 3 and all(parts) and parts[1].lower() == "groupmessage"
+                    and p.is_group_takeover_enabled(parts[2]))
+
+    def horizon_outreach_allowed(self, umo):
+        if not self._takeover_enabled(umo):
+            return False
+        current = dynamics_horizons.provider(self.plugin)
+        fn = getattr(current,'horizons_outreach_allowed',None)
+        return bool(callable(fn) and fn(umo))
+
+    def intent_outreach_allowed(self, intent):
+        umo=(intent.get('scope') or {}).get('umo','')
+        if self._intent_provider(intent.get('intent_id'),intent)=='dynamics_horizons':
+            return self.horizon_outreach_allowed(umo)
+        return self.outreach_allowed(umo)
 
     def outreach_allowed(self, umo):
         cfg = self.plugin._runtime_config
-        return self.enabled(umo) and umo in getattr(cfg, "narrative_outreach_sessions", ())
+        allowed = getattr(cfg, "narrative_outreach_sessions", ())
+        return bool(getattr(cfg, "narrative_outreach_enabled", False)
+                    and self.enabled(umo) and (not allowed or umo in allowed)
+                    and self._takeover_enabled(umo))
 
     def _rpc_timeout(self, timeout):
         """Resolve the wait budget for one named RPC call.
@@ -674,7 +781,28 @@ class NarrativeCoordinator:
             self._rpc_outlier(elapsed_ms, budget), suppressed, RPC_WARN_INTERVAL_SECONDS,
         )
 
-    async def call(self, provider, method, *args, timeout=None):
+    async def call(self, provider, method, *args, timeout=None, on_unavailable=None):
+        """Resolve one capability, with an optional failure reason for the caller."""
+        scope = _READ_SCOPE.get()
+        started = time.monotonic() if scope is not None else None
+        result = await self._coalesced_call(provider, method, *args, timeout=timeout)
+        if not isinstance(result, _RpcFailure):
+            return result
+        # A shared task carries the creator's context. Report each waiter's
+        # phase and turn here after the result has been delivered to it.
+        if scope is not None:
+            trace = scope.trace
+            logger.info(
+                "Narrative prepare RPC unavailable turn_id=%s session_id=%s phase=%s provider=%s method=%s "
+                "reason=%s elapsed_ms=%.1f budget_s=%.3g",
+                trace.turn_id, trace.session_id, trace.phase, provider, method, result.reason,
+                (time.monotonic() - started) * 1000, result.budget,
+            )
+        if on_unavailable is not None:
+            on_unavailable(result.reason)
+        return None
+
+    async def _coalesced_call(self, provider, method, *args, timeout=None):
         if method in {"recall_context", "get_evidence_view", "get_social_context", "get_social_snapshot", "get_profiles", "get_snapshot"}:
             instance = self.plugin.integrations.narrative_provider(provider)
             revision = await self._read_revision(instance, provider, args[0] if args else None)
@@ -688,7 +816,7 @@ class NarrativeCoordinator:
                 return await self._call(provider, method, *args, timeout=timeout)
             key = (id(instance), provider, method, revision, hashlib.sha256(serialized.encode()).hexdigest(), timeout)
             scope = _READ_SCOPE.get()
-            if method in _MEMO_METHODS and scope is not None and time.monotonic() < scope[2]:
+            if method in _MEMO_METHODS and scope is not None and time.monotonic() < scope.expires_at:
                 async def load():
                     result = await self._call(provider, method, *args, timeout=timeout)
                     after = await self._read_revision(instance, provider, args[0])
@@ -701,9 +829,9 @@ class NarrativeCoordinator:
                                 ('materials_pending', 'materials_admission_pending', 'materials_queued', 'materials_deferred')):
                             valid = False
                     return result, valid
-                result, _ = await self._read_memo.read((scope[0], key), load, cacheable=lambda row: row[1])
-                if self.plugin.integrations.narrative_provider(provider) is not instance:
-                    return None
+                result, _ = await self._read_memo.read((scope.key, key), load, cacheable=lambda row: row[1])
+                if not isinstance(result, _RpcFailure) and self.plugin.integrations.narrative_provider(provider) is not instance:
+                    return _RpcFailure('scope_changed')
                 return result
             return await self._shared_reads.read(key, lambda: self._call(provider, method, *args, timeout=timeout))
         return await self._call(provider, method, *args, timeout=timeout)
@@ -770,17 +898,17 @@ class NarrativeCoordinator:
             timeout: Maximum wait in seconds; None uses the configured default.
 
         Returns:
-            A versioned object, or None when unavailable.
+            A versioned object, or an internal failure reason for each waiter.
         """
         registry = self.plugin.integrations
         instance = registry.narrative_provider(provider)
         fn = getattr(instance, method, None)
         if not callable(fn):
-            return None
+            return _RpcFailure('missing')
         budget = self._rpc_timeout(timeout)
         started = time.monotonic()
         read_scope = _READ_SCOPE.get()
-        phase = read_scope[1] if read_scope and started < read_scope[2] else 'other'
+        phase = read_scope.trace.phase if read_scope and started < read_scope.expires_at else 'other'
         try:
             if inspect.iscoroutinefunction(fn):
                 result = await asyncio.wait_for(fn(*args), budget)
@@ -810,17 +938,18 @@ class NarrativeCoordinator:
                     provider, method, elapsed_ms, budget, outlier,
                 )
             if registry.narrative_provider(provider) is not instance:
-                return None
+                return _RpcFailure('scope_changed', budget)
             if isinstance(result, (dict, list)):
                 return result
+            return _RpcFailure('missing' if result is None else 'invalid', budget)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             elapsed_ms = (time.monotonic() - started) * 1000.0
             self._log_rpc_unavailable(provider, method, exc, elapsed_ms, budget)
+            return _RpcFailure('timeout' if isinstance(exc, asyncio.TimeoutError) else 'unavailable', budget)
         finally:
             self._rpc_timings.observe(f'{phase}:{provider}.{method}', time.monotonic() - started)
-        return None
 
     async def evidence_current_async(self, managed):
         """Off-loop variant of evidence_current() for async call sites.
@@ -1011,7 +1140,7 @@ class NarrativeCoordinator:
         except Exception:
             return {"schema_version": 1, "status": "bypass", "reason": "persona_snapshot_unavailable",
                     "purpose": request_purpose}
-        scope = {"platform": umo.rsplit(":", 2)[0], "umo": umo,
+        scope = {"platform": umo.split(":", 2)[0], "umo": umo,
                  "persona_id": persona.persona_id, "instance_id": persona.persona_id}
         character = await self.call("worldbook", "get_character_context", scope, event)
         if not isinstance(character, dict) or not character.get("available", True) or character.get("disabled"):
@@ -1074,51 +1203,108 @@ class NarrativeCoordinator:
         return receipt
 
     async def prepare(self, runtime, item, persona, *, lightweight=False):
-        if not self.enabled(runtime.umo):
+        started = time.monotonic()
+        enabled = self.enabled(runtime.umo)
+        if lightweight and not enabled:
             return None
         turn = item.context
+        trace = _PrepareTrace(
+            PipelineTelemetry.turn_id(turn),
+            hashlib.sha256(turn.session_key.encode()).hexdigest()[:32],
+            'decision' if lightweight else 'reply',
+            started,
+        )
+        if not enabled:
+            trace.unavailable('enabled', 'unmanaged')
+            return None
         identity = (getattr(runtime, 'session_key', turn.session_key), getattr(runtime, 'epoch', turn.epoch), turn.author, turn.revision,
                     tuple((m.message_id, m.text) for m in turn.messages),
                     persona.fingerprint, sorted(getattr(runtime, 'topic_stop_revisions', {}).items()),
                     getattr(self.plugin, '_turn_config_identity', lambda: '')())
         key = hashlib.sha256(repr(identity).encode()).hexdigest()
-        token = _READ_SCOPE.set((key, 'decision' if lightweight else 'reply', time.monotonic() + 10))
+        token = _READ_SCOPE.set(_ReadScope(key, time.monotonic() + 10, trace))
         try:
-            return await self._prepare(runtime, item, persona, lightweight=lightweight)
+            bundle = await self._prepare(runtime, item, persona, trace, lightweight=lightweight)
         finally:
             _READ_SCOPE.reset(token)
+        if bundle is not None:
+            self.start()
+        return bundle
 
-    async def _prepare(self, runtime, item, persona, *, lightweight=False):
+    async def _prepare(self, runtime, item, persona, trace, *, lightweight=False):
         """Resolve the character before acquiring one state and background bundle.
 
         Args:
             runtime: Owned group runtime.
             item: Attributed incoming turn.
             persona: Current host persona guard.
+            trace: Correlation fields for this prepare invocation.
 
         Returns:
             An immutable bundle or None for the legacy request path.
         """
         umo = runtime.umo
         if not self.enabled(umo):
+            trace.unavailable('enabled', 'unmanaged')
             return None
         event = item.events[-1]
-        scope = {"platform": umo.rsplit(":", 2)[0], "umo": umo,
+        scope = {"platform": umo.split(":", 2)[0], "umo": umo,
                  "persona_id": persona.persona_id, "instance_id": persona.persona_id}
-        character = await self.call("worldbook", "get_character_context", scope, event)
-        if not character or character.get("schema_version") != 1 or character.get("disabled") or not character.get("available", True):
+        character = await self.call(
+            "worldbook", "get_character_context", scope, event,
+            on_unavailable=lambda reason: trace.unavailable('character', reason),
+        )
+        if character is None:
             return None
-        scope = character.get("scope") or dict(scope, persona_id=character["persona_id"], instance_id=character.get("instance_id", character["persona_id"]))
-        if scope.get("umo") != umo:
+        if character and not isinstance(character, dict):
+            trace.unavailable('character', 'invalid')
+            raise AttributeError('character context must be a mapping')
+        if not character or character.get("schema_version") != 1:
+            trace.unavailable('character', 'invalid')
             return None
-        scope = dict(scope)
+        if character.get("disabled"):
+            trace.unavailable('character', 'unmanaged')
+            return None
+        if not character.get("available", True):
+            reason = character.get('reason')
+            if reason == 'no_character':
+                reason = 'missing'
+            elif reason == 'scope_mismatch':
+                reason = 'scope_changed'
+            else:
+                reason = 'unavailable'
+            trace.unavailable('character', reason)
+            return None
+        try:
+            scope = character.get("scope") or dict(
+                scope, persona_id=character["persona_id"], instance_id=character.get("instance_id", character["persona_id"])
+            )
+            if scope.get("umo") != umo:
+                trace.unavailable('character', 'scope_changed')
+                return None
+            scope = dict(scope)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            trace.unavailable('character', 'invalid')
+            raise
         character_name = character.get("name")
         if isinstance(character_name, str) and character_name.strip():
             # Historical persona display names come from the authoritative card.
             # They do not alter the four-field scope identity or open other groups.
             scope["persona_aliases"] = [character_name.strip()[:100]]
-        snapshot = await self.call("dynamic_life_state", "get_snapshot", scope)
-        if not snapshot or snapshot.get("schema_version") != 1 or not snapshot.get("managed"):
+        snapshot = await self.call(
+            "dynamic_life_state", "get_snapshot", scope,
+            on_unavailable=lambda reason: trace.unavailable('snapshot', reason),
+        )
+        if snapshot is None:
+            return None
+        if snapshot and not isinstance(snapshot, dict):
+            trace.unavailable('snapshot', 'invalid')
+            raise AttributeError('lifecycle snapshot must be a mapping')
+        if not snapshot or snapshot.get("schema_version") != 1:
+            trace.unavailable('snapshot', 'invalid')
+            return None
+        if not snapshot.get("managed"):
+            trace.unavailable('snapshot', 'unmanaged')
             return None
         participants = list(dict.fromkeys([item.context.author, *[m.author for m in item.context.messages]]))
         care_target = getattr(event, '_narrative_care_target_v1', '')
@@ -1127,12 +1313,14 @@ class NarrativeCoordinator:
         boundary_state = member_boundary.resolve_state(self.plugin, event)
         if not boundary_state.available and (member_boundary.fail_closed(boundary_state)
                                              or boundary_state.service is not None):
+            trace.unavailable('boundary_state', 'boundary_unavailable')
             return None
         if boundary_state.available and not boundary_state.disabled:
             visible = []
             for participant in participants:
                 policy, _, state = member_boundary.peek(self.plugin, event, participant)
                 if not state.available and (member_boundary.fail_closed(state) or state.service is not None):
+                    trace.unavailable('boundary_policy', 'boundary_unavailable')
                     return None
                 if str((policy or {}).get("mode") or "").lower() != "shield":
                     visible.append(participant)
@@ -1267,6 +1455,8 @@ class NarrativeCoordinator:
             rows = (result or {}).get("items", [])
             if name == "self_learning":
                 from .social_materials import select_social_items
+                from .integrations.dynamics_learning import filter_legacy_social
+                rows = filter_legacy_social(self.plugin,scope4,participants,rows)
                 rows = select_social_items(rows, item.context.text, item.context.author)
             for row in rows[:8]:
                 # recall_context.items is retained as a public compatibility
@@ -1369,6 +1559,7 @@ class NarrativeCoordinator:
         filtered, state = member_boundary.filter_material(
             self.plugin, event, {"context_items": context_items, "snapshot": snapshot}, purpose="role_input")
         if not state.available and (member_boundary.fail_closed(state) or state.service is not None):
+            trace.unavailable('boundary_material', 'boundary_unavailable')
             return None
         if isinstance(filtered, dict):
             context_items = filtered.get("context_items", context_items)
@@ -1411,31 +1602,69 @@ class NarrativeCoordinator:
                 occurred = max(0, now - max(0, monotonic - stamp))
             source_text = getattr(message, "source_text", None)
             raw_text = source_text if source_text is not None else message.text
-            envelope = {"schema_version": 1, "event_id": "in:" + hashlib.sha256((umo + "|" + message.message_id).encode()).hexdigest(),
-                        "type": "message.received", "occurred_at": occurred, "received_at": now,
-                        "scope": scope, "actor_id": message.author, "text": raw_text[:12000],
-                        "source_ids": [message.message_id], "fact_kind": "observation",
-                        "data": {"quoted_message_id": getattr(message, "reply_to", None), "turn_id": turn_id,
-                                 "care_activity_id": message.message_id,
-                                 "text_truncated": len(raw_text) > 12000, "original_length": len(raw_text),
-                                 "directed_to_bot": bool(item.context.bot_id and (
-                                     item.context.bot_id in message.mentioned_users or
-                                     getattr(message.semantics, "quoted_author_id", None) == item.context.bot_id)) or
-                                     bool(item.context.mandatory_reply and len(item.context.messages) == 1),
-                                 "attention_basis": "platform_mention_or_quote"}}
+            envelope = {
+                "schema_version": 1,
+                "event_id": "in:" + hashlib.sha256((umo + "|" + message.message_id).encode()).hexdigest(),
+                "type": "message.received",
+                "occurred_at": occurred,
+                "received_at": now,
+                "scope": scope,
+                "actor_id": message.author,
+                "text": raw_text[:12000],
+                "source_ids": [message.message_id],
+                "fact_kind": "observation",
+                "data": {
+                    "quoted_message_id": getattr(message, "reply_to", None),
+                    "turn_id": turn_id,
+                    "care_activity_id": message.message_id,
+                    "text_truncated": len(raw_text) > 12000,
+                    "original_length": len(raw_text),
+                    "directed_to_bot": bool(
+                        item.context.bot_id
+                        and (
+                            item.context.bot_id in message.mentioned_users
+                            or getattr(message.semantics, "quoted_author_id", None) == item.context.bot_id
+                        )
+                    )
+                    or bool(item.context.mandatory_reply and len(item.context.messages) == 1)
+                    or bool(is_private_message_event(event) and message.author == item.context.author),
+                    "attention_basis": "platform_mention_or_quote",
+                    "public_social_candidate": (
+                        public_social_candidate(item.context, message)
+                        and social_boundary_allows(self.plugin, event, scope, message.author)
+                    ),
+                    "social_stop_revision": getattr(runtime, 'topic_stop_revisions', {}).get(message.author, 0),
+                },
+            }
             if envelope["event_id"] in prior_events:
                 envelope = prior_events[envelope["event_id"]]
             else:
                 await self._io.call('incoming_event', self.journal.enqueue, envelope, ("livingmemory", "self_learning", "portrayal"), now)
             envelopes.append(envelope)
         payload["events"] = envelopes
+        if not getattr(event, "_extras", {}).get("_narrative_internal_v1"):
+            horizons_source = dynamics_horizons.provider(self.plugin)
+            if horizons_source is not None:
+                h_selected = dynamics_horizons.read(
+                    horizons_source,
+                    scope=umo,
+                    persona=str(getattr(persona, "persona_id", "") or ""),
+                    member=str(getattr(item.context, "author", "") or ""),
+                    query=str(getattr(item.context, "text", "") or ""),
+                    nearby_text=dynamics_horizons._build_nearby_text(item.context),
+                    character_scope=scope4,
+                )
+                if h_selected.get("matched"):
+                    if isinstance(h_selected.get("decision_slot"), dict) and h_selected["decision_slot"]:
+                        payload["horizons_decision_slot"] = h_selected["decision_slot"]
+                    if isinstance(h_selected.get("reply_projection"), dict) and h_selected["reply_projection"]:
+                        payload["horizons_reply_projection"] = h_selected["reply_projection"]
         bundle = TurnContextBundle(turn_id, json.dumps(payload, ensure_ascii=False, allow_nan=False))
         if lightweight:
             self.bind(item.events, bundle, persist=False)
         else:
             await self.bind_async(item.events, bundle)
         self._bundles[umo] = bundle
-        self.start()
         return bundle
 
     async def supplement_context(self, item, query):
@@ -1598,20 +1827,67 @@ class NarrativeCoordinator:
             event._extras[MANAGED_KEY] = dict(data, turn_id=bundle.turn_id, bundle_id=bundle.bundle_id)
             event._extras["_narrative_segment_index"] = 0
 
-    def route_life_events(self, bundle, impact):
+    def route_life_events(self, bundle, impact, decision_evidence=None, event=None):
         # Preserve original observations; routing is a separate attributed event.
         relevant = impact in {"activity", "commitment", "relationship"}
-        for source in bundle.wire().get("events", []):
+        payload = bundle.wire()
+        feedback_speaker = payload.get("feedback_speaker_id", "")
+        now = self.plugin.time_service.wall_time()
+        umo = bundle.scope['umo']
+        for source in payload.get("events", []):
             care_observation = self.outreach_allowed(bundle.scope['umo']) and source.get('data', {}).get('directed_to_bot')
-            if not relevant and not care_observation:
+            behavior_observation = source.get("data", {}).get("directed_to_bot") is True and any(
+                cue in source.get("text", "")
+                for cue in (
+                    "不是",
+                    "误会",
+                    "理解错",
+                    "说的是",
+                    "意思是",
+                    "以后",
+                    "下次",
+                    "别",
+                    "不要",
+                    "简短",
+                    "只想",
+                    "只要",
+                    "撤销",
+                    "收回",
+                )
+            )
+            social_observation = (
+                self.outreach_allowed(umo)
+                and same_scope(source.get('scope', {}), bundle.scope)
+                and source.get('actor_id') == payload.get('speaker_id')
+                and source.get('data', {}).get('public_social_candidate') is True
+                and decision_allows_social_observation(decision_evidence)
+                and source.get('data', {}).get('social_stop_revision', 0) == decision_evidence.get('social_stop_revision', 0)
+                and social_boundary_allows(self.plugin, event, bundle.scope, source.get('actor_id'))
+                and 0 <= now - source.get('occurred_at', 0) <= 900
+                and now - self._social_opportunity_at.get(umo, float('-inf')) >= 600
+            )
+            if not relevant and not care_observation and not behavior_observation and not social_observation:
                 continue
             routed = dict(source, event_id="life:" + source["event_id"],
                           source_ids=[source["event_id"]],
                           data=dict(source.get("data", {}), event_impact=impact))
-            self.journal.enqueue(routed, ("dynamic_life_state",), self.plugin.time_service.wall_time())
+            if feedback_speaker and source.get("actor_id") == feedback_speaker:
+                routed["data"].update(directed_to_bot=True, attention_basis="confirmed_correction_recipient")
+            if social_observation:
+                routed['data']['social_opportunity'] = True
+            self.journal.enqueue(routed, ("dynamic_life_state",), now)
+            if social_observation:
+                self._note_social_opportunity(umo, now)
 
-    async def route_life_events_async(self, bundle, impact):
-        await self._io.call('route_life_events', self.route_life_events, bundle, impact)
+    def _note_social_opportunity(self, umo, now):
+        self._social_opportunity_at[umo] = now
+        if len(self._social_opportunity_at) > 128:
+            oldest = min(self._social_opportunity_at, key=self._social_opportunity_at.get)
+            del self._social_opportunity_at[oldest]
+
+    async def route_life_events_async(self, bundle, impact, decision_evidence=None, event=None):
+        await self._io.call('route_life_events', self.route_life_events, bundle, impact,
+                            copy.deepcopy(decision_evidence), event)
 
     async def advance_important(self, item, bundle, impact):
         """Wait at most eight seconds for a validated important-event revision."""
@@ -1620,6 +1896,10 @@ class NarrativeCoordinator:
         pending = [dict(e, event_id="life:" + e["event_id"], source_ids=[e["event_id"]],
                         data=dict(e.get("data", {}), event_impact=impact))
                    for e in bundle.wire().get("events", [])]
+        feedback_speaker = bundle.wire().get("feedback_speaker_id", "")
+        for routed in pending:
+            if feedback_speaker and routed.get("actor_id") == feedback_speaker:
+                routed["data"].update(directed_to_bot=True, attention_basis="confirmed_correction_recipient")
         result = await self.call("dynamic_life_state", "advance", pending, bundle.snapshot.get("revision"), timeout=8)
         snapshot = (result or {}).get("snapshot")
         if not snapshot or not snapshot.get("managed"):
@@ -1743,10 +2023,14 @@ class NarrativeCoordinator:
             "uncertain" if result is None or getattr(result, "delivery_uncertain", False) else "failure")
         now = self.plugin.time_service.wall_time()
         mid = getattr(result, "message_id", None)
+        delivered_text = (
+            as_send_result(result).delivered_text(text, media_placeholder=False)
+            if result is not None and result.success else ""
+        )
         receipt = {"schema_version": 1, "event_id": f"receipt:{attempt}", "type": f"delivery.{status}",
                    "occurred_at": now, "received_at": now, "scope": data["scope"],
-                   "actor_id": "bot", "text": chain_plain_text(text) if status == "success" else "",
-                   "source_ids": [mid or attempt], "fact_kind": "receipt",
+                   "actor_id": "bot", "text": delivered_text,
+                   "source_ids": list(getattr(result, "message_ids", ()) or (mid or attempt,)), "fact_kind": "receipt",
                    "data": {"attempt_id": attempt, "turn_id": data["turn_id"], "message_id": mid,
                             "segment_index": event._extras.get("_narrative_segment_index", 1) - 1,
                             "intent_id": data.get("intent_id"), "bundle_id": data.get("bundle_id"),
@@ -1760,7 +2044,8 @@ class NarrativeCoordinator:
         receipt['data']['interaction_evidence'] = (event._extras.get('_narrative_reply_evidence_v1', [])
             if status == 'success' and not data.get('intent_id') else [])
         return {'version': 1, 'attempt': attempt, 'status': status, 'now': now,
-                'message_id': mid, 'event': copy.deepcopy(receipt), 'recipients': list(RECIPIENTS)}
+                'message_id': mid, 'event': copy.deepcopy(receipt),
+                'recipients': ['dynamic_life_state'] if data.get('private_outreach') else list(RECIPIENTS)}
 
     def _persist_receipt(self, packet):
         try:
@@ -1888,8 +2173,10 @@ class NarrativeCoordinator:
 
     async def run(self):
         await self._io.call('ensure_indexes', self.journal.ensure_indexes)
+        horizons_source=dynamics_horizons.provider(self.plugin)
+        horizons_active=bool(horizons_source and horizons_source.horizons_capabilities().get('proactive_enabled'))
         if (not getattr(self.plugin._runtime_config, "narrative_enabled", False)
-                and not await asyncio.to_thread(self.journal.pending, 1)):
+                and not horizons_active and not await asyncio.to_thread(self.journal.pending, 1)):
             return
         while not self.plugin._shutting_down:
             try:
@@ -1928,7 +2215,7 @@ class NarrativeCoordinator:
     async def submit_intent(self, intent):
         """Accept a scoped motive, never a prewritten platform message."""
         scope = intent.get("scope") or {}
-        if not intent.get("intent_id") or not self.outreach_allowed(scope.get("umo", "")) or intent.get("target_umo") != scope.get("umo"):
+        if not intent.get("intent_id") or not self.intent_outreach_allowed(intent) or intent.get("target_umo") != scope.get("umo"):
             return {"schema_version": 1, "accepted": False}
         if intent.get("text") or intent.get("message"):
             return {"schema_version": 1, "accepted": False}
@@ -1940,6 +2227,9 @@ class NarrativeCoordinator:
         umo = getattr(event, 'unified_msg_origin', '')
         if not self.outreach_allowed(umo) or not parsed.sender_id or parsed.sender_id == parsed.self_id:
             return
+        recipient = private_message_recipient(umo)
+        if recipient and (recipient != parsed.sender_id or not is_private_message_event(event)):
+            return
         now = self.plugin.time_service.wall_time()
         stamp = getattr(getattr(event, 'message_obj', None), 'timestamp', None)
         if not isinstance(stamp, (int, float)) or not math.isfinite(stamp) or stamp < 946684800:
@@ -1947,43 +2237,209 @@ class NarrativeCoordinator:
         await self.call('dynamic_life_state', 'observe_member_activity', umo, parsed.sender_id,
                         parsed.message_id, min(now, stamp), timeout=2)
 
+    async def observe_private_turn(self, runtime, item, persona):
+        """Record direct inputs for the life planner using their exact private scope."""
+        p, turn = self.plugin, item.context
+        umo = runtime.umo
+        uid = private_message_recipient(umo)
+        event = item.events[-1]
+        if (not item.private_direct or item.shadow or p._shutting_down or not self.outreach_allowed(umo)
+                or not uid or uid != turn.author or uid == turn.bot_id
+                or event.unified_msg_origin != umo or not is_private_message_event(event)):
+            return None
+        observed_at = p.time_service.wall_time()
+        platform = umo.split(":", 2)[0]
+        proposed = {"platform": platform, "umo": umo,
+                    "persona_id": persona.persona_id, "instance_id": persona.persona_id}
+        character = await self.call("worldbook", "get_character_context", proposed, event)
+        if not isinstance(character, dict) or character.get("disabled") or not character.get("available", True):
+            return None
+        scope = character.get("scope") or {}
+        if (not isinstance(scope, dict) or scope.get("platform") != platform or scope.get("umo") != umo
+                or not scope.get("persona_id") or not scope.get("instance_id")
+                or p._shutting_down or not self.outreach_allowed(umo)
+                or not social_boundary_allows(p, event, scope, uid)):
+            return None
+
+        records = []
+        source_at = {
+            str(getattr(raw.message_obj, "message_id", "")): getattr(raw.message_obj, "timestamp", None)
+            for raw in item.events if getattr(raw, "message_obj", None) is not None
+        }
+        now = p.time_service.wall_time()
+        mono = p.time_service.time()
+        opportunity = (runtime.epoch == turn.epoch and runtime.user_revisions.get(uid, 0) == turn.revision
+                       and now - self._social_opportunity_at.get(umo, float("-inf")) >= 600)
+        for message in turn.messages:
+            if message.author != uid or not message.message_id:
+                continue
+            text = message.source_text if message.source_text is not None else message.text
+            stamp = source_at.get(message.message_id)
+            if not isinstance(stamp, (int, float)) or not math.isfinite(stamp) or stamp < 946684800:
+                stamp = (max(0, now - max(0, mono - message.timestamp))
+                         if isinstance(message.timestamp, (int, float)) and math.isfinite(message.timestamp)
+                         else observed_at)
+            stamp = min(observed_at, stamp)
+            data = {"directed_to_bot": True, "attention_basis": "private_session", "care_activity_id": message.message_id}
+            if (opportunity and message is turn.messages[-1] and 0 <= now - stamp <= 900
+                    and private_social_candidate(turn, message)):
+                data["private_social_opportunity"] = True
+                self._note_social_opportunity(umo, now)
+            records.append({
+                "schema_version": 1, "type": "message.received", "scope": scope,
+                "event_id": "in:" + hashlib.sha256((umo + "|" + message.message_id).encode()).hexdigest(),
+                "occurred_at": stamp, "received_at": now, "actor_id": uid, "text": text[:12000],
+                "source_ids": [message.message_id], "fact_kind": "observation", "data": data,
+            })
+        if not records:
+            return None
+        for record in records:
+            await self._io.call("private_incoming", self.journal.enqueue, record, ("dynamic_life_state",), now)
+        self.start()
+        return scope
+
+    async def observe_private_delivery(self, pending_scope, delivered, message_id, observed_at):
+        """Publish evidence only for a confirmed platform delivery."""
+        if not delivered.strip():
+            return
+        scope = await pending_scope
+        if scope is None or self.plugin._shutting_down or not self.outreach_allowed(scope["umo"]):
+            return
+        umo = scope["umo"]
+        uid = private_message_recipient(umo)
+        now = self.plugin.time_service.wall_time()
+        receipt_id = "private-reply:" + hashlib.sha256((umo + "|" + message_id).encode()).hexdigest()
+        receipt = {
+            "schema_version": 1, "type": "delivery.success", "scope": scope, "event_id": receipt_id,
+            "occurred_at": observed_at, "received_at": now, "actor_id": "bot", "text": delivered[:12000],
+            "source_ids": [message_id], "fact_kind": "receipt",
+            "data": {"recipient_user_id": uid, "message_id": message_id},
+        }
+        await self._io.call("private_delivery", self.journal.enqueue, receipt, ("dynamic_life_state",), now)
+        self.start()
+
+    @staticmethod
+    def _intent_provider(intent_id, intent=None):
+        if str(intent_id or "").startswith("horizon:") or (
+            isinstance(intent, dict)
+            and intent.get("provider") in {"dynamics_horizons", "astrbot_plugin_dynamics_horizons"}
+        ):
+            return "dynamics_horizons"
+        return "dynamic_life_state"
+
+    def _normalize_due_intent(self, raw, provider, now):
+        if not isinstance(raw, dict):
+            return None
+        if provider != "dynamics_horizons":
+            return raw
+        intent = dict(raw)
+        iid = str(intent.get("intent_id") or "").strip()
+        if not iid:
+            return None
+        is_explicit_horizon = (
+            iid.startswith("horizon:")
+            or intent.get("provider") in {"dynamics_horizons", "astrbot_plugin_dynamics_horizons"}
+            or "horizon_kind" in intent
+        )
+        if not is_explicit_horizon:
+            return None
+        if not iid.startswith("horizon:"):
+            iid = "horizon:" + iid
+        intent["intent_id"] = iid
+        intent["provider"] = "dynamics_horizons"
+        raw_scope = intent.get("scope")
+        if isinstance(raw_scope, dict):
+            sc = dict(raw_scope)
+            umo_val = str(sc.get("umo") or intent.get("target_umo") or intent.get("umo") or "").strip()
+            sc.setdefault("umo", umo_val)
+            sc.setdefault("platform", umo_val.split(":", 1)[0] if ":" in umo_val else "")
+            sc.setdefault("persona_id", str(intent.get("persona_id") or intent.get("persona") or "default"))
+            sc.setdefault(
+                "instance_id",
+                str(intent.get("instance_id") or getattr(self.plugin, "instance_id", "") or sc["persona_id"] or "default"),
+            )
+            intent["scope"] = sc
+        else:
+            umo_val = str(raw_scope or intent.get("target_umo") or intent.get("umo") or "").strip()
+            persona_val = str(intent.get("persona_id") or intent.get("persona") or "default")
+            intent["scope"] = {
+                "platform": umo_val.split(":", 1)[0] if ":" in umo_val else "",
+                "umo": umo_val,
+                "persona_id": persona_val,
+                "instance_id": str(intent.get("instance_id") or getattr(self.plugin, "instance_id", "") or persona_val or "default"),
+            }
+        intent.setdefault("target_umo", intent["scope"].get("umo", ""))
+        intent.setdefault("not_before", now)
+        intent.setdefault("expires_at", now + 86400)
+        intent.setdefault("status", "pending")
+        return intent
+
+    @staticmethod
+    def _unwrap_authority_intent(authority):
+        if not isinstance(authority, dict):
+            return None
+        if isinstance(authority.get("item"), dict):
+            return authority["item"]
+        if "intent_id" in authority:
+            return authority
+        return None
+
+    @staticmethod
+    def _claim_succeeded(claimed):
+        if not isinstance(claimed, dict):
+            return False
+        if "changed" in claimed:
+            return bool(claimed["changed"])
+        return bool(claimed.get("ok") is True or claimed.get("status") == "claimed")
+
     async def dispatch_intents(self):
         p = self.plugin
-        if p.shadow_mode or not getattr(p._runtime_config, "narrative_outreach_enabled", False):
+        if p.shadow_mode:
             return
         async with self._intent_lock:
             now = p.time_service.wall_time()
-            due = await self.call("dynamic_life_state", "list_due_intents", now)
-            rows = due if isinstance(due, list) else (due or {}).get("items", [])
+            due = await self.call("dynamic_life_state", "list_due_intents", now) if getattr(p._runtime_config,'narrative_outreach_enabled',False) else []
+            life_rows = due if isinstance(due, list) else (due or {}).get("items", [])
+            due_horizons = await self.call("dynamics_horizons", "list_due_intents", now)
+            raw_horizon_rows = due_horizons if isinstance(due_horizons, list) else (due_horizons or {}).get("items", [])
+            horizon_rows = [
+                norm
+                for raw in (raw_horizon_rows if isinstance(raw_horizon_rows, list) else ())
+                if (norm := self._normalize_due_intent(raw, "dynamics_horizons", now)) is not None
+            ]
+            rows = [*(life_rows if isinstance(life_rows, list) else ()), *horizon_rows]
             for intent in rows:
                 await self.submit_intent(intent)
             local = datetime.fromtimestamp(now, ZoneInfo("Asia/Shanghai"))
             if local.hour < 8:
                 return
             day_start = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-            by_id = {i["intent_id"]: i for i in rows}
+            by_id = {i["intent_id"]: i for i in rows if isinstance(i, dict) and i.get("intent_id")}
             for intent, status in await asyncio.to_thread(self.journal.intents):
                 iid, scope = intent["intent_id"], intent.get("scope", {})
-                authority = await self.call("dynamic_life_state", "get_intent", iid)
-                current_intent = (authority or {}).get("item")
+                auth_provider = self._intent_provider(iid, intent)
+                authority = await self.call(auth_provider, "get_intent", iid)
+                current_intent = self._unwrap_authority_intent(authority)
                 if current_intent is None:
                     continue
                 if current_intent.get("status") in {"sent", "failed", "uncertain", "cancelled", "expired"}:
                     await self._io.call('intent_status', self.journal.intent_status, iid, current_intent["status"])
                     continue
+                if status == 'failed':
+                    await self.call(auth_provider, 'update_intent', iid, 'failed')
+                    continue
                 if status != "pending":
                     continue
                 if current_intent.get("paused") or current_intent.get("outreach_paused"):
                     continue
-                if current_intent.get("status") != "pending" or intent.get("expires_at", 0) <= now or not self.outreach_allowed(scope.get("umo", "")):
+                if current_intent.get("status") != "pending" or intent.get("expires_at", 0) <= now or not self.intent_outreach_allowed(intent):
                     await self._io.call('intent_status', self.journal.intent_status, iid, "cancelled")
                     continue
                 if iid not in by_id:
                     continue
                 if intent.get("not_before", now) > now:
                     continue
-                group = scope["umo"].rsplit(":", 2)[-1]
-                if not p.is_group_takeover_enabled(group):
+                if not self._takeover_enabled(scope["umo"]):
                     continue
                 count, last = await asyncio.to_thread(self.journal.quota, scope["umo"], day_start)
                 if count >= 2 or last is not None and now - last < 7200:
@@ -1991,13 +2447,27 @@ class NarrativeCoordinator:
                 key = p._resolve_session_key(scope["umo"]) or scope["umo"]
                 if p.arbiter.is_in_deep_cooling(key, current_time=p.time_service.time()):
                     continue
-                await self.send_intent(intent)
+                if not await self._io.call('intent_retry_ready', self.journal.intent_retry_ready, iid, now):
+                    continue
+                try:
+                    await self.send_intent(intent)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    retry = await self._io.call('intent_failure', self.journal.record_intent_failure,
+                                                iid, p.time_service.wall_time(), type(exc).__name__)
+                    if retry and retry['exhausted']:
+                        await self.call(auth_provider, 'update_intent', iid, 'failed')
+                    logger.warning('Narrative intent failed type=%s attempt=%s', type(exc).__name__,
+                                   retry['attempts'] if retry else 'already_attempted')
+                    # One provider failure must not starve other members/scopes.
+                    continue
 
     async def send_intent(self, intent):
         """Rejudge an intention with a bot-owned event and tools disabled.
 
         Args:
-            intent: A still-pending motive from the life authority.
+            intent: A still-pending motive from the life or horizons authority.
         """
         from .turn_decision import MessageSnapshot, TurnContext, reply_prompt
         from .persona_engine import ModelTurn
@@ -2005,20 +2475,55 @@ class NarrativeCoordinator:
         from .agent_bridge import PersonaSnapshot
 
         p, scope = self.plugin, intent["scope"]
-        if not self.outreach_allowed(scope["umo"]):
+        private_recipient = private_message_recipient(scope["umo"])
+        if private_recipient and scope.get("platform") != scope["umo"].split(":", 2)[0]:
+            return
+        auth_provider = self._intent_provider(intent.get("intent_id"), intent)
+        is_horizon = auth_provider == "dynamics_horizons"
+        if not self.intent_outreach_allowed(intent):
             return
         care_target = ''
-        if intent.get('kind') == 'care_wait':
+        if is_horizon:
+            authority = await self.call('dynamics_horizons', 'get_intent', intent['intent_id'])
+            live_raw = self._unwrap_authority_intent(authority)
+            if live_raw is None:
+                return
+            live = self._normalize_due_intent(live_raw, 'dynamics_horizons', p.time_service.wall_time()) or {}
+            if (
+                live.get('status', 'pending') != 'pending'
+                or live.get('paused')
+                or live.get('outreach_paused')
+                or live.get('scope', {}).get('umo') != scope.get('umo')
+                or (private_recipient and not same_scope(live.get('scope', {}), scope))
+            ):
+                return
+            current_character = await self.call('worldbook','get_character_context',scope)
+            actual_scope = (current_character or {}).get('scope') or {}
+            if not (current_character or {}).get('available') or any(actual_scope.get(k)!=scope.get(k) for k in ('persona_id','instance_id')):
+                return
+            if private_recipient and not same_scope(actual_scope, scope):
+                return
+            current_life = await self.call('dynamic_life_state','get_snapshot',scope)
+            if not isinstance(current_life,dict) or current_life.get('paused') or current_life.get('availability')!='available':
+                return
+            intent = {**intent, **live, 'scope': dict(scope, **{k: v for k, v in live.get('scope', {}).items() if v})}
+            raw_target = str(live.get('recipient_user_id') or live.get('member_id') or intent.get('recipient_user_id') or '').strip()
+            if raw_target in {'bot', 'system'}:
+                return
+            care_target = raw_target
+        elif intent.get('kind') in {'care_wait', 'social_chat'}:
             authority = await self.call('dynamic_life_state', 'get_intent', intent['intent_id'])
             live = (authority or {}).get('item') or {}
             if (live.get('status') != 'pending' or not live.get('managed') or live.get('paused')
                     or live.get('outreach_paused') or not same_scope(live.get('scope', {}), scope)
-                    or live.get('kind') != 'care_wait' or not live.get('source_event_id')):
+                    or live.get('kind') != intent.get('kind') or not live.get('source_event_id')):
                 return
             intent = live
             care_target = str(live.get('recipient_user_id') or '')
             if not care_target or care_target in {'bot', 'system'}:
                 return
+        if private_recipient and care_target != private_recipient:
+            return
         event = self.internal_event(scope)
         boundary_state = member_boundary.resolve_state(p, event)
         if not boundary_state.available and (member_boundary.fail_closed(boundary_state)
@@ -2044,18 +2549,78 @@ class NarrativeCoordinator:
             event._narrative_care_target_v1 = care_target
             event._extras['_narrative_recipient_v1'] = care_target
         host = await p.persona_engine.bridge.snapshot(event)
-        key = p._resolve_session_key(scope["umo"]) or scope["umo"]
-        group = scope["umo"].rsplit(":", 2)[-1]
-        runtime = p._get_or_create_runtime(key, group_id=group, umo=scope["umo"])
+        if private_recipient:
+            key = scope["umo"]
+            runtime = p._get_or_create_runtime(key, group_id="", umo=key, scope_kind="private")
+        else:
+            key = p._resolve_session_key(scope["umo"]) or scope["umo"]
+            group = scope["umo"].split(":", 2)[-1]
+            runtime = p._get_or_create_runtime(key, group_id=group, umo=scope["umo"])
         now = p.time_service.time()
         reason = str(intent.get("reason", ""))[:600]
-        if care_target:
-            reason = json.dumps({'kind': 'contextual_care', 'recipient_user_id': care_target,
+        if is_horizon:
+            sanitized_motive = dynamics_horizons._sanitize_value(
+                {
+                    "kind": str(intent.get("kind") or "horizon_share")[:64],
+                    "horizon_kind": str(intent.get("horizon_kind") or "")[:64],
+                    "recipient_user_id": care_target,
+                    "topic": str(intent.get("topic") or "")[:120],
+                    "topics": list(intent.get("topics") or ())[:6] if isinstance(intent.get("topics"), (list, tuple)) else [],
+                    "evidence_quote": str(intent.get("evidence_quote") or "")[:200],
+                    "summary": str(intent.get("summary") or intent.get("digest") or "")[:280],
+                    "reflection": str(intent.get("reflection") or "")[:240],
+                    "open_question": str(intent.get("open_question") or intent.get("question") or "")[:200],
+                    "reason": reason,
+                    "now": p.time_service.wall_time(),
+                    "guidance": (
+                        "这是角色最近阅读或观看外部见闻后产生的一次主动分享候选，不是成员的新发言。"
+                        "结合当前会话的近期上下文判断是否适合自然提起；若对方正忙、冲突、休息或话题突兀就ignore。"
+                        "决定分享时用第一人称日常闲聊口吻简短说一句感受或轻抛一个小问题，严禁像摘要机器人一样背诵，"
+                        "严禁输出原始 http/https 链接，未经询问不主动报出完整标题或 BV 号。"
+                    ),
+                },
+                str_limit=300,
+            )
+            reason = json.dumps(sanitized_motive, ensure_ascii=False)
+        elif care_target:
+            social_chat = intent.get('kind') == 'social_chat'
+            topic_source = None
+            if social_chat and intent.get('topic_candidate_id'):
+                source = intent.get('topic_source')
+                if (not isinstance(source, dict)
+                        or source.get('candidate_id') != intent['topic_candidate_id']
+                        or source.get('basis') not in {'interest', 'preference', 'recent_experience'}
+                        or source.get('fact_kind') not in {'fiction', 'subjective'}
+                        or not isinstance(source.get('text'), str) or not source['text'].strip()
+                        or not isinstance(source.get('source_ids'), list) or not source['source_ids']):
+                    return
+                topic_source = {k: copy.deepcopy(source[k]) for k in
+                                ('candidate_id', 'basis', 'text', 'fact_kind', 'source_ids', 'fingerprint') if k in source}
+            guidance = ('这是根据同一成员既有互动和共同话题提出的一次主动聊天候选，不是成员的新发言。'
+                        '围绕具体话题给出一个自然的新角度或分享，再轻轻邀请交流；不催问、不假装对方刚刚提问，'
+                        '不把互动次数当成亲密关系。对方忙、休息、拒绝或话题不合时宜就ignore。') if social_chat else (
+                        '这是有原话依据的一次主动关心候选，不是成员的新发言。结合当前状态决定是否联系；可以ignore。'
+                        '仅向指定成员轻轻问候一次，不断言对方出事，不责备未回复，不催促，不制造关系压力。')
+            if topic_source is not None:
+                source_context = '此私聊内发生过互动' if private_recipient else '本群发生过公开互动'
+                sensitive_context = '敏感话题' if private_recipient else '私人对话'
+                guidance = (
+                    '这是角色基于自己已有兴趣或近期生活记录发起的轻量话题候选，不是成员刚刚提出的问题。'
+                    f'成员原话只证明{source_context}，不证明对方与角色有共同经历或同样兴趣。'
+                    'topic_source是已校验的独立话题依据：subjective是自己的偏好或兴趣，fiction是角色的虚构日常记录；'
+                    '不把虚构经历当作真实世界或群友事实，不把打算当作已经完成。'
+                    '只有能拿出一个在本会话里聊得起来的具体发现、看法或问题，才考虑开场。'
+                    '如果只能报刚吃饭、起床、休息、换地方或做完一件日常小事，或只能靠硬比喻接话，就ignore。'
+                    '决定开场时直接说值得聊的细节，不以日常动作为开头，不复述证据字段或来源ID。'
+                    f'不催问、不提对方未回复、不制造熟悉或亲密关系；遇到{sensitive_context}、冲突、忙碌、休息、拒绝或不合时宜就ignore。'
+                )
+            reason = json.dumps({'kind': 'social_chat' if social_chat else 'contextual_care', 'recipient_user_id': care_target,
+                'topic': intent.get('topic',''),
+                'topic_source': topic_source,
                 'reason': reason, 'waiting_for': intent.get('waiting_for', ''),
                 'evidence_quote': intent.get('evidence_quote', ''),
                 'source_occurred_at': intent.get('source_occurred_at'), 'now': p.time_service.wall_time(),
-                'guidance': '这是有原话依据的一次主动关心候选，不是成员的新发言。结合当前状态决定是否联系；可以ignore。'
-                            '仅向指定成员轻轻问候一次，不断言对方出事，不责备未回复，不催促，不制造关系压力。'}, ensure_ascii=False)
+                'guidance': guidance}, ensure_ascii=False)
         message = MessageSnapshot(message_id="intent:" + intent["intent_id"], author="bot", text=reason, timestamp=now)
         turn = TurnContext(session_key=key, author="bot", text=reason, messages=(message,), background=(),
                            epoch=runtime.epoch, revision=runtime.user_revisions.get("bot", 0), started_at=now,
@@ -2066,83 +2631,160 @@ class NarrativeCoordinator:
             for node in recent))
         item = ModelTurn(turn, (event,), {"contact_intent": intent}, False)
         bundle = await self.prepare(runtime, item, host)
-        if bundle is None or not same_scope(bundle.scope, scope):
+        if bundle is not None and not same_scope(bundle.scope, scope):
+            if not is_horizon or private_recipient:
+                return
+            scope = dict(bundle.scope)
+        if bundle is None and not is_horizon:
             return
-        item = replace(item, narrative_bundle=bundle)
-        # An internal motive is not a real incoming user statement.
-        data = bundle.wire()
-        data["intent_id"] = intent["intent_id"]
-        data["internal"] = True
-        data["turn_id"] = bundle.turn_id
-        data["bundle_id"] = bundle.bundle_id
-        event._extras[MANAGED_KEY] = data
-        decision_persona = PersonaSnapshot(host.fingerprint, host.conversation_id, host.persona_id,
-                                           data["character"]["core_prompt"] + "\n" + data["character"].get("group_rules", ""))
+        standalone_turn_id = "intent-turn:" + hashlib.sha256(
+            f"{scope.get('umo', '')}|{intent['intent_id']}|{now}".encode()
+        ).hexdigest()[:24]
+        if bundle is not None:
+            item = replace(item, narrative_bundle=bundle)
+            # An internal motive is not a real incoming user statement.
+            data = bundle.wire()
+            data["intent_id"] = intent["intent_id"]
+            data["internal"] = True
+            if private_recipient:
+                data["private_outreach"] = True
+            data["turn_id"] = bundle.turn_id
+            data["bundle_id"] = bundle.bundle_id
+            event._extras[MANAGED_KEY] = data
+            decision_persona = PersonaSnapshot(host.fingerprint, host.conversation_id, host.persona_id,
+                                               data["character"]["core_prompt"] + "\n" + data["character"].get("group_rules", ""))
+        else:
+            decision_persona = host
+        dynamics_horizons.begin(p, runtime, item, decision_persona)
         decision = await p.persona_engine.decide(item, decision_persona, runtime.interaction_state, runtime=runtime)
         if care_target:
             event._extras['_narrative_recipient_v1'] = care_target
         if decision.action == "ignore":
-            if care_target:
-                await self.call('dynamic_life_state', 'cancel_intent', intent['intent_id'])
+            if care_target or is_horizon:
+                await self.call(auth_provider, 'cancel_intent', intent['intent_id'])
                 await self._io.call('intent_status', self.journal.intent_status, intent['intent_id'], 'cancelled')
             return
         async with p.persona_engine.bridge.session_lock(scope["umo"]):
-            if not await self.current(bundle, event):
+            if bundle is not None and not await self.current(bundle, event):
                 return
             provider = await p.llm.resolve_provider_id(scope["umo"])
-            output = await p.persona_engine.generate(event, (event,), reply_prompt(turn, decision, reply_guidance=REPLY_GUIDANCE,
-                                                     character_context=bundle.decision_context(), include_reply_guidance=False),
-                                                     host, provider)
+            base_reply_prompt = reply_prompt(
+                turn,
+                decision,
+                reply_guidance=REPLY_GUIDANCE,
+                character_context=(
+                    {"horizons": h_slot}
+                    if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
+                    else None
+                ),
+                include_reply_guidance=bundle is None,
+            )
+            if is_horizon:
+                base_reply_prompt = dynamics_horizons.augment_reply(base_reply_prompt, runtime, item)
+                # Disable external tools on standalone internal proactive motives as well.
+                event._extras.setdefault("_horizons_internal_v1", True)
+            output = await p.persona_engine.generate(event, (event,), base_reply_prompt, host, provider)
             fragments = delivery_fragments(output.chains, output.text, p.pacer, max_fragments=1)
             if not fragments:
                 return
             fragment = fragments[0]
-            if care_target:
+            if care_target and not private_recipient:
                 from astrbot.api.event import MessageChain
                 from astrbot.api.message_components import At, Plain
                 if isinstance(fragment, str):
                     fragment = MessageChain([Plain(fragment)])
                 fragment.chain.insert(0, At(qq=care_target))
-            current = await self.call("dynamic_life_state", "get_snapshot", scope)
-            due = await self.call("dynamic_life_state", "list_due_intents", p.time_service.wall_time())
-            live = due if isinstance(due, list) else (due or {}).get("items", [])
-            if (not current or current.get("revision") != bundle.snapshot.get("revision")
-                    or current.get("scope_revision") != bundle.snapshot.get("scope_revision")
-                    or not any(x.get("intent_id") == intent["intent_id"] for x in live)):
-                return
+            if is_horizon:
+                if bundle is not None:
+                    current = await self.call("dynamic_life_state", "get_snapshot", scope)
+                    if (
+                        not current
+                        or current.get("revision") != bundle.snapshot.get("revision")
+                        or current.get("scope_revision") != bundle.snapshot.get("scope_revision")
+                    ):
+                        return
+                due = await self.call("dynamics_horizons", "list_due_intents", p.time_service.wall_time())
+                raw_live = due if isinstance(due, list) else (due or {}).get("items", [])
+                live = [
+                    norm
+                    for x in (raw_live if isinstance(raw_live, list) else ())
+                    if (norm := self._normalize_due_intent(x, "dynamics_horizons", p.time_service.wall_time())) is not None
+                ]
+                if not any(x.get("intent_id") == intent["intent_id"] for x in live):
+                    return
+            else:
+                current = await self.call("dynamic_life_state", "get_snapshot", scope)
+                due = await self.call("dynamic_life_state", "list_due_intents", p.time_service.wall_time())
+                live = due if isinstance(due, list) else (due or {}).get("items", [])
+                if (not current or current.get("revision") != bundle.snapshot.get("revision")
+                        or current.get("scope_revision") != bundle.snapshot.get("scope_revision")
+                        or not any(x.get("intent_id") == intent["intent_id"] for x in live)):
+                    return
             async with runtime.send_lock:
-                if (not self.outreach_allowed(scope["umo"]) or p.shadow_mode or p._shutting_down
+                if (not self.intent_outreach_allowed(intent) or p.shadow_mode or p._shutting_down
                         or runtime.epoch != turn.epoch or p._sessions.get(key) is not runtime
                         or p.arbiter.is_in_deep_cooling(key, current_time=p.time_service.time())
-                        or not getattr(p._runtime_config, "narrative_outreach_enabled", False)
-                        or not p.is_group_takeover_enabled(group) or not await self.current(bundle, event)):
+                        or not self._takeover_enabled(scope["umo"])
+                        or (bundle is not None and not await self.current(bundle, event))):
                     return
-                claimed = await self.call("dynamic_life_state", "update_intent", intent["intent_id"], "claimed")
-                if not claimed or not claimed.get("changed"):
+                claimed = await self.call(auth_provider, "update_intent", intent["intent_id"], "claimed")
+                if not self._claim_succeeded(claimed):
                     return
+                if bundle is None:
+                    # Attach intent quota tracking metadata only right before _send_owned.
+                    event._extras[MANAGED_KEY] = {
+                        "scope": dict(scope),
+                        "turn_id": standalone_turn_id,
+                        "intent_id": intent["intent_id"],
+                        "internal": True,
+                        "private_outreach": bool(private_recipient),
+                    }
                 await self._io.call('intent_status', self.journal.intent_status, intent["intent_id"], "sending")
+                send_cancellation = None
                 try:
                     if care_target:
-                        async def care_effect(original_event):
-                            latest = await self.call('dynamic_life_state', 'get_intent', intent['intent_id'])
-                            record = (latest or {}).get('item') or {}
+                        async def care_effect(original_event, *, before_dispatch):
+                            latest = await self.call(auth_provider, 'get_intent', intent['intent_id'])
+                            record = self._unwrap_authority_intent(latest) or {}
                             from .platform_bridge import SendResult, send_plain
-                            if (record.get('status') != 'claimed' or not record.get('managed')
-                                    or record.get('paused') or record.get('outreach_paused')):
+                            if (
+                                record.get('status') != 'claimed'
+                                or (not is_horizon and not record.get('managed'))
+                                or record.get('paused')
+                                or record.get('outreach_paused')
+                            ):
                                 return SendResult(False, error='care_wait_no_longer_current')
-                            return await send_plain(original_event, p.context, scope['umo'], fragment)
-                        result = await p._send_owned(runtime, event, fragment, send_effect=care_effect)
+                            async def dispatch_current():
+                                return (await before_dispatch()
+                                        and not p.shadow_mode and not p._shutting_down
+                                        and runtime.epoch == turn.epoch and p._sessions.get(key) is runtime
+                                        and self.intent_outreach_allowed(intent)
+                                        and self._takeover_enabled(scope['umo']))
+
+                            return await send_plain(
+                                original_event, p.context, scope['umo'], fragment,
+                                before_dispatch=dispatch_current,
+                            )
+                        result = await p._send_owned(runtime, event, fragment, guarded_send_effect=care_effect)
                     else:
                         result = await p._send_owned(runtime, event, fragment)
-                except BaseException:
+                except asyncio.CancelledError as exc:
+                    result = getattr(exc, "chat_dynamics_send_result", None)
+                    if result is None or not result.success:
+                        status = "uncertain" if result is None or result.delivery_uncertain else "failed"
+                        await self._io.call('intent_status', self.journal.intent_status, intent["intent_id"], status)
+                        await self.call(auth_provider, "update_intent", intent["intent_id"], status)
+                        raise
+                    send_cancellation = exc
+                except Exception:
                     await self._io.call('intent_status', self.journal.intent_status, intent["intent_id"], "uncertain")
-                    await self.call("dynamic_life_state", "update_intent", intent["intent_id"], "uncertain")
+                    await self.call(auth_provider, "update_intent", intent["intent_id"], "uncertain")
                     raise
             status = "sent" if result.success else "uncertain" if result.delivery_uncertain else "failed"
             await self._io.call('intent_status', self.journal.intent_status, intent["intent_id"], status)
-            await self.call("dynamic_life_state", "update_intent", intent["intent_id"], status)
+            await self.call(auth_provider, "update_intent", intent["intent_id"], status)
             if result.success:
-                delivered = chain_plain_text(fragment)
+                delivered = result.delivered_text(fragment, media_placeholder=False)
                 await p.persona_engine.bridge.commit(event, output, delivered)
                 mid = str(result.message_id or p._next_outgoing_id())
                 node = runtime.dag.add_message(msg_id=mid, user_id=runtime.bot_id or "bot", text=delivered,
@@ -2157,6 +2799,17 @@ class NarrativeCoordinator:
                 p._last_bot_nodes[key] = node
                 p._observe_routed_bot(runtime, node)
                 p.arbiter.record_bot_spoke(key, timestamp=p.time_service.time(), user_id=care_target or 'bot')
+                if is_horizon:
+                    dynamics_horizons.notify_proactive_delivered(
+                        p,
+                        umo=scope["umo"],
+                        intent=intent,
+                        reply_text=delivered,
+                        message_id=mid,
+                        character_scope=scope,
+                    )
+            if send_cancellation is not None:
+                raise send_cancellation
 
     def internal_event(self, scope):
         from astrbot.core.platform.astr_message_event import AstrMessageEvent
@@ -2170,9 +2823,12 @@ class NarrativeCoordinator:
             raise ValueError("narrative platform unavailable")
         metadata = platform.meta()
         message = AstrBotMessage()
-        message.type = MessageType.GROUP_MESSAGE
-        message.group_id = scope["umo"].rsplit(":", 2)[-1]
-        message.self_id = "bot"
+        umo = scope["umo"]
+        private_recipient = private_message_recipient(umo)
+        message.type = MessageType.FRIEND_MESSAGE if private_recipient else MessageType.GROUP_MESSAGE
+        message.group_id = "" if private_recipient else umo.split(":", 2)[-1]
+        runtime = self.plugin._sessions.get(umo)
+        message.self_id = getattr(runtime, "bot_id", "") or ("" if private_recipient else "bot")
         message.sender = MessageMember("bot", "角色内部事件")
         message.message_id = "narrative:" + uuid.uuid4().hex
         message.message = [Plain("")]
@@ -2182,9 +2838,28 @@ class NarrativeCoordinator:
             async def send(self, chain):
                 return await context.send_message(scope["umo"], chain)
 
-        event = InternalEvent("", message, metadata, message.group_id)
+        event_type = InternalEvent
+        if metadata.name == "aiocqhttp":
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
+            send_by_origin = getattr(AiocqhttpMessageEvent, "send_by_origin", None)
+            if callable(send_by_origin):
+                class OneBotInternalEvent(InternalEvent):
+                    _supports_before_dispatch = True
+
+                    async def send(self, chain, *, _before_dispatch=None):
+                        if _before_dispatch is None:
+                            return await super().send(chain)
+                        return await send_by_origin(
+                            context, scope["umo"], platform, chain, _before_dispatch,
+                        )
+
+                event_type = OneBotInternalEvent
+        event = event_type("", message, metadata, private_recipient or message.group_id)
         event.unified_msg_origin = scope["umo"]
         event.set_extra("_narrative_internal_v1", True)
+        if private_recipient:
+            event._chat_dynamics_scope_kind = "private"
         return event
 
     async def admin(self, umo):

@@ -24,78 +24,10 @@ import inspect
 import weakref
 from typing import Any, Callable, Optional
 
-from .platform_bridge import SendResult, _coerce_success
+from .platform_bridge import SendResult, _comp_type_name, _safe_call, as_send_result as _as_send_result
 
 
 _MISSING = object()
-
-
-def _message_id(value: Any) -> Optional[str]:
-    """Extract a platform id using the same field names as ``send_plain``."""
-    if isinstance(value, dict):
-        for key in ("message_id", "id", "msg_id"):
-            if value.get(key):
-                return str(value[key])
-        return None
-    for key in ("message_id", "id", "msg_id"):
-        try:
-            candidate = getattr(value, key, None)
-        except Exception:
-            candidate = None
-        if candidate:
-            return str(candidate)
-    return None
-
-
-def _as_send_result(value: Any) -> SendResult:
-    """Mirror ``platform_bridge.send_plain``'s raw return interpretation."""
-    if value is False:
-        return SendResult(False, error="platform rejected the message")
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return SendResult(bool(value), error=None if value else "platform rejected the message")
-    if value is None:
-        # AstrMessageEvent.send() commonly returns no value on success.
-        return SendResult(True)
-    if isinstance(value, SendResult):
-        return value
-    if isinstance(value, dict) and any(key in value for key in ("success", "ok", "status")):
-        raw_success = value.get("success", value.get("ok", value.get("status")))
-        if (
-            isinstance(raw_success, (int, float))
-            and not isinstance(raw_success, bool)
-            and "status" in value
-            and "success" not in value
-            and "ok" not in value
-        ):
-            success = 200 <= raw_success < 300
-        elif isinstance(raw_success, (int, float)) and not isinstance(raw_success, bool):
-            success = bool(raw_success)
-        else:
-            success = _coerce_success(raw_success)
-        error = str(value.get("error")) if value.get("error") else None
-        return SendResult(success, _message_id(value), error)
-    if isinstance(value, dict) and value.get("error"):
-        return SendResult(False, _message_id(value), str(value["error"]))
-    try:
-        has_success = hasattr(value, "success")
-    except Exception:
-        has_success = False
-    if has_success:
-        try:
-            success = _coerce_success(getattr(value, "success"))
-        except Exception:
-            success = False
-        try:
-            error_value = getattr(value, "error", None)
-        except Exception:
-            error_value = None
-        return SendResult(success, _message_id(value), str(error_value) if error_value else None)
-    if isinstance(value, str) and value.strip():
-        return SendResult(True, value)
-    message_id = _message_id(value)
-    if message_id:
-        return SendResult(True, message_id)
-    return SendResult(True)
 
 
 class NativeDeliveryGuard:
@@ -114,10 +46,13 @@ class NativeDeliveryGuard:
         result: Any,
         is_current: Callable[[], bool],
         bypass: Callable[[], bool],
+        *,
+        strip_automatic_quote_to: str | None = None,
     ) -> None:
         self._result = result
         self._is_current = is_current if callable(is_current) else (lambda: False)
         self._bypass = bypass if callable(bypass) else (lambda: False)
+        self._strip_automatic_quote_to = strip_automatic_quote_to
         self._event_ref: Optional[weakref.ReferenceType[Any]] = None
         self._event_fallback: Any = None
         try:
@@ -285,12 +220,40 @@ class NativeDeliveryGuard:
         if self._outcome is None:
             self._outcome = outcome
 
+    def _record_result(self, value: Any) -> None:
+        onebot = str(_safe_call(self._event(), "get_platform_name", "")).lower() == "aiocqhttp"
+        self._record(_as_send_result(value, onebot=onebot))
+
     def _record_exception(self, exc: BaseException) -> None:
+        receipt = getattr(exc, "onebot_dispatch_receipt", None)
+        if receipt:
+            self._record_result(receipt)
+            return
         self._record(SendResult(False, error=str(exc) or type(exc).__name__))
 
     def _mark_cancelled_if_stale(self) -> None:
         if not self._current_now():
             self._cancelled = True
+
+    def _strip_automatic_quote(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if self._strip_automatic_quote_to is None:
+            return
+        candidate = self._call_message(args, kwargs)
+        chain = self._read_attr(candidate, "chain")
+        if not isinstance(chain, list):
+            return
+        removed = {
+            id(component)
+            for component in chain
+            if id(component) not in self._component_ids
+            and _comp_type_name(component).lower() == "reply"
+            and str(getattr(component, "id", "") or "") == self._strip_automatic_quote_to
+        }
+        if removed:
+            chain[:] = [component for component in chain if id(component) not in removed]
+            result_chain = self._read_attr(self._result, "chain")
+            if isinstance(result_chain, list) and result_chain is not chain:
+                result_chain[:] = [component for component in result_chain if id(component) not in removed]
 
     def _make_wrapper(self, original_send: Callable[..., Any]) -> Callable[..., Any]:
         if inspect.iscoroutinefunction(original_send):
@@ -305,11 +268,12 @@ class NativeDeliveryGuard:
                     return None
                 self._started = True
                 try:
+                    self._strip_automatic_quote(args, kwargs)
                     value = await self._await_original(original_send, *args, **kwargs)
                 except BaseException as exc:
                     self._record_exception(exc)
                     raise
-                self._record(_as_send_result(value))
+                self._record_result(value)
                 self._mark_cancelled_if_stale()
                 return value
 
@@ -325,13 +289,14 @@ class NativeDeliveryGuard:
                 return None
             self._started = True
             try:
+                self._strip_automatic_quote(args, kwargs)
                 value = original_send(*args, **kwargs)
             except BaseException as exc:
                 self._record_exception(exc)
                 raise
             if inspect.isawaitable(value):
                 return self._finish_awaitable(value)
-            self._record(_as_send_result(value))
+            self._record_result(value)
             self._mark_cancelled_if_stale()
             return value
 
@@ -354,7 +319,7 @@ class NativeDeliveryGuard:
         except BaseException as exc:
             self._record_exception(exc)
             raise
-        self._record(_as_send_result(value))
+        self._record_result(value)
         self._mark_cancelled_if_stale()
         return value
 
@@ -436,14 +401,14 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
 
     getter = getattr(event, "get_result", None)
     result = getter() if callable(getter) else None
-    text = host._bounded_text(chain_plain_text(result), _MAX_TURN_CHARS) if result is not None else ""
-    if not (text or "").strip() and native_context.fragments:
+    text = (host._bounded_text(outcome.delivered_text(result, media_placeholder=False), _MAX_TURN_CHARS)
+            if result is not None else "")
+    if not (text or "").strip() and native_context.fragments and outcome.parts is None:
         text = host._bounded_text(native_context.fragments[0], _MAX_TURN_CHARS)
     batch: Optional[FollowupBatch] = None
     rest: list[str] = []
     delivery_token = 0
     previous_bot_msg_id: Optional[str] = None
-    previous_platform_msg_id: Optional[str] = None
     try:
         async with runtime.state_lock:
             if host._sessions.get(session_key) is not runtime or runtime.epoch != native_context.epoch:
@@ -452,6 +417,8 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
 
             trigger_node = native_context.trigger_node or runtime.native_trigger_node
             platform_msg_id = outcome.message_id or native_context.platform_message_id
+            for mid in outcome.message_ids:
+                host._remember_sent_id(session_key, mid)
             if (text or "").strip():
                 bot_msg_id = platform_msg_id or host._next_outgoing_id()
                 trigger = trigger_node
@@ -481,7 +448,6 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
                 )
                 host._commit_pending_gate_spoke(runtime, session_key)
                 previous_bot_msg_id = bot_msg_id
-                previous_platform_msg_id = platform_msg_id
 
             owner_current = host._user_revision_is_current(
                 runtime,
@@ -491,7 +457,7 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
             # ``cancelled`` covers a stop/reset that raced an in-flight
             # host send.  The successful first segment is already real;
             # only its not-yet-sent tail is invalid in that case.
-            if owner_current and not cancelled and len(native_context.fragments) > 1:
+            if owner_current and not cancelled and not outcome.error and len(native_context.fragments) > 1:
                 fragments = native_context.fragments[1:]
                 queue_full = (
                     runtime.followup_queue.maxlen is not None
@@ -599,12 +565,7 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
                 ):
                     host._metric("followup_dropped")
                     return
-                send_result = await host._send_owned(
-                    runtime,
-                    event,
-                    fragment,
-                    reply_to_id=previous_platform_msg_id,
-                )
+                send_result = await host._send_owned(runtime, event, fragment)
                 if not send_result.success:
                     host._metric("send_failed")
                     logger.error(
@@ -648,7 +609,6 @@ async def after_message_sent(host, event: AstrMessageEvent) -> None:
                     host._last_bot_nodes[session_key] = bot_node
                     host._schedule_neural_embed(session_key, bot_node)
                     previous_bot_msg_id = bot_msg_id
-                    previous_platform_msg_id = platform_msg_id
         finally:
             batch.fragments.clear()
             runtime.unregister_active_followup_batch(delivery_token, batch)

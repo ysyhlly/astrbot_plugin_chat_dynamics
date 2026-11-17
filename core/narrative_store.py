@@ -34,6 +34,9 @@ class NarrativeJournal:
                 CREATE TABLE IF NOT EXISTS intents (
                     intent_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
                     status TEXT NOT NULL, attempted_at REAL);
+                CREATE TABLE IF NOT EXISTS intent_retries (
+                    intent_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL,
+                    next_retry REAL NOT NULL, error_code TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS bundles (
                     bundle_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL,
                     umo TEXT NOT NULL, payload TEXT NOT NULL, captured_at REAL NOT NULL);
@@ -51,6 +54,8 @@ class NarrativeJournal:
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout=5000")
+        db.execute("PRAGMA synchronous=NORMAL")
         return db
 
     def ensure_indexes(self):
@@ -293,6 +298,16 @@ class NarrativeJournal:
             "memory_source_status": safe_memory_status,
             "plan": safe_plan,
         }
+        adaptation_stage=(projection or {}).get('reply_adaptation_stage')
+        adaptation_counts=(projection or {}).get('reply_adaptation_counts')
+        if isinstance(adaptation_stage,str) and adaptation_stage in {'provider_kwargs_after_boundaries','unavailable','not_present'}:
+            data['reply_adaptation_stage']=adaptation_stage
+        if isinstance(adaptation_counts,dict):
+            safe={k:v for k,v in adaptation_counts.items() if k in {'profiles','memory_refs','dialogue','rhythm'}
+                  and type(v) is int and 0<=v<=100}
+            if type(adaptation_counts.get('personality_locked')) is bool:
+                safe['personality_locked']=adaptation_counts['personality_locked']
+            data['reply_adaptation_counts']=safe
         event = {"schema_version": 1, "event_id": "diagnostic:" + str(bundle_id),
                  "type": "decision.diagnostic", "occurred_at": now, "received_at": now,
                  "scope": scope, "actor_id": "bot", "text": "", "source_ids": [str(bundle_id)],
@@ -432,6 +447,31 @@ class NarrativeJournal:
     def intent_status(self, intent_id: str, status: str):
         with closing(self._connect()) as db, db:
             db.execute("UPDATE intents SET status=? WHERE intent_id=?", (status, intent_id))
+
+    def intent_retry_ready(self, intent_id: str, now: float) -> bool:
+        with closing(self._connect()) as db:
+            row = db.execute('SELECT next_retry FROM intent_retries WHERE intent_id=?', (intent_id,)).fetchone()
+            return row is None or row[0] <= now
+
+    def record_intent_failure(self, intent_id: str, now: float, error_code: str):
+        """Retry only pre-send failures; never reopen sent/claimed uncertainty."""
+        with closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT status FROM intents WHERE intent_id=?', (intent_id,)).fetchone()
+            if current is None or current[0] != 'pending':
+                return None
+            row = db.execute('SELECT attempts FROM intent_retries WHERE intent_id=?', (intent_id,)).fetchone()
+            attempts = (row[0] if row else 0) + 1
+            delay = (60, 120, 300, 900, 1800, 3600)[min(attempts - 1, 5)]
+            # Fixed exception class names only, never provider/user error text.
+            code = error_code if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', error_code) else 'GenerationError'
+            db.execute('INSERT INTO intent_retries VALUES(?,?,?,?) ON CONFLICT(intent_id) DO UPDATE SET '
+                       'attempts=excluded.attempts,next_retry=excluded.next_retry,error_code=excluded.error_code',
+                       (intent_id, attempts, now + delay, code))
+            exhausted = attempts >= 6
+            if exhausted:
+                db.execute("UPDATE intents SET status='failed' WHERE intent_id=? AND status='pending'", (intent_id,))
+            return {'attempts': attempts, 'next_retry': now + delay, 'exhausted': exhausted}
 
     def reminder_scope(self, umo, reminder_id):
         with closing(self._connect()) as db:

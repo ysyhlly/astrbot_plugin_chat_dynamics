@@ -20,101 +20,118 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title>会话回放</title>
+    <title data-series-text="会话回放">会话回放</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
-  </head>
+  <link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head>
   <body>
     <div class="grain" aria-hidden="true"></div>
-    <div class="app wire-app plugin-shell">
+    <div class="app wire-app plugin-shell series-workspace">
       <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
+        <header class="plugin-side series-nav">
+          <a class="series-brand" href="#workspace"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
+        </header>
         <div class="plugin-main">
-      <header class="topbar">
+      <header class="topbar series-heading">
         <div class="brand-lockup">
           <div class="brand-copy">
-            <p class="eyebrow">会话工作台 / REPLAY</p>
-            <h1>会话回放</h1>
-            <p class="lede">沿时间线回看讨论，理解每一次回复与安静。</p>
+            <p class="eyebrow" data-series-text="会话工作台 / REPLAY">会话工作台 / REPLAY</p>
+            <h1 data-series-text="会话回放">会话回放</h1>
+            <p class="lede" data-series-text="沿时间线回看讨论，理解每一次回复与安静。">沿时间线回看讨论，理解每一次回复与安静。</p>
           </div>
         </div>
         <div class="topbar-tools">
           <div class="connection-state" role="status" aria-live="polite" aria-atomic="true">
             <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
             <span class="connection-copy">
-              <span class="tool-label">连接状态</span>
-              <span id="linkLabel">未连接</span>
+              <span class="tool-label" data-series-text="连接状态">连接状态</span>
+              <span id="linkLabel" data-series-text="未连接">未连接</span>
             </span>
           </div>
-          <button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+          <button type="button" class="button button-quiet" id="btnRefresh" data-series-text="刷新">刷新</button>
         </div>
-      </header>
+      </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
 
-      <section class="replay-summary" aria-label="回放摘要">
-        <div><span>已形成主题</span><strong id="summaryTopics">—</strong><small>当前回放范围</small></div>
-        <div><span>关联消息</span><strong id="summaryMessages">—</strong><small>主题内保留的消息</small></div>
-        <div><span>开口 / 安静</span><strong id="summaryDecisions">—</strong><small>主题内的判断记录</small></div>
+      <section class="replay-summary" aria-label="回放摘要" data-series-aria-label="回放摘要">
+        <div><span data-series-text="已形成主题">已形成主题</span><strong id="summaryTopics">—</strong><small data-series-text="当前回放范围">当前回放范围</small></div>
+        <div><span data-series-text="关联消息">关联消息</span><strong id="summaryMessages">—</strong><small data-series-text="主题内保留的消息">主题内保留的消息</small></div>
+        <div><span data-series-text="开口 / 安静">开口 / 安静</span><strong id="summaryDecisions">—</strong><small data-series-text="主题内的判断记录">主题内的判断记录</small></div>
       </section>
-      <section class="wire-card replay-controls" aria-label="回放筛选">
-        <label for="sessionSelect">会话范围<select id="sessionSelect"></select></label>
-        <label for="topicSearch">查找主题<input id="topicSearch" type="search" placeholder="输入主题关键词" autocomplete="off" /></label>
-        <label for="decisionFilter">参与情况<select id="decisionFilter"><option value="all">全部主题</option><option value="speak">有开口记录</option><option value="silent">没有开口记录</option></select></label>
-        <span class="card-note" id="trackHint">正在读取回放</span>
+      <section class="wire-card replay-controls" aria-label="回放筛选" data-series-aria-label="回放筛选">
+        <label for="sessionSelect"><span data-series-text="会话范围">会话范围</span><select id="sessionSelect"></select></label>
+        <label for="topicSearch"><span data-series-text="查找主题">查找主题</span><input id="topicSearch" type="search" placeholder="输入主题关键词" autocomplete="off"  data-series-placeholder="输入主题关键词"/></label>
+        <label for="decisionFilter"><span data-series-text="参与情况">参与情况</span><select id="decisionFilter"><option value="all" data-series-text="全部主题">全部主题</option><option value="speak" data-series-text="有开口记录">有开口记录</option><option value="silent" data-series-text="没有开口记录">没有开口记录</option></select></label>
+        <span class="card-note" id="trackHint" data-series-text="正在读取回放">正在读取回放</span>
       </section>
 
-      <section class="wire-card" aria-labelledby="railTitle">
-        <div class="card-heading">
-          <div>
-            <p class="eyebrow">TIMELINE</p>
-            <h2 id="railTitle">主题时间线</h2>
+      <div class="replay-workbench">
+        <div class="replay-main-col">
+          <section class="wire-card" aria-labelledby="railTitle">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">TIMELINE</p>
+                <h2 id="railTitle" data-series-text="主题时间线">主题时间线</h2>
+              </div>
+              <span class="card-note" id="railCounts" data-series-text="主题 —">主题 —</span>
+            </div>
+            <p class="ops-note" data-series-text="每一行是一段讨论。选择时间块，查看判断记录与消息标注。短场景以最小宽度显示，准确起止时间见详情。">每一行是一段讨论。选择时间块，查看判断记录与消息标注。短场景以最小宽度显示，准确起止时间见详情。</p>
+            <p class="ops-note" id="topicTitleNote" role="status" aria-live="polite"></p>
+            <div class="replay-rail" id="replayRail" role="group" aria-label="群聊主题场景" data-series-aria-label="群聊主题场景"></div>
+            <p class="ops-note" id="unassignedNote" role="status" aria-live="polite"></p>
+            <div class="empty-state hidden" id="railEmpty" data-series-text="目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。">
+              目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。
+            </div>
+          </section>
+
+          <section class="wire-card hidden" id="archivedTopicsPanel" aria-label="已归档话题" data-series-aria-label="已归档话题">
+            <details>
+              <summary><span data-series-text="已归档话题（">已归档话题（</span><span id="archivedTopicCount">0</span>）</summary>
+              <p class="ops-note" data-series-text="一小时无人继续讨论的话题会归档，不再参与活跃话题匹配。">一小时无人继续讨论的话题会归档，不再参与活跃话题匹配。</p>
+              <ul class="archive-topics" id="archivedTopicList"></ul>
+            </details>
+          </section>
+        </div>
+
+        <aside class="wire-card replay-inspector" id="replayInspector" aria-labelledby="inspectorTitle">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">DECISION WATERFALL</p>
+              <h2 id="inspectorTitle" data-series-text="常驻检视抽屉">常驻检视抽屉</h2>
+            </div>
+            <button type="button" class="button button-quiet hidden" id="btnOpenSceneModal" data-series-text="标注与详情">标注与详情</button>
           </div>
-          <span class="card-note" id="railCounts">主题 —</span>
-        </div>
-        <p class="ops-note">每一行是一段讨论。选择时间块，查看判断记录与消息标注。短场景以最小宽度显示，准确起止时间见详情。</p>
-        <p class="ops-note" id="topicTitleNote" role="status" aria-live="polite"></p>
-        <div class="replay-rail" id="replayRail" role="group" aria-label="群聊主题场景"></div>
-        <p class="ops-note" id="unassignedNote" role="status" aria-live="polite"></p>
-        <div class="empty-state hidden" id="railEmpty">
-          目前没有形成话题，留白是正常状态。出现持续、集中的讨论后才会显示话题。
-        </div>
-      </section>
-
-      <section class="wire-card hidden" id="archivedTopicsPanel" aria-label="已归档话题">
-        <details>
-          <summary>已归档话题（<span id="archivedTopicCount">0</span>）</summary>
-          <p class="ops-note">一小时无人继续讨论的话题会归档，不再参与活跃话题匹配。</p>
-          <ul class="archive-topics" id="archivedTopicList"></ul>
-        </details>
-      </section>
+          <p class="ops-note" id="inspectorTopicMeta" data-series-text="点选时间块固定检视，默认速览最近主题。">点选时间块固定检视，默认速览最近主题。</p>
+          <div class="inspector-silence-tags" id="inspectorSilenceTags" aria-label="沉默原因分布" data-series-aria-label="沉默原因分布"></div>
+          <div class="inspector-waterfall" id="inspectorWaterfall" aria-live="polite"></div>
+        </aside>
+      </div>
 
       <dialog class="wire-card scene-dialog" id="detailDialog" aria-labelledby="detailTitle">
         <div class="card-heading">
           <div>
             <p class="eyebrow">SCENE DETAIL</p>
-            <h2 id="detailTitle">主题详情</h2>
+            <h2 id="detailTitle" data-series-text="主题详情">主题详情</h2>
           </div>
-          <button type="button" class="button button-quiet" id="btnCloseDetail">关闭详情</button>
+          <button type="button" class="button button-quiet" id="btnCloseDetail" data-series-text="关闭详情">关闭详情</button>
         </div>
-        <p class="one-liner" id="blockDetail">点时间轨上的色块。</p>
+        <p class="one-liner" id="blockDetail" data-series-text="点时间轨上的色块。">点时间轨上的色块。</p>
         <p class="ops-note" id="blockMeta"></p>
-        <ol class="scene-events" id="blockEvents" aria-label="场景中的逐次判断" aria-live="polite"></ol>
+        <ol class="scene-events" id="blockEvents" aria-label="场景中的逐次判断" aria-live="polite" data-series-aria-label="场景中的逐次判断"></ol>
         <section class="annotation-section" aria-labelledby="annotationTitle">
-          <h3 id="annotationTitle">话题与收件人纠错</h3>
-          <p class="ops-note">标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。</p>
+          <h3 id="annotationTitle" data-series-text="话题与收件人纠错">话题与收件人纠错</h3>
+          <p class="ops-note" data-series-text="标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。">标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。</p>
           <div id="annotationMessages"></div>
           <p id="annotationStatus" role="status" aria-live="polite"></p>
           <p id="annotationMetrics" class="ops-note"></p>
           <div class="ops-actions">
-            <button type="button" class="button" id="btnExportAnnotations">导出标注 JSON</button>
+            <button type="button" class="button" id="btnExportAnnotations" data-series-text="导出标注 JSON">导出标注 JSON</button>
           </div>
         </section>
-        <button type="button" class="button" id="btnOpenParticipation">在控制台调整参与设置</button>
+        <button type="button" class="button" id="btnOpenParticipation" data-series-text="在控制台调整参与设置">在控制台调整参与设置</button>
         <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
       </dialog>
         </div>

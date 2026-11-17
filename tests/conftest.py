@@ -55,6 +55,68 @@ def _install_astrbot_test_double() -> None:
     api_spec = importlib.util.find_spec("astrbot.api") if spec is not None else None
     # A bare namespace path named astrbot (without astrbot.api) is not a real SDK.
     if spec is not None and api_spec is not None:
+        from dataclasses import dataclass
+        try:
+            from astrbot.core.provider import entities as _ent
+            if not hasattr(_ent, "DecisionBooleanAnswer"):
+                @dataclass
+                class DecisionBooleanQuestion:
+                    instructions: str = ""
+
+                @dataclass
+                class DecisionChoiceQuestion:
+                    criteria: dict
+                    instructions: str = ""
+
+                @dataclass
+                class DecisionScoreQuestion:
+                    criteria: list
+                    instructions: str = ""
+
+                @dataclass
+                class DecisionBooleanAnswer:
+                    probability: float
+
+                @dataclass
+                class DecisionChoiceAnswer:
+                    choice: str
+                    probability: float
+                    probabilities: dict
+                    confidence: float
+
+                @dataclass
+                class DecisionScoreAnswer:
+                    score: float
+                    legend: dict
+                    probabilities: dict
+                    confidence: float
+
+                for _cls in (
+                    DecisionBooleanQuestion,
+                    DecisionChoiceQuestion,
+                    DecisionScoreQuestion,
+                    DecisionBooleanAnswer,
+                    DecisionChoiceAnswer,
+                    DecisionScoreAnswer,
+                ):
+                    setattr(_ent, _cls.__name__, _cls)
+            if hasattr(_ent, "ProviderType") and not hasattr(_ent.ProviderType, "DECISION"):
+                setattr(_ent.ProviderType, "DECISION", "decision")
+        except Exception:
+            pass
+        try:
+            from astrbot.core.provider import provider as _prov
+            if not hasattr(_prov, "DecisionProvider"):
+                _base = getattr(_prov, "Provider", object)
+
+                class DecisionProvider(_base):
+                    def __init__(self, provider_config=None, provider_settings=None):
+                        self.provider_config = provider_config or {}
+                        self.provider_settings = provider_settings or {}
+
+                _prov.DecisionProvider = DecisionProvider
+        except Exception:
+            pass
         return
 
     astrbot = types.ModuleType("astrbot")

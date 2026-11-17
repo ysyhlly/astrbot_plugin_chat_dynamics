@@ -20,76 +20,76 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title>群聊动态控制台</title>
+    <title data-series-text="群聊动态控制台">群聊动态控制台</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
 
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
-  </head>
+  <link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head>
   <body>
-    <a class="skip-link" href="#consoleContent">跳到工作区</a>
-    <div class="app plugin-shell">
+    <a class="skip-link" href="#consoleContent" data-series-text="跳到工作区">跳到工作区</a>
+    <div class="app plugin-shell series-workspace">
       <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
+        <header class="plugin-side series-nav">
+          <a class="series-brand" href="#consoleContent"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
+        </header>
         <div class="plugin-main">
-          <header class="topbar">
+          <header class="topbar series-heading">
             <div class="brand-copy">
               <p class="eyebrow">CHAT DYNAMICS / WORKSPACE</p>
-              <h1 id="pageTitle">群聊动态控制台</h1>
-              <p class="lede" id="pageDesc">看见每一场对话，掌握机器人的参与节奏。</p>
+              <h1 id="pageTitle" data-series-text="群聊动态控制台">群聊动态控制台</h1>
+              <p class="lede" id="pageDesc" data-series-text="看见每一场对话，掌握机器人的参与节奏。">看见每一场对话，掌握机器人的参与节奏。</p>
             </div>
             <div class="topbar-tools">
-              <div class="connection-state" role="status" aria-live="polite"><span id="linkLamp" class="status-dot" aria-hidden="true"></span><span id="linkLabel">正在连接</span></div>
-              <div class="clock-state"><span class="tool-label">本地时间</span><time id="clock">--:--:--</time></div>
-              <button class="button button-quiet" id="btnRefresh" type="button">刷新数据</button>
-              <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
+              <div class="connection-state" role="status" aria-live="polite"><span id="linkLamp" class="status-dot" aria-hidden="true"></span><span id="linkLabel" data-series-text="正在连接">正在连接</span></div>
+              <div class="clock-state"><span class="tool-label" data-series-text="本地时间">本地时间</span><time id="clock">--:--:--</time></div>
+              <button class="button button-quiet" id="btnRefresh" type="button" data-series-text="刷新数据">刷新数据</button>
+              <nav class="page-nav" id="pageNav" aria-label="插件子页切换" data-series-aria-label="插件子页切换"></nav>
             </div>
-          </header>
+          </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
           <main id="consoleContent" tabindex="-1">
 <section class="overview-section" aria-labelledby="overviewTitle">
           <div class="section-heading">
             <div>
               <p class="eyebrow">SYSTEM STATUS</p>
-              <h2 id="overviewTitle">系统概览</h2>
+              <h2 id="overviewTitle" data-series-text="系统概览">系统概览</h2>
             </div>
-            <p class="section-caption">每 15 秒同步 · 隐藏页面时暂停</p>
+            <p class="section-caption" data-series-text="每 15 秒同步 · 隐藏页面时暂停">每 15 秒同步 · 隐藏页面时暂停</p>
           </div>
-          <div class="stats" aria-label="总览">
+          <div class="stats" aria-label="总览" data-series-aria-label="总览">
             <article class="stat">
-              <span class="stat-label">插件状态</span>
+              <span class="stat-label" data-series-text="插件状态">插件状态</span>
               <strong id="statEnabled">—</strong>
-              <span class="stat-hint">运行入口</span>
+              <span class="stat-hint" data-series-text="运行入口">运行入口</span>
             </article>
             <article class="stat">
-              <span class="stat-label">接管范围</span>
+              <span class="stat-label" data-series-text="接管范围">接管范围</span>
               <strong id="statTakeover">—</strong>
-              <span class="stat-hint">策略过滤</span>
+              <span class="stat-hint" data-series-text="策略过滤">策略过滤</span>
             </article>
             <article class="stat">
-              <span class="stat-label">活跃会话</span>
+              <span class="stat-label" data-series-text="活跃会话">活跃会话</span>
               <strong id="statLive">—</strong>
-              <span class="stat-hint">当前观测</span>
+              <span class="stat-hint" data-series-text="当前观测">当前观测</span>
             </article>
             <article class="stat">
-              <span class="stat-label">冷却中</span>
+              <span class="stat-label" data-series-text="冷却中">冷却中</span>
               <strong id="statCooling">—</strong>
-              <span class="stat-hint">深度冷却</span>
+              <span class="stat-hint" data-series-text="深度冷却">深度冷却</span>
             </article>
             <article class="stat">
-              <span class="stat-label">防抖积压</span>
+              <span class="stat-label" data-series-text="防抖积压">防抖积压</span>
               <strong id="statPending">—</strong>
-              <span class="stat-hint">待处理消息</span>
+              <span class="stat-hint" data-series-text="待处理消息">待处理消息</span>
             </article>
           </div>
         </section>
-            <div class="workspace-navigation" role="tablist" aria-label="控制台工作区">
-              <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions">会话工作台</button>
-              <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy">参与与分寸</button>
-              <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations">互联诊断</button>
+            <div class="workspace-navigation" role="tablist" aria-label="控制台工作区" data-series-aria-label="控制台工作区">
+              <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions" data-series-text="会话工作台">会话工作台</button>
+              <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy" data-series-text="参与与分寸">参与与分寸</button>
+              <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations" data-series-text="互联诊断">互联诊断</button>
             </div>
             <section id="view-sessions" role="tabpanel" aria-labelledby="tab-sessions">
 <section class="onboarding hidden" id="onboarding" aria-labelledby="onboardingTitle">
@@ -100,36 +100,36 @@
           </div>
           <div>
             <p class="eyebrow">FIRST RUN</p>
-            <h2 id="onboardingTitle">先观察，再接管</h2>
-            <p>填写群聊白名单或开启全量接管，保持观察模式运行一段时间，再按需应用平衡或活跃预设。</p>
+            <h2 id="onboardingTitle" data-series-text="先观察，再接管">先观察，再接管</h2>
+            <p data-series-text="填写群聊白名单或开启全量接管，保持观察模式运行一段时间，再按需应用平衡或活跃预设。">填写群聊白名单或开启全量接管，保持观察模式运行一段时间，再按需应用平衡或活跃预设。</p>
             <ol>
-              <li>启用插件并确认接管范围</li>
-              <li>用明确 @ / 引用测试一轮消息</li>
-              <li>确认指标正常后关闭观察模式</li>
+              <li data-series-text="启用插件并确认接管范围">启用插件并确认接管范围</li>
+              <li data-series-text="用明确 @ / 引用测试一轮消息">用明确 @ / 引用测试一轮消息</li>
+              <li data-series-text="确认指标正常后关闭观察模式">确认指标正常后关闭观察模式</li>
             </ol>
           </div>
-        </section><section class="workspace" aria-label="会话观测工作区">
+        </section><section class="workspace" aria-label="会话观测工作区" data-series-aria-label="会话观测工作区">
           <aside class="rail" aria-labelledby="sessionTitle">
             <div class="rail-header">
               <div>
                 <p class="eyebrow">SESSION INDEX</p>
-                <h2 id="sessionTitle">群聊会话</h2>
+                <h2 id="sessionTitle" data-series-text="群聊会话">群聊会话</h2>
               </div>
-              <span class="rail-count" aria-hidden="true">实时</span>
+              <span class="rail-count" aria-hidden="true" data-series-text="实时">实时</span>
             </div>
             <label class="finder" for="sessionFilter">
-              <span>查找群 ID / session_key</span>
+              <span data-series-text="查找群 ID / session_key">查找群 ID / session_key</span>
               <div class="input-wrap">
                 <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
                   <circle cx="10.8" cy="10.8" r="6.3" fill="none" stroke="currentColor" stroke-width="1.6" />
                   <path d="m16 16 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
                 </svg>
-                <input id="sessionFilter" type="search" placeholder="输入群号或完整会话 ID" autocomplete="off" />
+                <input id="sessionFilter" type="search" placeholder="输入群号或完整会话 ID" autocomplete="off"  data-series-placeholder="输入群号或完整会话 ID"/>
               </div>
             </label>
             <p class="ops-note finder-note" id="sessionFilterNote" role="status" aria-live="polite" aria-atomic="true"></p>
             <ul class="channels" id="channelList">
-              <li class="empty">尚无会话。请先在配置中让过滤器对群聊生效。</li>
+              <li class="empty" data-series-text="尚无会话。请先在配置中让过滤器对群聊生效。">尚无会话。请先在配置中让过滤器对群聊生效。</li>
             </ul>
           </aside>
 
@@ -141,10 +141,10 @@
                 </svg>
               </div>
               <p class="empty-kicker">NO SIGNAL</p>
-              <h2 id="emptyTitle">没有选中的会话</h2>
-              <p id="emptyCopy">从列表选择一个群聊会话，或检查配置页的生效范围。</p>
+              <h2 id="emptyTitle" data-series-text="没有选中的会话">没有选中的会话</h2>
+              <p id="emptyCopy" data-series-text="从列表选择一个群聊会话，或检查配置页的生效范围。">从列表选择一个群聊会话，或检查配置页的生效范围。</p>
               <p class="ops-note detail-status" id="detailStatus" role="status" aria-live="polite" aria-atomic="true"></p>
-              <button type="button" class="button button-quiet hidden" id="btnRetryDetail">重试详情</button>
+              <button type="button" class="button button-quiet hidden" id="btnRetryDetail" data-series-text="重试详情">重试详情</button>
             </div>
 
             <div class="room hidden" id="roomView">
@@ -154,20 +154,22 @@
                   <p class="room-id" id="roomId">—</p>
                   <h2 id="roomMode">—</h2>
                 </div>
-                <div class="badges" aria-label="会话状态">
-                  <span class="badge" id="badgeTakeover">未生效</span>
-                  <span class="badge" id="badgeCool">冷却关</span>
-                  <span class="badge" id="badgeVibe">本地遥测</span>
+                <div class="badges" aria-label="会话状态" data-series-aria-label="会话状态">
+                  <span class="badge" id="badgeTakeover" data-series-text="未生效">未生效</span>
+                  <span class="badge" id="badgeCool" data-series-text="冷却关">冷却关</span>
+                  <span class="badge" id="badgeVibe" data-series-text="本地遥测">本地遥测</span>
                 </div>
               </header>
+
+              <section class="decision-strip" id="roomDecisionStrip" aria-label="JEV 判定瀑布与静默原因" data-series-aria-label="JEV 判定瀑布与静默原因"></section>
 
               <section class="signal-section" aria-labelledby="signalTitle">
                 <div class="subsection-heading">
                   <div>
                     <p class="eyebrow">SIGNAL METRICS</p>
-                    <h3 id="signalTitle">会话指标</h3>
+                    <h3 id="signalTitle" data-series-text="会话指标">会话指标</h3>
                   </div>
-                  <span class="subsection-note">当前窗口</span>
+                  <span class="subsection-note" data-series-text="当前窗口">当前窗口</span>
                 </div>
                 <div class="meters" id="meters"></div>
               </section>
@@ -176,28 +178,28 @@
                 <div class="subsection-heading">
                   <div>
                     <p class="eyebrow">MESSAGE RATE</p>
-                    <h3 id="traceTitle">消息速率</h3>
+                    <h3 id="traceTitle" data-series-text="消息速率">消息速率</h3>
                   </div>
-                  <span class="trace-meta" id="traceMeta">0 条/分</span>
+                  <span class="trace-meta" id="traceMeta" data-series-text="0 条/分">0 条/分</span>
                 </div>
-                <div class="bars" id="rateBars" role="img" aria-label="最近窗口内的消息条数"></div>
-                <div class="trace-axis" aria-hidden="true"><span>60 秒前</span><span>现在</span></div>
+                <div class="bars" id="rateBars" role="img" aria-label="最近窗口内的消息条数" data-series-aria-label="最近窗口内的消息条数"></div>
+                <div class="trace-axis" aria-hidden="true"><span data-series-text="60 秒前">60 秒前</span><span data-series-text="现在">现在</span></div>
               </section>
 
               <section class="pipeline-section" aria-labelledby="pipelineTitle">
                 <div class="subsection-heading">
                   <div>
                     <p class="eyebrow">PROCESS LINE</p>
-                    <h3 id="pipelineTitle">处理流水线</h3>
+                    <h3 id="pipelineTitle" data-series-text="处理流水线">处理流水线</h3>
                   </div>
-                  <span class="subsection-note">阶段状态</span>
+                  <span class="subsection-note" data-series-text="阶段状态">阶段状态</span>
                 </div>
-                <ol class="pipeline" id="pipeline" aria-label="消息处理流水线">
-                  <li data-stage="debounce" aria-label="防抖聚合"><span class="stage-index">01</span><span class="stage-name">防抖聚合</span><span class="stage-state"></span></li>
-                  <li data-stage="graph" aria-label="对话图谱"><span class="stage-index">02</span><span class="stage-name">对话图谱</span><span class="stage-state"></span></li>
-                  <li data-stage="vibe" aria-label="氛围探针"><span class="stage-index">03</span><span class="stage-name">氛围探针</span><span class="stage-state"></span></li>
-                  <li data-stage="arbiter" aria-label="插话仲裁"><span class="stage-index">04</span><span class="stage-name">插话仲裁</span><span class="stage-state"></span></li>
-                  <li data-stage="pacer" aria-label="碎发节奏"><span class="stage-index">05</span><span class="stage-name">碎发节奏</span><span class="stage-state"></span></li>
+                <ol class="pipeline" id="pipeline" aria-label="消息处理流水线" data-series-aria-label="消息处理流水线">
+                  <li data-stage="debounce" aria-label="防抖聚合" data-series-aria-label="防抖聚合"><span class="stage-index">01</span><span class="stage-name" data-series-text="防抖聚合">防抖聚合</span><span class="stage-state"></span></li>
+                  <li data-stage="graph" aria-label="对话图谱" data-series-aria-label="对话图谱"><span class="stage-index">02</span><span class="stage-name" data-series-text="对话图谱">对话图谱</span><span class="stage-state"></span></li>
+                  <li data-stage="vibe" aria-label="氛围探针" data-series-aria-label="氛围探针"><span class="stage-index">03</span><span class="stage-name" data-series-text="氛围探针">氛围探针</span><span class="stage-state"></span></li>
+                  <li data-stage="arbiter" aria-label="插话仲裁" data-series-aria-label="插话仲裁"><span class="stage-index">04</span><span class="stage-name" data-series-text="插话仲裁">插话仲裁</span><span class="stage-state"></span></li>
+                  <li data-stage="pacer" aria-label="碎发节奏" data-series-aria-label="碎发节奏"><span class="stage-index">05</span><span class="stage-name" data-series-text="碎发节奏">碎发节奏</span><span class="stage-state"></span></li>
                 </ol>
               </section>
 
@@ -205,11 +207,11 @@
                 <div class="subsection-heading">
                   <div>
                     <p class="eyebrow">RECENT TRACE</p>
-                    <h3 id="ledgerTitle">图谱近迹</h3>
+                    <h3 id="ledgerTitle" data-series-text="图谱近迹">图谱近迹</h3>
                   </div>
-                  <span class="trace-meta" id="dagCount">0 节点</span>
+                  <span class="trace-meta" id="dagCount" data-series-text="0 节点">0 节点</span>
                 </div>
-                <button type="button" class="button button-quiet hidden" id="toggleNodeContent" aria-pressed="false">临时显示消息正文</button>
+                <button type="button" class="button button-quiet hidden" id="toggleNodeContent" aria-pressed="false" data-series-text="临时显示消息正文">临时显示消息正文</button>
                 <ol class="nodes" id="nodeList"></ol>
               </section>
 
@@ -217,17 +219,17 @@
                 <div class="ops-heading">
                   <div>
                     <p class="eyebrow">SESSION CONTROL</p>
-                    <h3 id="opsTitle">会话管理</h3>
+                    <h3 id="opsTitle" data-series-text="会话管理">会话管理</h3>
                   </div>
-                  <p>操作只作用于当前群聊会话。</p>
+                  <p data-series-text="操作只作用于当前群聊会话。">操作只作用于当前群聊会话。</p>
                 </div>
                 <div class="ops-controls">
                   <div class="field">
-                    <label for="coolMinutes">冷却分钟</label>
+                    <label for="coolMinutes" data-series-text="冷却分钟">冷却分钟</label>
                     <input id="coolMinutes" type="number" min="1" max="180" step="1" value="15" inputmode="numeric" disabled />
                   </div>
-                  <button type="button" class="button button-primary" id="btnCool" disabled>开启深度冷却</button>
-                  <button type="button" class="button button-danger" id="btnReset" disabled>重置本会话状态</button>
+                  <button type="button" class="button button-primary" id="btnCool" disabled data-series-text="开启深度冷却">开启深度冷却</button>
+                  <button type="button" class="button button-danger" id="btnReset" disabled data-series-text="重置本会话状态">重置本会话状态</button>
                 </div>
                 <p class="ops-note" id="opsNote" role="status" aria-live="polite"></p>
               </section>
@@ -236,12 +238,12 @@
         </section>
             </section>
             <section id="view-policy" role="tabpanel" aria-labelledby="tab-policy" hidden>
-<section class="control-strip" aria-label="运行策略与预设">
+<section class="control-strip" aria-label="运行策略与预设" data-series-aria-label="运行策略与预设">
           <article class="policy-card">
             <div class="card-heading">
               <div>
                 <p class="eyebrow">RUNTIME POLICY</p>
-                <h2>运行策略</h2>
+                <h2 data-series-text="运行策略">运行策略</h2>
               </div>
               <span class="quiet-mark" aria-hidden="true"></span>
             </div>
@@ -249,8 +251,8 @@
             <div class="policy-details">
               <span id="privacyState">—</span>
               <span id="providerState">Provider：—</span>
-              <span id="mannersState">社交分寸：—</span>
-              <span id="mediaGateState">媒体门闩：—</span>
+              <span id="mannersState" data-series-text="社交分寸：—">社交分寸：—</span>
+              <span id="mediaGateState" data-series-text="媒体门闩：—">媒体门闩：—</span>
             </div>
           </article>
 
@@ -258,91 +260,91 @@
             <div class="card-heading">
               <div>
                 <p class="eyebrow">PRESET · CONFIG</p>
-                <h2>预设与参数</h2>
+                <h2 data-series-text="预设与参数">预设与参数</h2>
               </div>
-              <span class="card-note">详细参数见独立配置页</span>
+              <span class="card-note" data-series-text="详细参数见独立配置页">详细参数见独立配置页</span>
             </div>
             <div class="preset-form">
-              <label for="presetSelect">推荐预设</label>
+              <label for="presetSelect" data-series-text="推荐预设">推荐预设</label>
               <div class="control-row">
                 <select id="presetSelect" aria-describedby="presetNote">
-                  <option value="">选择预设</option>
+                  <option value="" data-series-text="选择预设">选择预设</option>
                 </select>
-                <button type="button" class="button button-primary" id="btnPreset" disabled>应用</button>
+                <button type="button" class="button button-primary" id="btnPreset" disabled data-series-text="应用">应用</button>
               </div>
             </div>
             <p class="ops-note" id="presetNote" role="status" aria-live="polite"></p>
-            <p class="config-migrate-note">完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。</p>
+            <p class="config-migrate-note" data-series-text="完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。">完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。</p>
           </article>
 
           <p class="ops-note metric-note" id="metricState" role="status" aria-live="polite"></p>
           <details class="diagnostic-drawer" id="shadowDecisions">
             <summary>
-              <span>最近观察决策</span>
-              <span class="summary-hint">次级诊断</span>
+              <span data-series-text="最近观察决策">最近观察决策</span>
+              <span class="summary-hint" data-series-text="次级诊断">次级诊断</span>
             </summary>
             <ol id="shadowDecisionList"></ol>
           </details>
         </section>        <details class="diagnostic-drawer" id="readAirPanel" open>
           <summary>
-            <span>读空气 · 分寸 · 群记忆</span>
-            <span class="summary-hint">统一查看群聊状态、参与程度与记忆入口</span>
+            <span data-series-text="读空气 · 分寸 · 群记忆">读空气 · 分寸 · 群记忆</span>
+            <span class="summary-hint" data-series-text="统一查看群聊状态、参与程度与记忆入口">统一查看群聊状态、参与程度与记忆入口</span>
           </summary>
           <div style="padding: 12px 4px 4px">
             <div class="section-heading">
               <div>
                 <p class="eyebrow">TODAY · READ AIR</p>
-                <h2 id="readAirTitle">今日读空气</h2>
+                <h2 id="readAirTitle" data-series-text="今日读空气">今日读空气</h2>
               </div>
-              <p class="section-caption">场合 · 插话 vs 安静 · 为什么没回（默认不露原文）</p>
+              <p class="section-caption" data-series-text="场合 · 插话 vs 安静 · 为什么没回（默认不露原文）">场合 · 插话 vs 安静 · 为什么没回（默认不露原文）</p>
             </div>
-            <div class="stats" aria-label="读空气">
+            <div class="stats" aria-label="读空气" data-series-aria-label="读空气">
               <article class="stat">
-                <span class="stat-label">当前场合</span>
+                <span class="stat-label" data-series-text="当前场合">当前场合</span>
                 <strong id="statOccasion">—</strong>
-                <span class="stat-hint" id="statOccasionHint">读空气</span>
+                <span class="stat-hint" id="statOccasionHint" data-series-text="读空气">读空气</span>
               </article>
               <article class="stat">
-                <span class="stat-label">今日插话</span>
+                <span class="stat-label" data-series-text="今日插话">今日插话</span>
                 <strong id="statIntervene">—</strong>
-                <span class="stat-hint">开口次数</span>
+                <span class="stat-hint" data-series-text="开口次数">开口次数</span>
               </article>
               <article class="stat">
-                <span class="stat-label">今日安静</span>
+                <span class="stat-label" data-series-text="今日安静">今日安静</span>
                 <strong id="statQuiet">—</strong>
-                <span class="stat-hint">闭嘴次数</span>
+                <span class="stat-hint" data-series-text="闭嘴次数">闭嘴次数</span>
               </article>
               <article class="stat">
-                <span class="stat-label">分寸旋钮</span>
+                <span class="stat-label" data-series-text="分寸旋钮">分寸旋钮</span>
                 <strong id="statPresence">—</strong>
-                <span class="stat-hint">隐身 / 懂事 / 活跃</span>
+                <span class="stat-hint" data-series-text="隐身 / 懂事 / 活跃">隐身 / 懂事 / 活跃</span>
               </article>
               <article class="stat">
-                <span class="stat-label">搭档灯</span>
+                <span class="stat-label" data-series-text="搭档灯">搭档灯</span>
                 <strong id="statPartner">—</strong>
                 <span class="stat-hint" id="statPartnerHint">selflearning</span>
               </article>
             </div>
             <p class="ops-note metric-note" id="whySilentState" role="status" aria-live="polite"></p>
             <div class="preset-form" id="presenceForm">
-              <p class="ops-note">参与程度对所有生效群聊应用；排除名单仍然优先。</p>
-<label for="presenceSelect">分寸旋钮</label>
+              <p class="ops-note" data-series-text="参与程度对所有生效群聊应用；排除名单仍然优先。">参与程度对所有生效群聊应用；排除名单仍然优先。</p>
+<label for="presenceSelect" data-series-text="分寸旋钮">分寸旋钮</label>
               <div class="control-row">
                 <select id="presenceSelect" aria-describedby="presenceNote">
-                  <option value="ghost">隐身</option>
-                  <option value="sensible">懂事</option>
-                  <option value="lively">活跃</option>
+                  <option value="ghost" data-series-text="隐身">隐身</option>
+                  <option value="sensible" data-series-text="懂事">懂事</option>
+                  <option value="lively" data-series-text="活跃">活跃</option>
                 </select>
-                <button type="button" class="button button-primary" id="btnPresence" disabled>应用</button>
+                <button type="button" class="button button-primary" id="btnPresence" disabled data-series-text="应用">应用</button>
               </div>
               <p class="ops-note" id="presenceNote" role="status" aria-live="polite"></p>
               <p class="ops-note" id="mediaGateNote" role="status" aria-live="polite"></p>
             </div>
             <div class="preset-form" id="notebookForm">
-              <label for="notebookUmo">群记忆小本（UMO）</label>
+              <label for="notebookUmo" data-series-text="群记忆小本（UMO）">群记忆小本（UMO）</label>
               <div class="control-row">
                 <input id="notebookUmo" type="text" placeholder="session_key / umo" aria-describedby="notebookNote" />
-                <button type="button" class="button button-quiet" id="btnNotebookLoad" disabled>查看</button>
+                <button type="button" class="button button-quiet" id="btnNotebookLoad" disabled data-series-text="查看">查看</button>
               </div>
               <p class="ops-note" id="notebookNote" role="status" aria-live="polite"></p>
               <pre class="ops-note" id="notebookPreview"></pre>
@@ -353,19 +355,19 @@
             <section id="view-integrations" role="tabpanel" aria-labelledby="tab-integrations" hidden>
 <section class="integration-panel" id="integrationPanel" aria-labelledby="integrationTitle">
           <div class="integration-header">
-            <div><p class="eyebrow">CONNECTIONS / SELF LEARNING</p><h2 id="integrationTitle">自学习互联</h2>
-              <p class="integration-subtitle">记忆、关系与群聊表达，在回复前汇入主模型。</p></div>
-            <span class="integration-badge" id="integrationStatus" role="status" aria-live="polite">等待诊断</span>
+            <div><p class="eyebrow">CONNECTIONS / SELF LEARNING</p><h2 id="integrationTitle" data-series-text="自学习互联">自学习互联</h2>
+              <p class="integration-subtitle" data-series-text="记忆、关系与群聊表达，在回复前汇入主模型。">记忆、关系与群聊表达，在回复前汇入主模型。</p></div>
+            <span class="integration-badge" id="integrationStatus" role="status" aria-live="polite" data-series-text="等待诊断">等待诊断</span>
           </div>
-          <div class="integration-metrics" aria-label="接口发现统计">
-            <div><strong id="integrationProviderCount">—</strong><span>已发现搭档</span></div>
-            <div><strong id="integrationCount">—</strong><span>已发现直连方法</span></div>
-            <div><strong>11</strong><span>支持的兼容方法名</span></div>
+          <div class="integration-metrics" aria-label="接口发现统计" data-series-aria-label="接口发现统计">
+            <div><strong id="integrationProviderCount">—</strong><span data-series-text="已发现搭档">已发现搭档</span></div>
+            <div><strong id="integrationCount">—</strong><span data-series-text="已发现直连方法">已发现直连方法</span></div>
+            <div><strong>11</strong><span data-series-text="支持的兼容方法名">支持的兼容方法名</span></div>
           </div>
           <div class="integration-capabilities" id="integrationCapabilities"></div>
           <div class="integration-providers" id="integrationProviders"></div>
-          <p class="integration-empty" id="integrationEmpty">正在读取接口诊断…</p>
-          <p class="integration-footnote" id="integrationNote">这里显示接入方式，不展示记忆正文。</p>
+          <p class="integration-empty" id="integrationEmpty" data-series-text="正在读取接口诊断…">正在读取接口诊断…</p>
+          <p class="integration-footnote" id="integrationNote" data-series-text="这里显示接入方式，不展示记忆正文。">这里显示接入方式，不展示记忆正文。</p>
         </section>
             </section>
           </main>

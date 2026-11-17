@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from astrbot.api import logger
 
 from .platform_bridge import SendResult
@@ -14,11 +15,17 @@ class DeferredReplyMedia:
         self._ready = asyncio.Event()
         self._primary_delivered = False
         self._attempted = False
+        self._cancelled = False
         self._lock = asyncio.Lock()
         self._primary_node = None
         self._ready_at = 0.0
         self._source_check = None
         self.reply_text = ""
+
+    def cancel(self):
+        """Disable automatic follow-up media after an explicit response choice."""
+        self._cancelled = True
+        self._ready.set()
 
     def confirm(self, source_check=None, *, text=""):
         self._primary_delivered = True
@@ -39,9 +46,14 @@ class DeferredReplyMedia:
         return await self.is_current()
 
     async def is_current(self):
-        if (not self._ready.is_set() or not self._primary_delivered or self._attempted
-                or asyncio.get_running_loop().time() - self._ready_at > 45
-                or self.runtime.last_bot_node is not self._primary_node):
+        if (
+            self._cancelled
+            or not self._ready.is_set()
+            or not self._primary_delivered
+            or self._attempted
+            or asyncio.get_running_loop().time() - self._ready_at > 45
+            or self.runtime.last_bot_node is not self._primary_node
+        ):
             return False
         if not await self.engine.valid_async(self.runtime, self.item):
             return False
@@ -61,14 +73,36 @@ class DeferredReplyMedia:
                     self._attempted = True  # no retry of an uncertain platform effect
                     event = self.item.events[-1]
 
-                    async def effect(original_event):
+                    async def effect(original_event, *, before_dispatch):
+                        denied = False
+
+                        async def check():
+                            nonlocal denied
+                            current = (
+                                await self.engine.valid_async(self.runtime, self.item)
+                                and self.runtime.last_bot_node is self._primary_node
+                                and not self._cancelled
+                                and asyncio.get_running_loop().time() - self._ready_at <= 45
+                                and await before_dispatch()
+                                and self.runtime.last_bot_node is self._primary_node
+                            )
+                            denied = not current
+                            return current
+
                         try:
-                            if callable(self._source_check) and not await self._source_check():
+                            try:
+                                inspect.signature(operation).bind(original_event, before_dispatch=check)
+                                accepts_guard = True
+                            except (TypeError, ValueError):
+                                accepts_guard = False
+                            if accepts_guard:
+                                sent = await operation(original_event, before_dispatch=check)
+                            elif await check():
+                                sent = await operation(original_event)
+                            else:
+                                sent = None
+                            if denied:
                                 return SendResult(False, error="native_memory_source_invalidated")
-                            if (not await self.engine.valid_async(self.runtime, self.item)
-                                    or self.runtime.last_bot_node is not self._primary_node):
-                                return SendResult(False, error="deferred_media_parent_changed")
-                            sent = await operation(original_event)
                             return SendResult(bool(sent), error=None if sent else "deferred_media_not_sent")
                         except asyncio.CancelledError:
                             raise
@@ -76,7 +110,7 @@ class DeferredReplyMedia:
                             return SendResult(False, error=type(exc).__name__, delivery_uncertain=True)
 
                     result = await self.engine.plugin._send_owned(
-                        self.runtime, event, chain, send_effect=effect,
+                        self.runtime, event, chain, guarded_send_effect=effect,
                         native_source_validator=self._source_check)
                     self.engine.plugin._metric("deferred_media_sent" if result.success else "deferred_media_failed")
                     logger.info("[ChatDynamics] deferred media session=%s success=%s uncertain=%s",

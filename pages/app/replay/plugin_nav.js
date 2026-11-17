@@ -90,6 +90,10 @@ export function signedContentHref(contentPath, theme, baseHref) {
   const applyTheme = (params) => {
     if (theme) params.set("theme", theme);
     params.set("ui", resolvedUi());
+    const scope = window.DynamicsGetActiveScope?.() ?? window.DynamicsUI?.getSharedScope?.();
+    if (scope !== undefined) params.set("umo", String(scope));
+    const language = window.DynamicsUI?.getLanguage?.();
+    if (language) params.set("lang", language);
     return params;
   };
 
@@ -187,7 +191,7 @@ export async function navigateToPluginPage(pageName, button = null) {
       await window.ChatDynamicsTheme?.flush();
       const signed = signedContentHref(extractContentPath(raw), theme);
       if (signed) {
-        if (await window.ChatDynamicsBeforeNavigate?.() === false) {
+        if (await (window.DynamicsBeforeNavigate || window.ChatDynamicsBeforeNavigate)?.() === false) {
           setNavNote("已取消跳转，未保存的修改仍保留。");
           return;
         }
@@ -215,7 +219,7 @@ export function mountPluginSideNav(currentId) {
 
   const current = String(currentId || "");
   root.innerHTML = PLUGIN_PAGES.map((page) => {
-    const label = `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[page.id]}</svg><span>${escapeHtml(page.label)}</span>`;
+    const label = `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[page.id]}</svg><span data-series-text="${escapeHtml(page.label)}">${escapeHtml(page.label)}</span>`;
     if (page.id === current) {
       return `<span class="plugin-side-item is-current" aria-current="page">${label}</span>`;
     }

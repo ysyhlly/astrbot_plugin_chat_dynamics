@@ -7,13 +7,20 @@ def energy_context(snapshot):
     raw = snapshot.get('energy') or {}
     stale = bool(snapshot.get('stale'))
     level = raw.get('level', 'unknown') if not stale else 'unknown'
-    if level not in {'unknown','normal','recovering','recovered'}:
+    if level not in {'unknown','normal','recovering','recovered','tired'}:
         level = 'unknown'
     result = {'level':level,'stale':stale,'fact_kind':'subjective'}
     for key in ('confirmed_activity_seconds','previous_rest_seconds'):
         value = raw.get(key)
         if not stale and type(value) in (int,float) and math.isfinite(value) and value >= 0:
             result[key] = round(min(value, 86400))
+    if not stale and raw.get('basis') in {'confirmed_activity_interval','migration_baseline'}:
+        result['basis'] = raw['basis']
+        result['label'] = str(raw.get('label') or '')[:40]
+        for key in ('energy','satiety','hydration'):
+            value = raw.get(key)
+            if type(value) in (int,float) and math.isfinite(value) and 0 <= value <= 1:
+                result[key] = round(value, 3)
     return result
 
 

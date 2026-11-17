@@ -78,6 +78,8 @@ class IntegrationRegistry(LegacySelfLearningBridge):
     """
 
     _ownership_catalog_v1 = True
+    _dynamics_memory_capabilities_v1 = True
+    _dynamics_world_capabilities_v1 = True
 
     def __init__(self, context=None, *, enabled=True, hub_url="", hub_key_env="SELFLEARNING_HUB_API_KEY"):
         self.capability_registry = CapabilityRegistry(context)

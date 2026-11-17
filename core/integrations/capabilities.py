@@ -18,7 +18,7 @@ class Capability:
 
 def provider_kind(name: str) -> str:
     normalized = "".join(char for char in str(name).casefold() if char.isalnum())
-    if "livingmemory" in normalized or "liveingmemory" in normalized:
+    if "dynamicsmemory" in normalized or "dynamics_memory" in normalized or "livingmemory" in normalized or "liveingmemory" in normalized:
         return "livingmemory"
     if "selflearning" in normalized:
         return "selflearning"

@@ -1,6 +1,5 @@
 """Per-message addressee questions and the conversation map given to the reply agent."""
 
-import pytest
 import json
 from dataclasses import replace
 
@@ -142,10 +141,11 @@ def test_bot_messages_are_not_asked_and_are_marked_as_bot():
     rows = {row["message_id"]: row for row in conversation_map(turn, {})["messages"]}
     assert rows["b5"]["speaker"] == {"user_id": BOT, "is_bot": True}
 
+import pytest
 
-from .test_jev_decision_layer import JevDouble, answers as layer_answers, jev_plugin  # noqa: F401, E402
-from .test_persona_model import drain, flush  # noqa: E402
-from .test_plugin_lifecycle import MockEvent  # noqa: E402
+from .test_jev_decision_layer import JevDouble, answers as layer_answers, jev_plugin  # noqa: F401
+from .test_persona_model import drain, flush
+from .test_plugin_lifecycle import MockEvent
 
 
 @pytest.mark.asyncio

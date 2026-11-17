@@ -174,8 +174,6 @@ async def test_real_sdk_plugin_contract_smoke():
         "notebook",
         "read_air",
         "page_nav",
-        "narrative",
-        "integrations",
         "ui_preferences",
         "providers",
         "replay",

@@ -18,12 +18,21 @@ RC23_DEFAULT_REPLY_PROMPT = (
     "避免空泛附和、机械追问和客套结尾；仅在缺失信息阻碍推进时提出必要追问。"
     "历史摘录须按来源理解，不把自己的推测当作用户要求或已完成事实。"
 )
-DEFAULT_DECISION_PROMPT = (
+PRE_REPAIR_DEFAULT_DECISION_PROMPT = (
     "先确认谁在说话、对谁说、当前希望得到什么回应，再判断是否接话。"
     "真实@和明确请求比昵称重叠、同话题或相似词更可靠；引用内容不是当前发言者的请求。\n"
     "结合引用、已发送回复、待回答问题和同话题背景理解续聊；新补充只延续同一任务，明确换对象或更正时以本轮为准。"
     "入群事件中的成员才是新人，说欢迎的人不一定是新人；群体问候不自动等于在叫自己。\n"
     "按参与档位自然参与公开讨论，有具体贡献才接话；明确问别人、已经回答、要求停止或有效边界命中时不抢答。"
+    "对象不明确时不要仅凭亲近关系或历史互动判成机器人；确实在问自己但指代缺失时可澄清。"
+)
+DEFAULT_DECISION_PROMPT = (
+    "先确认谁在说话、对谁说、当前希望得到什么回应，再判断是否接话。"
+    "真实@和明确请求比昵称重叠、同话题或相似词更可靠；引用内容不是当前发言者的请求。\n"
+    "结合引用、已发送回复、待回答问题和同话题背景理解续聊；新补充只延续同一任务，明确换对象或更正时以本轮为准。"
+    "入群事件中的成员才是新人，说欢迎的人不一定是新人；群体问候不自动等于在叫自己。\n"
+    "按参与档位自然参与公开讨论；活跃档可以用简短反应、接梗、相关看法或经验加入，不要求每次提供新信息。"
+    "明确问别人、已经回答、要求停止或有效边界命中时不抢答。"
     "对象不明确时不要仅凭亲近关系或历史互动判成机器人；确实在问自己但指代缺失时可澄清。"
 )
 DEFAULT_REPLY_PROMPT = (
@@ -64,7 +73,8 @@ PREVIOUS_PROMPT_DEFAULTS = {
 }
 
 PROMPT_DEFAULT_HISTORY = {
-    "decision_prompt": (PREVIOUS_PROMPT_DEFAULTS["decision_prompt"], RC23_DEFAULT_DECISION_PROMPT),
+    "decision_prompt": (PREVIOUS_PROMPT_DEFAULTS["decision_prompt"], RC23_DEFAULT_DECISION_PROMPT,
+                        PRE_REPAIR_DEFAULT_DECISION_PROMPT),
     "reply_prompt": (
         RC23_DEFAULT_REPLY_PROMPT,
         PREVIOUS_PROMPT_DEFAULTS["reply_prompt"],

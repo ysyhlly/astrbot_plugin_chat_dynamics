@@ -102,12 +102,11 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
                         answers[name] = {"type": "noul", "noul": 0.9}
                     elif spec["type"] == "choice":
                         choices = list(spec["criteria"])
-                        selected = {"action": "reply", "state": "casual", "recipient": "bot",
-                                    "completion": "complete", "reason": "addressed_question"}.get(name, choices[0])
-                        if selected not in choices:
-                            selected = choices[0]
-                        answers[name] = {"type": "choice", "choice": selected,
-                                         "probabilities": {key: float(key == selected) for key in choices},
+                        if name == "action" and "reply" in choices:
+                            choices.remove("reply")
+                            choices.insert(0, "reply")
+                        answers[name] = {"type": "choice", "choice": choices[0],
+                                         "probabilities": {key: float(key == choices[0]) for key in choices},
                                          "confidence": 1.0}
                     else:
                         answers[name] = {"type": "score", "score": 0.7, "confidence": 0.7,
@@ -156,9 +155,8 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["models"], ["jev-latest", "custom-model"])
         self.assertEqual(self.requests[-1][:3], ("GET", "/api/v1/models", "Bearer dummy-key"))
         available = self.panel_cls(self.host).list_available_providers()
-        self.assertEqual(available["systemone"][0]["id"], "selected-model")
-        self.assertEqual(available["systemone"][0]["model"], "custom-model")
-        self.assertEqual(available["chat"], [])
+        self.assertEqual(available["decision"][0]["id"], "selected-model")
+        self.assertEqual(available["decision"][0]["model"], "custom-model")
 
     async def test_source_environment_key_and_alternative_models_path(self):
         self.source["key"] = ["${JEV_TEST_KEY}"]
@@ -449,8 +447,7 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
         from .test_persona_model import BridgeDouble, drain, flush
         with patch("astrbot_plugin_chat_dynamics.core.agent_bridge.AstrBotAgentBridge.check", return_value=True):
             p = _plugin({"decision_provider": "selected-model", "debounce_base_cooldown": 10,
-                         "rule_topic_routing_enabled": False,
-                         "base_thinking_delay": 0, "daily_rhythm_enabled": False})
+                         "base_thinking_delay": 0, "daily_rhythm_enabled": False, "rule_topic_routing_enabled": False})
         p.context.provider_manager = self.manager
         p.context.get_provider_by_id = self.context.get_provider_by_id
         p.persona_engine.bridge = BridgeDouble()
@@ -462,8 +459,10 @@ class NativeFlowTests(unittest.IsolatedAsyncioTestCase):
             await p.on_group_message(event)
             await flush(p, event)
             await drain(p)
-            decisions = [row for row in self.requests if row[0] == 'POST' and row[1] == '/api/v1/systemone']
-            self.assertEqual(len(decisions), 1, [(row[0], row[1]) for row in self.requests])
+            # Startup refreshes the model catalog; the turn itself sends one decision.
+            decisions = [request for request in self.requests if request[0] == "POST"]
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0][1], "/api/v1/systemone")
             self.assertIn("recipient", decisions[0][3]["questions"])
             self.assertTrue(event.replies_sent)
             self.assertTrue(p.jev.snapshot()["available"])

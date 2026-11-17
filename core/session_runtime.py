@@ -13,6 +13,7 @@ from .graph import ConversationDAG, ConversationNode
 from .semantics import semantic_match
 from .topic_archive import TopicArchive
 from .presence_policy import MAX_AMBIENT_OPENINGS
+from .recent_images import RecentImages
 
 TOPIC_IDLE_SECONDS = 3600.0
 MAX_ACTIVE_TOPICS = 80
@@ -248,6 +249,7 @@ class SessionRuntime:
     # Each cancellable call has a member owner; the group worker stays alive on stop.
     owned_turn_tasks: Dict[asyncio.Task, str] = field(default_factory=dict, repr=False)
     user_revisions: Dict[str, int] = field(default_factory=dict)
+    recent_images: RecentImages = field(default_factory=RecentImages, repr=False)
     interaction_state: str = "observing"
     model_diagnostic: Dict[str, Any] = field(default_factory=dict)
     # Typed answers of the System One (Jev) decision layer for the last turn: the
@@ -473,6 +475,7 @@ class SessionRuntime:
         self.pending_hover = self.pending_hovers[-1] if self.pending_hovers else None
 
     def reset_conversation_state(self) -> None:
+        self.recent_images.clear()
         self.group_events.clear()
         if self.topic_batch_task is not None:
             self.topic_batch_task.cancel()
@@ -517,6 +520,7 @@ class SessionRuntime:
         self.last_activity = max(self.last_activity, float(timestamp))
 
     def invalidate(self) -> int:
+        self.recent_images.clear()
         self.clear_model_queue()
         self.epoch += 1
         self.revision += 1

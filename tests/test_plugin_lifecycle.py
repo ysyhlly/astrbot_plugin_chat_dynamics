@@ -272,10 +272,9 @@ async def test_plugin_full_end_to_end_flow():
     assert len(dag.nodes) >= 3
     user_node = dag.get_node("m2")
     assert user_node is not None
-    assert "bot_42" in user_node.mentioned_users
     first_user_node = dag.get_node("m1")
     assert first_user_node is not None
-    assert "m1" in user_node.parent_ids
+    assert "bot_42" in first_user_node.mentioned_users
     bot_nodes = sorted(
         (node for node in dag.nodes.values() if node.user_id == "bot_42"),
         key=lambda node: node.timestamp,

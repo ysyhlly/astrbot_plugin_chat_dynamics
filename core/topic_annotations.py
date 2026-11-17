@@ -201,12 +201,12 @@ class TopicAnnotations:
             state=trace.get("state"), mode=trace.get("mode", "legacy"),
             weights_version=trace.get("weights_version", "default"),
             outcome=node.metadata.get("outcome") or trace.get("outcome"),
-            shadow=node.metadata.get("shadow_decision") or trace.get("shadow"),
+            shadow=trace.get("shadow"),
         )
         if trace.get("trace_schema_version"):
             record["decision_trace"] = trace_with_updates(
                 trace, outcome=node.metadata.get("outcome") or trace.get("outcome"),
-                shadow=node.metadata.get("shadow_decision") or trace.get("shadow"))
+                shadow=trace.get("shadow"))
         # Only submitted labels and bounded diagnostics, never automatic message collection.
         if getattr(self.plugin, "console_show_message_content", False):
             record["text"] = node.text[:2000]

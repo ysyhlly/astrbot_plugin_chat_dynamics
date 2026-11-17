@@ -42,6 +42,14 @@ def is_private_message_event(event: Any) -> bool:
     return _message_type_name(event) in {"FRIEND_MESSAGE", "PRIVATE_MESSAGE"}
 
 
+def private_message_recipient(umo: str) -> str:
+    """Resolve the recipient from an AstrBot FriendMessage origin."""
+    parts = str(umo or "").split(":", 2)
+    if len(parts) == 3 and parts[0] and parts[1] == "FriendMessage":
+        return parts[2]
+    return ""
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})

@@ -1,22 +1,25 @@
 <!doctype html>
 <html lang="zh-CN"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark"><title>决策模型 · 群聊动态</title>
+  <meta name="color-scheme" content="light dark"><title data-series-text="决策模型 · 群聊动态">决策模型 · 群聊动态</title>
   <style>html{background:#f5f6f4;color-scheme:light}html[data-ui-theme="night"]{background:#0b1419;color-scheme:dark}</style>
   <script>(()=>{let s;try{s=localStorage.getItem('chat_dynamics_ui')}catch{}const q=new URLSearchParams(location.search).get('ui');document.documentElement.dataset.uiTheme=['day','night'].includes(q)?q:s==='night'?'night':'day'})();</script>
   <script src="./theme.js"></script>
   <link rel="stylesheet" href="./base.css"><link rel="stylesheet" href="./shell.css">
   <link rel="stylesheet" href="./plugin_nav.css"><link rel="stylesheet" href="./theme.css"><link rel="stylesheet" href="./style.css">
-</head><body><div class="app plugin-shell"><div class="plugin-layout">
-  <aside class="plugin-side" aria-label="插件页面"><p class="plugin-side-label">群聊动态</p><nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav></aside>
-  <main class="plugin-main">
-    <header class="topbar"><div><p class="eyebrow">群聊动态 / 决策</p><h1>决策模型</h1><p class="lede">查看当前 Jev 或普通 LLM 的连接、调用与耗时。运行统计不代表模型质量验收。</p></div><button type="button" id="refresh">立即刷新</button></header>
-    <p id="status" role="status" aria-live="polite">正在连接…</p>
-    <section class="metrics" aria-label="运行摘要">
-      <div><span>在线决策路径</span><strong id="mode">—</strong></div><div><span>当前模型</span><strong id="model">—</strong></div>
-      <div><span>调用次数</span><strong id="calls">—</strong></div><div><span>失败次数</span><strong id="failures">—</strong></div>
-      <div><span>最近请求耗时</span><strong id="latency">—</strong></div><div><span>模型连接</span><strong id="serviceState">—</strong></div>
+<link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head><body><div class="app plugin-shell series-workspace"><div class="plugin-layout">
+  <header class="plugin-side series-nav">
+          <a class="series-brand" href="#workspace"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
+        </header>
+  <main class="plugin-main" id="workspace" tabindex="-1">
+    <header class="topbar series-heading"><div><p class="eyebrow" data-series-text="群聊动态 / 决策">群聊动态 / 决策</p><h1 data-series-text="决策模型">决策模型</h1><p class="lede" data-series-text="查看当前 Jev 或普通 LLM 的连接、调用与耗时。运行统计不代表模型质量验收。">查看当前 Jev 或普通 LLM 的连接、调用与耗时。运行统计不代表模型质量验收。</p></div><button type="button" id="refresh" data-series-text="立即刷新">立即刷新</button></header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+    <p id="status" role="status" aria-live="polite" data-series-text="正在连接…">正在连接…</p>
+    <section class="metrics" aria-label="运行摘要" data-series-aria-label="运行摘要">
+      <div><span data-series-text="在线决策路径">在线决策路径</span><strong id="mode">—</strong></div><div><span data-series-text="当前模型">当前模型</span><strong id="model">—</strong></div>
+      <div><span data-series-text="调用次数">调用次数</span><strong id="calls">—</strong></div><div><span data-series-text="失败次数">失败次数</span><strong id="failures">—</strong></div>
+      <div><span data-series-text="最近请求耗时">最近请求耗时</span><strong id="latency">—</strong></div><div><span data-series-text="模型连接">模型连接</span><strong id="serviceState">—</strong></div>
     </section><p id="detail" class="section-copy"></p>
-    <section class="wire-card"><h2>失败时保守处理</h2><p class="section-copy">所选决策模型超时、不可用或置信度不足时采用本地保守计划，不补调另一后端。参与限制、冷却和发送保护仍然生效。普通 LLM 输出的置信分数未经概率校准。</p></section>
-    <section class="wire-card"><h2>历史样本导出</h2><p class="section-copy">历史数据库保留，只在点击导出时读取。每批最多 500 条；聊天内容按控制台隐私设置隐藏。模型调用不会再采集样本或启动训练。</p><button type="button" id="export">导出历史样本（最多 500 条）</button><p id="historyStatus" role="status" aria-live="polite"></p></section>
+    <section class="wire-card"><h2 data-series-text="失败时保守处理">失败时保守处理</h2><p class="section-copy" data-series-text="所选决策模型超时、不可用或置信度不足时采用本地保守计划，不补调另一后端。参与限制、冷却和发送保护仍然生效。普通 LLM 输出的置信分数未经概率校准。">所选决策模型超时、不可用或置信度不足时采用本地保守计划，不补调另一后端。参与限制、冷却和发送保护仍然生效。普通 LLM 输出的置信分数未经概率校准。</p></section>
+    <section class="wire-card"><h2 data-series-text="历史样本导出">历史样本导出</h2><p class="section-copy" data-series-text="历史数据库保留，只在点击导出时读取。每批最多 500 条；聊天内容按控制台隐私设置隐藏。模型调用不会再采集样本或启动训练。">历史数据库保留，只在点击导出时读取。每批最多 500 条；聊天内容按控制台隐私设置隐藏。模型调用不会再采集样本或启动训练。</p><button type="button" id="export" data-series-text="导出历史样本（最多 500 条）">导出历史样本（最多 500 条）</button><p id="historyStatus" role="status" aria-live="polite"></p></section>
   </main></div></div><script type="module" src="./app.js"></script></body></html>

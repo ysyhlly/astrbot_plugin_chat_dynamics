@@ -70,7 +70,8 @@ async def test_poke_honors_configured_three_second_interval(jev_plugin):
     event = prepare_poke(p, bridge)
     delays = []
     async def record(delay):
-        delays.append(delay)
+        if event.replies_sent and 0 < delay < 10:
+            delays.append(delay)
         await asyncio.sleep(0)
     p.time_service.sleep = record
     try:
@@ -79,8 +80,8 @@ async def test_poke_honors_configured_three_second_interval(jev_plugin):
         await drain(p)
         assert len(event.replies_sent) == 3
         from astrbot_plugin_chat_dynamics.core.pacer import scale_delay
-        interval = scale_delay(3.0, p._sessions[event.unified_msg_origin].last_delay_scale)
-        assert [delay for delay in delays if 0 < delay < 10] == [interval, interval], delays
+        scale = p._sessions[event.unified_msg_origin].last_delay_scale
+        assert delays == [pytest.approx(scale_delay(3.0, scale))] * 2
     finally:
         await p.terminate()
 

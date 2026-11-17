@@ -37,13 +37,13 @@
 
 .wire-nav a:hover {
   color: var(--text);
-  border-color: rgba(114, 216, 210, 0.45);
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent);
 }
 
 .wire-nav span.current {
   color: var(--cyan);
-  border-color: rgba(114, 216, 210, 0.4);
-  background: rgba(114, 216, 210, 0.1);
+  border-color: color-mix(in srgb, var(--cyan) 40%, transparent);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
 }
 
 /* Cards = preset-card skin */
@@ -75,9 +75,9 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border: 1px solid rgba(114, 216, 210, 0.35);
+  border: 1px solid color-mix(in srgb, var(--cyan) 35%, transparent);
   border-radius: 999px;
-  background: rgba(114, 216, 210, 0.08);
+  background: color-mix(in srgb, var(--cyan) 8%, transparent);
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
@@ -102,12 +102,12 @@
   height: 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--thermo-track, rgba(48, 62, 68, 0.08));
+  background: var(--thermo-track, color-mix(in srgb, var(--text) 8%, transparent));
   overflow: hidden;
 }
 .thermo-fill {
   height: 100%;
-  background: linear-gradient(90deg, rgba(114, 216, 210, 0.25), rgba(114, 216, 210, 0.75));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--cyan) 25%, transparent), color-mix(in srgb, var(--cyan) 75%, transparent));
   transition: width 0.25s ease;
 }
 .thermo-labels {
@@ -131,14 +131,14 @@
   cursor: pointer;
 }
 .chip[aria-pressed="true"] {
-  border-color: rgba(114, 216, 210, 0.45);
-  background: rgba(114, 216, 210, 0.12);
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent);
+  background: color-mix(in srgb, var(--cyan) 12%, transparent);
   color: var(--cyan);
 }
 .chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .chip.warn[aria-pressed="true"] {
-  border-color: rgba(242, 179, 110, 0.55);
-  background: rgba(242, 179, 110, 0.12);
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
   color: var(--amber, #f2b36e);
 }
 
@@ -193,8 +193,8 @@
 }
 .tab[aria-selected="true"] {
   color: var(--cyan);
-  border-color: rgba(114, 216, 210, 0.4);
-  background: rgba(114, 216, 210, 0.1);
+  border-color: color-mix(in srgb, var(--cyan) 40%, transparent);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
 }
 
 .empty-state {
@@ -212,7 +212,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 8px 0;
-  border-bottom: 1px solid rgba(157, 203, 208, 0.12);
+  border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 12%, transparent);
   font-size: 13px;
 }
 .partner-row:last-child { border-bottom: 0; }
@@ -237,7 +237,7 @@
   font: inherit;
 }
 
-.danger-zone { border-color: rgba(242, 143, 135, 0.35); }
+.danger-zone { border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
 .quiet-console-link { margin-top: 10px; color: var(--muted); font-size: 12px; }
 .quiet-console-link a { color: var(--cyan); text-decoration: none; }
 .advanced-note { margin-top: 8px; color: var(--muted); font-size: 13px; }

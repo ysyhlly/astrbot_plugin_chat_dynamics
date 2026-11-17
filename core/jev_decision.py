@@ -12,8 +12,9 @@ Two properties are load-bearing:
 * **The vocabulary is closed.** Every question offers the plugin's own options, so a
   remote answer can never introduce an unknown action, state, length or reason.
   Answers are located by the option keys we sent, never parsed out of prose.
-* **Wake types have separate admission rules.** A real platform @ always replies
-  without this decision call. Quotes use the lower recipient floor; names and
+* **Wake types have separate admission rules.** A real platform @ can enter the
+  reply agent without this decision call; the agent may still choose silence.
+  Quotes use the lower recipient floor; names and
   supplements need a confident bot recipient and a confident non-ignore action.
   Ambient chatter needs the normal join and confidence floors.
   An unavailable or uncertain decision never admits a quote/name wake by itself.
@@ -89,10 +90,10 @@ WAKE_RECIPIENT_FLOOR = 0.35
 JOIN_FLOOR = 0.7
 
 ACTION_CRITERIA = {
-    "ignore": "No response: another recipient, no useful contribution, or intrusion",
+    "ignore": "No response: the message clearly addresses another person, a reply would interrupt an active exchange, or there is no natural conversational response; an informal reaction or fitting banter can count even without new facts",
     "acknowledge": "A simple greeting, reaction or receipt needs no new content. A direct expression of affection, care, playful fondness or relationship confirmation is substantive; choose reply.",
     "clarify": "Ask one necessary question: a missing fact blocks a useful answer",
-    "reply": "Answer, advice, useful information or emotional support; new content is needed",
+    "reply": "Answer, advice, useful information or emotional support; also use for a fitting short joke, callback, opinion or addition to an active public conversation",
     "close": "Naturally finish an exchange or acknowledge an addressed ending; no new question or topic. Closing can be warm and does not imply rejection.",
 }
 STATE_CRITERIA = {
@@ -108,16 +109,16 @@ REASON_CRITERIA = {
     "addressed_request": "Direct task request to this participant; naming it alone is insufficient",
     "addressed_question": "Direct information question to this participant; use addressed_request for tasks",
     "ongoing_thread": "Continue this participant's exchange without a new direct task or information question",
-    "open_group_topic": "Useful public contribution without direct address or existing exchange",
+    "open_group_topic": "A fitting contribution to an open public discussion without direct address or an existing exchange; a light reaction, joke, callback or brief opinion can fit",
     "social_signal": "Only greeting, thanks, poke or reaction; no content request",
     "other_recipient": "Explicitly addresses someone else; discussing this participant does not address it",
     "boundary_or_sensitive": "Privacy, conflict or an explicit stop calls for restraint",
-    "low_value_chatter": "No direct request, continuation, useful public contribution or social signal",
+    "low_value_chatter": "No direct request, continuation, fitting social signal or natural conversational contribution; being informal or lacking new facts alone is not enough",
 }
 _ACTION_GOALS = {
     "reply": "针对目标消息给出实质回复，不展开无关内容。",
     "acknowledge": "简短、具体地回应目标消息；简单确认可简短确认，表达感受或关系确认要回答其在意之处。避免无关展开。",
-    "clarify": "问一句最小的澄清，确认对象或意图。",
+    "clarify": "只问一句中性的澄清，确认妨碍作答的关键信息。保留对方已给出的内容，不猜测缺失对象或列出无依据的选项。",
     "close": "简短收尾，不再抛出新问题。",
     "ignore": "本轮保持安静，继续旁听。",
 }
@@ -125,7 +126,7 @@ _REASON_GOALS = {
     "addressed_question": "先直接回答被问到的问题。",
     "addressed_request": "按对方的请求给出可用结果。",
     "ongoing_thread": "延续与对方的同一话题，不重复已说过的内容。",
-    "open_group_topic": "只补充一句与公开讨论相关的有用内容，越短越好。",
+    "open_group_topic": "简短接住公开讨论，回应其中的轻松反应、感受、接梗或相关看法。",
     "social_signal": "当作社交信号回应，不要当成内容请求或附件。",
 }
 
@@ -418,6 +419,7 @@ def _shrink(state: dict, max_chars: int) -> dict:
         character_state["context_items"] = [dict(r, text=excerpt(r.get('text', ''),140))
                                              for r in (social[:1] + memory[:1])]
         character_state["summary"] = ""
+        character_state.pop("horizons", None)
     state.pop("affection", None)
     state.pop("affection_policy", None)
     if _size(state) <= max_chars:
@@ -521,13 +523,16 @@ def build_questions(
                     "`participation_policy`, `decision_prompt`, `previous_state`, `observations` and `conversation`?"
                 ),
                 "focus": "Resolve speaker/recipient/task; follow participation_policy and decision_prompt. Quotes/topics "
-                         "do not establish recipient. Useful public contributions and directly addressed kindness with "
-                         "scoped closeness can invite reply; never hijack, repeat or override stop/privacy/consent. "
-                         "Continuation is not a new opening.",
+                         "do not establish recipient. In lively mode, a brief natural reaction, playful callback, "
+                         "shared-interest comment or small opinion can be a worthwhile public contribution even "
+                         "without new information; do not require a question or advice request. Join only when the "
+                         "discussion is open and this turn adds something fitting. Never jump into a message clearly "
+                         "addressed to another member, a private exchange, an active turn, or a stated boundary; "
+                         "never override stop/privacy/consent. Continuation is not a new opening.",
             },
             "criteria": {
-                "true": "Yes: speaking now is useful and interrupts nobody",
-                "false": "No: speaking now adds nothing, or would interrupt someone else",
+                "true": "Yes: a fitting response can keep this open conversation warm, playful or moving without interrupting anyone",
+                "false": "No: this clearly belongs to another person, crosses a boundary, interrupts, repeats what was said, or offers no fitting response",
             },
         },
         "action": {
@@ -535,10 +540,13 @@ def build_questions(
             "instructions": {
                 "question": "What single response action fits the current speaker's message?",
                 "focus": "Resolve current recipient/task from quotes, dialogue, confirmed topics and group_events; "
-                         "current corrections win. Do not answer background requests. Clarify blocking references "
-                         "only if asked; unclear recipient favors ignore. Addressed kindness/affection merits substance, "
-                         "especially with scoped closeness. Distinguish attacks, quoted defense and feedback; "
-                         "past refusal/affection alone does not settle consent.",
+                         "current corrections win. Do not answer background requests. In an open whole-group "
+                         "discussion, no individual recipient is expected: unclear addressee alone is not a reason "
+                         "to ignore a fitting lively contribution. A brief reaction, playful callback or short opinion "
+                         "can be enough without new facts. For directed or private exchanges, an uncertain recipient "
+                         "still favors silence. Clarify blocking references only if asked; respect stop, privacy and "
+                         "consent. Distinguish attacks, quoted defense and feedback; past refusal/affection alone does "
+                         "not settle consent.",
             },
             "criteria": ACTION_CRITERIA,
         },
@@ -693,6 +701,8 @@ def _targets(turn: TurnContext, answers: Mapping[str, Any], *, needed: bool,
 
 
 def _goal(action: str, reason: str) -> str:
+    if action == "clarify":
+        return _ACTION_GOALS[action]
     return (_ACTION_GOALS.get(action, _ACTION_GOALS["ignore"]) + _REASON_GOALS.get(reason, ""))[:600]
 
 
@@ -716,7 +726,7 @@ def _reply_style(
     chosen_state = state[0] if state is not None and state[1] >= floor else default_state
     if action == "ignore" or chosen_state == "observing":
         chosen_state = default_state
-    chosen_length = length[0] if length is not None and length[1] >= floor else "brief"
+    chosen_length = length[0] if action != "clarify" and length is not None and length[1] >= floor else "brief"
     chosen_reason = reason[0] if reason is not None and reason[1] >= floor else ""
     return chosen_state, chosen_length, chosen_reason
 
@@ -883,6 +893,9 @@ def decision_from_answers(
 
     `prefix` identifies the source of the diagnostic reason in a decision trace.
     """
+    action = _choice(answers, "action", ACTIONS)
+    if turn.mandatory_reply and action and action[0] == "ignore" and action[1] >= min_confidence:
+        return TurnDecision.abstain(prefix + "model_silent")
     if turn.mandatory_reply and not narrative:
         return TurnDecision.fallback(turn, "at_mandatory")
     current_target = any(
@@ -940,7 +953,8 @@ def decision_from_answers(
         and completion is not None
         and completion[0] == "complete"
         and completion[1] >= min_confidence
-        and _choice(answers, "action", ACTIONS) is not None
+        and action is not None
+        and not (action[0] == "ignore" and action[1] >= min_confidence)
         and reason is not None
         and (not bare_reaction or (continuity[0] == "answer" and dialogue.question_pending))
         and not _aimed_only_at_others(turn)
@@ -949,15 +963,18 @@ def decision_from_answers(
     ):
         state = _choice(answers, "state", STATES)
         length = _choice(answers, "length", LENGTHS)
-        chosen_state, chosen_length, _ = _reply_style("reply", state, length, reason, min_confidence)
+        chosen = "clarify" if action[0] == "clarify" and action[1] >= min_confidence else "reply"
+        chosen_state, chosen_length, _ = _reply_style(chosen, state, length, reason, min_confidence)
         if chosen_state in {"observing", "disengaging"}:
             chosen_state = "casual"
         return TurnDecision(
-            "reply",
+            chosen,
             chosen_state,
             _targets(turn, answers, needed=True, floor=min_confidence),
-            "接住这轮对上一段对话的回答、补充或纠正，先回应新增内容；问题已经答过就继续讨论，不重复询问。"
-            "根据内容补充一个相关看法、细节或必要问题，自然推进，不机械追问或擅自结束话题。",
+            _goal(chosen, reason[0]) if chosen == "clarify" else (
+                "接住这轮对上一段对话的回答、补充或纠正，先回应新增内容；问题已经答过就继续讨论，不重复询问。"
+                "根据内容补充一个相关看法、细节或必要问题，自然推进，不机械追问或擅自结束话题。"
+            ),
             chosen_length,
             prefix + "dialogue_" + continuity[0],
         )
@@ -1021,8 +1038,6 @@ def decision_from_answers(
     reason_code = prefix + (chosen_reason or "action_accepted")
     explicit_wake = bool(turn.explicit and turn.wake_kind == "legacy"
                          and chosen_reason != "boundary_or_sensitive")
-    if chosen == "ignore" and explicit_wake:
-        return TurnDecision.fallback(turn, prefix + "explicit_wake")
     join = answers.get("join")
     if isinstance(join, Mapping) and join.get("type") == "noul":
         probability = join.get("noul")

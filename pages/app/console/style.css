@@ -145,6 +145,21 @@
 .channel.active { box-shadow:inset 3px 0 var(--cyan); }
 .channel .meta,.stat-hint { font-size:12px; }
 .room-head { border-left:3px solid var(--cyan); padding-left:16px; }
+.decision-strip { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:12px; margin-top:18px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
+.decision-strip:empty { display:none; }
+.decision-waterfall-card,.decision-silence-card { display:grid; gap:8px; align-content:start; min-width:0; }
+.decision-silence-card { border-left:1px solid var(--line); padding-left:14px; }
+.dwf-kicker { display:flex; align-items:center; justify-content:space-between; gap:8px; font:600 11px/1.4 var(--mono); color:var(--muted); }
+.dwf-steps { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.dwf-pill { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; border:1px solid var(--line); background:var(--surface); font-size:12px; line-height:1.35; }
+.dwf-pill[data-tone="speak"] { border-color:var(--cyan); color:var(--cyan); background:var(--cyan-soft); font-weight:600; }
+.dwf-pill[data-tone="quiet"] { border-color:var(--amber); color:var(--amber); background:var(--amber-soft); }
+.dwf-bar { height:5px; border-radius:999px; background:var(--line); overflow:hidden; }
+.dwf-bar > i { display:block; height:100%; background:var(--cyan); border-radius:999px; }
+.dwf-tags { display:flex; flex-wrap:wrap; gap:6px; }
+.dwf-tag { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:5px; border:1px solid var(--line); background:var(--surface); color:var(--text); font-size:11px; }
+.dwf-tag small { color:var(--muted); font-family:var(--mono); }
+@media(max-width:900px) { .decision-strip { grid-template-columns:1fr; } .decision-silence-card { border-left:0; border-top:1px solid var(--line); padding-left:0; padding-top:10px; } }
 .meter { padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); }
 .gauge { height:5px; }
 .nodes li { line-height:1.8; }

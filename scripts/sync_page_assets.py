@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "pages" / "app"
+ROOT = Path(__file__).resolve().parents[1] / "pages"
 PAGES = ("console", "config", "memory", "replay", "learning")
 
 

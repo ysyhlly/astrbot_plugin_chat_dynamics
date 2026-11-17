@@ -20,45 +20,45 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title>群聊动态 · 设置</title>
+    <title data-series-text="群聊动态 · 设置">群聊动态 · 设置</title>
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
-  </head>
+  <link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head>
   <body>
-    <a class="skip-link" href="#configMain">跳到设置</a>
+    <a class="skip-link" href="#configMain" data-series-text="跳到设置">跳到设置</a>
     <div class="grain" aria-hidden="true"></div>
-    <div class="app plugin-shell">
+    <div class="app plugin-shell series-workspace">
       <div class="plugin-layout">
-        <aside class="plugin-side" aria-label="插件页面">
-          <p class="plugin-side-label">群聊动态</p>
-          <nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航"></nav>
-        </aside>
+        <header class="plugin-side series-nav">
+          <a class="series-brand" href="#configMain"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
+        </header>
         <div class="plugin-main">
-      <header class="topbar">
+      <header class="topbar series-heading">
         <div class="brand-copy">
-          <p class="eyebrow">群聊动态 / 设置</p>
-          <h1 id="pageTitle">插件设置</h1>
-          <p class="lede" id="pageDesc">选择生效群聊、决策模型和回复模型，核对后保存。</p>
+          <p class="eyebrow" data-series-text="群聊动态 / 设置">群聊动态 / 设置</p>
+          <h1 id="pageTitle" data-series-text="插件设置">插件设置</h1>
+          <p class="lede" id="pageDesc" data-series-text="选择生效群聊、决策模型和回复模型，核对后保存。">选择生效群聊、决策模型和回复模型，核对后保存。</p>
         </div>
         <div class="topbar-tools">
-          <nav class="page-nav" id="pageNav" aria-label="插件子页切换"></nav>
+          <nav class="page-nav" id="pageNav" aria-label="插件子页切换" data-series-aria-label="插件子页切换"></nav>
           <div class="connection-state" role="status" aria-live="polite">
-            <span class="status-dot" id="linkLamp" aria-hidden="true"></span><span id="linkLabel">连接中</span>
+            <span class="status-dot" id="linkLamp" aria-hidden="true"></span><span id="linkLabel" data-series-text="连接中">连接中</span>
           </div>
         </div>
-      </header>
+      </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
 
-      <div class="action-bar" role="region" aria-label="配置操作">
+      <div class="action-bar" role="region" aria-label="配置操作" data-series-aria-label="配置操作">
         <div class="action-copy">
-          <strong id="actionTitle">所有修改已保存</strong>
+          <strong id="actionTitle" data-series-text="所有修改已保存">所有修改已保存</strong>
           <p class="ops-note" id="configNote" role="status" aria-live="polite"></p>
-          <p class="action-impact" id="configActionImpact">保存后会立即影响当前生效的群聊。</p>
+          <p class="action-impact" id="configActionImpact" data-series-text="保存后会立即影响当前生效的群聊。">保存后会立即影响当前生效的群聊。</p>
         </div>
         <div class="action-buttons">
-          <button type="button" class="button button-quiet" id="btnConfigReload">重新读取</button>
-          <button type="button" class="button" id="btnConfigApply">重新应用已存配置</button>
-          <button type="button" class="button button-primary" id="btnConfigSave" disabled>保存并立即应用</button>
+          <button type="button" class="button button-quiet" id="btnConfigReload" data-series-text="重新读取">重新读取</button>
+          <button type="button" class="button" id="btnConfigApply" data-series-text="重新应用已存配置">重新应用已存配置</button>
+          <button type="button" class="button button-primary" id="btnConfigSave" disabled data-series-text="保存并立即应用">保存并立即应用</button>
         </div>
       </div>
 
@@ -66,78 +66,88 @@
         <section class="config-overview" aria-labelledby="configStartTitle">
           <div class="overview-heading">
             <div>
-              <p class="eyebrow">运行路径</p>
-              <h2 id="configStartTitle">当前运行路径</h2>
+              <p class="eyebrow" data-series-text="运行路径">运行路径</p>
+              <h2 id="configStartTitle" data-series-text="当前运行路径">当前运行路径</h2>
             </div>
-            <p><span class="overview-state" id="configOverviewState">已应用</span>核对这轮对哪些群生效、由谁判断，以及失败时如何处理。编辑时显示保存后预览。</p>
+            <p><span class="overview-state" id="configOverviewState" data-series-text="已应用">已应用</span><span data-series-text="核对这轮对哪些群生效、由谁判断，以及失败时如何处理。编辑时显示保存后预览。">核对这轮对哪些群生效、由谁判断，以及失败时如何处理。编辑时显示保存后预览。</span></p>
           </div>
           <div class="overview-steps">
             <article class="overview-step">
-              <span class="step-label"><span>01</span> 生效范围</span>
-              <strong id="configScopeHeadline">读取中</strong>
-              <p id="configScopeStatus" role="status" aria-live="polite">正在读取生效范围…</p>
+              <span class="step-label"><span>01</span> <span data-series-text="生效范围">生效范围</span></span>
+              <strong id="configScopeHeadline" data-series-text="读取中">读取中</strong>
+              <p id="configScopeStatus" role="status" aria-live="polite" data-series-text="正在读取生效范围…">正在读取生效范围…</p>
             </article>
             <article class="overview-step" id="decisionOverview">
-              <span class="step-label"><span>02</span> 判断方式</span>
-              <strong id="configDecisionHeadline">读取中</strong>
-              <p id="configDecisionStatus" role="status" aria-live="polite">正在读取判断路径…</p>
+              <span class="step-label"><span>02</span> <span data-series-text="判断方式">判断方式</span></span>
+              <strong id="configDecisionHeadline" data-series-text="读取中">读取中</strong>
+              <p id="configDecisionStatus" role="status" aria-live="polite" data-series-text="正在读取判断路径…">正在读取判断路径…</p>
             </article>
             <article class="overview-step">
-              <span class="step-label"><span>03</span> 回复与故障处理</span>
-              <strong id="configModelHeadline">读取中</strong>
-              <p id="configModelStatus" role="status" aria-live="polite">正在读取模型配置…</p>
+              <span class="step-label"><span>03</span> <span data-series-text="回复与故障处理">回复与故障处理</span></span>
+              <strong id="configModelHeadline" data-series-text="读取中">读取中</strong>
+              <p id="configModelStatus" role="status" aria-live="polite" data-series-text="正在读取模型配置…">正在读取模型配置…</p>
             </article>
           </div>
           <div class="config-conflicts hidden" id="configConflicts" role="status" aria-live="polite">
-            <div class="conflict-heading"><strong id="configConflictTitle">配置路径需要核对</strong><span id="configConflictCount"></span></div>
+            <div class="conflict-heading"><strong id="configConflictTitle" data-series-text="配置路径需要核对">配置路径需要核对</strong><span id="configConflictCount"></span></div>
             <ul id="configConflictList"></ul>
           </div>
         </section>
         <section class="model-connection" aria-labelledby="modelConnectionTitle">
           <div>
-            <p class="eyebrow">Jev / 普通 LLM</p>
-            <h2 id="modelConnectionTitle">接入已添加的决策模型</h2>
-            <p>在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。</p>
-            <p id="jevConnectionStatus" role="status" aria-live="polite">正在读取决策模型列表…</p>
+            <p class="eyebrow" data-series-text="Jev / 普通 LLM">Jev / 普通 LLM</p>
+            <h2 id="modelConnectionTitle" data-series-text="接入已添加的决策模型">接入已添加的决策模型</h2>
+            <p data-series-text="在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。">在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。</p>
+            <p id="jevConnectionStatus" role="status" aria-live="polite" data-series-text="正在读取决策模型列表…">正在读取决策模型列表…</p>
           </div>
           <div class="action-buttons">
-            <button type="button" class="button" id="btnRefreshModels">刷新模型列表</button>
-            <button type="button" class="button button-primary" id="btnUseJev">选择决策模型</button>
+            <button type="button" class="button" id="btnRefreshModels" data-series-text="刷新模型列表">刷新模型列表</button>
+            <button type="button" class="button button-primary" id="btnUseJev" data-series-text="选择决策模型">选择决策模型</button>
           </div>
         </section>
         <details class="integration-panel" id="integrationPanel">
-          <summary><span>插件联动与设置归属</span><span id="integrationSummary">读取中</span></summary>
+          <summary><span data-series-text="插件联动与设置归属">插件联动与设置归属</span><span id="integrationSummary" data-series-text="读取中">读取中</span></summary>
           <div class="integration-panel-body">
-            <p>Chat Dynamics 负责接话与发送；角色卡、记忆、关系和表情由各自插件管理。</p>
+            <p data-series-text="Chat Dynamics 负责接话与发送；角色卡、记忆、关系和表情由各自插件管理。">Chat Dynamics 负责接话与发送；角色卡、记忆、关系和表情由各自插件管理。</p>
             <div class="integration-toolbar">
-              <p id="integrationNote" role="status" aria-live="polite">正在核对插件与接口…</p>
-              <button type="button" class="button button-quiet" id="btnIntegrationRefresh">刷新联动状态</button>
+              <p id="integrationNote" role="status" aria-live="polite" data-series-text="正在核对插件与接口…">正在核对插件与接口…</p>
+              <button type="button" class="button button-quiet" id="btnIntegrationRefresh" data-series-text="刷新联动状态">刷新联动状态</button>
             </div>
             <div id="integrationCards" class="integration-cards" aria-busy="true"></div>
           </div>
         </details>
         <div class="settings-workspace">
-          <aside class="settings-index" aria-label="设置目录">
-            <div class="config-mode" role="group" aria-label="设置复杂度">
-              <button type="button" class="button" id="btnBasicConfig" aria-pressed="true">常用</button>
-              <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false">全部</button>
+          <div class="settings-index series-context" aria-label="设置目录" data-series-aria-label="设置目录">
+            <div class="config-mode" role="group" aria-label="设置复杂度" data-series-aria-label="设置复杂度">
+              <button type="button" class="button" id="btnBasicConfig" aria-pressed="true" data-series-text="常用">常用</button>
+              <button type="button" class="button button-quiet" id="btnAdvancedConfig" aria-pressed="false" data-series-text="全部">全部</button>
             </div>
-            <p class="index-label">设置目录 · 数字表示当前显示 / 本类总数</p>
-            <nav id="configCategoryNav" aria-label="配置分类导航"></nav>
-          </aside>
+            
+            <nav id="configCategoryNav" aria-label="配置分类导航" data-series-aria-label="配置分类导航"></nav>
+          </div>
           <div class="settings-editor">
         <div class="config-toolbar">
-          <label class="config-search">搜索全部设置<input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off" /></label>
-          <label class="config-category">快速跳转<select id="configCategory"><option value="">正在读取分类…</option></select></label>
-          <div class="config-view-actions"><button type="button" class="button button-quiet" id="btnExpandGroups">全部展开</button><button type="button" class="button button-quiet" id="btnCollapseGroups">全部收起</button></div>
+          <label class="config-search"><span data-series-text="搜索全部设置">搜索全部设置</span><input id="configSearch" type="search" placeholder="搜索名称、说明或参数名" autocomplete="off"  data-series-placeholder="搜索名称、说明或参数名"/></label>
+          <label class="config-category"><span data-series-text="快速跳转">快速跳转</span><select id="configCategory"><option value="" data-series-text="正在读取分类…">正在读取分类…</option></select></label>
+          <div class="config-view-actions"><button type="button" class="button button-quiet" id="btnExpandGroups" data-series-text="全部展开">全部展开</button><button type="button" class="button button-quiet" id="btnCollapseGroups" data-series-text="全部收起">全部收起</button></div>
           <p id="configResultCount" class="ops-note" role="status" aria-live="polite"></p>
         </div>
         <p class="ops-note error hidden" id="configMismatch" role="status"></p>
         <div class="ops-note hidden" id="configWarnings" role="status" aria-live="polite"></div>
-        <div id="configEmpty" class="search-empty hidden" role="status"><h2>没有匹配的设置</h2><p>试试更短的关键词，或搜索参数名称。</p><button type="button" class="button" id="btnClearSearch">清除搜索</button></div>
-        <div id="configForm" class="config-sections" aria-label="插件参数表单" aria-busy="true"></div>
+        <div id="configEmpty" class="search-empty hidden" role="status"><h2 data-series-text="没有匹配的设置">没有匹配的设置</h2><p data-series-text="试试更短的关键词，或搜索参数名称。">试试更短的关键词，或搜索参数名称。</p><button type="button" class="button" id="btnClearSearch" data-series-text="清除搜索">清除搜索</button></div>
+        <div id="configForm" class="config-sections" aria-label="插件参数表单" aria-busy="true" data-series-aria-label="插件参数表单"></div>
           </div>
         </div>
+        <aside class="config-diff-bar hidden" id="configDiffBar" role="region" aria-label="未保存修改对比" data-series-aria-label="未保存修改对比">
+          <div class="diff-summary">
+            <strong id="configDiffCount" data-series-text="0 项未保存修改">0 项未保存修改</strong>
+            <div class="diff-chips" id="configDiffList"></div>
+          </div>
+          <div class="action-buttons">
+            <button type="button" class="button button-quiet" id="btnDiffDiscard" data-series-text="还原未存修改">还原未存修改</button>
+            <button type="button" class="button button-primary" id="btnDiffSave" data-series-text="保存并立即应用">保存并立即应用</button>
+          </div>
+        </aside>
       </main>
         </div>
       </div>

@@ -78,7 +78,7 @@ NODE_FIELDS = ('msg_id', 'user_id', 'text', 'timestamp', 'reply_to_id',
 # `tests/test_static_contracts.py` holds them apart: every name in the first group
 # must have a producer in this tree (a key nobody writes is a phantom that a reader
 # will one day trust), and nothing may start writing a name in the second.
-_WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome',
+_WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'reply_choice',
                        'discussion_seed', 'discussion_confirmed_at', 'discussion_confirmed_by',
                        'discussion_support_ids', 'discussion_support_topic_id', 'discussion_representative_id',
                        'trace_inputs', 'turn_id', 'topic_title', 'edge_metadata',

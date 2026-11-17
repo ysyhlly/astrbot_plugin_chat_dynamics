@@ -2,15 +2,18 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG
-from astrbot_plugin_chat_dynamics.core.persona_engine import _platform_reply_id, snapshot_turn
+from astrbot_plugin_chat_dynamics.core.agent_bridge import AgentOutput
+from astrbot_plugin_chat_dynamics.core import member_boundary
+from astrbot_plugin_chat_dynamics.core.persona_engine import _automatic_group_reply_id, _platform_reply_id, snapshot_turn
 from astrbot_plugin_chat_dynamics.core.platform_bridge import SendResult
 from .test_jev_decision_layer import JevDouble, answers
 from .test_persona_model import BridgeDouble
-from .test_plugin_lifecycle import MockEvent, _plugin
+from .test_plugin_lifecycle import At, MockEvent, Reply, _plugin
 
 
 def _parsed(message_id: str = "", text: str = "") -> SimpleNamespace:
@@ -110,6 +113,11 @@ def test_platform_reply_requires_explicit_true_marker_for_history():
     assert _platform_reply_id(runtime, item, historical.msg_id) is None
     historical.metadata["platform_message_id"] = True
     assert _platform_reply_id(runtime, item, historical.msg_id) == historical.msg_id
+    assert _automatic_group_reply_id(runtime, item, historical.msg_id) is None
+
+    older = runtime.dag.add_message("member-old", "user_2", "较早的问题", timestamp=0.6)
+    older.metadata["platform_message_id"] = True
+    assert _automatic_group_reply_id(runtime, item, _platform_reply_id(runtime, item, older.msg_id)) == older.msg_id
 
 
 @pytest.fixture
@@ -154,16 +162,27 @@ async def _run_persona(plugin, event, fragments, send_results):
 
 
 @pytest.mark.asyncio
-async def test_persona_real_message_id_chains_platform_replies(persona_plugin):
-    event = MockEvent("请求", message_id="source-real", is_at_or_wake_command=True)
+@pytest.mark.parametrize("quoted", [False, True])
+@pytest.mark.parametrize("streamed", [False, True])
+async def test_persona_quotes_only_initial_fragment_when_inbound_is_quoted(persona_plugin, quoted, streamed):
+    components = [At("bot_42")]
+    if quoted:
+        components.append(Reply("earlier-message"))
+    event = MockEvent("请求", message_id="source-real", components=components)
+    parts = ["first", "second", "third"]
+    if streamed:
+        persona_plugin.persona_engine.bridge.generate = AsyncMock(
+            return_value=AgentOutput("first second third", "conv", "[]", [], stream_prefix="first")
+        )
+        parts = parts[1:]
     calls, runtime = await _run_persona(
         persona_plugin,
         event,
-        ["first", "second", "third"],
+        parts,
         [SendResult(True, "bot-real-1"), SendResult(True, "bot-real-2"), SendResult(True, "bot-real-3")],
     )
 
-    assert [reply_to_id for _, reply_to_id in calls] == ["source-real", "bot-real-1", "bot-real-2"]
+    assert calls == [("first", "source-real" if quoted else None), ("second", None), ("third", None)]
     assert runtime.last_bot_node is not None
     assert runtime.last_bot_node.reply_to_id == "bot-real-2"
     assert [runtime.dag.get_node(message_id).reply_to_id for message_id in ("bot-real-1", "bot-real-2", "bot-real-3")] == [
@@ -206,6 +225,34 @@ async def test_persona_fallback_id_never_becomes_platform_reply(persona_plugin):
 
 
 @pytest.mark.asyncio
+async def test_plain_owned_send_guards_selected_member_without_a_quote(persona_plugin, monkeypatch):
+    plugin = persona_plugin
+    event = MockEvent("请求")
+    runtime = plugin._get_or_create_runtime(event.unified_msg_origin, group_id=event.group_id)
+    event._chat_dynamics_boundary_uid = event.sender_id
+    seen = []
+    blocked = set()
+
+    def current(_plugin, _event, targets, _snapshot):
+        seen.append(targets)
+        return not blocked.intersection(targets)
+
+    monkeypatch.setattr(member_boundary, "dispatch_targets_current", current)
+    event.send = AsyncMock(return_value={"message_id": "plain"})
+    try:
+        first = await plugin._send_owned(runtime, event, "首段", boundary_target_uid="other-member")
+        assert first.success
+        assert [type(part).__name__ for part in event.send.call_args.args[0].chain] == ["Plain"]
+        blocked.add("other-member")
+        tail = await plugin._send_owned(runtime, event, "尾段", boundary_target_uid="other-member")
+        assert not tail.success and tail.error == "boundary_policy_cancelled"
+        assert event.send.await_count == 1
+        assert seen == [["other-member"], ["other-member"], ["other-member"]]
+    finally:
+        await plugin.terminate()
+
+
+@pytest.mark.asyncio
 async def test_persona_failed_send_does_not_advance_reply_or_dag(persona_plugin):
     event = MockEvent("失败请求", message_id="source-real", is_at_or_wake_command=True)
     calls, runtime = await _run_persona(
@@ -215,7 +262,7 @@ async def test_persona_failed_send_does_not_advance_reply_or_dag(persona_plugin)
         [SendResult(False, error="rejected"), SendResult(True, "should-not-send")],
     )
 
-    assert calls == [("first", "source-real")]
+    assert calls == [("first", None)]
     assert runtime.last_bot_node is None
     assert all(node.user_id != runtime.bot_id for node in runtime.dag.nodes.values())
     assert not persona_plugin.persona_engine.bridge.commits

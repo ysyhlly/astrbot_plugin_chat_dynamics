@@ -28,11 +28,11 @@ def event_for(kind):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('recipient,confidence,reply', [('bot', 0.35, True), ('bot', 0.34, False), ('other', 0.99, False), ('unclear', 0.99, False)])
 @pytest.mark.parametrize('kind', ['quote', 'name', 'platform'])
-async def test_soft_wake_respects_action_and_recipient(jev_plugin, recipient, confidence, reply, kind):
+@pytest.mark.parametrize('action', ['reply', 'ignore'])
+async def test_soft_wake_respects_action_and_recipient(jev_plugin, recipient, confidence, reply, kind, action):
     p, bridge = jev_plugin
     await p.save_config_values({'bot_names': ['小助手']})
-    # Isolate recipient confidence from the independent action decision.
-    p.jev.payload = answers(action='reply', state='casual', reason='addressed_question',
+    p.jev.payload = answers(action=action, state='observing', reason='addressed_question',
                             join={'type': 'noul', 'noul': 0.01},
                             recipient={'type': 'choice', 'choice': recipient, 'confidence': confidence})
     event = event_for(kind)
@@ -43,7 +43,7 @@ async def test_soft_wake_respects_action_and_recipient(jev_plugin, recipient, co
         assert len(p.jev.calls) == 1
         assert 'recipient' in p.jev.calls[0]['questions']
         assert p.jev.calls[0]['state']['conversation']['reply_required'] is False
-        assert bool(event.replies_sent) == bool(bridge.requests) == (reply and kind == "quote")
+        assert bool(event.replies_sent) == bool(bridge.requests) == (reply and kind == "quote" and action == "reply")
     finally:
         await p.terminate()
 
@@ -245,12 +245,13 @@ async def test_at_failed_delivery_attempts_one_fallback_and_records_result(jev_p
 @pytest.mark.asyncio
 async def test_at_partial_delivery_does_not_send_duplicate_fallback(jev_plugin):
     p, bridge = jev_plugin
-    p.pacer.persona_fragments = lambda text: ['第一段', '第二段']
+    bridge.response = '第一段\n\n第二段'
     p.time_service.sleep = lambda seconds: asyncio.sleep(0)
     attempts = []
     async def send(runtime, event, text, **kwargs):
         attempts.append(text)
-        return SimpleNamespace(success=len(attempts) == 1, message_id='sent' if len(attempts) == 1 else None)
+        from astrbot_plugin_chat_dynamics.core.platform_bridge import SendResult
+        return SendResult(success=len(attempts) == 1, message_id='sent' if len(attempts) == 1 else None)
     p._send_owned = send
     event = event_for('at')
     try:

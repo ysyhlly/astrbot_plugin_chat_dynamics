@@ -1,3 +1,4 @@
+import {msg, tr, setText, apply} from "../shared/series-ui.js";
 import { friendlyError } from "./api.js";
 import { mountIntegrationStatus } from "./integration_status.js";
 
@@ -22,7 +23,8 @@ const BASE_BASIC_KEYS = new Set([
   "context_completion_enabled",
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
   "reply_probability_threshold", "quote_reply_threshold", "name_reply_threshold", "reply_provider", "reply_timeout", "bot_names",
-  "narrative_enabled", "narrative_all_groups", "narrative_sessions", "narrative_outreach_enabled",
+  "narrative_enabled", "narrative_all_groups", "narrative_sessions", "narrative_private_chat_enabled",
+  "narrative_outreach_enabled", "narrative_outreach_sessions",
 ]);
 const BASIC_HINTS = {
   context_completion_enabled: "缺少关键上下文时先补查一次（限时8秒），再复判并回复或澄清；群聊与戳戳共用。",
@@ -43,7 +45,9 @@ const BASIC_HINTS = {
   narrative_enabled: "启用角色持续生活与状态共享。选择全部群或填写完整会话 UMO，并在动态生活插件中启用叙事模式及对应范围。",
   narrative_all_groups: "明确对所有群启用持续生活；只接入世界书角色与生活插件配置人格匹配的群聊，私聊和明确卸下角色的会话仍跳过。此开关不随“全部群接管”自动开启，生活插件的范围也须匹配。",
   narrative_sessions: "未开启“全部群叙事”时只对这些完整会话 UMO 生效，例如 qq-main:GroupMessage:123456；每行一个。开启全部群叙事后此列表无需填写，可保留以便以后切回指定会话。",
+  narrative_private_chat_enabled: "需同时开启私聊接管，并在群间世界开启私聊叙事。私聊证据仅用于原私聊会话。",
   narrative_outreach_enabled: "允许已启用叙事的会话接收有明确动机的主动联系；生活推进本身不会强制发言。可在记忆小本中单独暂停。",
+  narrative_outreach_sessions: "留空允许所有已接管且启用叙事的群聊和私聊。填写后仅允许精确匹配的完整 UMO，每行一个。",
 };
 const OPTION_LABELS = {
   participation_backend: { jev: "Jev／原生抉择（默认）", llm: "普通 LLM 参与决策" },
@@ -110,12 +114,13 @@ const CONFIG_GROUPS = [
   {
     "id": "narrative",
     "title": "角色持续生活",
-    "blurb": "角色状态与事件推演、群聊范围和主动联系；详细记录见记忆小本",
+    "blurb": "角色状态与事件推演、群聊和私聊范围、主动联系；详细记录见记忆小本",
     "open": false,
     "keys": [
       "narrative_enabled",
       "narrative_all_groups",
       "narrative_sessions",
+      "narrative_private_chat_enabled",
       "narrative_outreach_enabled",
       "narrative_outreach_sessions",
       "narrative_context_retention_days",
@@ -346,6 +351,11 @@ const els = {
   decisionOverview: document.getElementById("decisionOverview"),
   btnBasicConfig: document.getElementById("btnBasicConfig"),
   btnAdvancedConfig: document.getElementById("btnAdvancedConfig"),
+  configDiffBar: document.getElementById("configDiffBar"),
+  configDiffCount: document.getElementById("configDiffCount"),
+  configDiffList: document.getElementById("configDiffList"),
+  btnDiffDiscard: document.getElementById("btnDiffDiscard"),
+  btnDiffSave: document.getElementById("btnDiffSave"),
 };
 
 let bridge = window.AstrBotPluginPage || null;
@@ -477,8 +487,13 @@ function updateScopeStatus() {
       : route.narrativeAllGroups ? " 持续生活：全部群，按世界书与生活人格匹配。"
         : route.narrativeSessions.length ? ` 持续生活：${route.narrativeSessions.length} 个指定会话。`
           : " 持续生活尚未选择会话；可填写完整 UMO 或明确开启全部群叙事。";
-    if (route.narrativeEnabled) message += value("narrative_outreach_enabled")
-      ? " 主动联系已允许，仍受生活插件的范围和联系门控约束。" : " 主动联系已关闭。";
+    if (route.narrativeEnabled) {
+      if (value("private_chat_enabled") && value("narrative_private_chat_enabled")) message += " 私聊持续生活已允许。";
+      const outreachSessions = listSetting(value("narrative_outreach_sessions"));
+      message += !value("narrative_outreach_enabled") ? " 主动联系已关闭。"
+        : outreachSessions.length ? ` 主动联系限 ${outreachSessions.length} 个指定会话。`
+          : " 主动联系范围覆盖全部已接管且启用叙事的会话。";
+    }
   }
   if (configState.mismatches.length && !configDirty) message += " 有已存设置尚未应用，以下表单可能与运行状态不同。";
   els.configScopeStatus.textContent = `${configDirty ? "保存后" : "当前"}：${message}`;
@@ -502,14 +517,14 @@ function updateScopeStatus() {
     : "使用所选模型服务中的地址、密钥和模型 ID 完成结构化决策。";
   els.configModelHeadline.textContent = `@必回 · 引用 ≥ ${value("quote_reply_threshold") ?? 35}% · 昵称 ≥ ${value("name_reply_threshold") ?? 70}%`;
   els.configModelStatus.textContent = "@机器人直接回复；引用机器人仍需确认接话对象。昵称和补充消息还需有足够把握认为值得回应，不会把“忽略”强制改成回复。晚安安、安安静静等歧义表达不作为昵称呼唤。睡眠中只有明确呼唤或引用才可简短回应。";
-  els.configStartTitle.textContent = configDirty ? "保存后路径预览" : "当前运行路径";
-  els.configOverviewState.textContent = configDirty ? "尚未保存" : configState.mismatches.length ? "已保存未应用" : "已应用";
+  setText(els.configStartTitle, msg(configDirty ? "保存后路径预览" : "当前运行路径"));
+  setText(els.configOverviewState, msg(configDirty ? "尚未保存" : configState.mismatches.length ? "已保存未应用" : "已应用"));
   els.configOverviewState.dataset.state = configDirty ? "draft" : configState.mismatches.length ? "pending" : "applied";
   els.configConflicts.classList.toggle("hidden", !route.issues.length);
-  els.configConflictTitle.textContent = configDirty ? "保存前请核对" : "配置路径需要核对";
-  els.configConflictCount.textContent = `${route.issues.length} 项`;
+  setText(els.configConflictTitle, msg(configDirty ? "保存前请核对" : "配置路径需要核对"));
+  setText(els.configConflictCount, msg("{0} 项", route.issues.length));
   els.configConflictList.innerHTML = route.issues.map(issue => `<li><span>${escapeHtml(issue.kind)}</span><p>${escapeHtml(issue.text)}</p>${issue.key
-    ? `<button type="button" data-focus-key="${escapeHtml(issue.key)}">定位参数</button>` : ""}</li>`).join("");
+    ? `<button type="button" data-focus-key="${escapeHtml(issue.key)}">${escapeHtml(tr("定位参数"))}</button>` : ""}</li>`).join("");
   updateFieldContexts(route);
   updateModelConnectionNote();
 }
@@ -585,7 +600,7 @@ function escapeHtml(value) {
 function setLink(ok, label) {
   els.linkLamp.classList.toggle("on", ok);
   els.linkLamp.classList.toggle("warn", !ok);
-  els.linkLabel.textContent = label;
+  setText(els.linkLabel, label);
 }
 
 async function apiGet(endpoint, params = {}) {
@@ -606,18 +621,24 @@ async function apiPost(endpoint, body = {}) {
 
 function setConfigNote(message, isError = false) {
   if (!els.configNote) return;
-  els.configNote.textContent = message || "";
+  setText(els.configNote, message);
   els.configNote.classList.toggle("error", Boolean(isError));
 }
 
 function setConfigDirty(dirty) {
   configDirty = Boolean(dirty);
   if (els.actionTitle) {
-    els.actionTitle.textContent = configDirty ? "有未保存修改" : "所有修改已保存";
+    setText(els.actionTitle, msg(configDirty ? "有未保存修改" : "所有修改已保存"));
   }
   if (els.btnConfigSave) {
     els.btnConfigSave.disabled = configBusy || !configDirty;
-    els.btnConfigSave.title = configDirty ? "保存并应用到运行时" : "没有未保存的修改";
+    setText(els.btnConfigSave, msg(configDirty ? "保存并应用到运行时" : "没有未保存的修改"), "title");
+  }
+  if (els.btnDiffSave) els.btnDiffSave.disabled = configBusy || !configDirty;
+  if (els.btnDiffDiscard) els.btnDiffDiscard.disabled = configBusy || !configDirty;
+  if (els.configDiffBar) {
+    els.configDiffBar.classList.toggle("hidden", !configDirty);
+    if (!configDirty && els.configDiffList) els.configDiffList.innerHTML = "";
   }
   document.querySelector(".action-bar").dataset.dirty = String(configDirty);
   updateScopeStatus();
@@ -634,17 +655,40 @@ function setConfigBusy(busy) {
   setConfigDirty(configDirty);
 }
 
+function shortDiffVal(val) {
+  if (typeof val === "boolean") return val ? "开" : "关";
+  const text = String(val ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "空";
+  return text.length > 16 ? `${text.slice(0, 15)}…` : text;
+}
+
 function updateEditedFields() {
   let count = 0;
+  const diffs = [];
   els.configForm.querySelectorAll("[data-config-key]").forEach(input => {
-    const initial = configFieldValue(input.dataset.configKey);
-    const current = input.type === "checkbox" ? input.checked : input.value;
-    const changed = String(initial) !== String(current);
+    const key = input.dataset.configKey;
+    const initial = configFieldValue(key);
+    const current = input.type === "checkbox" ? input.checked : input.dataset.booleanSelect === "true" ? input.value === "true" : input.value;
+    const initialComparable = input.dataset.booleanSelect === "true" ? Boolean(initial) : initial;
+    const changed = String(initialComparable) !== String(current);
     input.closest(".config-field").dataset.dirty = String(changed);
-    if (changed) count += 1;
+    if (changed) {
+      count += 1;
+      const title = configState.schema[key]?.description || key;
+      diffs.push({ key, title, before: shortDiffVal(initialComparable), after: shortDiffVal(current) });
+    }
   });
   setConfigDirty(count > 0);
-  if (count) els.actionTitle.textContent = `${count} 项未保存修改`;
+  if (count) {
+    setText(els.actionTitle, msg("{0} 项未保存修改", count));
+    if (els.configDiffCount) setText(els.configDiffCount, msg("{0} 项未保存修改 · 点击标签定位参数", count));
+    if (els.configDiffList) {
+      els.configDiffList.innerHTML = diffs
+        .slice(0, 8)
+        .map(d => `<button type="button" class="diff-chip" data-diff-key="${escapeHtml(d.key)}"><span>${escapeHtml(d.title)}</span><code>${escapeHtml(d.before)} → ${escapeHtml(d.after)}</code></button>`)
+        .join("") + (diffs.length > 8 ? `<span class="ops-note">+${diffs.length - 8} 项</span>` : "");
+    }
+  }
 }
 
 function isProviderField(key, schema) {
@@ -684,7 +728,7 @@ function updateModelConnectionNote() {
 function prepareJevSelection() {
   if (configBusy) return;
   focusConfigField(routeInfo().llm ? "decision_llm_provider" : "decision_provider");
-  setConfigNote("请选择决策模型，核对群聊范围后保存。");
+  setConfigNote(msg("请选择决策模型，核对群聊范围后保存。"));
 }
 
 async function refreshModelList() {
@@ -694,11 +738,11 @@ async function refreshModelList() {
     await loadProviders();
     refreshProviderSelects();
     updateScopeStatus();
-    setConfigNote("模型列表已刷新；未保存的设置已保留。");
+    setConfigNote(msg("模型列表已刷新；未保存的设置已保留。"));
   } catch (_) {
     refreshProviderSelects();
     updateScopeStatus();
-    setConfigNote("模型列表读取失败；已保留当前选择和未保存的设置，请稍后重试。", true);
+    setConfigNote(msg("模型列表读取失败；已保留当前选择和未保存的设置，请稍后重试。"), true);
   } finally {
     setConfigBusy(false);
   }
@@ -818,12 +862,12 @@ function renderField(key, mismatchSet) {
   const value = configFieldValue(key);
   let control = "";
   if (key === "takeover_all" && type === "bool") {
-    control = `<select data-config-key="takeover_all" data-boolean-select="true" aria-label="群聊生效范围">
-      <option value="false" ${value ? "" : "selected"}>仅指定群</option>
-      <option value="true" ${value ? "selected" : ""}>全部群（排除名单除外）</option>
+    control = `<select data-config-key="takeover_all" data-boolean-select="true" aria-label="群聊生效范围" data-series-aria-label="群聊生效范围">
+      <option value="false" ${value ? "" : "selected"} data-series-text="仅指定群">仅指定群</option>
+      <option value="true" ${value ? "selected" : ""} data-series-text="全部群（排除名单除外）">全部群（排除名单除外）</option>
     </select>`;
   } else if (type === "bool") {
-    control = `<span class="config-check"><input type="checkbox" role="switch" aria-label="${escapeHtml(title)}" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/><span class="check-state" aria-hidden="true"><span class="check-on">已开启</span><span class="check-off">已关闭</span></span></span>`;
+    control = `<span class="config-check"><input type="checkbox" role="switch" aria-label="${escapeHtml(title)}" data-config-key="${escapeHtml(key)}" ${value ? "checked" : ""}/><span class="check-state" aria-hidden="true"><span class="check-on" data-series-text="已开启">已开启</span><span class="check-off" data-series-text="已关闭">已关闭</span></span></span>`;
   } else if (isProviderField(key, schema) && type === "string") {
     control = renderProviderSelect(key, value);
   } else if (type === "string" && Array.isArray(schema.options) && schema.options.length) {
@@ -834,9 +878,9 @@ function renderField(key, mismatchSet) {
       )
       .join("")}</select>`;
   } else if (type === "string" && schema.editor === "textarea") {
-    control = `<textarea data-config-key="${escapeHtml(key)}" rows="6" maxlength="4000" placeholder="留空使用默认提示词">${escapeHtml(value)}</textarea>`;
+    control = `<textarea data-config-key="${escapeHtml(key)}" rows="6" maxlength="4000" placeholder="留空使用默认提示词" data-series-placeholder="留空使用默认提示词">${escapeHtml(value)}</textarea>`;
   } else if (type === "list") {
-    control = `<textarea data-config-key="${escapeHtml(key)}" rows="2" placeholder="逗号或换行分隔">${escapeHtml(value)}</textarea>`;
+    control = `<textarea data-config-key="${escapeHtml(key)}" rows="2" placeholder="逗号或换行分隔" data-series-placeholder="逗号或换行分隔">${escapeHtml(value)}</textarea>`;
   } else if (type === "int" || type === "float") {
     const slider = schema.slider && typeof schema.slider === "object" ? schema.slider : {};
     const bounds = [
@@ -855,7 +899,7 @@ function renderField(key, mismatchSet) {
     <span class="config-key">${escapeHtml(key)}</span>
     ${control}
     <span class="config-context" data-context-key="${escapeHtml(key)}" hidden></span>
-    <span class="config-effective">生效：${effectiveText}</span>
+    <span class="config-effective"><span data-series-text="生效：">生效：</span>${effectiveText}</span>
     ${hint ? `<span class="config-hint config-detail-hint">${escapeHtml(hint)}</span>` : ""}
     ${BASIC_HINTS[key] ? `<span class="config-hint config-basic-hint">${escapeHtml(BASIC_HINTS[key])}</span>` : ""}
   </label>`;
@@ -902,13 +946,13 @@ function renderConfigForm(panel) {
   if (els.configWarnings) {
     els.configWarnings.classList.toggle("hidden", !configState.warnings.length);
     els.configWarnings.innerHTML = configState.warnings.length
-      ? `<strong>运行配置提示</strong><ul>${configState.warnings.map(warning => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+      ? `<strong data-series-text="运行配置提示">运行配置提示</strong><ul>${configState.warnings.map(warning => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
       : "";
   }
   const keys = Object.keys(configState.schema).filter(key => configState.schema[key]?.invisible !== true);
   els.configForm.setAttribute("aria-busy", "false");
   if (!keys.length) {
-    els.configForm.innerHTML = '<p class="empty">暂无配置 schema。</p>';
+    els.configForm.innerHTML = `<p class="empty">${escapeHtml(tr("暂无配置 schema。"))}</p>`;
     return;
   }
   const mismatchSet = new Set(configState.mismatches);
@@ -924,11 +968,11 @@ function renderConfigForm(panel) {
 
   const groups = groupedKeys(keys);
   const selectedCategory = els.configCategory.value;
-  els.configCategory.innerHTML = '<option value="">选择设置分类…</option>' + groups.map((group) =>
+  els.configCategory.innerHTML = '<option value="" data-series-text="选择设置分类…">选择设置分类…</option>' + groups.map((group) =>
     `<option value="${escapeHtml(group.id)}">${escapeHtml(group.title)} · ${group.keys.length} 项</option>`).join("");
   els.configCategory.value = groups.some((group) => group.id === selectedCategory) ? selectedCategory : "";
   document.getElementById("configCategoryNav").innerHTML = groups.map(group =>
-    `<button type="button" class="category-link" data-category="${escapeHtml(group.id)}">${escapeHtml(group.title)}<span>${group.keys.length}</span></button>`).join("");
+    `<button type="button" class="category-link" data-category="${escapeHtml(group.id)}"><span data-series-text="${escapeHtml(group.title)}">${escapeHtml(tr(group.title))}</span><span>${group.keys.length}</span></button>`).join("");
   els.configForm.innerHTML = groups
     .map((group) => {
       const isOpen = openGroups.has(group.id);
@@ -939,8 +983,8 @@ function renderConfigForm(panel) {
       return `<details class="config-group" data-group-id="${escapeHtml(group.id)}" data-search="${escapeHtml(`${group.title} ${group.blurb}`.toLocaleLowerCase())}" ${isOpen ? "open" : ""}>
         <summary>
           <div class="group-title">
-            <strong>${escapeHtml(group.title)}</strong>
-            <span>${escapeHtml(group.blurb)}</span>
+            <strong data-series-text="${escapeHtml(group.title)}">${escapeHtml(tr(group.title))}</strong>
+            <span data-series-text="${escapeHtml(group.blurb)}">${escapeHtml(tr(group.blurb))}</span>
           </div>
           ${badge}
         </summary>
@@ -951,6 +995,11 @@ function renderConfigForm(panel) {
     })
     .join("");
 
+  apply(els.configForm);
+  apply(els.configCategory);
+  groups.forEach((group, index) => setText(els.configCategory.options[index + 1], msg("{0} · {1} 项", msg(group.title), group.keys.length)));
+  apply(document.getElementById("configCategoryNav"));
+  apply(els.configWarnings);
   setConfigDirty(false);
   els.configForm.querySelectorAll("details.config-group").forEach((group) => {
     group.addEventListener("toggle", () => {
@@ -1013,7 +1062,7 @@ async function loadConfigPanel() {
   }
 }
 
-function focusConfigField(key) {
+function focusConfigField(key, markInvalid = true) {
   if (!key) return;
   const input = els.configForm.querySelector(`[data-config-key="${key}"]`);
   if (!input) return;
@@ -1023,8 +1072,10 @@ function focusConfigField(key) {
   if (group) openGroups.add(group.dataset.groupId);
   filterConfigFields();
   persistView();
-  input.setAttribute("aria-invalid", "true");
-  input.closest(".config-field")?.classList.add("has-error");
+  if (markInvalid) {
+    input.setAttribute("aria-invalid", "true");
+    input.closest(".config-field")?.classList.add("has-error");
+  }
   input.focus({ preventScroll: true });
   input.scrollIntoView({ block: "center" });
 }
@@ -1033,7 +1084,7 @@ async function saveConfigPanel() {
   if (!els.configForm || configBusy) return;
   const route = routeInfo();
   if (!route.decisionReady) {
-    setConfigNote("决策设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。", true);
+    setConfigNote(msg("决策设置尚未就绪：请选择已启用的决策模型，并核对上方连接提示。"), true);
     return;
   }
   let updates;
@@ -1044,13 +1095,13 @@ async function saveConfigPanel() {
     focusConfigField(err && err.configKey);
     return;
   }
-  setConfigNote("正在保存并应用…");
+  setConfigNote(msg("正在保存并应用…"));
   const baseline = Object.fromEntries(Object.keys(updates).map(key => [key, configState.stored[key] ?? null]));
   setConfigBusy(true);
   try {
     const panel = await apiPost("config", { config: updates, baseline });
     renderConfigForm(panel || {});
-    setConfigNote("已保存并应用到运行时");
+    setConfigNote(msg("已保存并应用到运行时"));
   } catch (err) {
     setConfigDirty(true);
     setConfigNote(friendlyError(err, "保存失败，请稍后重试。"), true);
@@ -1061,13 +1112,13 @@ async function saveConfigPanel() {
 
 async function applyConfigPanel() {
   if (configBusy) return;
-  if (configDirty && !window.confirm("有未保存的修改，强制应用已存配置会丢弃它们。继续吗？")) return;
+  if (configDirty && !await window.DynamicsUI.confirm(msg("有未保存的修改，强制应用已存配置会丢弃它们。继续吗？"), {danger: true})) return;
   setConfigBusy(true);
-  setConfigNote("正在强制应用已存配置…");
+  setConfigNote(msg("正在强制应用已存配置…"));
   try {
     const panel = await apiPost("config/apply", {});
     renderConfigForm(panel || {});
-    setConfigNote("已强制同步到运行时");
+    setConfigNote(msg("已强制同步到运行时"));
   } catch (err) {
     setConfigNote(friendlyError(err, "应用失败，请稍后重试。"), true);
   } finally {
@@ -1125,15 +1176,16 @@ async function boot() {
   if (bridge && typeof bridge.ready === "function") {
     try {
       await withTimeout(bridge.ready());
-      setLink(true, "已连接");
+      setLink(true, msg("已连接"));
     } catch (_err) {
-      setLink(false, "连接超时");
+      setLink(false, msg("连接超时"));
     }
   } else {
-    setLink(false, "本地预览");
+    setLink(false, msg("本地预览"));
   }
-  els.btnConfigReload.addEventListener("click", () => {
-    if (configDirty && !window.confirm("有未保存的修改，重新读取会丢弃它们。继续吗？")) return;
+  els.btnConfigReload.addEventListener("click", async () => {
+    if (configBusy) return;
+    if (configDirty && !await window.DynamicsUI.confirm(msg("有未保存的修改，重新读取会丢弃它们。继续吗？"), {danger: true})) return;
     void loadConfigPanel();
   });
   window.addEventListener("beforeunload", (event) => {
@@ -1142,19 +1194,44 @@ async function boot() {
     event.preventDefault();
     event.returnValue = "";
   });
-  window.ChatDynamicsBeforeNavigate = () => {
+  window.ChatDynamicsBeforeNavigate = async () => {
     if (configBusy) return false;
-    if (configDirty && !window.confirm("有未保存的修改，离开会丢弃它们。继续吗？")) return false;
+    if (configDirty && !await window.DynamicsUI.confirm((window.DynamicsUI.msg ?? String)("有未保存的修改，离开会丢弃它们。继续吗？"), {danger: true})) return false;
     navigationApproved = true;
     window.setTimeout(() => { navigationApproved = false; }, 0);
     return true;
   };
+  window.DynamicsBeforeNavigate = window.ChatDynamicsBeforeNavigate;
   els.btnConfigApply.addEventListener("click", () => {
     void applyConfigPanel();
   });
   els.btnConfigSave.addEventListener("click", () => {
     void saveConfigPanel();
   });
+  if (els.btnDiffSave) {
+    els.btnDiffSave.addEventListener("click", () => {
+      void saveConfigPanel();
+    });
+  }
+  if (els.btnDiffDiscard) {
+    els.btnDiffDiscard.addEventListener("click", () => {
+      if (configBusy || !configDirty) return;
+      renderConfigForm({
+        schema: configState.schema,
+        stored: configState.stored,
+        effective: configState.effective,
+        mismatches: configState.mismatches,
+        warnings: configState.warnings,
+      });
+      setConfigNote(msg("已还原未保存的修改"));
+    });
+  }
+  if (els.configDiffList) {
+    els.configDiffList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-diff-key]");
+      if (btn) focusConfigField(btn.dataset.diffKey, false);
+    });
+  }
   setConfigDirty(false);
   const integrations = mountIntegrationStatus({
     apiGet,

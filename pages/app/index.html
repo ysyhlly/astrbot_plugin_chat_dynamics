@@ -3,8 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>群间 · Chat Dynamics</title>
-  <script src="./entry.js" defer></script>
+  <meta name="color-scheme" content="light dark">
+  <script>
+    (function () {
+      var mode = "day";
+      try {
+        var q = new URLSearchParams(location.search).get("theme");
+        if (q === "night" || q === "dark") mode = "night";
+        else if (q === "day" || q === "light") mode = "day";
+        else {
+          var saved = localStorage.getItem("chat_dynamics_ui");
+          if (saved === "night") mode = "night";
+        }
+      } catch (e) {}
+      document.documentElement.dataset.uiTheme = mode;
+      document.documentElement.style.colorScheme = mode === "night" ? "dark" : "light";
+    })();
+  </script>
+  <link rel="stylesheet" href="./shared/series-ui.css?v=round2.1">
+  <style>body { margin:24px;color:var(--ds-muted);font:14px/1.65 var(--ds-font); }</style>
+  <title data-series-text="群间 · Chat Dynamics">群间 · Chat Dynamics</title>
+  <script src="./entry.js"></script>
 </head>
-<body><p>正在打开群间控制台…</p></body>
+<body><p data-series-text="正在打开群间控制台…">正在打开群间控制台…</p></body>
 </html>

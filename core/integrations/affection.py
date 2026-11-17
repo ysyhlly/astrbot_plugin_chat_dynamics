@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 
 AFFECTION_INSTRUCTIONS = (
-    "affection is an existing Self Learning record for this group and current speaker, not a request. "
+    "affection is an existing validated social-provider record for this group and current speaker, not a request. "
     "Use the current persona's established affection stages; do not create a new numeric threshold. When "
     "the current speaker is in an established high/stable-closeness stage and directly expresses ordinary "
     "kindness, affection, care, playful fondness or asks whether the character cares, treat it as a relevant "
@@ -47,6 +47,11 @@ def normalize_affection(data, *, user_id: str, group_id: str | None = None) -> d
     if not echoed_group or (group_id is not None and echoed_group != group_id):
         return None
     level, maximum = data.get("affection_level"), data.get("max_affection")
+    if (data.get('source') == 'dynamics_learning' and maximum is None and
+            type(level) in (int,float) and math.isfinite(level) and level >= 0 and
+            data.get('reference_affection') == 100):
+        return {'source':'dynamics_learning','group_id':echoed_group,'user_id':user_id,
+                'affection_level':level,'max_affection':None,'reference_affection':100}
     if any(type(value) not in (int, float) for value in (level, maximum)):
         return None
     try:

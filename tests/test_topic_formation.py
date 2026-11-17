@@ -26,8 +26,8 @@ def test_media_and_reactions_never_form_topic_even_in_burst(text):
         assert result.topic_status == "unformed"
     assert not rt.routing_state.topics
     blocks = replay_topic_blocks(SimpleNamespace(dags={"room": rt.dag}), [], "room")
-    assert all(block['is_unassigned'] for block in blocks)
-    assert sum(block['message_count'] for block in blocks) == 8
+    assert len(blocks) == 1 and blocks[0]['topic_status'] == 'unassigned'
+    assert not blocks[0]['topic_id'] and blocks[0]['message_count'] == 8
 
 
 def test_four_connected_human_turns_form_one_topic_and_backfill():

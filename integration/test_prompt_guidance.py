@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from .test_persona_agent import host_fixture as host_fixture
 from astrbot_plugin_chat_dynamics.core.agent_bridge import AstrBotAgentBridge
+from astrbot_plugin_chat_dynamics.core.context_retrieval import ContextEvidence
 from astrbot_plugin_chat_dynamics.core.narrative import REPLY_GUIDANCE, _narrative_scope_key
 from astrbot_plugin_chat_dynamics.core.turn_decision import TurnContext, MessageSnapshot, TurnDecision, reply_prompt
 
@@ -61,9 +62,75 @@ async def test_managed_reply_gets_one_system_guidance_and_keeps_current_request(
         row['content'] for row in calls[0].get('contexts', [])
         if row.get('role') == 'system' and isinstance(row.get('content'), str))
     assert system.count(REPLY_GUIDANCE) == 1
+    assert "Do not supply unsupported names, categories or alternatives in the question" in system
     assert 'reply_guidance' not in json.loads(prompt)
     assert persona.prompt in system
     for expected in ('偏爱悬疑短篇', '想读完下一章', '刚被逗笑的轻松余韵', '小存档'):
         assert expected in serialized
     assert '不应泄漏的昵称' not in serialized
     assert "interaction_understanding" in serialized and "corrects_previous" in serialized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("scenario", "action"), [
+    ("missing_referent", "acknowledge"),
+    ("missing_referent", "reply"),
+    ("known_alternatives", "clarify"),
+    ("explicit_correction", "reply"),
+])
+async def test_provider_receives_grounding_policy_and_attributed_source_text(host_fixture, scenario, action):
+    context, event, calls = host_fixture
+    bridge = AstrBotAgentBridge(context)
+    current, quote, background = "买个深黑或者深白，谁来都能看", "", (
+        MessageSnapshot("recent-user", "u", "腿照随手就能拍吧", context_evidence=(
+            ContextEvidence("same_author", "m", 0.0),
+        )),
+    )
+    if scenario == "known_alternatives":
+        current = "给旅行用，马克杯还是玻璃杯？"
+    elif scenario == "explicit_correction":
+        current, quote = "说的是袜子，还是深黑或深白。", "older-bot"
+        background += (MessageSnapshot(quote, "bot", "买衣裳还是买杯子？", context_evidence=(
+            ContextEvidence("reply", "m", 1.0),
+        )),)
+    turn = TurnContext(
+        event.unified_msg_origin, "u", current, (MessageSnapshot("m", "u", current, reply_to=quote),),
+        background, 0, 0, 0, True, bot_id="bot",
+        nearby_context=(MessageSnapshot("nearby", "other", "隔壁在挑保温瓶"),),
+    )
+    event.message_str = current
+    decision = TurnDecision(action, "focused", ("m",), "回应本轮消息", "brief", "test")
+    await bridge.generate(event, (event,), reply_prompt(turn, decision), await bridge.snapshot(event), "provider")
+    assert calls and not event.sent
+    messages = calls[0]["contexts"]
+    system = calls[0].get("system_prompt", "") + "".join(
+        row["content"] for row in messages if row["role"] == "system" and isinstance(row["content"], str)
+    )
+    assert "Keep an unresolved referent unknown in every response, including acknowledge and reply" in system
+    assert "Use the details and alternatives the speaker actually gave" in system
+    assert "its guesses are not independent evidence" in system
+    assert "the current speaker's explicit correction supersedes older conditions" in system
+    texts = [
+        part["text"] if isinstance(part, dict) else part
+        for row in messages if row["role"] == "user"
+        for part in (row["content"] if isinstance(row["content"], list) else [row["content"]])
+        if isinstance(part, str) or isinstance(part, dict) and part.get("type") == "text"
+    ]
+    payload = next(json.loads(text) for text in texts if text.startswith('{"conversation":'))
+    conversation = payload["conversation"]
+    assert conversation["text"] == current and conversation["speaker_identity"]["user_id"] == "u"
+    assert payload["response_plan"]["action"] == action
+    assert "隔壁在挑保温瓶" not in "\n".join(texts)
+    if scenario == "missing_referent":
+        assert conversation["background"][0]["context_evidence"][0]["relation"] == "same_author"
+        assert all(word not in "\n".join(texts) for word in ("衣裳", "杯子", "袜子"))
+        if action == "acknowledge":
+            assert payload["attention_plan"]["mode"] == "light"
+    elif scenario == "known_alternatives":
+        start, end = conversation["messages"][0]["text_spans"][0]
+        assert "马克杯还是玻璃杯" in conversation["text"][start:end]
+        assert payload["attention_plan"]["mode"] == "clarify"
+    else:
+        prior = conversation["background"][-1]
+        assert prior["author_identity"]["user_id"] == conversation["bot_identity"]["user_id"] == "bot"
+        assert prior["text"] == "买衣裳还是买杯子？" and conversation["messages"][0]["reply_to"] == prior["message_id"]

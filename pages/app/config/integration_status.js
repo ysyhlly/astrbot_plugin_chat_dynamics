@@ -1,6 +1,6 @@
 /** Read-only companion status; configuration remains owned by each plugin. */
 const LABELS = {
-  ready: "接口可用", partial: "需兼容接口", missing: "未安装",
+  conflict: "多个能力提供者，请停用重复插件", ready: "接口可用", partial: "需兼容接口", missing: "未安装",
   disabled: "已停用", loading: "等待就绪",
 };
 

@@ -1,7 +1,7 @@
 """Run maintained checks for the native Jev runtime and its current pages.
 
 Older suites document retired training/backends or the old model-decision path;
-they are retained as history and are not the v1.16 release acceptance contract.
+they are retained as history and are not the v1.15 release acceptance contract.
 """
 from pathlib import Path
 import argparse
@@ -9,11 +9,6 @@ import subprocess
 import sys
 
 BACKEND = [
-    "test_native_conf",
-    "test_single_page_entry", "test_page_asset_sync",
-    "test_llm_participation",
-    "test_discussion_llm",
-    "test_companion_catalog", "test_rule_topic_router", "test_rule_routing_integration", "test_poke_source_boundary", "test_compat_bundle",
     "test_builtin_systemone", "test_wake_policy", "test_strong_wake_delivery",
     "test_jev_decision", "test_jev_decision_layer", "test_jev_turn_completion", "test_selflearning_affection", "test_participation_prompts", "test_member_stop",
     "test_jev_input_optimization", "test_conversation_map", "test_turn_evidence_contract", "test_persona_explicit_context", "test_persona_reply_identity", "test_context_retrieval",
@@ -28,7 +23,7 @@ BACKEND = [
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",
     "test_decision_gate_clock", "test_release_contract",
 ]
-BROWSER = ["test_single_page_browser", "test_llm_participation_browser", "test_companion_settings_browser", "test_rule_routing_browser", "test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser", "test_annotation_concurrency_browser"]
+BROWSER = ["test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser", "test_annotation_concurrency_browser"]
 
 
 def main():

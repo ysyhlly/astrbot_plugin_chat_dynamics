@@ -20,6 +20,12 @@ class Companion:
 
 
 COMPANIONS = (
+    Companion("dynamics_learning", "群间学习", "表达与社交学习、调整审查和回合反馈",
+              "在群间学习中配置生效会话、分析/审查模型与审查方式；审批后的增量按会话和人格生效。",
+              ("learning_capabilities", "ingest_dynamics_event", "get_learning_context")),
+    Companion("dynamics_horizons", "群间见闻", "外部信息源阅读、暂存兴趣与待讨论问题",
+              "在群间见闻中按角色配置订阅源、书架与双模型审查；接话与主动分享统一由群间裁决。",
+              ("horizons_capabilities", "get_horizons_context", "ingest_dynamics_event", "list_due_intents")),
     Companion("autonomous_blocking", "自主屏蔽", "成员屏蔽、工具与发送边界",
               "在自主屏蔽插件中管理成员策略；此处只决定服务缺失时是否停止回复。",
               ("resolve_context", "peek_policy", "policy_snapshot", "filter_frames"), "boundaries"),
@@ -38,8 +44,8 @@ COMPANIONS = (
     Companion("portrayal", "用户画像", "成员画像与背景资料",
               "在用户画像插件中管理采集和画像；此处只读取当前成员获准的资料。",
               ("get_profiles",)),
-    Companion("stealer", "表情包小偷", "文字与表情的联合回复",
-              "在表情插件中设置候选、自动发送和作用域；此处沿用回复时机与发送校验。",
+    Companion("stealer", "视觉表达", "按聊天语境选择文字、表情或生图",
+              "在视觉插件中管理图库、角色和生图供应商；Chat Dynamics 沿用回复时机、工具权限与发送校验。",
               ("start_joint_reply_prefetch",), "media"),
     Companion("memory_guard", "内存回收", "归还进程分配器中的空闲页",
               "独立运行，无需修改聊天模型或插件的业务缓存。", (), ""),
@@ -69,8 +75,56 @@ def _instance(item: Any) -> Any:
     return instance if instance is not None and not isinstance(instance, type) else None
 
 
+CAPABILITY_ROLES = {"worldbook": "character", "dynamic_life_state": "life", "livingmemory": "memory", "self_learning":"social", "stealer":"media"}
+
+
+def _manifest(instance: Any) -> dict:
+    """Only a synchronous, versioned, data-only declaration participates."""
+    getter = getattr(instance, "get_dynamics_capabilities", None)
+    if not callable(getter):
+        return {}
+    import inspect
+    if inspect.iscoroutinefunction(getter):
+        return {}
+    try:
+        result = getter()
+    except Exception:
+        return {}
+    if not isinstance(result, dict) or type(result.get("schema_version")) is not int or result["schema_version"] != 1:
+        return {}
+    return result
+
+
+def _role_candidates(entries, name):
+    role = CAPABILITY_ROLES.get(name)
+    found = []
+    seen = set()
+    for key, item in entries:
+        if not _value(item, "activated", True):
+            continue
+        instance = _instance(item)
+        if instance is None:
+            continue
+        manifest = _manifest(instance) if role else {}
+        capabilities = manifest.get("capabilities", {})
+        declared = (isinstance(capabilities, dict) and type(capabilities.get(role)) is int
+                    and capabilities.get(role) == 1 and manifest.get("enabled") is True)
+        if (_matches(key, item, name) or declared) and id(instance) not in seen:
+            seen.add(id(instance))
+            found.append((key, item, instance, manifest))
+    return found
+
+
 def find_companion(context: Any, name: str) -> Any:
     """Resolve a fresh active instance; reload/disable takes effect immediately."""
+    if name in CAPABILITY_ROLES:
+        candidates = _role_candidates(companion_entries(context), name)
+        if len(candidates) != 1:
+            return None  # Never silently choose between two state owners.
+        _, _, instance, manifest = candidates[0]
+        if manifest and manifest.get("ready") is not True:
+            return None
+        return instance
     for key, item in companion_entries(context):
         if _matches(key, item, name) and _value(item, "activated", True):
             instance = _instance(item)
@@ -97,10 +151,28 @@ def companion_snapshot(context: Any, config: dict[str, Any] | None = None) -> di
         stopping = getattr(instance, "_terminating", False) is True or getattr(instance, "_shutting_down", False) is True
         state = ("missing" if item is None else "disabled" if not active else "loading" if instance is None or loading or stopping
                  else "partial" if missing else "ready")
+        selected_plugin = "astrbot_plugin_" + spec.key
+        title, settings = spec.title, spec.settings
+        providers = []
+        if spec.key in CAPABILITY_ROLES:
+            candidates = _role_candidates(entries, spec.key)
+            providers = [str(_value(entry, "name", key) or key) for key, entry, _, _ in candidates]
+            if len(candidates) > 1:
+                state = "conflict"
+            elif candidates:
+                key, item, instance, manifest = candidates[0]
+                selected_plugin = str(_value(item, "name", key) or key)
+                missing = [method for method in spec.methods if not callable(getattr(instance, method, None))]
+                state = "loading" if manifest and manifest.get("ready") is not True else "partial" if missing else "ready"
+                display = manifest.get("display_name")
+                if isinstance(display, str) and display.strip():
+                    display = display.strip()[:80]
+                    title = display + {"worldbook": " · 角色与世界", "dynamic_life_state": " · 持续生活", "livingmemory": " · 长期记忆", "self_learning":" · 社交与学习", "stealer":" · 视觉表达"}[spec.key]
+                    settings = "在「" + display + "」中管理资料与状态；Chat Dynamics 负责接入范围和回复调度。"
         version = _value(item, "version", "") if item is not None else ""
-        rows.append(dict(id=spec.key, name=spec.title, plugin="astrbot_plugin_" + spec.key,
+        rows.append(dict(id=spec.key, name=title, plugin=selected_plugin, providers=providers,
                          version=version[:80] if isinstance(version, str) else "", state=state,
-                         required=required, role=spec.role, settings=spec.settings,
+                         required=required, role=spec.role, settings=settings,
                          config_group=spec.config_group, missing_methods=missing))
     return dict(schema_version=1, companions=rows,
                 blocking=[row["id"] for row in rows if row["required"] and row["state"] != "ready"])

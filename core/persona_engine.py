@@ -16,7 +16,7 @@ from .pacer import PacingShaper, is_rhythm_short_act, scale_delay
 from .topic_identity import confirmed_topic_id
 from .active_dialogue import dialogue_for_node
 from .dialogue_context import capture_dialogue
-from .platform_bridge import chain_plain_text
+from .platform_bridge import _comp_type_name, _safe_call, chain_plain_text
 from .bot_identity import BotIdentityMatcher
 from .group_context import select_group_events
 from .deferred_reply_media import DeferredReplyMedia
@@ -53,6 +53,9 @@ from . import member_boundary
 from .context_completion import complete_context
 from .early_reply import final_fragments
 from .native_decision import selected_decision_client
+from .integrations import dynamics_horizons
+from .integrations import dynamics_learning
+from .integrations import scene_learning
 
 
 
@@ -130,6 +133,23 @@ def _event_platform_ids(events: tuple[Any, ...]) -> frozenset[str]:
     return frozenset(ids)
 
 
+def _actual_send_message_ids(sent: Any, fragment: Any, delivered_text: str) -> tuple[str, ...]:
+    """Return only platform IDs carried by a successful send receipt."""
+    if not getattr(sent, "success", False):
+        return ()
+    candidates = list(getattr(sent, "message_ids", ()) or ())
+    candidates.append(getattr(sent, "message_id", None))
+    identified = getattr(sent, "identified_messages", None)
+    if callable(identified):
+        candidates.extend(message_id for message_id, _ in identified(fragment, delivered_text))
+    result: list[str] = []
+    for value in candidates:
+        message_id = str(value or "").strip()[:128]
+        if message_id and message_id not in result:
+            result.append(message_id)
+    return tuple(result)
+
+
 def _platform_reply_id(runtime: Any, item: ModelTurn, message_id: str) -> str | None:
     """Return a platform ID only when it is backed by a real platform message."""
     if not message_id:
@@ -143,6 +163,24 @@ def _platform_reply_id(runtime: Any, item: ModelTurn, message_id: str) -> str | 
         return None
     if _node_metadata(node).get("platform_message_id") is True:
         return message_id
+    return None
+
+
+def _automatic_group_reply_id(runtime: Any, item: ModelTurn, platform_id: str | None) -> str | None:
+    """Quote a real member message when it identifies the turn being answered."""
+    if item.private_direct or not platform_id or not item.context.messages:
+        return None
+    target = _dag_node(runtime, platform_id)
+    author = str(getattr(target, "user_id", "") or "")
+    if not author or author == runtime.bot_id:
+        return None
+    messages = item.context.messages
+    if platform_id != messages[-1].message_id or any(
+        (message.reply_to or getattr(message.semantics, "quoted_message_id", ""))
+        not in ("", message.message_id)
+        for message in messages
+    ):
+        return platform_id
     return None
 
 
@@ -739,6 +777,9 @@ def snapshot_turn(
 
 
 class PersonaEngine:
+    _dynamics_horizons_v1 = True
+    _dynamics_learning_social_v2 = True
+    _dynamics_learning_v1 = True
     _decision_compaction_release = True
     _decision_nearby_context_release = True
     _recipient_guard_release = True
@@ -793,6 +834,8 @@ class PersonaEngine:
     def _valid_suffix(self, runtime, item: ModelTurn) -> bool:
         """尾部判定（会话/epoch/冷却等纯本地状态检查）。"""
         p, turn = self.plugin, item.context
+        if not dynamics_learning.current(runtime, item):
+            return self._invalid(runtime, item, "learning_revision_changed")
         scope_enabled = (
             p.is_runtime_scope_enabled(runtime)
             if callable(getattr(p, "is_runtime_scope_enabled", None))
@@ -897,12 +940,13 @@ class PersonaEngine:
                 runtime, item, outcomes.mark_suppressed, "lifecycle_invalidated:" + reason, stage="generation"
             )
         logger.warning(
-            "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s valid=%s%s",
+            "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s valid=%s%s pipeline_turn_id=%s",
             runtime.session_key,
             _turn_log_id(runtime, item),
             reason,
             valid,
             (" error=" + error_type) if error_type else "",
+            self.telemetry.turn_id(item.context),
         )
 
     def _sweep_in_flight(self, runtime, item: ModelTurn) -> None:
@@ -1103,10 +1147,10 @@ class PersonaEngine:
                 completion_waited=item.debounce_result.was_extended,
             )
         async with self.slots:
-            affection = None
+            affection = dynamics_learning.affection(p,runtime,item) if runtime is not None else None
             integrations = getattr(p, "integrations", None)
             read_affection = getattr(integrations, "affection_for_decision", None)
-            if runtime is not None and callable(read_affection) and item.narrative_bundle is None:
+            if affection is None and runtime is not None and callable(read_affection) and item.narrative_bundle is None:
                 try:
                     affection = await read_affection(group_id=str(runtime.group_id), user_id=turn.author)
                 except asyncio.CancelledError:
@@ -1120,7 +1164,16 @@ class PersonaEngine:
                     if await self.valid_async(runtime, item) and p._sessions.get(runtime.session_key) is runtime:
                         runtime.routing_state.expire_topics(runtime.dag, p.time_service.time())
                         topics, topic_questions, topic_mapping = build_topic_task(runtime, turn, p.time_service.time())
-            decision_prompt = DECISION_GUIDANCE if item.narrative_bundle else p._runtime_config.decision_prompt
+            decision_prompt = p._runtime_config.decision_prompt
+            if item.narrative_bundle:
+                # Life context supplies evidence and continuity, not a hidden
+                # participation preset. Keep the operator's public-chat policy.
+                decision_prompt += "\n" + DECISION_GUIDANCE
+            learning = dynamics_learning.selected(runtime, item)
+            decision_prompt += learning["context"]
+            horizons_slot = dynamics_horizons.decision_slot(runtime, item)
+            if item.narrative_bundle is None and horizons_slot is not None:
+                decision_prompt = decision_prompt.rstrip() + "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
             if item.narrative_bundle and item.events:
                 boundary_state = member_boundary.resolve_state(p, item.events[-1])
                 if boundary_state.available and not boundary_state.disabled:
@@ -1135,11 +1188,18 @@ class PersonaEngine:
                 turn = replace(
                     turn, nearby_context=filter_nearby(turn.nearby_context, p, item.events[-1] if item.events else None)
                 )
+                char_state = item.narrative_bundle.decision_context() if item.narrative_bundle else None
+                if char_state is None and horizons_slot is not None:
+                    char_state = {"horizons": horizons_slot}
+                elif isinstance(char_state, dict) and horizons_slot is not None and "horizons" not in char_state:
+                    merged_cs = {**char_state, "horizons": horizons_slot}
+                    if len(json.dumps(merged_cs, ensure_ascii=False, separators=(",", ":"))) <= 2400:
+                        char_state = merged_cs
                 bounded_state = build_state(
                     turn,
                     previous_state=state,
                     observations=observations,
-                    presence="sensible" if item.narrative_bundle else p._runtime_config.presence_knob,
+                    presence=p._runtime_config.presence_knob,
                     persona_prompt=(
                         item.narrative_bundle.wire()["character"]["core_prompt"]
                         if item.narrative_bundle
@@ -1148,7 +1208,7 @@ class PersonaEngine:
                     decision_prompt=decision_prompt,
                     active_topics=topics,
                     affection=affection,
-                    character_state=item.narrative_bundle.decision_context() if item.narrative_bundle else None,
+                    character_state=char_state,
                     character_rules=item.narrative_bundle.wire()["character"].get("group_rules", "")
                     if item.narrative_bundle
                     else None,
@@ -1283,6 +1343,13 @@ class PersonaEngine:
             runtime.jev_decision["semantic_coverage"] = coverage
             runtime.jev_decision["request_budget"] = request_budget
             runtime.jev_decision["backend"] = p._runtime_config.decision_backend
+            runtime.jev_decision["effective_participation"] = {
+                "managed": item.narrative_bundle is not None,
+                "presence": bounded_state.get("participation_policy", {}).get("presence_knob"),
+                "operator_guidance_included": str(bounded_state.get("decision_prompt", "")).startswith(
+                    p._runtime_config.decision_prompt.strip()
+                ),
+            }
             if rule_routing:
                 runtime.jev_decision["recipient_source"] = (
                     "llm" if turn.messages and any(e.startswith("recipient_llm_")
@@ -1299,7 +1366,8 @@ class PersonaEngine:
             turn,
             answers,
             min_confidence=floor,
-            join_floor=getattr(p._runtime_config, "reply_probability_threshold", 70.0) / 100.0,
+            join_floor=(learning["threshold"] if learning["threshold"] is not None else
+                        getattr(p._runtime_config, "reply_probability_threshold", 70.0)) / 100.0,
             quote_recipient_floor=getattr(p._runtime_config, "quote_reply_threshold", 35.0) / 100.0,
             name_recipient_floor=getattr(p._runtime_config, "name_reply_threshold", 70.0) / 100.0,
             prefix=prefix,
@@ -1388,6 +1456,7 @@ class PersonaEngine:
                 ready.cancel()
 
     def cancel_member(self, runtime, user_id: str) -> None:
+        runtime.recent_images.discard(user_id)
         # Finish trace facts before the command advances the owner's revision.
         for item in (runtime.active_model_turn, *runtime.model_queue, *runtime.model_waiting.values()):
             if item is not None and item.context.author == user_id:
@@ -1575,7 +1644,12 @@ class PersonaEngine:
             )
         ):
             return
-        if any(outcomes.read_outcome(node).get("delivered") for node in nodes):
+        if any(
+            outcomes.read_outcome(node).get("delivered")
+            or node.metadata.get("reply_choice", {}).get("no_reply") is True
+            or node.metadata.get("reply_choice", {}).get("intentional_nonverbal") is True
+            for node in nodes
+        ):
             return
         failure = next(
             (
@@ -1601,7 +1675,8 @@ class PersonaEngine:
             fallback_event._extras["_narrative_generation_failure_v1"] = failure
             try:
                 sent = await p._send_owned(
-                    runtime, fallback_event, text, reply_to_id=_platform_reply_id(runtime, item, target)
+                    runtime, fallback_event, text,
+                    reply_to_id=_automatic_group_reply_id(runtime, item, _platform_reply_id(runtime, item, target)),
                 )
             finally:
                 fallback_event._extras.pop("_narrative_generation_failure_v1", None)
@@ -1617,6 +1692,12 @@ class PersonaEngine:
         fallback_reason = (
             "private_reply_fallback" if (item.private_direct and not turn.mandatory_reply) else "at_reply_fallback"
         )
+        fallback_choice = None
+        for node in nodes:
+            choice = node.metadata.get("reply_choice")
+            if isinstance(choice, dict):
+                choice.update(actual="text", no_reply=False, delivered=True, reason=fallback_reason)
+                fallback_choice = dict(choice)
         record_outcome(runtime, item, outcomes.mark_delivered, reason=fallback_reason)
         self.diagnostic(
             runtime,
@@ -1625,6 +1706,7 @@ class PersonaEngine:
             action="acknowledge",
             wake_kind="private" if item.private_direct and not turn.mandatory_reply else "at",
             reply_required=True,
+            **({"reply_choice": fallback_choice} if fallback_choice else {}),
         )
         if not await self.valid_async(runtime, item):
             return
@@ -1681,6 +1763,10 @@ class PersonaEngine:
             )
             item = replace(item, narrative_bundle=bundle)
         interaction_state = runtime.interaction_state
+        dynamics_learning.begin(p, runtime, item, judgement_persona)
+        dynamics_horizons.begin(p, runtime, item, judgement_persona)
+        private_outreach_observer = None
+        private_outreach_scope = None
         if item.private_direct:
             target = turn.messages[-1].message_id if turn.messages else ""
             decision = TurnDecision(
@@ -1691,6 +1777,11 @@ class PersonaEngine:
                 length="normal",
                 reason_code="private_direct",
             )
+            private_outreach_observer = getattr(p, "narrative", None)
+            if private_outreach_observer is not None and private_outreach_observer.outreach_allowed(runtime.umo):
+                private_outreach_scope = p._create_background_task(
+                    private_outreach_observer.observe_private_turn(runtime, item, persona)
+                )
         else:
             decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
         if bundle is not None:
@@ -1700,7 +1791,32 @@ class PersonaEngine:
                 if isinstance(impact, dict) and impact.get("confidence", 0) >= p._runtime_config.jev_min_confidence
                 else "none"
             )
-            await narrative.route_life_events_async(bundle, impact)
+            semantic = reply_interaction(
+                turn, runtime.jev_decision.get("interaction_frame"), floor=p._runtime_config.jev_min_confidence
+            )
+            recipient = runtime.jev_decision.get("recipient", {})
+            if (
+                semantic.get("turn_update", {}).get("choice") == "corrects_previous"
+                and recipient.get("choice") == "bot"
+                and recipient.get("confidence", 0) >= p._runtime_config.jev_min_confidence
+                and decision.action != "ignore"
+            ):
+                # Attach classifier evidence to the routed copy, never rewrite
+                # the observed platform mention or quote on the original event.
+                payload = bundle.wire()
+                payload["feedback_speaker_id"] = turn.author
+                bundle = type(bundle)(bundle.turn_id, json.dumps(payload, ensure_ascii=False))
+                item = replace(item, narrative_bundle=bundle)
+                impact = "relationship"
+            await narrative.route_life_events_async(bundle, impact, decision_evidence={
+                **runtime.jev_decision,
+                "social_context_current": (
+                    runtime.epoch == turn.epoch
+                    and runtime.user_revisions.get(turn.author, 0) == turn.revision
+                    and not p._shutting_down and not item.shadow
+                ),
+                "social_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
+            }, event=item.events[-1] if item.events else None)
             revised = await narrative.advance_important(item, bundle, impact)
             if revised.payload != bundle.payload:
                 bundle = revised
@@ -1744,6 +1860,7 @@ class PersonaEngine:
                 decision_turn = turn
                 if bundle is not None:
                     await narrative.bind_async(item.events, bundle)
+                dynamics_horizons.begin(p, runtime, item, judgement_persona)
                 info = item.observations["context_completion"]
                 p._metric("context_completion_attempted")
                 logger.info(
@@ -1792,7 +1909,9 @@ class PersonaEngine:
                 )
         if bundle is not None and decision.action != "ignore" and decision.reason_code not in _WAITING_REASONS:
             previous = bundle.wire()
-            full_bundle = await self.telemetry.run("prepare_reply", turn, narrative.prepare(runtime, item, persona))
+            full_bundle = await self.telemetry.run(
+                "prepare_reply", turn, narrative.prepare(runtime, item, persona), none_is_unavailable=True
+            )
             if full_bundle is None:
                 self._finish_generation_failure(runtime, item, "narrative_prepare_unavailable", suppressed=True)
                 return
@@ -1802,6 +1921,7 @@ class PersonaEngine:
             judgement_persona = replace(
                 persona, prompt=material["core_prompt"] + "\n" + material.get("group_rules", "")
             )
+            dynamics_horizons.begin(p, runtime, item, judgement_persona)
             prior_view = previous.get("evidence_view")
             current_view = bundle.wire().get("evidence_view")
             if (
@@ -1844,6 +1964,7 @@ class PersonaEngine:
                 return
             now = p.time_service.time()
             if decision.reason_code in _WAITING_REASONS:
+                dynamics_learning.finalize(runtime, item, decision)
                 waiting_id = turn.messages[-1].message_id
 
                 async def expired():
@@ -1923,7 +2044,7 @@ class PersonaEngine:
                 )
             )
             opening = not addressed and not continuation
-            opening_limit = participation_policy("sensible" if bundle is not None else p._runtime_config.presence_knob)[
+            opening_limit = participation_policy(p._runtime_config.presence_knob)[
                 "ambient_openings_per_minute"
             ]
             if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:
@@ -1950,7 +2071,7 @@ class PersonaEngine:
                     availability = bundle.snapshot.get("availability", "unknown")
                     if availability == "asleep" and not sleep_wake_admitted:
                         decision = replace(decision, action="ignore", reason_code="narrative_asleep")
-                    elif availability in {"asleep", "busy"} and sleep_wake_admitted:
+                    elif availability in {"asleep", "busy"} and sleep_wake_admitted and decision.action != "ignore":
                         decision = replace(
                             decision,
                             action="acknowledge",
@@ -2057,7 +2178,7 @@ class PersonaEngine:
                 runtime.request_media_understand = False
                 decision = replace(
                     decision,
-                    action="acknowledge" if wake_admitted else "ignore",
+                    action="acknowledge" if wake_admitted and proposed.action != "ignore" else "ignore",
                     reason_code=(
                         "at_required_gate_unavailable"
                         if turn.mandatory_reply
@@ -2098,6 +2219,8 @@ class PersonaEngine:
                         trace, should_reply=decision.action != "ignore", branch=decision.reason_code
                     )
                     node.metadata["trace_inputs"] = compact_trace_inputs(node.metadata["decision_trace"])
+
+            dynamics_learning.finalize(runtime, item, decision)
 
             # The typed answers of a System One decision travel with the diagnostic so
             # the console can show why the decision layer chose what it chose; the
@@ -2168,6 +2291,25 @@ class PersonaEngine:
                 p._metric("shadow_decision")
                 return
             if decision.action == "ignore":
+                action_answer = runtime.jev_decision.get("action", {})
+                action_confidence = action_answer.get("confidence") if isinstance(action_answer, dict) else None
+                if (
+                    proposed.action == "ignore"
+                    and isinstance(action_answer, dict)
+                    and action_answer.get("type") == "choice"
+                    and action_answer.get("choice") == "ignore"
+                    and type(action_confidence) in (int, float)
+                    and p._runtime_config.jev_min_confidence <= action_confidence <= 1
+                ):
+                    for node in item.outcome_nodes:
+                        if node is not None:
+                            node.metadata["reply_choice"] = {
+                                "requested": "silent",
+                                "actual": "silent",
+                                "no_reply": True,
+                                "reason": decision.reason_code,
+                                "delivered": False,
+                            }
                 if not item.shadow:
                     p._metric("speech_withheld")
                 if proposed.reason_code in ("decision_timeout", "decision_invalid_or_failed", "queue_overload"):
@@ -2218,6 +2360,11 @@ class PersonaEngine:
                 ):
                     return
             understand = bool(getattr(runtime, "request_media_understand", False))
+            context_images = runtime.recent_images.select(runtime, turn, event, p, p.time_service.time())
+            if context_images:
+                runtime.model_diagnostic["recent_image_source_ids"] = [source.node.msg_id for source in context_images]
+                logger.info("[ChatDynamics] recent image context session=%s sources=%s", runtime.session_key,
+                            ",".join(source.node.msg_id for source in context_images))
             try:
                 reminder_context = p.group_memory.reminder_context(turn.session_key, now=p.time_service.wall_time())
             except Exception as exc:
@@ -2234,29 +2381,38 @@ class PersonaEngine:
                     turn,
                     event,
                     item.events,
-                    reply_prompt(
-                        turn,
-                        decision,
-                        interaction_frame=runtime.jev_decision.get("interaction_frame"),
-                        interaction_floor=p._runtime_config.jev_min_confidence,
-                        conversation_map=conversation_map(
-                            turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
-                        ),
-                        delivery_constraints={
-                            "length_hint": decision.length,
-                            "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
-                            "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
-                        },
-                        reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
-                        group_reminders=reminder_context,
-                        character_context=bundle.decision_context() if bundle is not None else None,
-                        include_reply_guidance=bundle is None,
+                    dynamics_horizons.augment_reply(
+                        await scene_learning.prepare_all(reply_prompt(
+                            turn,
+                            decision,
+                            interaction_frame=runtime.jev_decision.get("interaction_frame"),
+                            interaction_floor=p._runtime_config.jev_min_confidence,
+                            conversation_map=conversation_map(
+                                turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
+                            ),
+                            delivery_constraints={
+                                "length_hint": decision.length,
+                                "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
+                                "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
+                            },
+                            reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
+                            group_reminders=reminder_context,
+                            character_context=(
+                                {"horizons": h_slot}
+                                if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
+                                else None
+                            ),
+                            include_reply_guidance=bundle is None,
+                        ), runtime, item),
+                        runtime,
+                        item,
                     ),
                     persona,
                     provider,
                     execution_log=runtime.tool_executions,
                     history_text=turn.history_text(),
                     media_understand=understand,
+                    context_images=context_images,
                     private_direct=item.private_direct,
                     deferred_reply_media=deferred_media,
                 )
@@ -2283,8 +2439,66 @@ class PersonaEngine:
                 p._metric("native_agent_failed")
                 p._metric("llm_reply_failed")
                 raise
+            reply_mode = getattr(output, "reply_mode", "")
+            narration = str(getattr(output, "narration", "") or "")
+            reply_reason = getattr(output, "reply_reason", "")
+            if reply_mode == "narration" and not turn.mandatory_reply:
+                # An admitted ambient turn is not permission to publish a no-reply notice.
+                reply_mode = "silent"
+                narration = ""
+                reply_reason = "narration_requires_at"
+            nonverbal_mode = reply_mode in {"narration", "poke"}
+            if reply_mode:
+                if deferred_media is not None:
+                    deferred_media.cancel()
+                choice = {
+                    "requested": getattr(output, "requested_reply_mode", reply_mode),
+                    "actual": reply_mode,
+                    "reason": reply_reason,
+                    "no_reply": reply_mode == "silent",
+                    "intentional_nonverbal": nonverbal_mode,
+                    "delivered": False,
+                }
+                if reply_mode == "narration":
+                    choice["no_reply"] = False
+                    choice["narration"] = True
+                for node in item.outcome_nodes:
+                    if node is not None:
+                        node.metadata["reply_choice"] = dict(choice)
+                # Later ingress may replace the session diagnostic while a send
+                # is awaiting its receipt. Keep this turn's choice by reference.
+                runtime.model_diagnostic["reply_choice"] = choice
+                if reply_mode == "silent":
+                    record_outcome(
+                        runtime, item, outcomes.mark_suppressed, choice["reason"] or "model_silent", stage="generation"
+                    )
+                    p._metric("speech_withheld")
+                    return
+                if reply_mode == "narration" and not narration:
+                    record_outcome(runtime, item, outcomes.mark_delivery_failed, "empty_narration")
+                    return
+                if reply_mode == "poke":
+                    poke_target = str(getattr(turn, "author", "") or "")
+                    bot_id = str(runtime.bot_id or "")
+                    event_sender = str(_safe_call(event, "get_sender_id", "") or "")
+                    group_id = str(_safe_call(event, "get_group_id", "") or "")
+                    platform_name = str(_safe_call(event, "get_platform_name", "") or "").lower()
+                    call_action = getattr(getattr(event, "bot", None), "call_action", None)
+                    if (
+                        platform_name != "aiocqhttp"
+                        or not callable(call_action)
+                        or not poke_target.isascii()
+                        or not poke_target.isdigit()
+                        or not event_sender.isascii()
+                        or not event_sender.isdigit()
+                        or event_sender != poke_target
+                        or poke_target == bot_id
+                        or (group_id and (not group_id.isascii() or not group_id.isdigit()))
+                    ):
+                        record_outcome(runtime, item, outcomes.mark_delivery_failed, "invalid_poke_target")
+                        return
             if not getattr(output, "stream_prefix", ""):
-                if output.text or output.chains:
+                if output.text or output.chains or nonverbal_mode:
                     p._metric("native_agent_succeeded")
                     p._metric("llm_reply_succeeded")
                 else:
@@ -2308,15 +2522,42 @@ class PersonaEngine:
             from .stream_reply import output_fragments
 
             delivered = []
+            delivered_message_ids = []
+            send_cancellation = None
             target_id = decision.target_message_ids[0]
-            dag_parent_id = target_id if _dag_node(runtime, target_id) is not None else None
-            platform_parent_id = _platform_reply_id(runtime, item, target_id)
+            target_node = _dag_node(runtime, target_id)
+            dag_parent_id = target_id if target_node is not None else None
+            platform_target_id = _platform_reply_id(runtime, item, target_id)
+            first_quote_id = _automatic_group_reply_id(runtime, item, platform_target_id)
+            send_options = {}
+            target_author = getattr(target_node, "user_id", None)
+            if target_author and target_author not in {turn.author, runtime.bot_id}:
+                send_options["boundary_target_uid"] = target_author
             delay_scale = float(getattr(runtime, "last_delay_scale", 1.0) or 1.0)
             if gate is not None:
                 delay_scale = float(gate.delay_scale or delay_scale)
             try:
+                delivery_output = output
+                if reply_mode == "narration":
+                    from .platform_bridge import build_plain_chain
+
+                    delivery_output = replace(
+                        output,
+                        text="",
+                        chains=[build_plain_chain(narration)],
+                        stream_prefix="",
+                    )
+                elif reply_mode == "poke":
+                    from .platform_bridge import build_poke_chain
+
+                    delivery_output = replace(
+                        output,
+                        text="",
+                        chains=[build_poke_chain(poke_target)],
+                        stream_prefix="",
+                    )
                 async for index, fragment in output_fragments(
-                    output,
+                    delivery_output,
                     p.pacer,
                     max_fragments,
                     delivery_fragments,
@@ -2355,17 +2596,83 @@ class PersonaEngine:
                             )
                             break
                         send_source_validator = getattr(output, "native_memory_validator", None)
-                        if send_source_validator is None:
-                            sent = await p._send_owned(runtime, event, fragment, reply_to_id=platform_parent_id)
-                        else:
-                            sent = await p._send_owned(
-                                runtime,
-                                event,
-                                fragment,
-                                reply_to_id=platform_parent_id,
-                                native_source_validator=output.native_sources_current,
+                        quote_id = first_quote_id if index == 0 and not nonverbal_mode else None
+                        fragment_quote_id = quote_id
+                        if fragment_quote_id and any(
+                            _comp_type_name(component).lower() in {"reply", "file", "node", "nodes", "poke"}
+                            for component in getattr(fragment, "chain", ())
+                        ):
+                            fragment_quote_id = None
+                        try:
+                            event_extras = getattr(event, "_extras", None)
+                            previous_nonverbal_marker = None
+                            if nonverbal_mode:
+                                if not isinstance(event_extras, dict):
+                                    event_extras = {}
+                                    event._extras = event_extras
+                                previous_nonverbal_marker = event_extras.get("_chat_dynamics_nonverbal_send_v1")
+                                event_extras["_chat_dynamics_nonverbal_send_v1"] = reply_mode
+                            try:
+                                if send_source_validator is None:
+                                    sent = await p._send_owned(
+                                        runtime, event, fragment, reply_to_id=fragment_quote_id, **send_options
+                                    )
+                                else:
+                                    sent = await p._send_owned(
+                                        runtime,
+                                        event,
+                                        fragment,
+                                        reply_to_id=fragment_quote_id,
+                                        native_source_validator=output.native_sources_current,
+                                        **send_options,
+                                    )
+                            finally:
+                                if nonverbal_mode:
+                                    if previous_nonverbal_marker is None:
+                                        event_extras.pop("_chat_dynamics_nonverbal_send_v1", None)
+                                    else:
+                                        event_extras["_chat_dynamics_nonverbal_send_v1"] = previous_nonverbal_marker
+                        except asyncio.CancelledError as exc:
+                            sent = getattr(exc, "chat_dynamics_send_result", None)
+                            if sent is None or not sent.success:
+                                raise
+                            send_cancellation = exc
+                        if not sent.success and sent.error == "joint_meme_candidate_unavailable" and reply_mode:
+                            fallback_text = getattr(fragment, "_cd_meme_fallback_text_v1", "")
+                            if fallback_text:
+                                fragment = fallback_text
+                                sent = await p._send_owned(
+                                    runtime,
+                                    event,
+                                    fragment,
+                                    reply_to_id=quote_id,
+                                    native_source_validator=output.native_sources_current,
+                                    **send_options,
+                                )
+                                actual = "text"
+                            else:
+                                actual = "silent"
+                            for node in item.outcome_nodes:
+                                if node is not None:
+                                    node.metadata["reply_choice"].update(
+                                        actual=actual, no_reply=actual == "silent", reason="meme_unavailable"
+                                    )
+                            choice.update(
+                                actual=actual, no_reply=actual == "silent", reason="meme_unavailable"
                             )
+                            if actual == "silent":
+                                p._metric("speech_withheld")
+                                record_outcome(
+                                    runtime, item, outcomes.mark_suppressed, "meme_unavailable", stage="delivery"
+                                )
+                                break
                     if not sent.success:
+                        if sent.error == "native_memory_source_invalidated":
+                            record_outcome(
+                                runtime, item, outcomes.mark_suppressed,
+                                "native_memory_source_invalidated", stage="delivery",
+                            )
+                            break
                         if sent.error == "boundary_policy_cancelled":
                             record_outcome(
                                 runtime, item, outcomes.mark_suppressed, "boundary_policy_changed", stage="delivery"
@@ -2375,6 +2682,11 @@ class PersonaEngine:
                         record_outcome(runtime, item, outcomes.mark_delivery_failed, "send_failed")
                         p._metric("send_failed")
                         break
+                    if reply_mode:
+                        for node in item.outcome_nodes:
+                            if node is not None:
+                                node.metadata["reply_choice"]["delivered"] = True
+                        choice["delivered"] = True
                     record_outcome(runtime, item, outcomes.mark_delivered)
                     if not delivered:
                         sent_at = time.monotonic()
@@ -2394,15 +2706,14 @@ class PersonaEngine:
                         completion = getattr(output, "completion_task", None)
                         if completion is not None and not completion.done():
                             p._metric("first_sentence_before_agent_finalize")
-                    delivered_text = (
-                        fragment
-                        if isinstance(fragment, str)
-                        else "".join(getattr(c, "text", "[已发送媒体]") for c in fragment.chain)
-                    )
-                    semantic = getattr(fragment, "_cd_delivery_text_v1", None)
-                    if isinstance(semantic, str):
-                        delivered_text = semantic
+                    delivered_text = "[戳一戳]" if reply_mode == "poke" else sent.delivered_text(fragment)
                     delivered.append(delivered_text)
+                    for actual_id in _actual_send_message_ids(sent, fragment, delivered_text):
+                        if actual_id not in delivered_message_ids:
+                            delivered_message_ids.append(actual_id)
+                    if not nonverbal_mode:
+                        for message_id, text in sent.identified_messages(fragment, delivered_text):
+                            dynamics_learning.delivered(runtime, item, message_id, text)
                     p._metric("send_succeeded")
                     if runtime.epoch != turn.epoch:
                         break
@@ -2416,7 +2727,9 @@ class PersonaEngine:
                         reply_to_id=dag_parent_id,
                         metadata={
                             "platform_message_id": real_message_id is not None,
-                            "dialogue_delivered": True,
+                            "dialogue_delivered": not nonverbal_mode,
+                            "reply_mode": reply_mode or "text",
+                            "narration": reply_mode == "narration",
                             "trigger_user_id": turn.author,
                             "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
                             "dialogue_state": decision.state,
@@ -2424,8 +2737,13 @@ class PersonaEngine:
                         },
                     )
                     bot.metadata["platform_message_id"] = real_message_id is not None
+                    if nonverbal_mode:
+                        runtime.remember_sent(msg_id)
+                        runtime.last_model_send = p.time_service.time()
+                        continue
                     check_sources = getattr(output, "native_sources_current", None)
-                    if callable(check_sources) and not await check_sources():
+                    if (send_cancellation is not None or sent.error
+                            or callable(check_sources) and not await check_sources()):
                         # Keep the delivered node/history truthful, but do not
                         # derive routing or embedding state from revoked memory.
                         runtime.last_bot_node = bot
@@ -2446,8 +2764,12 @@ class PersonaEngine:
                     p._last_bot_nodes[runtime.session_key] = bot
                     runtime.remember_sent(msg_id)
                     dag_parent_id = msg_id
-                    platform_parent_id = real_message_id
                     if len(delivered) == 1:
+                        if private_outreach_scope is not None:
+                            p._create_background_task(private_outreach_observer.observe_private_delivery(
+                                private_outreach_scope, sent.delivered_text(fragment, media_placeholder=False),
+                                msg_id, p.time_service.wall_time(),
+                            ))
                         if not item.private_direct:
                             runtime.interaction_state = decision.state
                             p.arbiter.record_bot_spoke(
@@ -2491,9 +2813,21 @@ class PersonaEngine:
                             p._metric("llm_reply_failed")
                 # Reset/cool may cancel a tail; persist only already delivered text, never a draft.
                 if delivered:
-                    committed = await self.bridge.commit(event, output, "\n\n".join(delivered))
+                    full_delivered_text = "\n\n".join(delivered)
+                    committed = await self.bridge.commit(event, output, full_delivered_text)
                     if not committed:
                         self.diagnostic(runtime, "history_conflict")
+                    if not nonverbal_mode:
+                        dynamics_horizons.delivered(
+                            p,
+                            runtime,
+                            item,
+                            full_delivered_text,
+                            message_id=str(getattr(getattr(runtime, "last_bot_node", None), "msg_id", "") or ""),
+                            message_ids=delivered_message_ids,
+                        )
+                if send_cancellation is not None:
+                    raise send_cancellation
                 if completion_cancelled:
                     raise asyncio.CancelledError
             if (

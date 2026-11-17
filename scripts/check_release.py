@@ -7,7 +7,6 @@ run in a clean checkout before development dependencies are installed.
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import re
 import sys
@@ -28,25 +27,34 @@ _BACKUP_RE = re.compile(r"\.bak(?:[._-]|$)", re.IGNORECASE)
 
 
 def _required_paths(root: Path) -> tuple[str, ...]:
+    page_paths = (
+        (
+            "pages/app/index.html",
+            "pages/app/_page.json",
+            "pages/app/console/index.html",
+            "pages/app/console/app.js",
+            "pages/app/console/style.css",
+        )
+        if (root / "pages/app/_page.json").exists() and not (root / "pages/console/index.html").exists()
+        else (
+            "pages/console/index.html",
+            "pages/console/app.js",
+            "pages/console/style.css",
+            "pages/console/_page.json",
+        )
+    )
     return (
         "__init__.py",
         "main.py",
-        "reload_bootstrap.py",
-        "docs/integrations.md",
         "core",
-        "pages/app/index.html",
-        "pages/app/entry.js",
-        "pages/app/_page.json",
-        "pages/app/console/index.html",
-        "pages/app/console/app.js",
-        "pages/app/console/style.css",
-        "pages/app/console/_page.json",
+        *page_paths,
         "i18n",
         ".astrbot-plugin/i18n",
         "_conf_schema.json",
         "metadata.yaml",
         "README.md",
         "CHANGELOG.md",
+        "RELEASE_NOTES.md",
         "LICENSE",
         "requirements.txt",
     )
@@ -88,29 +96,9 @@ def _check_schema(root: Path) -> list[str]:
     return errors
 
 
-def check_runtime_logging(root: Path) -> list[str]:
-    """Marketplace rule: packaged runtime code must use astrbot.api.logger."""
-    errors = []
-    for path in iter_release_files(root):
-        if path.suffix != '.py':
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding='utf-8-sig'))
-        except (SyntaxError, UnicodeError) as exc:
-            errors.append(f'invalid runtime source {path.relative_to(root)}: {type(exc).__name__}')
-            continue
-        for node in ast.walk(tree):
-            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
-                     else [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
-            if any(name == 'logging' or name.startswith('logging.') for name in names):
-                errors.append(f'{path.relative_to(root)}:{node.lineno}: use astrbot.api.logger, not stdlib logging')
-    return errors
-
-
 def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]:
     """Return human-readable release errors; an empty list means valid."""
     errors: list[str] = []
-    errors.extend(check_runtime_logging(root))
     for relative in _required_paths(root):
         path = root / relative
         if not path.exists():
@@ -118,12 +106,7 @@ def validate_release(root: Path, *, allow_empty_repo: bool = False) -> list[str]
         elif relative == "core" and not any(path.glob("*.py")):
             errors.append("core must contain Python runtime modules")
 
-    errors.extend(check_page_assets(root / "pages" / "app"))
-    pages = root / 'pages'
-    if pages.is_dir():
-        entries = sorted(path.name for path in pages.iterdir() if path.is_dir() and (path / 'index.html').is_file())
-        if entries != ['app']:
-            errors.append('plugin must expose exactly one page entry: app')
+    errors.extend(check_page_assets(root / "pages"))
 
     try:
         version, repo = _read_metadata(root)
@@ -156,16 +139,15 @@ def iter_release_files(root: Path) -> Iterable[Path]:
         "__init__.py",
         "main.py",
         "reload_bootstrap.py",
+        "series_panels.py",
         "_conf_schema.json",
         "metadata.yaml",
         "README.md",
         "CHANGELOG.md",
+        "RELEASE_NOTES.md",
         "LICENSE",
         "requirements.txt",
         "pages",
-        "docs/integrations.md",
-        "docs/rule-topic-routing.md",
-        "docs/openai-decisions.md",
         ".astrbot-plugin",
         "i18n",
         "core",

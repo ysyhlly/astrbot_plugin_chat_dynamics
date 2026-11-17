@@ -194,7 +194,7 @@ async def test_jev_receives_frozen_topics_when_the_graph_advances_before_decisio
 
 
 @pytest.mark.asyncio
-async def test_jev_can_attach_a_many_fragment_reply_to_the_latest_platform_message(jev_plugin, monkeypatch):
+async def test_jev_keeps_the_latest_target_of_many_fragments_without_a_quote(jev_plugin, monkeypatch):
     p, bridge = jev_plugin
     events = [MockEvent(f"安装补充{i}，请帮我看一下", message_id=f"fragment-{i}",
                         is_at_or_wake_command=i == 0) for i in range(12)]
@@ -214,7 +214,9 @@ async def test_jev_can_attach_a_many_fragment_reply_to_the_latest_platform_messa
         assert len(p.jev.calls) == len(bridge.requests) == 1
         assert list(p.jev.calls[0]["questions"]["target"]["criteria"]) == [f"fragment-{i}" for i in range(4, 12)]
         assert bridge.requests[0][0]["response_plan"]["target_message_ids"][0] == "fragment-11"
-        assert sent == ["fragment-11"]
+        assert sent == [None]
+        runtime = p._sessions[events[-1].unified_msg_origin]
+        assert runtime.dag.get_node("sent").reply_to_id == "fragment-11"
     finally:
         await p.terminate()
 

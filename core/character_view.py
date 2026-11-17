@@ -29,12 +29,18 @@ def build_lm_final_material_payload(material, managed):
     """
     if not isinstance(material, dict) or not isinstance(managed, dict):
         return _LM_MATERIAL_PREFIX + "{}", {"schema_version": 1, "entries": {}}
+    material=dict(material)
+    omitted=material.pop('_reply_usage_omitted',[])
     serialized = json.dumps(material, ensure_ascii=False)
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     counts = _lm_material_counts(material, managed)
+    from .reply_adaptation import counts as adaptation_counts, usage as adaptation_usage
+    adaptation=adaptation_counts(material)
     return _LM_MATERIAL_PREFIX + serialized, {
         "schema_version": 1,
         "entries": {digest: counts},
+        "adaptation_entries":{digest:adaptation} if adaptation is not None else {},
+        "usage_entries":{digest:adaptation_usage(material,omitted)} if adaptation is not None else {},
     }
 
 
@@ -1076,6 +1082,9 @@ class HistoryViewProvider:
             if isinstance(self.diagnostic_state.get("member_boundary"), dict):
                 diagnostic["member_boundary"] = copy.deepcopy(self.diagnostic_state["member_boundary"])
             diagnostic.update(_body_free_provider_input_diagnostic(result))
+            from .reply_adaptation import measure,log_measurement
+            diagnostic.update(measure(result.get('contexts'),self.lm_material_provenance))
+            log_measurement(diagnostic)
             try:
                 diagnostic.update(_lm_projection_measurement(
                     result.get("contexts"), self.lm_material_provenance
@@ -1165,7 +1174,7 @@ def speaker_snapshot(snapshot, speaker_id='', now=0):
     humanlike = snapshot.get("humanlike", {})
     if isinstance(humanlike, dict):
         selected = {}
-        for key in ("preferences", "goals", "moods", "nicknames"):
+        for key in ("preferences", "goals", "moods", "nicknames", "corrections", "interests"):
             rows = humanlike.get(key, [])
             if not isinstance(rows, list):
                 continue
@@ -1173,13 +1182,17 @@ def speaker_snapshot(snapshot, speaker_id='', now=0):
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                if key in {"moods", "nicknames"} and (not speaker_id or row.get("subject_id") != speaker_id):
+                if key in {"moods", "nicknames", "corrections"} and (not speaker_id or row.get("subject_id") != speaker_id):
                     continue
                 if (
                     row.get("origin") == "conversation"
-                    and key in {"preferences", "goals"}
+                    and key in {"preferences", "goals", "interests"}
                     and speaker_id not in row.get("participant_ids", [])
                 ):
+                    continue
+                if key == "corrections" and row.get("status") != "active":
+                    continue
+                if key == "moods" and row.get("status") == "settled":
                     continue
                 if key == "preferences" and row.get("status") != "active":
                     continue
@@ -1192,7 +1205,7 @@ def speaker_snapshot(snapshot, speaker_id='', now=0):
                 item = {
                     k: v
                     for k, v in row.items()
-                    if k in {"id", "subject_id", "text", "nickname", "status", "fact_kind", "origin", "participant_ids"}
+                    if k in {"id", "subject_id", "text", "nickname", "status", "fact_kind", "origin", "participant_ids", "category", "topic", "evidence_quote", "cause_quote", "next_step", "progress_kind"}
                 }
                 if key == "moods":
                     start = row.get("updated_at", now)
@@ -1200,8 +1213,12 @@ def speaker_snapshot(snapshot, speaker_id='', now=0):
                         continue
                     item["strength"] = round(2 ** (-max(0, now - start) / 600), 3)
                 kept.append(item)
+            if key in {"corrections", "interests"}:
+                # Prefer recent changes without making their scope broader.
+                by_id = {row.get("id"): row.get("updated_at", 0) for row in rows if isinstance(row, dict)}
+                kept.sort(key=lambda item: by_id.get(item.get("id"), 0), reverse=True)
             if kept:
-                selected[key] = kept[: {"preferences": 6, "goals": 3, "moods": 1, "nicknames": 1}[key]]
+                selected[key] = kept[: {"preferences": 6, "goals": 3, "moods": 1, "nicknames": 1, "corrections": 16, "interests": 4}[key]]
         result["humanlike"] = selected
     global_state=snapshot.get('global_presentation')
     local=snapshot.get('scoped_presentation')

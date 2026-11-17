@@ -175,9 +175,17 @@ def test_idle_sessions_are_pruned():
 
 
 def test_console_page_files_exist():
-    root = Path(__file__).resolve().parents[1] / "pages" / "app" / "console"
-    for name in ("index.html", "app.js", "style.css", "_page.json"):
-        assert (root / name).is_file()
+    pages = Path(__file__).resolve().parents[1] / "pages"
+    if (pages / "app" / "_page.json").is_file() and not (pages / "console" / "index.html").is_file():
+        assert (pages / "app" / "index.html").is_file()
+        assert (pages / "app" / "_page.json").is_file()
+        root = pages / "app" / "console"
+        for name in ("index.html", "app.js", "style.css"):
+            assert (root / name).is_file()
+    else:
+        root = pages / "console"
+        for name in ("index.html", "app.js", "style.css", "_page.json"):
+            assert (root / name).is_file()
     html = (root / "index.html").read_text(encoding="utf-8")
     assert "群聊动态控制台" in html
     assert "./app.js" in html
@@ -222,7 +230,7 @@ async def test_web_api_returns_503_during_shutdown():
 
 
 def test_console_uses_bridge_without_direct_fetch_fallback():
-    js = (Path(__file__).resolve().parents[1] / "pages" / "app" / "console" / "app.js").read_text(encoding="utf-8")
+    js = (Path(__file__).resolve().parents[1] / "pages" / "console" / "app.js").read_text(encoding="utf-8")
     assert "fetch(" not in js
     assert "session_key" in js
     assert "detailRequestToken" in js
@@ -306,15 +314,14 @@ async def test_reset_cancels_in_flight_vibe_classification():
     plugin = _plugin({"takeover_all": True})
     key = "mock:GroupMessage:g1"
     plugin._get_or_create_runtime(key, group_id="g1", umo=key, bot_id="bot")
-    vibe_task = asyncio.create_task(asyncio.sleep(60))
-    plugin._vibe_llm_tasks.add(vibe_task)
-    plugin._vibe_llm_tasks_by_session[key] = vibe_task
+    bg_task = asyncio.create_task(asyncio.sleep(60))
+    plugin._embedding_tasks_by_session.setdefault(key, set()).add(bg_task)
 
     plugin._reset_session_state(key)
-    await asyncio.gather(vibe_task, return_exceptions=True)
+    await asyncio.gather(bg_task, return_exceptions=True)
 
-    assert vibe_task.cancelled()
-    assert key not in plugin._vibe_llm_tasks_by_session
+    assert bg_task.cancelled()
+    assert key not in plugin._embedding_tasks_by_session
 
 
 @pytest.mark.asyncio
@@ -351,27 +358,23 @@ async def test_web_api_cool_invalidates_generation_and_checks_resolved_group(mon
 
 @pytest.mark.asyncio
 async def test_cool_cancels_in_flight_vibe_before_returning():
-    plugin = _plugin({"takeover_all": True, "vibe_llm_enabled": True})
+    plugin = _plugin({"takeover_all": True})
     key = "mock:GroupMessage:g1"
     plugin._get_or_create_runtime(key, group_id="g1", umo=key, bot_id="bot")
-    plugin._vibe_msg_counts[key] = 12
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_refresh(session_id, text, now):
+    async def slow_hook():
         started.set()
         await release.wait()
-        plugin.vibe_analyzer.mark_llm_snapshot(session_id, now)
 
-    plugin._refresh_vibe_from_llm = slow_refresh
-    plugin._schedule_vibe_llm(key, "in flight", now=500.0)
-    task = plugin._vibe_llm_tasks_by_session[key]
+    task = asyncio.create_task(slow_hook())
+    plugin._hook_tasks_by_session.setdefault(key, set()).add(task)
     await asyncio.wait_for(started.wait(), timeout=1.0)
 
     assert await plugin._cool_session_async(key, 10.0) is True
     assert task.cancelled()
-    assert key not in plugin._vibe_llm_tasks_by_session
-    assert plugin.vibe_analyzer.has_llm_snapshot(key) is False
+    assert key not in plugin._hook_tasks_by_session
 
 
 @pytest.mark.asyncio

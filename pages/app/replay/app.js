@@ -1,4 +1,5 @@
 import { navigateToPluginPage } from "./plugin_nav.js";
+import {msg, tr, setText} from "../shared/series-ui.js";
 import {
   apiGet,
   apiPost,
@@ -39,10 +40,39 @@ const els = {
   blockEvents: document.getElementById("blockEvents"),
   tonightNote: document.getElementById("tonightNote"),
   btnRefresh: document.getElementById("btnRefresh"),
+  inspectorTopicMeta: document.getElementById("inspectorTopicMeta"),
+  inspectorSilenceTags: document.getElementById("inspectorSilenceTags"),
+  inspectorWaterfall: document.getElementById("inspectorWaterfall"),
+  btnOpenSceneModal: document.getElementById("btnOpenSceneModal"),
 };
 
+const SHARED_SCOPE_KEY = "dynamics_active_umo";
+function readSharedScope() {
+  if (window.DynamicsUI?.getSharedScope) return window.DynamicsUI.getSharedScope();
+  const incomingScope = new URLSearchParams(window.location.search);
+  if (incomingScope.has("umo")) return String(incomingScope.get("umo") || "").trim();
+  try {
+    const q = (new URLSearchParams(window.location.search).get("umo") || "").trim();
+    if (q) return q;
+  } catch {}
+  try {
+    const s = (window.sessionStorage.getItem(SHARED_SCOPE_KEY) || "").trim();
+    if (s) return s;
+  } catch {}
+  return "";
+}
+function writeSharedScope(umo) {
+  const clean = String(umo || "").trim();
+  window.DynamicsUI?.setSharedScope?.(clean, {emit: false, syncUrl: false});
+  try {
+    if (clean) window.sessionStorage.setItem(SHARED_SCOPE_KEY, clean);
+    else window.sessionStorage.removeItem(SHARED_SCOPE_KEY);
+  } catch {}
+}
+
 let online = false;
-let selectedUmo = storageGet(UMO_KEY, "");
+let selectedUmo = (new URLSearchParams(window.location.search).has("umo") || window.DynamicsUI?.getSharedScope) ? readSharedScope() : storageGet(UMO_KEY, "");
+window.DynamicsGetActiveScope = () => selectedUmo || "";
 let busy = false;
 let blocks = [];
 let replayData = null;
@@ -71,16 +101,16 @@ function dirtyAnnotationCount() {
   return annotationMessages.querySelectorAll('.annotation-row[data-dirty="true"]').length;
 }
 
-function confirmDiscardAnnotations() {
+async function confirmDiscardAnnotations() {
   const dirty = dirtyAnnotationCount();
   if (!dirty) return true;
-  return window.confirm(`有 ${dirty} 条标注还没保存，继续会丢掉这些修改。确定继续吗？`);
+  return window.DynamicsUI.confirm(msg("有 {0} 条标注还没保存，继续会丢掉这些修改。确定继续吗？", dirty));
 }
 
 const RECIPIENT_ERRORS = { correct: "判断正确", missed_bot: "漏判 Bot", false_bot: "误判为对 Bot 说", wrong_recipient: "收件人错误", missing_recipient: "遗漏收件人", subject_confusion: "混淆提及与称呼", unknown: "无法判断" };
 const RECIPIENT_BOOLS = { recipient_correct: "收件人判断正确", bot_targeted: "在对 Bot 说话", expected_reply: "Bot 应该回复" };
 function traceView(trace) {
-  if (!trace || ![2, 3].includes(trace.trace_schema_version ?? trace.routing_schema_version)) return '<p class="ops-note">暂无决策记录</p>';
+  if (!trace || ![2, 3].includes(trace.trace_schema_version ?? trace.routing_schema_version)) return '<p class="ops-note" data-series-text="暂无决策记录">暂无决策记录</p>';
   const yesNo = value => value === true ? "是" : value === false ? "否" : "待决";
   const recipient = trace.recipient || {}, topic = trace.topic || {}, participation = trace.participation || {};
   const ids = trace.identifiers_redacted ? "ID 已隐藏" : (recipient.ids || []).join(", ") || "未确定";
@@ -97,7 +127,10 @@ function traceView(trace) {
     ? judgement.current_addressees?.find(row => row.selected) || judgement.recipient
     : judgement?.current_addressees?.at(-1) || judgement?.recipient;
   const modelHtml = judgement ? `<p class="ops-note" data-model-judgement>模型动作：${escapeHtml(actionLabels[judgement.action?.choice] || "未记录")}（${escapeHtml(score(judgement.action?.confidence))}） · 对象：${escapeHtml(recipientLabels[modelRecipient?.kind || modelRecipient?.choice] || "未记录")}（${escapeHtml(score(modelRecipient?.confidence))}） · 采用规则：${escapeHtml(trace.decision_branch || trace.decision_stages?.persona?.reason_code || "未记录")}</p>` : "";
-  return `${routingHtml}${modelHtml}<details><summary>判断依据（启发式分数，未经概率校准）</summary><ul>${evidenceHtml || "<li>暂无证据明细</li>"}</ul></details><p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
+  const wfAction = actionLabels[judgement?.action?.choice] || (participation.should_reply === true ? "回复" : participation.should_reply === false ? "安静" : "待决");
+  const wfSpeak = wfAction === "回复" || wfAction === "简短回应" || wfAction === "澄清";
+  const waterfallBadges = `<div class="jev-waterfall-strip"><span class="jev-wf-badge">01 话题 · ${escapeHtml(score(topic.confidence))}</span><span class="jev-wf-badge">02 对 Bot · ${escapeHtml(yesNo(recipient.bot_targeted))}</span><span class="jev-wf-badge" data-tone="${wfSpeak ? "speak" : "quiet"}">03 抉择 · ${escapeHtml(wfAction)}</span></div>`;
+  return `${waterfallBadges}${routingHtml}${modelHtml}<details><summary>判断依据（启发式分数，未经概率校准）</summary><ul>${evidenceHtml || "<li>暂无证据明细</li>"}</ul></details><p class="ops-note" data-trace-summary>${escapeHtml(summary)}</p><details><summary>查看决策记录</summary><pre class="decision-trace">${escapeHtml(JSON.stringify(trace, null, 2))}</pre></details>`;
 }
 
 function blockDecisionCounts(block) {
@@ -112,11 +145,14 @@ function blockDecisionCounts(block) {
 }
 
 function recipientEditor(index) {
-  const select = (key, label, options) => `<label for="recipient-${key}-${index}">${label}</label><select id="recipient-${key}-${index}" data-recipient="${key}"><option value="">未标注</option>${options}</select>`;
-  return `<details class="recipient-editor"><summary>收件人与回复纠错（可选）</summary>${Object.entries(RECIPIENT_BOOLS).map(([key, label]) => select(key, label, '<option value="true">是</option><option value="false">否</option>')).join("")}
-    ${["recipient_ids", "subject_ids"].map(key => `<label for="recipient-${key}-${index}">${key === "recipient_ids" ? "收件人 ID" : "被讨论对象 ID"}</label><input id="recipient-${key}-${index}" data-recipient="${key}" type="text" aria-describedby="recipient-help-${index}" placeholder="多个 ID 用逗号分隔">`).join("")}
+  const select = (key, label, options) => `<label for="recipient-${key}-${index}" data-series-text="${escapeHtml(label)}">${label}</label><select id="recipient-${key}-${index}" data-recipient="${key}"><option value="" data-series-text="未标注">未标注</option>${options}</select>`;
+  return `<details class="recipient-editor"><summary data-series-text="收件人与回复纠错（可选）">收件人与回复纠错（可选）</summary>${Object.entries(RECIPIENT_BOOLS).map(([key, label]) => select(key, label, '<option value="true" data-series-text="是">是</option><option value="false" data-series-text="否">否</option>')).join("")}
+    ${["recipient_ids", "subject_ids"].map(key => {
+      const label = key === "recipient_ids" ? "收件人 ID" : "被讨论对象 ID";
+      return `<label for="recipient-${key}-${index}" data-series-text="${label}">${label}</label><input id="recipient-${key}-${index}" data-recipient="${key}" type="text" aria-describedby="recipient-help-${index}" placeholder="多个 ID 用逗号分隔" data-series-placeholder="多个 ID 用逗号分隔">`;
+    }).join("")}
     <p id="recipient-help-${index}" class="ops-note">留空表示未标注；输入 [] 表示没有对象。每项最多 256 字符，最多 64 项。</p>
-    ${select("recipient_error_type", "收件人错误类型", Object.entries(RECIPIENT_ERRORS).map(([key, label]) => `<option value="${key}">${label}</option>`).join(""))}</details><p data-saved-annotation class="ops-note"></p>`;
+    ${select("recipient_error_type", "收件人错误类型", Object.entries(RECIPIENT_ERRORS).map(([key, label]) => `<option value="${key}" data-series-text="${escapeHtml(label)}">${label}</option>`).join(""))}</details><p data-saved-annotation class="ops-note"></p>`;
 }
 function applyAnnotationData(data, block, prefill = false) {
   annotationData = data;
@@ -200,8 +236,70 @@ async function renderAnnotations(block) {
   }
 }
 
-function selectBlock(index, discardConfirmed = false) {
-  if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
+function renderInspector() {
+  if (!els.inspectorTopicMeta || !els.inspectorSilenceTags || !els.inspectorWaterfall) return;
+  const tagCounts = new Map();
+  for (const b of blocks) {
+    for (const ev of b.events || []) {
+      const label = ev.action === "speak" ? "开口回应" : (LANE_ZH[ev.lane] || ev.reason_zh || "安静保持");
+      tagCounts.set(label, (tagCounts.get(label) || 0) + 1);
+    }
+    if (b.is_unassigned) {
+      const c = blockDecisionCounts(b);
+      if (c.speak) tagCounts.set("开口回应", (tagCounts.get("开口回应") || 0) + c.speak);
+      if (c.silent) tagCounts.set("未归话题静默", (tagCounts.get("未归话题静默") || 0) + c.silent);
+    }
+  }
+  els.inspectorSilenceTags.innerHTML = tagCounts.size
+    ? Array.from(tagCounts.entries()).slice(0, 6).map(([k, v]) => `<span class="silence-chip">${escapeHtml(k)} <b>${v}</b></span>`).join("")
+    : '<span class="silence-chip">当前筛选暂无判定分流标签</span>';
+
+  const inspectedIndex = selectedIndex >= 0 && blocks[selectedIndex] ? selectedIndex : (blocks.length ? blocks.length - 1 : -1);
+  const activeBlock = inspectedIndex >= 0 ? blocks[inspectedIndex] : null;
+  if (!activeBlock) {
+    els.inspectorTopicMeta.textContent = "点选时间块固定检视，出现新讨论后这里常驻展示 JEV 判定瀑布。";
+    els.inspectorWaterfall.innerHTML = '<div class="wf-stage"><div class="wf-stage-head"><strong>等待话题样本</strong><span>IDLE</span></div><p>暂无活跃话题，留白属正常状态。</p></div>';
+    if (els.btnOpenSceneModal) els.btnOpenSceneModal.classList.add("hidden");
+    return;
+  }
+  const counts = blockDecisionCounts(activeBlock);
+  const pinnedLabel = selectedIndex >= 0 ? "已固定检视" : "最近主题速览";
+  els.inspectorTopicMeta.textContent = `${pinnedLabel}：${activeBlock.topic_title || "未关联主题"} · 开口 ${counts.speak} / 安静 ${counts.silent}`;
+  if (els.btnOpenSceneModal) {
+    els.btnOpenSceneModal.classList.remove("hidden");
+    els.btnOpenSceneModal.dataset.inspectIndex = String(inspectedIndex);
+  }
+  const lastTrace = [...(activeBlock.messages || [])].reverse().find((m) => m && m.decision_trace)?.decision_trace || null;
+  const lastEvent = (activeBlock.events || []).at(-1) || null;
+  const pctBar = (val, fallback = 50) => {
+    const num = typeof val === "number" && val >= 0 && val <= 1 ? Math.round(val * 100) : fallback;
+    return Math.max(6, Math.min(100, num));
+  };
+  const topicConf = lastTrace?.topic?.confidence ?? (activeBlock.messages || []).at(-1)?.confidence;
+  const recConf = lastTrace?.decision_stages?.judgement?.recipient?.confidence ?? lastTrace?.recipient?.confidence;
+  const actChoice = lastTrace?.decision_stages?.judgement?.action?.choice || lastEvent?.action || (counts.speak ? "speak" : "silent");
+  const actConf = lastTrace?.decision_stages?.judgement?.action?.confidence;
+  const reasonText = lastEvent?.reason_zh || lastTrace?.decision_branch || (counts.speak ? "满足参与门槛并发送" : "保持克制旁听");
+  els.inspectorWaterfall.innerHTML = `
+    <div class="wf-stage">
+      <div class="wf-stage-head"><strong>01 话题归属</strong><span>${typeof topicConf === "number" ? `${Math.round(topicConf * 100)}%` : "已归档"}</span></div>
+      <p>${escapeHtml(activeBlock.topic_title || "未关联主题")}（${activeBlock.message_count || 0} 条消息）</p>
+      <div class="wf-bar"><i style="width:${pctBar(topicConf, 72)}%"></i></div>
+    </div>
+    <div class="wf-stage">
+      <div class="wf-stage-head"><strong>02 对象识别</strong><span>${lastTrace?.recipient?.bot_targeted === true ? "对 Bot" : "群内交流"}</span></div>
+      <p>${escapeHtml(lastTrace?.recipient?.ambiguous ? "对象存在歧义，审慎接话" : "按上下文与呼唤规则完成识别")}</p>
+      <div class="wf-bar"><i style="width:${pctBar(recConf, lastTrace?.recipient?.bot_targeted ? 88 : 48)}%"></i></div>
+    </div>
+    <div class="wf-stage">
+      <div class="wf-stage-head"><strong>03 参与抉择</strong><span>${escapeHtml(String(actChoice))}</span></div>
+      <p>${escapeHtml(reasonText)}</p>
+      <div class="wf-bar"><i style="width:${pctBar(actConf, counts.speak ? 82 : 36)}%"></i></div>
+    </div>`;
+}
+
+async function selectBlock(index, discardConfirmed = false) {
+  if (!discardConfirmed && !await confirmDiscardAnnotations()) return false;
   selectedIndex = index;
   const nodes = els.replayRail.querySelectorAll(".replay-block");
   nodes.forEach(node => {
@@ -214,9 +312,10 @@ function selectBlock(index, discardConfirmed = false) {
   void renderAnnotations(block);
   if (!block) {
     els.detailDialog.close();
-    els.blockDetail.textContent = "点时间轨上的色块。";
+    setText(els.blockDetail, msg("点时间轨上的色块。"));
     els.blockMeta.textContent = "";
     els.tonightNote.textContent = "";
+    renderInspector();
     return;
   }
   els.detailTitle.textContent = block.topic_title || "未关联主题";
@@ -231,10 +330,11 @@ function selectBlock(index, discardConfirmed = false) {
   } else {
     els.tonightNote.textContent = "参与设置已集中到控制台，对所有生效群聊应用。";
   }
+  renderInspector();
 }
 
-function renderRail(data, discardConfirmed = false) {
-  if (!discardConfirmed && !confirmDiscardAnnotations()) return false;
+async function renderRail(data, discardConfirmed = false) {
+  if (!discardConfirmed && !await confirmDiscardAnnotations()) return false;
   replayData = data;
   archivedTopics = Array.isArray(data.archived_topics) ? data.archived_topics : [];
   blocks = (Array.isArray(data.topic_blocks) ? data.topic_blocks : []).filter(block => block.is_unassigned || block.topic_id && block.topic_id !== "UNKNOWN" && (!block.topic_status || block.topic_status === "committed"));
@@ -245,7 +345,7 @@ function renderRail(data, discardConfirmed = false) {
   const history = archivedTopics.filter(topic => !query || (topic.topic_title || "").toLocaleLowerCase().includes(query));
   document.getElementById("archivedTopicList").innerHTML = history.length
     ? history.map(topic => `<li><strong>${escapeHtml(topic.topic_title || "历史话题")}</strong>${!selectedUmo && topic.session_id ? ` <small>会话 ${escapeHtml(redactId(topic.session_id))}</small>` : ""}</li>`).join("")
-    : "<li>没有符合筛选条件的历史话题。</li>";
+    : '<li data-series-text="没有符合筛选条件的历史话题。">没有符合筛选条件的历史话题。</li>';
   const decision = document.getElementById("decisionFilter").value;
   const speaks = block => blockDecisionCounts(block).speak > 0;
   const counts = allBlocks.map(blockDecisionCounts);
@@ -258,12 +358,13 @@ function renderRail(data, discardConfirmed = false) {
       ? "已形成的话题会先显示，归纳完成后自动更新小标题。归纳失败或关闭时，可在详情查看状态。"
       : "";
   blocks = allBlocks.filter(block => (!query || (block.topic_title || "").toLocaleLowerCase().includes(query)) && (decision === "all" || (decision === "speak" ? speaks(block) : !speaks(block))));
-  els.railEmpty.textContent = allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : archivedTopics.length ? "当前没有活跃话题，已归档话题可在下方查看。" : "目前没有形成话题，留白是正常状态。出现新的讨论后会显示话题。";
+  setText(els.railEmpty, msg(allBlocks.length ? "没有符合筛选条件的主题。试试其他关键词或参与情况。" : archivedTopics.length ? "当前没有活跃话题，已归档话题可在下方查看。" : "目前没有形成话题，留白是正常状态。出现新的讨论后会显示话题。"));
   const unassigned = Math.max(0, Number(data.unassigned_message_count) || 0);
   document.getElementById("unassignedNote").textContent = unassigned
     ? `有 ${unassigned} 条消息尚未归入话题。点击“未归话题消息”可检查回复、对象判断与发送结果。`
     : "未归入话题的消息也会保留判断记录。";
-  els.railCounts.textContent = `${blocks.filter(block => !block.is_unassigned).length} 个主题场景 · ${blocks.filter(block => block.is_unassigned).length} 组未归话题消息`;
+  const unassignedGroups = blocks.filter(block => block.is_unassigned).length;
+  els.railCounts.textContent = `${blocks.filter(block => !block.is_unassigned).length} 个主题场景${unassignedGroups ? ` · ${unassignedGroups} 组未归话题消息` : ""}`;
   els.trackHint.textContent = selectedUmo ? `会话 ${redactId(selectedUmo)}` : "总览最近判断";
   if (Number.isInteger(data.message_limit) && Number.isInteger(data.retained_message_count)) {
     els.trackHint.textContent += ` · 当前回看 ${data.retained_message_count} 条 · 每会话最多 ${data.message_limit} 条`;
@@ -303,34 +404,53 @@ async function refresh({ automatic = false } = {}) {
     const data = await apiGet("replay", params);
     if (revision !== refreshRevision) return;
     if (automatic && (els.detailDialog.open || dirtyAnnotationCount())) return;
-    if (!confirmDiscardAnnotations()) return;
+    if (!await confirmDiscardAnnotations()) return;
+    if (revision !== refreshRevision) return;
     online = true;
-    setLink(els, true, "已连接");
+    setLink(els, true, tr("已连接"));
     fillSessionSelect(els.sessionSelect, data.sessions || [], selectedUmo);
     if (selectedUmo !== els.sessionSelect.value) {
       selectedUmo = els.sessionSelect.value;
       storageSet(UMO_KEY, selectedUmo);
+      writeSharedScope(selectedUmo);
     }
     renderRail(data, true);
   } catch (err) {
     if (revision !== refreshRevision) return;
     online = false;
-    setLink(els, false, friendlyError(err, "离线"));
+    setLink(els, false, friendlyError(err, tr("离线")));
     if (automatic) return;
     if (dirtyAnnotationCount()) return;
     els.replayRail.innerHTML = "";
     blocks = [];
     replayData = null;
     for (const id of ["summaryTopics", "summaryMessages", "summaryDecisions"]) document.getElementById(id).textContent = "—";
-    els.railEmpty.textContent = "回放暂时不可用，请检查连接后刷新。";
+    setText(els.railEmpty, msg("回放暂时不可用，请检查连接后刷新。"));
     selectBlock(-1, true);
     els.railCounts.textContent = "主题 —";
     els.railEmpty.classList.remove("hidden");
-    els.blockDetail.textContent = "回放暂时不可用，请稍后刷新。";
+    setText(els.blockDetail, msg("回放暂时不可用，请稍后刷新。"));
   } finally {
     pendingRefreshes -= 1;
   }
 }
+
+window.addEventListener("dynamics-scopechange", async event => {
+  const next = String(event.detail?.umo || "").trim();
+  if (next === selectedUmo) return;
+  const previous = selectedUmo;
+  if (!await confirmDiscardAnnotations()) {
+    window.DynamicsUI?.setSharedScope?.(previous, {emit: false, syncUrl: false});
+    return;
+  }
+  ++refreshRevision;
+  ++annotationRevision;
+  await selectBlock(-1, true);
+  selectedUmo = next;
+  els.sessionSelect.value = next;
+  storageSet(UMO_KEY, next);
+  void refresh();
+});
 
 async function boot() {
   renderNav("replay");
@@ -377,9 +497,9 @@ async function boot() {
         row.querySelectorAll('[data-recipient]').forEach(input => delete input.dataset.edited);
       }
       if (!row.querySelector("[data-saved-annotation]").textContent) {
-        row.querySelector("[data-saved-annotation]").textContent = "已保存标注。";
+        setText(row.querySelector("[data-saved-annotation]"), msg("已保存标注。"));
       }
-      annotationStatus.textContent = row.dataset.dirty ? "已保存提交时的标注；后续修改尚未保存。" : "已保存标注。";
+      setText(annotationStatus, msg(row.dataset.dirty ? "已保存提交时的标注；后续修改尚未保存。" : "已保存标注。"));
 
     } catch (err) {
       if (revision === annotationRevision) {
@@ -388,7 +508,7 @@ async function boot() {
     } finally { button.disabled = false; }
   });
   document.getElementById("btnExportAnnotations").addEventListener("click", () => {
-    if (!annotationData) { annotationStatus.textContent = "请先等待标注加载完成。"; return; }
+    if (!annotationData) { setText(annotationStatus, msg("请先等待标注加载完成。")); return; }
     const blob = new Blob([JSON.stringify(annotationData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -400,8 +520,8 @@ async function boot() {
   } catch {
     /* bridge may still work for api calls */
   }
-  els.sessionSelect.addEventListener("change", () => {
-    if (!confirmDiscardAnnotations()) {
+  els.sessionSelect.addEventListener("change", async () => {
+    if (!await confirmDiscardAnnotations()) {
       els.sessionSelect.value = selectedUmo;
       return;
     }
@@ -409,24 +529,35 @@ async function boot() {
     selectedUmo = els.sessionSelect.value || "";
     ++annotationRevision;
     storageSet(UMO_KEY, selectedUmo);
+    writeSharedScope(selectedUmo);
     void refresh();
   });
-  els.replayRail.addEventListener("click", (event) => {
+  if (els.btnOpenSceneModal) {
+    els.btnOpenSceneModal.addEventListener("click", async () => {
+      const idx = Number(els.btnOpenSceneModal.dataset.inspectIndex ?? -1);
+      if (idx >= 0 && blocks[idx]) {
+        if (await selectBlock(idx) === false) return;
+        els.detailDialog.showModal();
+      }
+    });
+  }
+  els.replayRail.addEventListener("click", async (event) => {
     const btn = event.target.closest(".replay-block");
     if (!btn) return;
-    selectBlock(Number(btn.getAttribute("data-index")));
+    if (await selectBlock(Number(btn.getAttribute("data-index"))) === false) return;
     els.detailDialog.showModal();
   });
-  els.btnCloseDetail.addEventListener("click", () => {
-    if (!confirmDiscardAnnotations()) return;
+  els.btnCloseDetail.addEventListener("click", async () => {
+    if (!await confirmDiscardAnnotations()) return;
     els.detailDialog.close();
   });
-  els.detailDialog.addEventListener("cancel", (event) => {
-    if (!confirmDiscardAnnotations()) event.preventDefault();
+  els.detailDialog.addEventListener("cancel", async (event) => {
+    event.preventDefault();
+    if (await confirmDiscardAnnotations()) els.detailDialog.close();
   });
   let navigationDiscardConfirmed = false;
-  window.ChatDynamicsBeforeNavigate = () => {
-    if (!confirmDiscardAnnotations()) return false;
+  window.ChatDynamicsBeforeNavigate = async () => {
+    if (!await confirmDiscardAnnotations()) return false;
     navigationDiscardConfirmed = true;
     setTimeout(() => { navigationDiscardConfirmed = false; }, 1000);
     return true;

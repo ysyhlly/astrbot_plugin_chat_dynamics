@@ -29,13 +29,15 @@ if str(WORKSPACE_ROOT) not in sys.path:
 
 from astrbot.api.platform import MessageType  # noqa: E402
 from astrbot.core.message.message_event_result import MessageChain, MessageEventResult  # noqa: E402
-from astrbot.core.message.components import Plain  # noqa: E402
+from astrbot.core.message.components import File, Plain, Reply  # noqa: E402
 from astrbot.core.platform.astr_message_event import AstrMessageEvent  # noqa: E402
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent  # noqa: E402
 from astrbot.core.star.filter.command import CommandFilter  # noqa: E402
 from astrbot.core.star.filter.permission import PermissionType, PermissionTypeFilter  # noqa: E402
 from astrbot.core.star.star_handler import star_handlers_registry  # noqa: E402
 
 from astrbot_plugin_chat_dynamics.core.native_delivery import NativeDeliveryGuard  # noqa: E402
+from astrbot_plugin_chat_dynamics.core.platform_bridge import send_plain  # noqa: E402
 from astrbot_plugin_chat_dynamics.main import ChatDynamicsPlugin  # noqa: E402
 
 
@@ -154,3 +156,67 @@ async def test_real_sdk_segmented_chain_replacement_remains_guarded():
         assert guard.outcome is not None and not guard.outcome.success
     finally:
         guard.restore()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep_quote", [False, True])
+async def test_real_sdk_native_autoquote_is_removed_only_for_plain_replies(keep_quote):
+    event = RealEvent()
+    result = MessageEventResult().message("首段")
+    event.set_result(result)
+    received = []
+
+    async def send(message):
+        received.extend(await AiocqhttpMessageEvent._parse_onebot_json(message))
+        return "head-id"
+
+    event.send = send
+    guard = NativeDeliveryGuard(
+        event, result, lambda: True, lambda: False,
+        strip_automatic_quote_to=None if keep_quote else "incoming",
+    )
+    assert guard.install()
+    try:
+        # The host's result decorator adds the quote after the plugin hook.
+        result.chain.insert(0, Reply(id="incoming"))
+        await event.send(result.derive(list(result.chain)))
+        assert [segment["type"] for segment in received] == (
+            ["reply", "text"] if keep_quote else ["text"]
+        )
+        assert result.get_plain_text() == "首段"
+        assert guard.outcome and guard.outcome.message_id == "head-id"
+    finally:
+        guard.restore()
+
+
+@pytest.mark.asyncio
+async def test_real_qq_partial_receipt_for_plain_text_and_rejected_file(tmp_path, monkeypatch):
+    event = RealEvent()
+    event.get_platform_name = lambda: "aiocqhttp"
+    document = tmp_path / "reply.txt"
+    document.write_text("file", encoding="utf-8")
+    chain = MessageChain([Plain("已送达文本"), File(name=document.name, file=str(document))])
+    received = []
+
+    class LocalTransport:
+        async def send_group_msg(self, *, group_id, message):
+            received.extend(message)
+            if message[0]["type"] == "text":
+                return {"status": "ok", "data": {"message_id": 101}}
+            return {"status": "failed", "retcode": 100}
+
+    async def send(message):
+        return await AiocqhttpMessageEvent._send_chain(LocalTransport(), message, None, True, "100", None)
+
+    async def no_sleep(_seconds):
+        pass
+
+    monkeypatch.setattr(
+        "astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event.asyncio.sleep", no_sleep
+    )
+    event.send = send
+    receipt = await send_plain(event, None, event.unified_msg_origin, chain)
+    assert [segment["type"] for segment in received] == ["text", "file"]
+    assert receipt.success and receipt.error
+    assert receipt.message_ids == ("101",)
+    assert receipt.delivered_text(chain) == "已送达文本"

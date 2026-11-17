@@ -15,7 +15,7 @@ sync_playwright = playwright.sync_playwright
 expect = playwright.expect
 
 ROOT = Path(__file__).resolve().parents[1]
-CONSOLE = ROOT / "pages" / "app" / "console"
+CONSOLE = ROOT / "pages" / "app" / "console" if (ROOT / "pages/app/console/index.html").is_file() else ROOT / "pages" / "console"
 
 
 def _launch_browser(pw):

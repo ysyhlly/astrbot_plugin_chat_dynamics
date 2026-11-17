@@ -13,11 +13,11 @@ from astrbot_plugin_chat_dynamics.core.prompt_policy import PROMPT_DEFAULTS, PRE
 from astrbot_plugin_chat_dynamics.core.runtime_persistence import export_runtime_state, restore_runtime_state
 from astrbot_plugin_chat_dynamics.core.graph import ConversationDAG
 from astrbot_plugin_chat_dynamics.core.jev_decision import (
-    MAX_TOTAL_REQUEST_CHARS, bound_request_state, build_questions, build_state, request_size,
+    MAX_TOTAL_REQUEST_CHARS, bound_request_state, build_questions, build_state, decision_from_answers, request_size,
 )
 from astrbot_plugin_chat_dynamics.core.persona_engine import is_request_supplement, turn_is_continuation
 from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRuntime
-from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, clip_conversation_text
+from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, clip_conversation_text, reply_prompt
 from .test_jev_decision_layer import answers, jev_plugin as jev_plugin
 from .test_jev_turn_completion import completion_plugin as completion_plugin, tick
 from .test_persona_model import drain, flush
@@ -62,6 +62,30 @@ def test_interleaved_delivered_dialogue_continues_its_own_topic():
     assert dialogue.last_bot_message_id == first.msg_id
     assert turn_is_continuation(runtime, turn(current, runtime), 110)
     assert capture_dialogue(runtime, current, frozenset(runtime.dag.nodes)).last_bot_text == first.text
+
+
+@pytest.mark.parametrize("confidence,action,length", [(0.9, "clarify", "brief"), (0.2, "reply", "normal")])
+def test_continuation_keeps_an_explicit_clarify_action_with_ready_context(confidence, action, length):
+    runtime = room()
+    delivered(runtime)
+    current = route(runtime.dag.add_message("current", "alice", "这会儿还是报同样的错", timestamp=110))
+    dialogue = capture_dialogue(runtime, current, frozenset(runtime.dag.nodes))
+    context = turn(current, runtime, dialogue=dialogue)
+    judged = answers(
+        action="clarify",
+        length="normal",
+        continuity={"type": "choice", "choice": "continue", "confidence": 0.9},
+        context_need={"type": "choice", "choice": "ready", "confidence": 0.9},
+    )
+    judged["action"]["confidence"] = confidence
+    result = decision_from_answers(context, judged)
+    assert (result.action, result.length, result.reason_code) == (action, length, "jev_dialogue_continue")
+    payload = json.loads(reply_prompt(context, result))
+    assert payload["response_plan"]["target_message_ids"] == ["current"]
+    assert payload["attention_plan"]["mode"] == ("clarify" if action == "clarify" else "conversational")
+    if action == "clarify":
+        assert "中性的澄清" in result.response_goal
+        assert "先直接回答" not in result.response_goal
 
 
 @pytest.mark.parametrize("kind", ["other_recipient", "other_topic", "other_owner", "expired", "closed", "stopped", "reset"])

@@ -28,11 +28,14 @@ class PipelineTelemetry:
         self.samples.append({'turn_id': self.turn_id(turn), 'stage': stage, 'outcome': outcome,
                              'elapsed_ms': round(max(0.0, seconds) * 1000, 1), 'at': time.time()})
 
-    async def run(self, stage, turn, operation):
+    async def run(self, stage, turn, operation, *, none_is_unavailable=False):
         key = self.turn_id(turn)
         started, outcome = time.monotonic(), "success"
         try:
-            return await operation
+            result = await operation
+            if none_is_unavailable and result is None:
+                outcome = "unavailable"
+            return result
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -53,6 +56,7 @@ class PipelineTelemetry:
             stages[stage] = {"count": len(rows), "p50_ms": values[(len(values) - 1) // 2],
                              "p90_ms": values[min(len(values) - 1, int(len(values) * .9))],
                              "failed": sum(r["outcome"] == "failed" for r in rows),
+                             "unavailable": sum(r["outcome"] == "unavailable" for r in rows),
                              "cancelled": sum(r["outcome"] == "cancelled" for r in rows)}
         hooks = {}
         for row in self.hook_samples:

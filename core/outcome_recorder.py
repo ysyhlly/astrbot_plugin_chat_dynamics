@@ -118,6 +118,12 @@ def _write(node: object, value: str, *, delivered: bool, reason: str = "",
         updated = deepcopy(trace)
         updated[OUTCOME_KEY] = dict(block)
         metadata["decision_trace"] = updated
+    # Optional companion callback is transient; no learner objects enter metadata.
+    try:
+        from .integrations.dynamics_learning import outcome
+        outcome(node)
+    except Exception:
+        pass
     return block
 
 

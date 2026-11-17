@@ -6,6 +6,9 @@ from .character_material import energy_context, select_commitments
 from .character_view import historical_item, speaker_snapshot
 from .narrative import select_evidence_slots
 from . import member_boundary
+from .environment_context import activity_text,environment_context
+from .scene_context import scene_context
+from .world_visual_context import world_visual_context
 
 
 _SCOPE_KEYS = ("platform", "umo", "persona_id", "instance_id")
@@ -116,20 +119,43 @@ def _current_interaction_basis(managed):
     }
 
 
-def reply_material(managed, budget=8000):
+def reply_material(managed, budget=8000, *, quiet=False):
+    """Project a turn for archive review or for conversation generation."""
     snapshot = speaker_snapshot(managed.get("snapshot", {}), managed.get("speaker_id", ""), managed.get("captured_at", 0))
-    state = {k: snapshot[k] for k in ("revision", "scope_revision", "activity", "availability",
-             "subjective_state", "summary", "valid_from", "valid_until", "stale", "energy") if k in snapshot}
-    for k in ("activity", "subjective_state", "summary"):
-        if k in state:
-            state[k] = excerpt(state[k], 300)
-    state['energy'] = energy_context(snapshot)
-    if snapshot.get("humanlike"):
-        state["humanlike"] = snapshot["humanlike"]
+    fields = ("revision", "scope_revision", "availability", "valid_from", "valid_until", "stale")
+    state = {key: snapshot[key] for key in fields if key in snapshot}
+    energy = energy_context(snapshot)
+    state["energy"] = {"level": energy["level"]} if quiet else energy
+    humanlike = snapshot.get("humanlike", {})
+    if quiet:
+        humanlike = {key: rows for key, rows in humanlike.items() if key != "goals"}
+        if "interests" in humanlike:
+            interests = [row for row in humanlike["interests"] if row.get("progress_kind") != "fiction"]
+            if interests:
+                humanlike["interests"] = interests
+            else:
+                humanlike.pop("interests")
+    if humanlike:
+        state["humanlike"] = humanlike
     state["commitments"] = select_commitments(snapshot.get('commitments', []), managed.get('speaker_id', ''), managed.get('captured_at', 0), limit=6)
     out = {"snapshot": state, "source_scope": managed["scope"], "speaker_id": managed.get("speaker_id"),
            "context_items": [], "world_items": [], "purpose": managed.get("purpose", "reply"),
            "evidence_detail": "available_in_local_turn_journal"}
+    if not quiet:
+        for key in ("activity", "subjective_state", "summary"):
+            if key in snapshot:
+                value = activity_text(snapshot) if key == "activity" else snapshot[key]
+                state[key] = excerpt(value, 300)
+        captured_at = managed.get("captured_at", 0)
+        environment = environment_context(snapshot, captured_at, forecast_limit=4)
+        if environment is not None:
+            state["environment"] = environment
+        scene = scene_context(snapshot)
+        if scene is not None:
+            state["scene"] = scene
+        visual = world_visual_context(snapshot, captured_at, include_rules=False)
+        if visual is not None:
+            out["world_visual"] = visual
     availability = managed.get("availability")
     if isinstance(availability, dict):
         statuses = {"ready", "partial", "empty", "timeout", "unavailable", "invalid", "pending", "deferred"}
@@ -172,30 +198,35 @@ def reply_material(managed, budget=8000):
     expression=managed.get('expression_context',{})
     if not isinstance(expression, dict):
         expression = {}
-    from .rest_behavior import rest_reply_context
-    rest_context = rest_reply_context(snapshot, expression)
-    if rest_context:
-        out['rest_behavior'] = rest_context
+    if not quiet:
+        from .rest_behavior import rest_reply_context
+
+        rest_context = rest_reply_context(snapshot, expression)
+        if rest_context:
+            out['rest_behavior'] = rest_context
     if expression.get('guidance'):
         out['expression_context']={k:expression[k] for k in ('fact_kind','recent_replies','ellipsis_prefixes','guidance') if k in expression}
         out['expression_context']['guidance'] = excerpt(out['expression_context'].get('guidance', ''), 500)
-        recent_replies = out['expression_context'].get('recent_replies', [])
-        if not isinstance(recent_replies, (list, tuple)):
-            recent_replies = []
-        prefixes = out['expression_context'].get('ellipsis_prefixes', [])
-        if not isinstance(prefixes, (list, tuple)):
-            prefixes = []
-        out['expression_context']['recent_replies'] = [excerpt(value, 240) for value in recent_replies[:4]]
-        out['expression_context']['ellipsis_prefixes'] = [excerpt(value, 80) for value in prefixes[:12]]
+        for key, count, limit in (("recent_replies", 4, 240), ("ellipsis_prefixes", 12, 80)):
+            values = expression.get(key)
+            if quiet:
+                if type(values) is not int:
+                    out["expression_context"].pop(key, None)
+            else:
+                out["expression_context"][key] = (
+                    [excerpt(value, limit) for value in values[:count]] if isinstance(values, (list, tuple)) else []
+                )
     if snapshot.get("recent_interaction"):
         state["recent_interaction"] = snapshot["recent_interaction"]
     out["system_receipts"] = managed.get("system_receipts", [])
+    horizons_proj = managed.get("horizons_reply_projection")
+    if isinstance(horizons_proj, dict) and horizons_proj:
+        out["horizons"] = copy.deepcopy(horizons_proj)
     slot_budget = max(0, int(budget) - len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) - 320)
     out["evidence_slots"], slot_diagnostics = select_evidence_slots(raw_evidence_slots, slot_budget)
     out["evidence_slot_diagnostics"] = slot_diagnostics
-    # Retain the small set of current world facts before spending the remaining
-    # budget on longer historical context; current relationship cues already
-    # have priority above both.
+    # Retain matched Worldbook settings before spending the remaining budget on
+    # historical context; current relationship cues have priority above both.
     for row in managed.get("character", {}).get("world_items", []):
         clean = {k: excerpt(v, 600) if k in {"text", "content"} else str(v)[:240] for k,v in row.items() if k in {"text", "content", "source_id", "fact_kind"}}
         out["world_items"].append(clean)
@@ -220,6 +251,8 @@ def reply_material(managed, budget=8000):
         out["world_items"].pop()
     if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > budget:
         out.pop("expression_context", None)
+    if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > budget:
+        out.pop("horizons", None)
     if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > budget and state.get("summary"):
         state["summary"] = ""
     if len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) > budget:
@@ -461,7 +494,8 @@ def filter_reply_material(boundary_host, event, material, managed):
             snapshot_routes.append(("system_receipts", index, token))
     expression = result.get("expression_context")
     if isinstance(expression, dict):
-        text_parts = [*expression.get("recent_replies", []), *expression.get("ellipsis_prefixes", [])]
+        text_parts = [text for key in ("recent_replies", "ellipsis_prefixes")
+                      if isinstance(values := expression.get(key), list) for text in values]
         guidance = expression.get("guidance")
         if isinstance(guidance, str):
             text_parts.append(guidance)

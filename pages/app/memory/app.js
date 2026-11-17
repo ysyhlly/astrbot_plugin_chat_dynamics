@@ -1,3 +1,4 @@
+import {msg, setText, tr} from "../shared/series-ui.js";
 import {
   apiGet,
   apiPost,
@@ -45,7 +46,13 @@ const els = {
   btnNarrativeCorrect: document.getElementById("btnNarrativeCorrect"),
 };
 
-let selectedUmo = storageGet(UMO_KEY, "");
+const incomingScope = new URLSearchParams(window.location.search);
+let selectedUmo = String(window.DynamicsUI?.getSharedScope?.() ?? (incomingScope.has("umo") ? incomingScope.get("umo") : storageGet(UMO_KEY, "")) ?? "").trim();
+window.DynamicsGetActiveScope = () => selectedUmo;
+function publishNotebookScope() {
+  storageSet(UMO_KEY, selectedUmo);
+  window.DynamicsUI?.setSharedScope?.(selectedUmo, {emit: false, syncUrl: false});
+}
 let tab = "anniversaries";
 let notebook = { anniversaries: [], reminders: [], slang_trials: [], mute_until: 0 };
 let online = false;
@@ -254,7 +261,7 @@ async function mutateNarrative(action, payload = {}) {
   busy = true;
   setEnabled();
   els.narrativeStatus.classList.remove("error");
-  els.narrativeStatus.textContent = "正在记录操作…";
+  setText(els.narrativeStatus, msg("正在记录操作…"));
   try {
     await apiPost("narrative", { umo, action, ...payload });
     if (umo !== selectedUmo) return;
@@ -273,7 +280,10 @@ async function mutateNarrative(action, payload = {}) {
 function showListLoading() {
   els.listEmpty.classList.add("hidden");
   els.listHost.setAttribute("aria-busy", "true");
-  els.listHost.innerHTML = '<p class="ops-note loading-note">正在加载记忆小本…</p>';
+  const note = document.createElement("p");
+  note.className = "ops-note loading-note";
+  setText(note, msg("正在加载记忆小本…"));
+  els.listHost.replaceChildren(note);
 }
 
 function addFormHasInput() {
@@ -303,7 +313,7 @@ function paintTabs() {
 
 function paintAddForm() {
   if (tab === "anniversaries") {
-    els.addTitle.textContent = "记一个纪念日";
+    setText(els.addTitle, msg("记一个纪念日"));
     els.addFields.innerHTML = `
       <label>标题<input name="title" maxlength="40" required placeholder="例如：群庆" /></label>
       <label>月<input name="month" type="number" min="1" max="12" required /></label>
@@ -311,13 +321,13 @@ function paintAddForm() {
       <label>备注<input name="note" maxlength="80" placeholder="可选，勿写隐私" /></label>
     `;
   } else if (tab === "reminders") {
-    els.addTitle.textContent = "记一条约定";
+    setText(els.addTitle, msg("记一条约定"));
     els.addFields.innerHTML = `
       <label>内容<input name="text" maxlength="80" required placeholder="到期提醒一句" /></label>
       <label>到期时间<input name="due_local" type="datetime-local" required /></label>
     `;
   } else {
-    els.addTitle.textContent = "记一条试用梗";
+    setText(els.addTitle, msg("记一条试用梗"));
     els.addFields.innerHTML = `
       <label>短语<input name="phrase" maxlength="24" required placeholder="需已批准；敏感词会被拒" /></label>
       <label class="chip-row" style="align-items:center">
@@ -354,11 +364,11 @@ function renderList() {
   else rows = notebook.slang_trials || [];
 
   if (loadFailed) {
-    document.getElementById("memoryCount").textContent = "读取失败";
+    setText(document.getElementById("memoryCount"), msg("读取失败"));
     els.listHost.innerHTML = "";
     els.listEmpty.classList.remove("hidden");
     els.listEmpty.classList.add("is-error");
-    els.listEmpty.textContent = "记忆小本暂时读不到，请点右上角「刷新」重试。";
+    setText(els.listEmpty, msg("记忆小本暂时读不到，请点右上角「刷新」重试。"));
     return;
   }
   document.getElementById("memoryCount").textContent = `${rows.length} 条`;
@@ -366,7 +376,7 @@ function renderList() {
   if (!selectedUmo) {
     els.listHost.innerHTML = "";
     els.listEmpty.classList.remove("hidden");
-    els.listEmpty.textContent = "请先选择群聊会话。也可从顶部导航打开「今日读空气」。";
+    setText(els.listEmpty, msg("请先选择群聊会话。也可从顶部导航打开「今日读空气」。"));
     return;
   }
   if (!rows.length) {
@@ -442,10 +452,10 @@ async function loadSessions() {
     const air = await apiGet("read_air", selectedUmo ? { umo: selectedUmo } : {});
     fillSessionSelect(els.sessionSelect, air.sessions || [], selectedUmo);
     online = true;
-    setLink(els, true, "已连接");
+    setLink(els, true, tr("已连接"));
   } catch (err) {
     online = false;
-    setLink(els, false, friendlyError(err, "离线"));
+    setLink(els, false, friendlyError(err, tr("离线")));
   }
   setEnabled();
 }
@@ -455,7 +465,7 @@ async function loadNotebook() {
   if (!selectedUmo) {
     notebook = { anniversaries: [], reminders: [], slang_trials: [], mute_until: 0 };
     renderList();
-    els.sessionNote.textContent = "未选择会话。";
+    setText(els.sessionNote, msg("未选择会话。"));
     return;
   }
   try {
@@ -464,7 +474,7 @@ async function loadNotebook() {
     notebook = result;
     online = true;
     loadFailed = false;
-    setLink(els, true, "已连接");
+    setLink(els, true, tr("已连接"));
     const mute = Number(notebook.mute_until || 0);
     const muted = mute > Date.now() / 1000;
     els.sessionNote.textContent = muted
@@ -478,7 +488,7 @@ async function loadNotebook() {
     online = false;
     loadFailed = true;
     notebook = { anniversaries: [], reminders: [], slang_trials: [] };
-    setLink(els, false, "读取失败");
+    setLink(els, false, tr("读取失败"));
     els.sessionNote.textContent = friendlyError(err, "读取失败，请稍后重试。");
   }
   setEnabled();
@@ -520,7 +530,7 @@ async function onAdd(event) {
   const fd = new FormData(els.addForm);
   busy = true;
   setEnabled();
-  els.addNote.textContent = "写入中…";
+  setText(els.addNote, msg("写入中…"));
   try {
     if (tab === "anniversaries") {
       await apiPost("notebook", {
@@ -550,7 +560,7 @@ async function onAdd(event) {
       });
     }
     els.addNote.classList.remove("error");
-    els.addNote.textContent = "已记下。";
+    setText(els.addNote, msg("已记下。"));
     els.addForm.reset();
     await loadNotebook();
   } catch (err) {
@@ -594,6 +604,41 @@ function onListClick(event) {
   }
 }
 
+function hasNotebookDraft() {
+  return addFormHasInput() || Boolean(document.getElementById("narrativeActivity")?.value.trim()
+    || document.getElementById("narrativeAvailability")?.value);
+}
+async function canLeaveNotebook() {
+  if (busy) return false;
+  return !hasNotebookDraft() || await window.DynamicsUI.confirm((window.DynamicsUI.msg ?? String)("有未保存的新增记录或状态纠正，离开会丢弃它们。继续吗？"), {danger: true});
+}
+window.DynamicsBeforeNavigate = canLeaveNotebook;
+window.ChatDynamicsBeforeNavigate = canLeaveNotebook;
+async function changeNotebookScope(next) {
+  next = String(next || "").trim();
+  if (next === selectedUmo) return true;
+  if (!await canLeaveNotebook()) {
+    els.sessionSelect.value = selectedUmo;
+    publishNotebookScope();
+    return false;
+  }
+  ++notebookRevision; ++narrativeRevision;
+  selectedUmo = next;
+  publishNotebookScope();
+  notebook = { anniversaries: [], reminders: [], slang_trials: [] };
+  narrativeData = null; loadFailed = false;
+  paintAddForm(); els.narrativeCorrectForm?.reset();
+  if (next && ![...els.sessionSelect.options].some(option => option.value === next)) {
+    const option = document.createElement("option"); option.value = next; option.textContent = next;
+    els.sessionSelect.append(option);
+  }
+  els.sessionSelect.value = next;
+  showListLoading();setEnabled();
+  await Promise.all([loadNotebook(), loadNarrative()]);
+  return true;
+}
+window.addEventListener("dynamics-scopechange", event => { void changeNotebookScope(event.detail?.umo); });
+
 async function boot() {
   renderNav("memory");
   try {
@@ -602,10 +647,10 @@ async function boot() {
     /* ignore */
   }
   document.querySelectorAll(".tab").forEach((node) => {
-    node.addEventListener("click", () => {
+    node.addEventListener("click", async () => {
       const next = node.getAttribute("data-tab") || "anniversaries";
       if (next === tab) return;
-      if (addFormHasInput() && !window.confirm("切换分类会清空「新增记录」里填写的内容，继续吗？")) return;
+      if (addFormHasInput() && !await window.DynamicsUI.confirm(msg("切换分类会清空「新增记录」里填写的内容，继续吗？"))) return;
       tab = next;
       els.addNote.textContent = "";
       els.addNote.classList.remove("error");
@@ -622,26 +667,7 @@ async function boot() {
       tabs[next].focus();
     });
   });
-  els.sessionSelect.addEventListener("change", () => {
-    const next = els.sessionSelect.value || "";
-    const narrativeDraft = Boolean(document.getElementById("narrativeActivity")?.value.trim()
-      || document.getElementById("narrativeAvailability")?.value);
-    if (next !== selectedUmo && (addFormHasInput() || narrativeDraft)
-        && !window.confirm("切换会话会清空未保存的新增记录或状态纠正，继续吗？")) {
-      els.sessionSelect.value = selectedUmo;
-      return;
-    }
-    selectedUmo = next;
-    storageSet(UMO_KEY, selectedUmo);
-    notebook = { anniversaries: [], reminders: [], slang_trials: [] };
-    loadFailed = false;
-    paintAddForm();
-    els.narrativeCorrectForm?.reset();
-    showListLoading();
-    setEnabled();
-    void loadNotebook();
-    void loadNarrative();
-  });
+  els.sessionSelect.addEventListener("change", () => { void changeNotebookScope(els.sessionSelect.value); });
   els.btnRefresh.addEventListener("click", async () => {
     showListLoading();
     await loadSessions();
@@ -672,7 +698,7 @@ async function boot() {
     if (activity) patch.activity = activity;
     if (availability) patch.availability = availability;
     if (!Object.keys(patch).length) {
-      els.narrativeStatus.textContent = "请填写活动或选择可交互状态。";
+      setText(els.narrativeStatus, msg("请填写活动或选择可交互状态。"));
       els.narrativeStatus.classList.add("error");
       return;
     }

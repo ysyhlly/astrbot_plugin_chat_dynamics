@@ -59,7 +59,7 @@ def resolve_recipients(runtime, node, bot_names=(), *, gap=45.0, lifetime=120.0)
             else:
                 can_anchor = False
             anchor = current.msg_id
-        elif current.metadata.get('explicit_unresolved') or '[提及]' in current.text:
+        elif '[提及]' in current.text:
             states.clear()
             reason, can_anchor = 'recipient_unresolved', False
         else:

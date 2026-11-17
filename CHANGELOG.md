@@ -1,3 +1,33 @@
+# 更新日志
+
+## v1.19.0-rc.1 — 2026-11-17
+
+整合系列面板、记忆与见闻上下文、公开话题参与、图片追问与表情元数据保护，以及戳戳和静默动作。保留配置中的模型与决策路由。统一发布版本和安装包元数据。
+
+## v1.18.3-learning.1-weather.1-reply.1-media.1-world.2-private.1-visual.5.outreach.3-scenes.2-horizons.2.memory.1.reliability.1.prepare.1.grounding.1.imagecontext.1.memenotes.1
+
+- Keep visible message text separate from internal image descriptions in plain extraction, delivery receipts and caption deduplication.
+
+## v1.18.3-learning.1-weather.1-reply.1-media.1-world.2-private.1-visual.5.outreach.3-scenes.2-horizons.2.memory.1
+
+- 对支持分阶段最终复验的记忆来源，将每次模型/发送边界校验限制为总计 5 秒、摘要两阶段累计 3 秒；有效但超过 1 秒的读取可以完成，真正超时仍拒绝。
+- 在其他异步校验完成后执行最新摘要来源复验；混合原生/工具来源的末段继续共享最多 1 秒的窗口，冻结本次工具来源集合，防止校验中途被替换。
+- 保留旧回调的一秒预算与布尔接口，补充无正文的失败阶段、耗时和 effect 类型诊断，不缓存跨调用的校验成功结果。
+
+## v1.18.3-learning.1-weather.1-reply.1-media.1-world.2-private.1-visual.5.outreach.3 — 群间五插件联动优化与主类模块化
+
+- 将 `main.py` 中的配置面板、群组手记 CRUD、会话生命周期清理及 Web API 路由转发方法抽离至 `core/plugin_web_mixin.py`（`PluginWebAndAdminMixin`），主类体积缩减近 600 行并完整保留 MRO、方法签名与静态契约。
+- 为 `NarrativeJournal._connect` 补齐连接级 `PRAGMA busy_timeout=5000` 与 `synchronous=NORMAL`；为 `decision_status.py` 只读历史分页补齐 `PRAGMA busy_timeout=2000`；将 `web_api.py` 叙事归档解压与意图状态写入改为 `asyncio.to_thread` 非阻塞调用。
+- 统一五插件共享静态导航条 `series-panels.js` / `series-ui.css`（消除 `@import` 串行瀑布流并合并 `pages/app/*` 同沙盒重复副本）及热重载入口 `reload_bootstrap.py`，并在发布白名单补齐 `reload_bootstrap.py` 与 `series_panels.py`。
+- 整合 v1.18.3 系列学习适配、实况环境/天气感知、媒体联动、群间世界生活叙事、私聊与外联回执投递能力。
+
+## v1.18.2-rc.1 — 群间世界原生接入
+
+- 通过公开能力声明发现角色/生活提供者，兼容原有插件。
+- 同一种能力的多个启用提供者显示冲突，不静默选源。
+- 角色与生活卡片显示实际提供者，停用/重载立即重新解析。
+- 不修改接话判断、成员边界和发送回执路径。
+
 ## v1.18.1
 
 - 按上架要求统一使用 `from astrbot.api import logger`，移除主插件运行时代码中的内置 logging 日志器；发布检查新增 AST 约束，阻止再次引入。

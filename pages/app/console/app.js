@@ -1,3 +1,4 @@
+import {msg, tr, setText} from "../shared/series-ui.js";
 import { friendlyError } from "./errors.js";
 import { renderDecisionLayer, renderIntegrations } from "./integrations.js";
 import { mountWorkspace } from "./workspace.js";
@@ -30,6 +31,7 @@ const els = {
   btnRetryDetail: document.getElementById("btnRetryDetail"),
   board: document.getElementById("board"),
   roomView: document.getElementById("roomView"),
+  roomDecisionStrip: document.getElementById("roomDecisionStrip"),
   roomId: document.getElementById("roomId"),
   roomMode: document.getElementById("roomMode"),
   badgeTakeover: document.getElementById("badgeTakeover"),
@@ -79,6 +81,32 @@ const els = {
 };
 
 let bridge = window.AstrBotPluginPage || null;
+const SHARED_SCOPE_KEY = "dynamics_active_umo";
+
+function readSharedScope() {
+  if (window.DynamicsUI?.getSharedScope) return window.DynamicsUI.getSharedScope();
+  const incomingScope = new URLSearchParams(window.location.search);
+  if (incomingScope.has("umo")) return String(incomingScope.get("umo") || "").trim();
+  try {
+    const queryUmo = (new URLSearchParams(window.location.search).get("umo") || "").trim();
+    if (queryUmo) return queryUmo;
+  } catch {}
+  try {
+    const sessionUmo = (window.sessionStorage.getItem(SHARED_SCOPE_KEY) || "").trim();
+    if (sessionUmo) return sessionUmo;
+  } catch {}
+  return "";
+}
+
+function writeSharedScope(umo) {
+  const clean = String(umo || "").trim();
+  window.DynamicsUI?.setSharedScope?.(clean, {emit: false, syncUrl: false});
+  try {
+    if (clean) window.sessionStorage.setItem(SHARED_SCOPE_KEY, clean);
+  } catch {}
+}
+
+window.DynamicsGetActiveScope = () => selectedId || "";
 
 async function wirePageNav(currentPage) {
   const mod = await import("./plugin_nav.js");
@@ -155,7 +183,7 @@ function pct(value) {
 function setLink(ok, label) {
   els.linkLamp.classList.toggle("on", ok);
   els.linkLamp.classList.toggle("warn", !ok);
-  els.linkLabel.textContent = label;
+  setText(els.linkLabel, label);
 }
 
 function setBusy(element, busy) {
@@ -173,12 +201,12 @@ function sessionIdentities(row) {
 }
 
 function setFilterNote(message, isError = false) {
-  els.sessionFilterNote.textContent = message || "";
+  setText(els.sessionFilterNote, message);
   els.sessionFilterNote.classList.toggle("error", isError);
 }
 
 function setDetailStatus(message, isError = false, retry = false) {
-  els.detailStatus.textContent = message || "";
+  setText(els.detailStatus, message);
   els.detailStatus.classList.toggle("error", isError);
   els.btnRetryDetail.classList.toggle("hidden", !retry);
   els.btnRetryDetail.disabled = !retry || detailLoading || refreshInFlight || operationInFlight;
@@ -346,7 +374,7 @@ function renderOverview(data) {
   els.statCooling.textContent = safeData.cooling_count === undefined || safeData.cooling_count === null ? "—" : String(safeData.cooling_count);
   els.statPending.textContent = safeData.pending_count === undefined || safeData.pending_count === null ? "—" : String(safeData.pending_count);
   if (typeof safeData.shadow_mode === "boolean") {
-    els.shadowState.textContent = safeData.shadow_mode ? "观察模式 · 不产生副作用" : "正常运行";
+    setText(els.shadowState, msg(safeData.shadow_mode ? "观察模式 · 不产生副作用" : "正常运行"));
   } else {
     els.shadowState.textContent = "—";
   }
@@ -476,7 +504,7 @@ function renderOverviewUnavailable(message = "后端未响应") {
   [els.statEnabled, els.statTakeover, els.statLive, els.statCooling, els.statPending].forEach((element) => {
     element.textContent = "—";
   });
-  els.shadowState.textContent = "连接中断";
+  setText(els.shadowState, msg("连接中断"));
   els.shadowState.title = "";
   els.privacyState.textContent = "控制台正文：未知";
   els.providerState.textContent = "Provider：未知";
@@ -493,17 +521,17 @@ function renderOverviewUnavailable(message = "后端未响应") {
   els.onboarding.classList.add("hidden");
   renderChannels([]);
   const empty = els.channelList.querySelector(":scope > .empty");
-  if (empty) empty.textContent = "连接中断，无法读取会话。";
-  renderRoom(null, "连接已中断", "当前详情已清空，连接恢复后会自动重试。");
+  if (empty) setText(empty, msg("连接中断，无法读取会话。"));
+  renderRoom(null, msg("连接已中断"), msg("当前详情已清空，连接恢复后会自动重试。"));
   setDetailStatus(message, true, false);
-  setFilterNote("连接中断，暂时无法查找会话。", true);
+  setFilterNote(msg("连接中断，暂时无法查找会话。"), true);
   updateManagementControls();
 }
 
 function operationProgress(kind) {
-  if (kind === "cool") return "正在开启深度冷却…";
-  if (kind === "reset") return "正在重置会话状态…";
-  return "正在应用预设…";
+  if (kind === "cool") return msg("正在开启深度冷却…");
+  if (kind === "reset") return msg("正在重置会话状态…");
+  return msg("正在应用预设…");
 }
 
 function setOperationLabel(kind, busy) {
@@ -533,7 +561,7 @@ function beginOperation(kind, sessionId = "") {
     detailLoading = true;
     detailError = false;
     lastDetail = null;
-    renderRoom(null, "正在更新会话详情", operationProgress(kind));
+    renderRoom(null, msg("正在更新会话详情"), operationProgress(kind));
     setDetailStatus(operationProgress(kind), false, false);
   }
   setOperationLabel(kind, true);
@@ -545,7 +573,7 @@ function showOperationDetailError(message, err) {
   detailLoading = false;
   detailError = true;
   lastDetail = null;
-  renderRoom(null, "操作未完成", "详情没有被旧数据覆盖。修复连接后可以重试读取。");
+  renderRoom(null, msg("操作未完成"), msg("详情没有被旧数据覆盖。修复连接后可以重试读取。"));
   const reason = err ? ` ${friendlyError(err, "")}` : "";
   setDetailStatus(`${message}${reason}`, true, true);
   updateManagementControls();
@@ -599,10 +627,10 @@ async function loadPresets() {
 async function applyPreset() {
   const name = els.presetSelect.value;
   if (!name || !overviewOnline || !presetsLoaded || operationInFlight) return;
-  if (!window.confirm("应用此预设并覆盖对应运行参数？")) return;
+  if (!await window.DynamicsUI.confirm(msg("应用此预设并覆盖对应运行参数？"))) return;
   const sessionId = selectedId;
   const token = beginOperation("preset", sessionId);
-  setOps("正在应用预设…");
+  setOps(msg("正在应用预设…"));
   try {
     const result = await apiPost("preset/apply", { name, confirm: true });
     if (token !== operationRequestToken) return;
@@ -610,7 +638,7 @@ async function applyPreset() {
       ? "预设已在运行时生效，但没能写入磁盘：重启后参数会回到原值。"
       : "预设已应用并保存。";
     await refresh({ refreshDetail: true, operationToken: token });
-    if (token === operationRequestToken && overviewOnline) setOps("预设已应用。");
+    if (token === operationRequestToken && overviewOnline) setOps(msg("预设已应用。"));
   } catch (err) {
     if (token === operationRequestToken) {
       els.presetNote.textContent = friendlyError(err, "预设应用失败，请稍后重试。");
@@ -632,15 +660,15 @@ function renderChannels(sessions) {
     return haystack.includes(q);
   });
   if (!rows.length) {
-    const message = q ? "没有匹配的会话。" : "尚无会话。请先在配置中让过滤器对群聊生效。";
+    const message = msg(q ? "没有匹配的会话。" : "尚无会话。请先在配置中让过滤器对群聊生效。");
     const existingEmpty = els.channelList.querySelector(":scope > .empty");
     if (els.channelList.children.length !== 1 || !existingEmpty) {
       const item = document.createElement("li");
       item.className = "empty";
-      item.textContent = message;
+      setText(item, message);
       els.channelList.replaceChildren(item);
     } else {
-      existingEmpty.textContent = message;
+      setText(existingEmpty, message);
     }
     return;
   }
@@ -673,7 +701,7 @@ function renderChannels(sessions) {
       <span class="id">${escapeHtml(row.group_id || row.session_id)}</span>
       <span class="session-key">${escapeHtml(sessionKey)}</span>
       <span class="meta">
-        <span class="mode-${cssMode(row.mode)}">${escapeHtml(MODE_LABEL[row.mode] || row.mode || "未知")}</span>
+        <span class="mode-${cssMode(row.mode)}">${escapeHtml(MODE_LABEL[row.mode] ? tr(MODE_LABEL[row.mode]) : row.mode || tr("未知"))}</span>
         <span>${Number(row.mpm || 0).toFixed(1)} 条/分</span>
       </span>
     `;
@@ -708,13 +736,13 @@ function meter(label, value, ratio) {
 
 function renderRoom(
   detail,
-  emptyTitle = "没有选中的会话",
-  emptyCopy = "从列表选择一个群聊会话，或检查配置页的生效范围。",
+  emptyTitle = msg("没有选中的会话"),
+  emptyCopy = msg("从列表选择一个群聊会话，或检查配置页的生效范围。"),
 ) {
   if (!detail) {
     els.traceMeta.title = "";
-    els.emptyTitle.textContent = emptyTitle;
-    els.emptyCopy.textContent = emptyCopy;
+    setText(els.emptyTitle, emptyTitle);
+    setText(els.emptyCopy, emptyCopy);
     els.emptyBoard.classList.remove("hidden");
     els.roomView.classList.add("hidden");
     return;
@@ -725,13 +753,13 @@ function renderRoom(
   const groupId = String(detail.group_id || detail.session_id || "");
   const sessionKey = String(detail.session_key || detail.session_id || "");
   els.roomId.textContent = groupId && groupId !== sessionKey ? `${groupId} · ${sessionKey}` : sessionKey;
-  els.roomMode.textContent = MODE_LABEL[detail.mode] || String(detail.mode || "未知");
+  setText(els.roomMode, MODE_LABEL[detail.mode] ? msg(MODE_LABEL[detail.mode]) : detail.mode || msg("未知"));
   els.roomMode.className = `mode-${cssMode(detail.mode)}`;
-  els.badgeTakeover.textContent = detail.takeover ? "已生效" : "未生效";
+  setText(els.badgeTakeover, msg(detail.takeover ? "已生效" : "未生效"));
   els.badgeTakeover.classList.toggle("hot", Boolean(detail.takeover));
-  els.badgeCool.textContent = detail.cooling
-    ? `冷却 ${Math.ceil((detail.cooling_remaining || 0) / 60)} 分`
-    : "冷却关";
+  setText(els.badgeCool, detail.cooling
+    ? msg("冷却 {0} 分", Math.ceil((detail.cooling_remaining || 0) / 60))
+    : msg("冷却关"));
   els.badgeCool.classList.toggle("cool", Boolean(detail.cooling));
   const llmCount = Number(detail.vibe_llm_snapshot_count || 0);
   const llmAge = Number(detail.vibe_llm_snapshot_age);
@@ -743,6 +771,41 @@ function renderRoom(
     els.badgeVibe.textContent = llmCount ? `本地遥测 · 已校准 ${llmCount} 次` : "本地遥测";
   }
   els.badgeVibe.title = Number.isFinite(llmAge) ? `最近一次 LLM 校准：${Math.ceil(llmAge)} 秒前` : "尚未调用 LLM 校准";
+
+  if (els.roomDecisionStrip) {
+    const decision = detail.model_decision || {};
+    const jev = decision.jev || {};
+    const actionChoice = String(decision.action || jev.action?.choice || (detail.last_bot_text ? "reply" : "listen"));
+    const isSpeak = ["speak", "reply", "acknowledge", "clarify", "close"].includes(actionChoice);
+    const confNum = typeof jev.action?.confidence === "number" ? jev.action.confidence : NaN;
+    const confPct = Number.isFinite(confNum) ? Math.max(4, Math.min(100, Math.round(confNum * 100))) : (detail.cooling ? 15 : 55);
+    const backendTag = decision.backend === "llm" ? "LLM 抉择" : decision.backend === "jev" ? "JEV 原生抉择" : "本地遥测仲裁";
+    const recipientKind = jev.recipient?.choice || jev.recipient?.kind || (detail.takeover ? "群聊监听" : "旁听");
+    const reasonCode = decision.reason_code || (detail.cooling ? "deep_cooling" : "ready");
+    const whyAll = Array.isArray(overview?.read_air?.why_silent) ? overview.read_air.why_silent : [];
+    const sessionWhy = whyAll.filter((item) => !item.session_id || String(item.session_id) === sessionKey || String(item.session_id) === groupId);
+    const whyRows = (sessionWhy.length ? sessionWhy : whyAll).slice(0, 4);
+    const silencePills = whyRows.length
+      ? whyRows.map((item) => `<span class="dwf-tag">${escapeHtml(item.reason_zh || item.reason_code || "安静保持")}${item.lane ? `<small>${escapeHtml(item.lane)}</small>` : ""}</span>`).join("")
+      : `<span class="dwf-tag">${detail.cooling ? "深度冷却生效中" : "近期无静默拦截记录"}</span>`;
+    setHtmlIfChanged(
+      els.roomDecisionStrip,
+      `<div class="decision-waterfall-card">
+        <div class="dwf-kicker"><span>JEV DECISION WATERFALL</span><span>${escapeHtml(backendTag)}${decision.latency_ms ? ` · ${escapeHtml(decision.latency_ms)}ms` : ""}</span></div>
+        <div class="dwf-steps">
+          <span class="dwf-pill">01 对象 · ${escapeHtml(recipientKind)}</span>
+          <span class="dwf-pill" data-tone="${isSpeak ? "speak" : "quiet"}">02 动作 · ${escapeHtml(actionChoice)}</span>
+          <span class="dwf-pill">03 分支 · ${escapeHtml(reasonCode)}</span>
+          ${decision.shadow ? '<span class="dwf-pill" data-tone="quiet">观察模式</span>' : ""}
+        </div>
+        <div class="dwf-bar" title="动作置信度 ${Number.isFinite(confNum) ? `${Math.round(confNum * 100)}%` : "启发式就绪"}"><i style="width:${confPct}%"></i></div>
+      </div>
+      <div class="decision-silence-card">
+        <div class="dwf-kicker"><span>WHY SILENT · 静默与分寸标签</span><span>${detail.cooling ? "冷却中" : "正常守候"}</span></div>
+        <div class="dwf-tags">${silencePills}</div>
+      </div>`,
+    );
+  }
 
   const metersHtml = [
     meter("消息/分钟", Number(detail.mpm || 0).toFixed(1), Math.min(1, (detail.mpm || 0) / 20)),
@@ -881,6 +944,21 @@ function detailBelongsToSession(detail, requestedId) {
   return false;
 }
 
+window.addEventListener("dynamics-scopechange", event => {
+  const next = String(event.detail?.umo || "").trim();
+  if (next === selectedId) return;
+  detailRequestToken += 1;
+  selectedId = "";
+  lastDetail = null;
+  detailLoading = false;
+  detailError = false;
+  renderChannels(overview?.sessions || []);
+  renderRoom(null);
+  setDetailStatus("");
+  updateManagementControls();
+  if (next) void selectSession(next);
+});
+
 async function selectSession(sessionId, { silent = false } = {}) {
   const requestedId = String(sessionId || "");
   if (!requestedId || !overviewOnline) return;
@@ -889,17 +967,19 @@ async function selectSession(sessionId, { silent = false } = {}) {
   const sameSelection = selectedId === requestedId && Boolean(lastDetail) && !detailError;
   if (selectedId !== requestedId) revealMessageContent = false;
   selectedId = requestedId;
+  writeSharedScope(selectedId);
+  if (els.notebookUmo && !els.notebookUmo.value.trim()) els.notebookUmo.value = selectedId;
   const requestToken = ++detailRequestToken;
   detailLoading = true;
   detailError = false;
   if (!silent || !sameSelection) {
     lastDetail = null;
     renderChannels(sessions);
-    renderRoom(null, "正在加载会话详情", `正在加载 ${requestedId}…`);
-    setDetailStatus("正在加载会话详情…", false, false);
+    renderRoom(null, msg("正在加载会话详情"), msg("正在加载 {0}…", requestedId));
+    setDetailStatus(msg("正在加载会话详情…"), false, false);
   } else {
     renderChannels(sessions);
-    setDetailStatus(silent ? "" : "正在更新会话详情…", false, false);
+    setDetailStatus(silent ? "" : msg("正在更新会话详情…"), false, false);
   }
   updateManagementControls();
   try {
@@ -920,10 +1000,10 @@ async function selectSession(sessionId, { silent = false } = {}) {
     detailError = true;
     if (!silent || !sameSelection) {
       lastDetail = null;
-      renderRoom(null, "无法加载会话详情", "当前详情已清空，请检查 session_key 或后端连接后重试。");
+      renderRoom(null, msg("无法加载会话详情"), msg("当前详情已清空，请检查 session_key 或后端连接后重试。"));
     }
     const detailMessage = friendlyError(err, "会话详情请求失败，请稍后重试。");
-    setDetailStatus(`详情加载失败：${detailMessage}`, true, true);
+    setDetailStatus(msg("详情加载失败：{0}", detailMessage), true, true);
     setOps(detailMessage, true, "detail");
     updateManagementControls();
   }
@@ -936,7 +1016,7 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
   if (!quietPoll) {
     setBusy(els.btnRefresh, true);
     els.btnRefresh.disabled = true;
-    els.btnRefresh.textContent = "刷新中…";
+    setText(els.btnRefresh, msg("刷新中…"));
   }
   updateManagementControls();
   const requestToken = ++overviewRequestToken;
@@ -945,12 +1025,12 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
     if (requestToken !== overviewRequestToken) return;
     if (operationToken !== null && operationToken !== operationRequestToken) return;
     if (!data) {
-      setLink(false, "后端未响应");
+      setLink(false, msg("后端未响应"));
       renderOverviewUnavailable("后端未响应");
       lastOverviewFp = "";
       return;
     }
-    setLink(true, "插件已连接");
+    setLink(true, msg("插件已连接"));
     const nextFp = overviewSnapshotFingerprint(data);
     const overviewChanged = nextFp !== lastOverviewFp;
     lastOverviewFp = nextFp;
@@ -987,8 +1067,16 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
         setDetailStatus("");
         updateManagementControls();
       }
-    } else if (Array.isArray(data.sessions) && data.sessions.length === 1) {
-      await selectSession(sessionKey(data.sessions[0]), { silent: false });
+    } else if (Array.isArray(data.sessions) && data.sessions.length) {
+      const preferred = readSharedScope();
+      const matched = preferred
+        ? data.sessions.find((row) => sessionKey(row) === preferred || sessionIdentities(row).includes(preferred))
+        : null;
+      if (matched) {
+        await selectSession(sessionKey(matched), { silent: false });
+      } else if (data.sessions.length === 1 && !new URLSearchParams(window.location.search).has("umo") && !window.DynamicsUI?.getSharedScope) {
+        await selectSession(sessionKey(data.sessions[0]), { silent: false });
+      }
     }
   } catch (err) {
     if (requestToken !== overviewRequestToken || (operationToken !== null && operationToken !== operationRequestToken)) return;
@@ -1003,7 +1091,7 @@ async function refresh({ refreshDetail = true, operationToken = null, quiet = fa
     if (!document.hidden) {
       setBusy(els.btnRefresh, false);
       els.btnRefresh.disabled = false;
-      els.btnRefresh.textContent = "刷新";
+      setText(els.btnRefresh, msg("刷新"));
     }
     updateManagementControls();
   }
@@ -1030,7 +1118,7 @@ function startPolling() {
 }
 
 function setOps(message, isError = false, source = "operation") {
-  els.opsNote.textContent = message;
+  setText(els.opsNote, message);
   els.opsNote.classList.toggle("error", isError);
   els.opsNote.dataset.source = message ? source : "";
 }
@@ -1040,19 +1128,19 @@ async function coolSelected() {
   const minutes = Number(els.coolMinutes.value || 15);
   if (!Number.isFinite(minutes) || minutes < 1 || minutes > 180) {
     els.coolMinutes.setAttribute("aria-invalid", "true");
-    setOps("冷却分钟必须在 1 到 180 之间。", true);
+    setOps(msg("冷却分钟必须在 1 到 180 之间。"), true);
     els.coolMinutes.focus();
     return;
   }
   els.coolMinutes.removeAttribute("aria-invalid");
   const sessionId = selectedId;
   const token = beginOperation("cool", sessionId);
-  setOps("正在开启深度冷却…");
+  setOps(msg("正在开启深度冷却…"));
   try {
     await apiPost("cool", { session_key: sessionId, minutes });
     if (token !== operationRequestToken) return;
     if (selectedId === sessionId) {
-      setOps(`已开启 ${minutes} 分钟深度冷却。`);
+      setOps(msg("已开启 {0} 分钟深度冷却。", minutes));
     }
     await refresh({ refreshDetail: true, operationToken: token });
   } catch (err) {
@@ -1068,13 +1156,13 @@ async function coolSelected() {
 async function resetSelected() {
   if (!selectedId || !overviewOnline || !lastDetail || detailLoading || operationInFlight) return;
   const sessionId = selectedId;
-  if (!window.confirm(`重置会话 ${sessionId} 的图谱、遥测与冷却？`)) return;
+  if (!await window.DynamicsUI.confirm(msg("重置会话 {0} 的图谱、遥测与冷却？", sessionId))) return;
   const token = beginOperation("reset", sessionId);
-  setOps("正在重置会话状态…");
+  setOps(msg("正在重置会话状态…"));
   try {
     await apiPost("reset", { session_key: sessionId });
     if (token !== operationRequestToken) return;
-    if (selectedId === sessionId) setOps("本会话状态已清空。");
+    if (selectedId === sessionId) setOps(msg("本会话状态已清空。"));
     await refresh({ refreshDetail: true, operationToken: token });
   } catch (err) {
     if (token === operationRequestToken && selectedId === sessionId) {
@@ -1095,12 +1183,12 @@ async function boot() {
   if (bridge && typeof bridge.ready === "function") {
     try {
       await withTimeout(bridge.ready());
-      setLink(true, "Bridge 已连接");
+      setLink(true, msg("Bridge 已连接"));
     } catch (_err) {
-      setLink(false, "Bridge 超时");
+      setLink(false, msg("Bridge 超时"));
     }
   } else {
-    setLink(false, "直连 / 本地预览");
+    setLink(false, msg("直连 / 本地预览"));
   }
   els.clock.textContent = fmtTime(new Date());
   setInterval(() => {
@@ -1143,7 +1231,7 @@ if (els.btnNotebookLoad) els.btnNotebookLoad.addEventListener("click", () => { l
         return;
       }
       if (exactUmo.length > 1) {
-        setFilterNote("完整 UMO 匹配多个会话，请从列表中选择。", true);
+        setFilterNote(msg("完整 UMO 匹配多个会话，请从列表中选择。"), true);
         els.sessionFilter.setAttribute("aria-invalid", "true");
         return;
       }
@@ -1152,10 +1240,10 @@ if (els.btnNotebookLoad) els.btnNotebookLoad.addEventListener("click", () => { l
         setFilterNote("");
         void selectSession(sessionKey(exactGroup[0]));
       } else if (exactGroup.length > 1) {
-        setFilterNote("群 ID 匹配多个会话，请输入完整 UMO。", true);
+        setFilterNote(msg("群 ID 匹配多个会话，请输入完整 UMO。"), true);
         els.sessionFilter.setAttribute("aria-invalid", "true");
       } else {
-        setFilterNote("未在已加载会话中找到匹配项，请从列表选择或输入完整 UMO。", true);
+        setFilterNote(msg("未在已加载会话中找到匹配项，请从列表选择或输入完整 UMO。"), true);
         els.sessionFilter.setAttribute("aria-invalid", "true");
       }
     }

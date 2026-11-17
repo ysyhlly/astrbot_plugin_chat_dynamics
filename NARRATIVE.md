@@ -107,8 +107,11 @@ queue and hourly budget. No prefilled preferences, emotions or nicknames are
 written at deployment. Source rollback preserves the optional state fields.
 
 The default is disabled: `narrative_enabled=false`, `narrative_sessions=[]`,
-`narrative_outreach_enabled=false`. Existing all-group takeover does not grant
-narrative access. Complete UMO values must also be enabled in the life plugin.
+`narrative_outreach_enabled=false` and `narrative_private_chat_enabled=false`.
+Enable narrative separately from takeover. Private chats require private takeover
+and the private narrative setting in both Chat Dynamics and World. An empty
+`narrative_outreach_sessions` list covers all managed narrative chats once outreach
+is enabled. Entries restrict it to exact complete UMO values.
 
 ## Ownership
 

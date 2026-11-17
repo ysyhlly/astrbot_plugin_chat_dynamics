@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from astrbot.api import logger
+import asyncio
 import hashlib
 import json
 import math
@@ -303,7 +304,7 @@ class ConsoleWebAPI:
             bundle_id = body.get('bundle_id')
             if not isinstance(bundle_id, str) or not 1 <= len(bundle_id) <= 128:
                 return _json_err('bundle_id required', 400)
-            material = coordinator.journal.full_bundle(bundle_id)
+            material = await asyncio.to_thread(coordinator.journal.full_bundle, bundle_id)
             if not material or material.get('scope', {}).get('umo') != umo:
                 return _json_err('context not found in this scope', 404)
             return _json_ok(material)
@@ -337,7 +338,7 @@ class ConsoleWebAPI:
                 return _json_err("intent not found in this conversation", 404)
             result = await coordinator.call("dynamic_life_state", "cancel_intent", iid)
             if result is not None:
-                coordinator.journal.intent_status(iid, "cancelled")
+                await asyncio.to_thread(coordinator.journal.intent_status, iid, "cancelled")
         elif action in {"correct", "correct_global"}:
             patch = body.get("patch")
             if not isinstance(patch, dict) or not patch or set(patch) - {"activity", "availability", "subjective_state", "summary"}:

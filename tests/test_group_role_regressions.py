@@ -93,7 +93,7 @@ async def test_nickname_plain_group_message_falls_back_to_persona_reply_with_dag
     if runtime.generation_task:
         await asyncio.wait_for(runtime.generation_task, 2)
 
-    assert sends == [(bridge.response, "nickname-incoming")]
+    assert sends == [(bridge.response, None)]
     incoming = runtime.dag.get_node("nickname-incoming")
     assert incoming is not None
     bot_node = runtime.last_bot_node
@@ -181,7 +181,7 @@ async def test_missing_message_id_keeps_distinct_same_text_events(monkeypatch):
     assert plugin._metrics["duplicate_ignored"] == 0
 
 
-async def _dispatch_legacy_fragments(plugin, returned_ids, source_message_id="incoming-1"):
+async def _dispatch_legacy_fragments(plugin, returned_ids, source_message_id="incoming-1", quoted=False):
     session_key = _session_key("legacy-fragments")
     runtime = plugin._get_or_create_runtime(
         session_key,
@@ -190,7 +190,9 @@ async def _dispatch_legacy_fragments(plugin, returned_ids, source_message_id="in
         bot_id="bot_42",
     )
     trigger_id = source_message_id or "turn_1000_user_1_0"
-    trigger = runtime.dag.add_message(trigger_id, "user-1", "请求", timestamp=1.0)
+    trigger = runtime.dag.add_message(
+        trigger_id, "user-1", "请求", timestamp=1.0, reply_to_id="earlier" if quoted else None
+    )
     event = MockEvent("请求", group_id="legacy-fragments", message_id=source_message_id)
     captured = []
 
@@ -214,10 +216,11 @@ async def _dispatch_legacy_fragments(plugin, returned_ids, source_message_id="in
 
 
 @pytest.mark.asyncio
-async def test_legacy_fragments_reply_to_previous_real_platform_ids(monkeypatch):
-    runtime, captured = await _dispatch_legacy_fragments(_plugin(), ["out-1", "out-2", "out-3"])
+@pytest.mark.parametrize("quoted", [False, True])
+async def test_legacy_fragments_quote_only_first_when_inbound_is_quoted(quoted):
+    runtime, captured = await _dispatch_legacy_fragments(_plugin(), ["out-1", "out-2", "out-3"], quoted=quoted)
 
-    assert [reply_to for _fragment, reply_to in captured] == ["incoming-1", "out-1", "out-2"]
+    assert [reply_to for _fragment, reply_to in captured] == ["incoming-1" if quoted else None, None, None]
     bot_nodes = [node for node in runtime.dag.nodes.values() if node.user_id == "bot_42"]
     assert [node.msg_id for node in bot_nodes] == ["out-1", "out-2", "out-3"]
     assert [node.reply_to_id for node in bot_nodes] == ["incoming-1", "out-1", "out-2"]
@@ -227,7 +230,7 @@ async def test_legacy_fragments_reply_to_previous_real_platform_ids(monkeypatch)
 async def test_legacy_fallback_ids_link_dag_but_never_platform_replies(monkeypatch):
     runtime, captured = await _dispatch_legacy_fragments(_plugin(), [None, None, None])
 
-    assert [reply_to for _fragment, reply_to in captured] == ["incoming-1", None, None]
+    assert [reply_to for _fragment, reply_to in captured] == [None, None, None]
     bot_nodes = [node for node in runtime.dag.nodes.values() if node.user_id == "bot_42"]
     assert all(node.msg_id.startswith("bot_") for node in bot_nodes)
     assert [node.reply_to_id for node in bot_nodes] == [
@@ -325,10 +328,10 @@ async def _run_native_tail(plugin, first_message_id, returned_ids):
 
 
 @pytest.mark.asyncio
-async def test_native_tail_uses_real_id_from_host_first_send(monkeypatch):
+async def test_unquoted_native_tail_keeps_real_id_from_host_first_send(monkeypatch):
     runtime, captured = await _run_native_tail(_plugin(), "native-first", ["native-second", "native-third"])
 
-    assert [reply_to for _fragment, reply_to in captured] == ["native-first", "native-second"]
+    assert [reply_to for _fragment, reply_to in captured] == [None, None]
     bot_nodes = [node for node in runtime.dag.nodes.values() if node.user_id == "bot_42"]
     assert [node.msg_id for node in bot_nodes] == ["native-first", "native-second", "native-third"]
     assert [node.reply_to_id for node in bot_nodes] == ["incoming-2", "native-first", "native-second"]

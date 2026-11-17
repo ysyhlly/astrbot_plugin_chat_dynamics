@@ -104,10 +104,13 @@ class RuleTopicRouter(ThreadRouter):
         topic.label_requested = len(topic.message_ids) >= 2 and bool(representative)
         if node.user_id != getattr(runtime, 'bot_id', ''):
             topic.human_updated_at = max(topic.human_updated_at, node.timestamp)
-        routing = node.metadata['routing']
+        routing = node.metadata.get('routing')
+        if not isinstance(routing, dict):
+            routing = {'evidence': []}
+            node.metadata['routing'] = routing
         routing.update(topic_id=topic_id, topic_confidence=confidence, topic_status='committed', topic_ambiguous=False,
                        ambiguous=routing.get('addressee_ambiguous', True))
-        routing['evidence'] = [e for e in routing['evidence'] if e != 'topic_not_formed'] + [reason]
+        routing['evidence'] = [e for e in routing.get('evidence', []) if e != 'topic_not_formed'] + [reason]
         routing['ledger'] = routing_ledger(routing)
         node.metadata['topic_id'] = topic_id
         node.metadata.pop('discussion_seed', None)

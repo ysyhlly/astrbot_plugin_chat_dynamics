@@ -652,7 +652,7 @@ def _replay_decision_trace(node: Any, show_content: bool) -> dict:
     source = source if isinstance(source, dict) else {}
     if source.get("trace_schema_version"):
         result = trace_with_updates(source,
-            outcome=node.metadata.get("outcome"), shadow=node.metadata.get("shadow_decision"))
+            outcome=node.metadata.get("outcome"), shadow=source.get("shadow"))
         if not show_content:
             result = redact_trace_identifiers(result)
         result["identifiers_redacted"] = not show_content

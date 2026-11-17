@@ -14,6 +14,14 @@ import weakref
 from collections.abc import Mapping
 
 
+# Summary validation includes two fresh Worldbook, Blocking and SQL passes.
+# Give each stage room for those reads while capping the full check at every
+# provider, tool or delivery boundary. Each check starts with a fresh deadline.
+_SOURCE_VALIDATION_STAGE_SECONDS = 3.0
+_SOURCE_VALIDATION_EFFECT_SECONDS = 5.0
+_SOURCE_VALIDATION_SLOW_SECONDS = 1.0
+_LEGACY_SOURCE_VALIDATION_SECONDS = 1.0
+
 
 class _ResetDelegate:
     """Await reset before decorating its runner, while forwarding close()."""
@@ -146,6 +154,8 @@ class _ToolMemorySourceRegistry:
     _TOOL_MODULES = frozenset({
         # Unit-test namespace and the exact AstrBot plugin loader namespace.
         "astrbot_plugin_livingmemory.core.tools.memory_search_tool",
+        "astrbot_plugin_dynamics_memory.core.tools.memory_search_tool",
+        "data.plugins.astrbot_plugin_dynamics_memory.core.tools.memory_search_tool",
         "data.plugins.astrbot_plugin_livingmemory.core.tools.memory_search_tool",
     })
     _PERMISSION_WRAPPER_MODULE = "astrbot.core.provider.func_tool_manager"
@@ -356,15 +366,15 @@ class _ToolMemorySourceRegistry:
                 and self._validator_ids == tuple(id(item) for item in self._validators)
                 and all(callable(item) for item in self._validators))
 
-    async def validate_all(self):
-        if self._failed or self._active is not None or not isinstance(self._validators, tuple):
+    async def validate_all(self, validators):
+        if self._failed or self._active is not None or self._validators is not validators:
             return False
-        # All registered sources share the caller's single deadline.
-        for validator in self._validators:
+        # All registered sources share the caller's tool stage deadline.
+        for validator in validators:
             result = validator()
             if not inspect.isawaitable(result) or await result is not True:
                 return False
-        return True
+        return self._validators is validators
 
 
 def _make_native_sources_validator(request, event, runner, tool_registry):
@@ -373,6 +383,9 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
     native_callback = getattr(request, "_lm_native_memory_validate_v1", None)
     summary_sources = getattr(request, "_lm_private_summary_sources_v1", None)
     summary_callback = getattr(request, "_lm_private_summary_validate_v1", None)
+    summary_owner = getattr(summary_callback, "_lm_summary_deferred_final_owner_v1", None)
+    summary_has_finalizer = (isinstance(summary_owner, tuple) and len(summary_owner) == 2
+                             and summary_owner[0] is request and summary_owner[1] is event)
     injection_getter = getattr(request, "_lm_private_injection_v1", None)
     persona_callback = getattr(request, "_cd_private_persona_current_v1", None)
     persona_required = getattr(event, "_chat_dynamics_owned_request", False) is True
@@ -380,6 +393,7 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
     persona_owner = getattr(persona_callback, "_cd_private_persona_owner_v1", None)
     native_present = native_bundle is not None
     summary_present = summary_sources is not None
+    defer_summary = summary_present and summary_has_finalizer
     sources_present = native_present or summary_present
 
     frozen_native, native_fingerprint = _json_fingerprint(native_bundle) if native_present else (None, None)
@@ -389,7 +403,8 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
     identity_valid = ((not native_present or (frozen_native is not None and native_fingerprint is not None))
                       and (not summary_present or
                            (isinstance(frozen_summary, dict) and bool(frozen_summary)
-                            and summary_fingerprint is not None and callable(summary_callback)))
+                            and summary_fingerprint is not None and callable(summary_callback)
+                            and (summary_owner is None or summary_has_finalizer)))
                       and (not persona_required or
                            (callable(persona_callback) and isinstance(persona_owner, tuple)
                             and len(persona_owner) == 2 and persona_owner[0] is request
@@ -399,6 +414,8 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
         if getattr(request, "_lm_native_memory_validate_v1", None) is not native_callback:
             return False
         if getattr(request, "_lm_private_summary_validate_v1", None) is not summary_callback:
+            return False
+        if getattr(summary_callback, "_lm_summary_deferred_final_owner_v1", None) is not summary_owner:
             return False
         if getattr(request, "_cd_private_persona_current_v1", None) is not persona_callback:
             return False
@@ -453,18 +470,12 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
         # least one frozen source validator; summary text is not a quote proof.
         return not segments or sources_present
 
-    failure_state = {'stage': 'identity', 'logged': False}
-
-    def mark_invalidated(reason='source_rejected'):
+    def mark_invalidated(reason):
         try:
             setattr(event, "_cd_native_memory_source_invalidated_v1", True)
             setattr(event, "_cd_native_memory_failure_reason_v1", reason)
         except Exception:
             pass
-        if not failure_state['logged']:
-            failure_state['logged'] = True
-            logger.warning('Native memory validation failed reason=%s stage=%s native=%s summary=%s tool_registry=%s',
-                reason, failure_state['stage'], native_present, summary_present, tool_registry_required)
         sink = getattr(event, "_cd_native_memory_source_failure_sink_v1", None)
         if callable(sink):
             try:
@@ -472,66 +483,137 @@ def _make_native_sources_validator(request, event, runner, tool_registry):
             except Exception:
                 pass
 
-    async def validate():
+    async def validate(*, effect="owned_boundary"):
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        cancelling_before = task.cancelling()
+        started = stage_started = loop.time()
+        # Older callbacks have no way to move their final source-state read to
+        # the end of the effect check. Preserve their existing deadline.
+        effect_budget = (_SOURCE_VALIDATION_EFFECT_SECONDS if defer_summary
+                         else _LEGACY_SOURCE_VALIDATION_SECONDS)
+        effect_deadline = started + effect_budget
+        stage = "identity"
+        stage_times_ms = {}
+
+        def start_stage(name):
+            nonlocal stage, stage_started
+            now = loop.time()
+            stage_times_ms[stage] = round((now - stage_started) * 1000)
+            stage, stage_started = name, now
+
+        def record_timing():
+            now = loop.time()
+            stage_times_ms[stage] = round((now - stage_started) * 1000)
+            return round((now - started) * 1000)
+
+        def reject(reason):
+            mark_invalidated(reason)
+            logger.warning(
+                "Native memory validation failed reason=%s stage=%s effect=%s elapsed_ms=%d "
+                "stage_times_ms=%s native=%s summary=%s tool_registry=%s",
+                reason, stage, effect, record_timing(), stage_times_ms, native_present,
+                summary_present, tool_registry_required,
+            )
+            return False
+
+        async def read_stage(name, callback, *, budget=_SOURCE_VALIDATION_STAGE_SECONDS):
+            start_stage(name)
+            deadline = min(effect_deadline, stage_started + budget)
+            if stage_started >= deadline:
+                raise TimeoutError
+            async with asyncio.timeout_at(deadline) as timeout:
+                result = callback() if callable(callback) else None
+                result = await result if inspect.isawaitable(result) else None
+            # Await within the effect task so a successful freshness check adds
+            # no task handoff before the effect. Discard late results even if a
+            # lower layer handled the deadline's CancelledError itself.
+            if task.cancelling() > cancelling_before:
+                raise asyncio.CancelledError
+            if timeout.expired() or loop.time() >= deadline:
+                raise TimeoutError
+            return result
+
         try:
-            failure_state['stage'] = 'identity'
             if not identity_valid:
-                mark_invalidated('source_identity_invalid')
-                return False
+                return reject("source_identity_invalid")
             if not same_receipts():
-                mark_invalidated('tool_binding_invalid' if tool_registry_required and not tool_registry.intact(request,event,runner)
-                                 else 'receipt_identity_changed')
-                return False
+                return reject(
+                    "tool_binding_invalid"
+                    if tool_registry_required and not tool_registry.intact(request, event, runner)
+                    else "receipt_identity_changed"
+                )
+            tool_validators = tool_registry._validators if tool_registry_required else ()
             if not injection_is_safe():
-                mark_invalidated('injection_not_proven')
-                return False
+                return reject("injection_not_proven")
             if not sources_present and not persona_required and not tool_registry_required:
                 return True
-            async with asyncio.timeout(1.0):
-                if persona_required:
-                    failure_state['stage'] = 'persona_before'
-                    result = persona_callback()
-                    if not inspect.isawaitable(result) or await result is not True:
-                        mark_invalidated('persona_not_current')
-                        return False
-                if native_present:
-                    failure_state['stage'] = 'native_memory'
-                    if native_valid is None or await native_valid() is not True:
-                        mark_invalidated('native_sources_not_current')
-                        return False
-                if summary_present:
-                    failure_state['stage'] = 'summary_memory'
-                    result = summary_callback()
-                    if not inspect.isawaitable(result) or await result is not True:
-                        mark_invalidated('summary_sources_not_current')
-                        return False
-                if persona_required:
-                    failure_state['stage'] = 'persona_after'
-                    result = persona_callback()
-                    if not inspect.isawaitable(result) or await result is not True:
-                        mark_invalidated('persona_not_current')
-                        return False
-                if tool_registry_required:
-                    failure_state['stage'] = 'tool_memory'
-                    if not tool_registry.intact(request, event, runner):
-                        mark_invalidated('tool_binding_invalid')
-                        return False
-                    if await tool_registry.validate_all() is not True:
-                        mark_invalidated('tool_sources_not_current')
-                        return False
-                if not same_receipts() or not injection_is_safe():
-                    failure_state['stage'] = 'final_identity'
-                    mark_invalidated('receipt_identity_changed')
-                    return False
+            if persona_required and await read_stage("persona_before", persona_callback) is not True:
+                return reject("persona_not_current")
+            if (native_present and not defer_summary
+                    and await read_stage("native_memory", native_valid) is not True):
+                return reject("native_sources_not_current")
+            summary_finalizer = None
+            summary_remaining = _SOURCE_VALIDATION_STAGE_SECONDS
+            if summary_present:
+                if defer_summary:
+                    prepare_summary = functools.partial(summary_callback, defer_final=True)
+                    summary_finalizer = await read_stage("summary_memory", prepare_summary)
+                    if not callable(summary_finalizer):
+                        return reject("summary_sources_not_current")
+                    summary_remaining -= loop.time() - stage_started
+                elif await read_stage("summary_memory", summary_callback) is not True:
+                    return reject("summary_sources_not_current")
+            if persona_required and await read_stage("persona_after", persona_callback) is not True:
+                return reject("persona_not_current")
+            if defer_summary and (native_present or tool_validators):
+                # In mixed-source turns, keep the gap from revalidating native
+                # or tool sources to the effect within the original budget.
+                effect_deadline = min(
+                    effect_deadline, loop.time() + _LEGACY_SOURCE_VALIDATION_SECONDS,
+                )
+            if (native_present and defer_summary
+                    and await read_stage("native_memory", native_valid) is not True):
+                return reject("native_sources_not_current")
+            if tool_registry_required:
+                if (not tool_registry.intact(request, event, runner)
+                        or tool_registry._validators is not tool_validators):
+                    start_stage("tool_memory")
+                    return reject("tool_binding_invalid")
+                validate_tools = functools.partial(tool_registry.validate_all, tool_validators)
+                if await read_stage("tool_memory", validate_tools) is not True:
+                    return reject("tool_sources_not_current")
+            if summary_finalizer is not None:
+                if not same_receipts():
+                    start_stage("final_identity")
+                    return reject("receipt_identity_changed")
+                # Do the final committed atom/parent read after the other
+                # validators. After this stage there are only sync checks.
+                if await read_stage("summary_final", summary_finalizer, budget=summary_remaining) is not True:
+                    return reject("summary_sources_not_current")
+            start_stage("final_identity")
+            if tool_registry_required and tool_registry._validators is not tool_validators:
+                return reject("tool_binding_invalid")
+            if not same_receipts() or not injection_is_safe():
+                return reject("receipt_identity_changed")
+            if loop.time() >= effect_deadline:
+                return reject("validation_timeout")
+            if loop.time() - started >= _SOURCE_VALIDATION_SLOW_SECONDS:
+                logger.info(
+                    "Native memory validation passed effect=%s elapsed_ms=%d stage_times_ms=%s",
+                    effect, record_timing(), stage_times_ms,
+                )
             return True
         except asyncio.CancelledError:
             raise
         except TimeoutError:
-            mark_invalidated('validation_timeout')
-            return False
+            if task.cancelling() > cancelling_before:
+                raise asyncio.CancelledError
+            return reject("validation_timeout")
         except Exception:
-            mark_invalidated('validation_exception')
-            return False
+            if task.cancelling() > cancelling_before:
+                raise asyncio.CancelledError
+            return reject("validation_exception")
 
     return validate, (sources_present or callable(injection_getter)
                       or getattr(event, "_cd_owned_original_input_v1", False) is True)
@@ -575,7 +657,7 @@ def _install_native_memory_guard(runner, request, event, bundle):
                 except Exception:
                     pass
 
-        async def guarded_validate():
+        async def guarded_validate(*, effect="owned_boundary"):
             if (capability is None
                     or getattr(event, "_cd_owned_memory_sources_validate_v1", None) is not capability):
                 mark_invalidated()
@@ -587,7 +669,7 @@ def _install_native_memory_guard(runner, request, event, bundle):
                 mark_invalidated()
                 return False
             try:
-                result = frozen_validate()
+                result = frozen_validate(effect=effect)
                 if not inspect.isawaitable(result):
                     mark_invalidated()
                     return False
@@ -608,7 +690,7 @@ def _install_native_memory_guard(runner, request, event, bundle):
                     or getattr(event, "_cd_owned_memory_sources_validate_v1", None) is not guarded_capability):
                 mark_invalidated()
                 return False
-            return await guarded_validate() is True
+            return await guarded_validate(effect="owned_capability") is True
 
         capability = guarded_capability
         capability._cd_owned_memory_sources_owner_v1 = (request, event, frozen_validate)
@@ -629,10 +711,11 @@ def _install_native_memory_guard(runner, request, event, bundle):
     if provider is None and not fallbacks:
         return False
     try:
+        provider_validate = functools.partial(validate, effect="provider")
         if provider is not None:
-            runner.provider = _NativeMemoryValidationProvider(provider, validate, event)
+            runner.provider = _NativeMemoryValidationProvider(provider, provider_validate, event)
         runner.fallback_providers = [
-            _NativeMemoryValidationProvider(fallback, validate, event)
+            _NativeMemoryValidationProvider(fallback, provider_validate, event)
             for fallback in fallbacks
         ]
     except Exception:
@@ -659,7 +742,7 @@ def _install_native_memory_guard(runner, request, event, bundle):
             from .agent_bridge import OwnedToolExecutor
 
             async def tool_guard():
-                if not await validate():
+                if not await validate(effect="tool"):
                     from .member_boundary import BoundaryCancelled
                     raise BoundaryCancelled("native_memory_source_invalidated")
 
@@ -674,7 +757,7 @@ def _install_native_memory_guard(runner, request, event, bundle):
             getattr(event, "_cd_native_memory_send_guard_v1", False)
             or getattr(event, "_cd_native_send_guard_v1", False)):
         async def guarded_send(*args, **kwargs):
-            if not await validate():
+            if not await validate(effect="send"):
                 from .member_boundary import BoundaryCancelled
                 raise BoundaryCancelled("native_memory_source_invalidated")
             result = original_send(*args, **kwargs)

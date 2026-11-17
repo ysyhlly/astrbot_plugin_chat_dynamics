@@ -14,7 +14,8 @@ import random
 import re
 import copy
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable, Callable
 from typing import Any, List, Optional
 
 from .member_identity import display_name
@@ -103,6 +104,41 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     delivery_uncertain: bool = False
+    message_ids: tuple[str, ...] = ()
+    parts: tuple[tuple[int, tuple[str, ...]], ...] | None = None
+
+    def delivered_text(self, fragment: Any, *, media_placeholder: bool = True) -> str:
+        if isinstance(fragment, str):
+            return fragment
+        if self.parts is None:
+            if not media_placeholder:
+                return chain_plain_text(fragment)
+            semantic = getattr(fragment, "_cd_delivery_text_v1", None)
+            if isinstance(semantic, str):
+                return semantic
+            return "".join(getattr(c, "text", "[已发送媒体]") for c in fragment.chain)
+        indices = (index for index, _ids in self.parts if 0 <= index < len(fragment.chain))
+        return "".join(
+            getattr(fragment.chain[index], "text", "[已发送媒体]" if media_placeholder else "")
+            for index in indices
+        )
+
+    def identified_messages(self, fragment: Any, delivered_text: str) -> list[tuple[str | None, str]]:
+        if self.parts is None:
+            # A list receipt can name several messages without giving content
+            # per ID. Leave their text empty rather than attributing the whole chain.
+            ids = self.message_ids or (self.message_id,)
+            return [(mid, delivered_text if len(ids) == 1 else "") for mid in ids]
+        result = {}
+        for index, ids in self.parts:
+            if isinstance(fragment, str) or index < 0 or index >= len(fragment.chain):
+                content = ""
+            else:
+                component = fragment.chain[index]
+                content = getattr(component, "text", "")
+            for mid in ids:
+                result[mid] = content if len(ids) == 1 else ""
+        return list(result.items()) or [(None, delivered_text)]
 
 
 def _safe_call(obj: Any, name: str, default: Any = None) -> Any:
@@ -596,9 +632,8 @@ def result_has_rich_media(result: Any) -> bool:
 def chain_plain_text(chain: Any) -> str:
     if chain is None:
         return ""
-    semantic = getattr(chain, "_cd_delivery_text_v1", None)
-    if isinstance(semantic, str):
-        return semantic
+    # Internal image descriptions are receipt context, not visible chain text.
+    # SendResult.delivered_text handles them only when media_placeholder=True.
     if isinstance(chain, str):
         return chain
     if hasattr(chain, "get_plain_text"):
@@ -793,6 +828,8 @@ async def send_plain(
     text: Any,
     reply_to_id: Optional[str] = None,
     allow_voice: bool = False,
+    *,
+    before_dispatch: Callable[[], Awaitable[bool]] | None = None,
 ) -> SendResult:
     """Dispatches a plain-text fragment through official AstrBot send APIs.
 
@@ -817,10 +854,17 @@ async def send_plain(
     if allow_voice:
         chain = await maybe_attach_voice(event, context, session_id, chain)
     result = None
+    onebot = str(_safe_call(event, "get_platform_name", "")).lower() == "aiocqhttp"
+    def outcome(raw):
+        sent = as_send_result(raw, onebot=onebot)
+        if sent.parts is not None and reply_to_id:
+            return replace(sent, parts=tuple((index - 1, ids) for index, ids in sent.parts))
+        return sent
+
     try:
         components = getattr(chain, "chain", [])
         if (
-            str(_safe_call(event, "get_platform_name", "")).lower() == "aiocqhttp"
+            onebot
             and len(components) == 1
             and _comp_type_name(components[0]).lower() == "poke"
         ):
@@ -835,16 +879,25 @@ async def send_plain(
             payload = {"user_id": target_id}
             if group_id:
                 payload["group_id"] = group_id
+            if before_dispatch is not None and not await before_dispatch():
+                return SendResult(False, error="native_memory_source_invalidated")
             result = call_action("send_poke", **payload)
             if inspect.isawaitable(result):
                 result = await result
         elif event is not None and hasattr(event, "send"):
-            result = event.send(chain)
+            if before_dispatch is not None and onebot and getattr(event, "_supports_before_dispatch", False) is True:
+                result = event.send(chain, _before_dispatch=before_dispatch)
+            else:
+                if before_dispatch is not None and not await before_dispatch():
+                    return SendResult(False, error="native_memory_source_invalidated")
+                result = event.send(chain)
             if inspect.isawaitable(result):
                 result = await result
         elif context is not None and hasattr(context, "send_message"):
             umo = getattr(event, "unified_msg_origin", None) if event is not None else None
             target = umo or session_id
+            if before_dispatch is not None and not await before_dispatch():
+                return SendResult(False, error="native_memory_source_invalidated")
             result = context.send_message(target, chain)
             if inspect.isawaitable(result):
                 result = await result
@@ -854,21 +907,78 @@ async def send_plain(
                 _session_label(session_id),
             )
             return SendResult(False, error="no send API available")
+    except asyncio.CancelledError as exc:
+        receipt = getattr(exc, "onebot_dispatch_receipt", None)
+        if onebot and receipt:
+            exc.chat_dynamics_send_result = outcome(receipt)
+        raise
     except Exception as exc:
         # Keep platform exception details out of logs; callers still receive
         # the original error text for programmatic diagnostics and tests.
         logger.error("[ChatDynamics] Failed to send fragment code=CD_SEND_FAILED type=%s", type(exc).__name__)
-        return SendResult(False, error=str(exc), delivery_uncertain=True)
+        receipt = getattr(exc, "onebot_dispatch_receipt", None)
+        return outcome(receipt) if onebot and receipt else SendResult(
+            False, error=str(exc), delivery_uncertain=True)
+    return outcome(result)
 
+
+def _receipt_message_id(result: Any) -> str | None:
+    for key in ("message_id", "id", "msg_id"):
+        try:
+            value = result.get(key) if isinstance(result, dict) else getattr(result, key, None)
+        except Exception:
+            continue
+        if (isinstance(value, str) and value.strip()) or (type(value) is int and value != 0):
+            return str(value)
+    return None
+
+
+def as_send_result(result: Any, *, onebot: bool = False) -> SendResult:
+    """Keep delivery status separate from IDs supplied by the transport."""
+    if onebot and isinstance(result, dict) and result.get("_onebot_dispatch_receipt") is True:
+        parts = []
+        ids = []
+        error = result.get("error")
+        uncertain = bool(result.get("delivery_uncertain"))
+        for index, raw in result["parts"]:
+            receipt = as_send_result(raw, onebot=True)
+            uncertain = uncertain or receipt.delivery_uncertain
+            if receipt.success:
+                part_ids = receipt.message_ids or ((receipt.message_id,) if receipt.message_id else ())
+                parts.append((index, part_ids))
+                ids.extend(part_ids)
+            else:
+                error = error or receipt.error or "platform rejected the message"
+        return SendResult(
+            bool(parts), ids[-1] if ids else None, error or ("empty_message" if not parts else None),
+            uncertain, tuple(dict.fromkeys(ids)), tuple(parts),
+        )
+    if isinstance(result, (list, tuple)):
+        parts = [as_send_result(part, onebot=onebot) for part in result]
+        ids = tuple(dict.fromkeys(
+            mid for part in parts if part.success
+            for mid in (part.message_ids or ((part.message_id,) if part.message_id else ()))
+        ))
+        failure = next((part for part in parts if not part.success), None)
+        return SendResult(
+            any(part.success for part in parts), ids[-1] if ids else None,
+            failure.error if failure is not None else None,
+            any(part.delivery_uncertain for part in parts),
+            ids,
+        )
     if result is False:
         return SendResult(False, error="platform rejected the message")
     if isinstance(result, (int, float)) and not isinstance(result, bool):
+        if onebot and type(result) is int and result != 0:
+            return SendResult(True, str(result))
         return SendResult(bool(result), error=None if result else "platform rejected the message")
     if result is None:
         # AstrMessageEvent.send() commonly returns no value on success.
         return SendResult(True)
     if isinstance(result, SendResult):
         return result
+    if isinstance(result, dict) and onebot and result.get("error"):
+        return SendResult(False, _receipt_message_id(result), str(result["error"]))
     if isinstance(result, dict) and any(key in result for key in ("success", "ok", "status")):
         raw_success = result.get("success", result.get("ok", result.get("status")))
         if (
@@ -885,38 +995,25 @@ async def send_plain(
             success = bool(raw_success)
         else:
             success = _coerce_success(raw_success)
-        message_id = next(
-            (str(result[key]) for key in ("message_id", "id", "msg_id") if result.get(key)),
-            None,
-        )
+        message_id = _receipt_message_id(result)
+        if onebot and message_id is None and isinstance(result.get("data"), dict):
+            message_id = _receipt_message_id(result["data"])
         error = str(result.get("error")) if result.get("error") else None
         return SendResult(success, message_id, error)
     if isinstance(result, dict) and result.get("error"):
-        message_id = next(
-            (str(result[key]) for key in ("message_id", "id", "msg_id") if result.get(key)),
-            None,
-        )
-        return SendResult(False, message_id, str(result["error"]))
-    if hasattr(result, "success"):
-        success = _coerce_success(getattr(result, "success"))
-        message_id = next(
-            (
-                str(getattr(result, key))
-                for key in ("message_id", "id", "msg_id")
-                if getattr(result, key, None)
-            ),
-            None,
-        )
-        error_value = getattr(result, "error", None)
-        return SendResult(success, message_id, str(error_value) if error_value else None)
+        return SendResult(False, _receipt_message_id(result), str(result["error"]))
+    missing = object()
+    try:
+        raw_success = getattr(result, "success", missing)
+    except Exception:
+        raw_success = missing
+    if raw_success is not missing:
+        try:
+            error_value = getattr(result, "error", None)
+        except Exception:
+            error_value = None
+        return SendResult(_coerce_success(raw_success), _receipt_message_id(result),
+                          str(error_value) if error_value else None)
     if isinstance(result, str) and result.strip():
         return SendResult(True, result)
-    for attr in ("message_id", "id", "msg_id"):
-        value = getattr(result, attr, None)
-        if value:
-            return SendResult(True, str(value))
-    if isinstance(result, dict):
-        for key in ("message_id", "id", "msg_id"):
-            if result.get(key):
-                return SendResult(True, str(result[key]))
-    return SendResult(True)
+    return SendResult(True, _receipt_message_id(result))

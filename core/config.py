@@ -143,6 +143,7 @@ class RuntimeConfig:
     rhythm_skip_morning_hi_tonight: bool = False
     narrative_enabled: bool = False
     narrative_all_groups: bool = False
+    narrative_private_chat_enabled: bool = False
     narrative_sessions: frozenset[str] = frozenset()
     narrative_outreach_enabled: bool = False
     narrative_outreach_sessions: frozenset[str] = frozenset()
@@ -434,6 +435,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         presence_knob=_presence_knob(_get(raw, "presence_knob", "sensible"), warnings),
         narrative_enabled=_bool(_get(raw, "narrative_enabled", False), False),
         narrative_all_groups=_bool(_get(raw, "narrative_all_groups", False), False),
+        narrative_private_chat_enabled=_bool(_get(raw, "narrative_private_chat_enabled", False), False),
         narrative_sessions=frozenset(_strings(_get(raw, "narrative_sessions", []))),
         narrative_outreach_sessions=frozenset(_strings(_get(raw, "narrative_outreach_sessions", []))),
         narrative_context_retention_days=_integer(raw, "narrative_context_retention_days", 7, 1, 90, warnings),

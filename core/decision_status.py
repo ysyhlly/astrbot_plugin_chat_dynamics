@@ -25,6 +25,7 @@ def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_conten
     # No creation, migration, collection, leasing, or cleanup on a status/export read.
     db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
     try:
+        db.execute("PRAGMA busy_timeout=2000")
         db.execute("PRAGMA query_only=ON")
         deadline = time.monotonic() + 2
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)

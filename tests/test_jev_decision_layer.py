@@ -61,8 +61,6 @@ def jev_plugin(monkeypatch):
     p = _plugin({
         "decision_mode": "persona_model",
         "decision_backend": "jev",
-        # This fixture covers the retained model-attribution mode. Rule routing
-        # has its own fixture and must never depend on Jev recipient answers.
         "rule_topic_routing_enabled": False,
         "base_thinking_delay": 0,
         "debounce_base_cooldown": 10,

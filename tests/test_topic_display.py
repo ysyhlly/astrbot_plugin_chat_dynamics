@@ -81,8 +81,8 @@ async def test_title_survives_another_member_message_without_sending(monkeypatch
 ])
 @pytest.mark.asyncio
 async def test_topic_model_selection_and_separate_title_timeout(topic_provider, reply_provider, expected):
-    p = _plugin({"rule_topic_routing_enabled": False, "topic_reranker_provider": topic_provider, "reply_provider": reply_provider,
-                 "topic_reranker_timeout": 1.5, "topic_title_timeout": 12})
+    p = _plugin({"topic_reranker_provider": topic_provider, "reply_provider": reply_provider,
+                 "topic_reranker_timeout": 1.5, "topic_title_timeout": 12, "rule_topic_routing_enabled": False})
     async def host_provider(**kwargs):
         return "host-chat"
     p.context.get_current_chat_provider_id = host_provider

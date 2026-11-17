@@ -1,6 +1,10 @@
 """Cross-plugin ownership, persistence and immutable state regressions."""
 
+import asyncio
+import hashlib
 import json
+import logging
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +12,11 @@ import pytest
 from astrbot_plugin_chat_dynamics.core.narrative import NarrativeCoordinator, TurnContextBundle, MANAGED_KEY
 from astrbot_plugin_chat_dynamics.core.narrative_store import NarrativeJournal
 from astrbot_plugin_chat_dynamics.core.jev_decision import build_questions, build_state, decision_from_answers
+from astrbot_plugin_chat_dynamics.core.pipeline_telemetry import PipelineTelemetry
 from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, PersonaSnapshot, TurnContext
 from astrbot_plugin_chat_dynamics.core.persona_engine import ModelTurn
+from astrbot_plugin_chat_dynamics.core import narrative, persona_engine
+from astrbot_plugin_chat_dynamics.core.reply_failure import unavailable_reply
 
 SCOPE = {"platform": "qq", "umo": "qq:GroupMessage:1", "persona_id": "anan", "instance_id": "anan"}
 
@@ -34,6 +41,266 @@ def coordinator(tmp_path, providers=None):
     result = NarrativeCoordinator(plugin, tmp_path / "journal.sqlite3")
     result.start = lambda: None
     return result
+
+
+class CharacterProvider:
+    async def get_character_context(self, scope, event):
+        return {"schema_version": 1, "scope": scope, "fingerprint": "character", "core_prompt": "private-prompt"}
+
+
+class LifeProvider:
+    async def get_snapshot(self, scope):
+        return {"schema_version": 1, "scope": scope, "managed": True, "revision": 1}
+
+
+async def prepare(manager, *, lightweight=False, context=None):
+    item = ModelTurn(context or turn(), (SimpleNamespace(_extras={}),), {}, False)
+    bundle = await manager.prepare(SimpleNamespace(umo=SCOPE["umo"]), item,
+                                   PersonaSnapshot("private-host", "", "anan", "persona"), lightweight=lightweight)
+    return bundle, item
+
+
+@pytest.fixture
+def prepare_logs(monkeypatch, caplog):
+    logger = logging.getLogger(__name__)
+    monkeypatch.setattr(narrative, "logger", logger)
+    monkeypatch.setattr(persona_engine, "logger", logger)
+    caplog.set_level(logging.INFO, logger.name)
+    return caplog
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("character,snapshot,stage,reason", [
+    ({"schema_version": 1, "available": False, "reason": "no_character"}, None, "character", "missing"),
+    ([], None, "character", "invalid"),
+    ({"schema_version": 1, "scope": dict(SCOPE, umo="qq:GroupMessage:2")}, None, "character", "scope_changed"),
+    ({"schema_version": 1, "scope": SCOPE}, {"schema_version": 1, "managed": False}, "snapshot", "unmanaged"),
+    ({"schema_version": 1, "scope": SCOPE}, {"schema_version": 2, "managed": True}, "snapshot", "invalid"),
+    ({"schema_version": 1, "scope": SCOPE}, [], "snapshot", "invalid"),
+])
+async def test_prepare_early_exit_reports_actual_reason(tmp_path, prepare_logs, character, snapshot, stage, reason):
+    manager = coordinator(tmp_path, {
+        "worldbook": SimpleNamespace(get_character_context=lambda *args: character),
+        "dynamic_life_state": SimpleNamespace(get_snapshot=lambda scope: snapshot),
+    })
+    bundle, item = await prepare(manager, lightweight=True)
+    assert bundle is None
+    assert MANAGED_KEY not in item.events[-1]._extras and not manager.journal.pending()
+    turn_id = PipelineTelemetry.turn_id(item.context)
+    session_id = hashlib.sha256(item.context.session_key.encode()).hexdigest()[:32]
+    assert (f"Narrative prepare unavailable turn_id={turn_id} session_id={session_id} "
+            f"phase=decision stage={stage} reason={reason} elapsed_ms=") in prepare_logs.text
+    assert SCOPE["umo"] not in prepare_logs.text
+    assert "hello" not in prepare_logs.text
+
+
+@pytest.mark.asyncio
+async def test_disabled_lightweight_prepare_is_quiet(tmp_path, prepare_logs):
+    manager = coordinator(tmp_path)
+    manager.plugin._runtime_config.narrative_enabled = False
+    bundle, _ = await prepare(manager, lightweight=True)
+    assert bundle is None and not prepare_logs.records
+    bundle, _ = await prepare(manager)
+    assert bundle is None
+    assert "phase=reply stage=enabled reason=unmanaged" in prepare_logs.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("character,snapshot,stage,error", [
+    (["private-character"], None, "character", AttributeError),
+    ({"schema_version": 1}, None, "character", KeyError),
+    ({"schema_version": 1, "scope": "private-scope"}, None, "character", AttributeError),
+    ({"schema_version": 1, "scope": SCOPE}, ["private-snapshot"], "snapshot", AttributeError),
+])
+async def test_malformed_lightweight_prepare_preserves_failure(tmp_path, prepare_logs, character, snapshot, stage, error):
+    manager = coordinator(tmp_path, {
+        "worldbook": SimpleNamespace(get_character_context=lambda *args: character),
+        "dynamic_life_state": SimpleNamespace(get_snapshot=lambda scope: snapshot),
+    })
+    with pytest.raises(error):
+        await prepare(manager, lightweight=True)
+    assert not manager.journal.pending()
+    assert f"phase=decision stage={stage} reason=invalid" in prepare_logs.text
+    assert "private-" not in prepare_logs.text
+
+
+@pytest.mark.asyncio
+async def test_prepare_life_timeout_reports_budget_and_discards_reply(tmp_path, prepare_logs):
+    cancelled = asyncio.Event()
+
+    class SlowLife:
+        async def get_snapshot(self, scope):
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+    manager = coordinator(tmp_path, {"worldbook": CharacterProvider(), "dynamic_life_state": SlowLife()})
+    assert manager._rpc_timeout(None) == 5.0
+    manager.plugin._runtime_config.narrative_rpc_timeout_seconds = .02
+    bundle, item = await prepare(manager)
+    assert bundle is None and cancelled.is_set()
+    assert MANAGED_KEY not in item.events[-1]._extras and not manager.journal.pending()
+    turn_id = PipelineTelemetry.turn_id(item.context)
+    assert f"Narrative prepare RPC unavailable turn_id={turn_id} " in prepare_logs.text
+    assert "phase=reply provider=dynamic_life_state method=get_snapshot reason=timeout" in prepare_logs.text
+    assert "budget_s=0.02" in prepare_logs.text
+    assert "phase=reply stage=snapshot reason=timeout elapsed_ms=" in prepare_logs.text
+    assert "private-prompt" not in prepare_logs.text
+
+
+@pytest.mark.asyncio
+async def test_shared_memory_rpc_failure_reports_both_waiters_and_preserves_prepares(tmp_path, prepare_logs):
+    entered, release = asyncio.Event(), asyncio.Event()
+    invocations = 0
+
+    class Memory:
+        async def peek_evidence_revision(self, scope):
+            return {"available": True, "correction_revision": 1}
+
+        async def recall_context(self, *args):
+            nonlocal invocations
+            invocations += 1
+            entered.set()
+            await release.wait()
+            raise RuntimeError("private-recall-error")
+
+    manager = coordinator(tmp_path, {"worldbook": CharacterProvider(), "dynamic_life_state": LifeProvider(),
+                                     "livingmemory": Memory()})
+    creator = asyncio.create_task(prepare(manager))
+    waiter = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        other = replace(turn(), messages=(replace(turn().messages[0], message_id="second-message"),))
+        waiter = asyncio.create_task(prepare(manager, context=other))
+
+        async def wait_for_join():
+            while not manager.call_diagnostics()["shared_read_joins"]:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_join(), 2)
+        release.set()
+        prepares = await asyncio.gather(creator, waiter)
+    finally:
+        release.set()
+        await asyncio.gather(*(task for task in (creator, waiter) if task is not None), return_exceptions=True)
+    assert invocations == 1
+    rpc_logs = [row.message for row in prepare_logs.records if "method=recall_context reason=unavailable" in row.message]
+    assert len(rpc_logs) == 2
+    for bundle, item in prepares:
+        assert bundle is not None and bundle.wire()["availability"]["livingmemory"] is False
+        turn_id = PipelineTelemetry.turn_id(item.context)
+        assert any(f"turn_id={turn_id} " in row and "phase=reply " in row for row in rpc_logs)
+    assert "private-recall-error" not in prepare_logs.text and SCOPE["umo"] not in prepare_logs.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["boundary_state", "boundary_policy", "boundary_material"])
+async def test_prepare_boundary_unavailability_stays_fail_closed(tmp_path, prepare_logs, stage):
+
+    class Boundary:
+        def resolve_context(self, **kwargs):
+            return {"ready": True, "owner": {"self_id": "bot"}}
+
+        def peek_policy(self, context, uid):
+            if stage == "boundary_policy":
+                raise RuntimeError("private-boundary-error")
+            return {}
+
+    class Memory:
+        async def recall_context(self, *args):
+            providers.pop("autonomous_blocking")
+            return {"items": []}
+
+    providers = {"worldbook": CharacterProvider(), "dynamic_life_state": LifeProvider(), "livingmemory": Memory()}
+    if stage != "boundary_state":
+        providers["autonomous_blocking"] = Boundary()
+    manager = coordinator(tmp_path, providers)
+    manager.plugin._runtime_config.autonomous_blocking_required = True
+    bundle, item = await prepare(manager)
+    assert bundle is None
+    assert MANAGED_KEY not in item.events[-1]._extras and not manager.journal.pending()
+    assert f"phase=reply stage={stage} reason=boundary_unavailable elapsed_ms=" in prepare_logs.text
+    assert "private-boundary-error" not in prepare_logs.text
+
+
+@pytest.mark.asyncio
+async def test_pipeline_only_marks_none_unavailable_when_requested():
+    telemetry = PipelineTelemetry()
+
+    async def nothing():
+        return None
+
+    async def false():
+        return False
+
+    assert await telemetry.run("turn_total", turn(), nothing()) is None
+    assert await telemetry.run("prepare_reply", turn(), nothing(), none_is_unavailable=True) is None
+    assert await telemetry.run("prepare_reply", turn(), false(), none_is_unavailable=True) is False
+    snapshot = telemetry.snapshot()
+    assert [row["outcome"] for row in snapshot["recent"]] == ["success", "unavailable", "success"]
+    assert snapshot["stages"]["prepare_reply"]["unavailable"] == 1
+    assert snapshot["stages"]["prepare_reply"]["failed"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed,mandatory", [(False, True), (True, True), (True, False)])
+async def test_pipeline_prepare_failure_preserves_fallback_contract(tmp_path, monkeypatch, prepare_logs,
+                                                                    malformed, mandatory):
+    from astrbot_plugin_chat_dynamics.core.agent_bridge import AstrBotAgentBridge
+    from .test_jev_decision_layer import JevDouble, answers
+    from .test_persona_model import BridgeDouble, drain, flush
+    from .test_plugin_lifecycle import At, MockEvent, _plugin
+
+    class Life(LifeProvider):
+        calls = 0
+
+        async def get_snapshot(self, scope):
+            self.calls += 1
+            if self.calls == 1:
+                return await super().get_snapshot(scope)
+            await asyncio.Future()
+
+    monkeypatch.setattr(AstrBotAgentBridge, "check", lambda self: True)
+    event = MockEvent("安安，帮我看看", message_id="prepare-failure", components=[At("bot_42")] if mandatory else [])
+    plugin = _plugin({"narrative_enabled": True, "narrative_sessions": [event.unified_msg_origin],
+                      "daily_rhythm_enabled": False, "decision_mode": "persona_model", "base_thinking_delay": 0,
+                      "debounce_base_cooldown": 10, "narrative_rpc_timeout_seconds": 1})
+    plugin.narrative = NarrativeCoordinator(plugin, tmp_path / "prepare-timeout.db")
+    plugin.narrative.start = lambda: None
+    bridge = BridgeDouble()
+    plugin.persona_engine.bridge = bridge
+    plugin.jev = JevDouble(answers())
+    life = Life()
+    world = SimpleNamespace(get_character_context=lambda *args: ["private-character"]) if malformed else CharacterProvider()
+    providers = {"worldbook": world, "dynamic_life_state": life}
+    plugin.integrations.narrative_provider = providers.get
+    try:
+        await plugin.on_group_message(event)
+        await flush(plugin, event)
+        await drain(plugin)
+        assert not bridge.requests
+        telemetry = plugin.persona_engine.telemetry.snapshot()["recent"]
+        decision = next(row for row in telemetry if row["stage"] == "prepare_decision")
+        if malformed:
+            assert life.calls == 0 and not plugin.jev.calls
+            assert decision["outcome"] == "failed"
+            assert all(row["stage"] != "prepare_reply" for row in telemetry)
+            reason, detail = "agent_failed", "phase=decision stage=character reason=invalid"
+        else:
+            assert life.calls == 2 and plugin.jev.calls
+            reply = next(row for row in telemetry if row["stage"] == "prepare_reply")
+            assert decision["outcome"] == "success" and reply["outcome"] == "unavailable"
+            assert reply["turn_id"] == decision["turn_id"]
+            reason, detail = "narrative_prepare_unavailable", "phase=reply stage=snapshot reason=timeout"
+        assert event.replies_sent == ([unavailable_reply(reason)] if mandatory else [])
+        trace = next(row.message for row in prepare_logs.records if detail in row.message)
+        warning = next(row.message for row in prepare_logs.records if f"reason={reason} " in row.message
+                       and "reply generation failed" in row.message)
+        assert f"turn_id={decision['turn_id']} " in trace
+        assert f"pipeline_turn_id={decision['turn_id']}" in warning
+    finally:
+        await plugin.terminate()
 
 
 def test_notification_ack_is_durable_and_duplicate_does_not_reopen(tmp_path):
@@ -234,8 +501,14 @@ async def test_managed_native_turn_sees_same_state_and_at_gets_real_receipt(tmp_
             payload = bridge.requests[0][0]
             assert payload["character_state"]["availability"] == availability
             assert payload["response_plan"]["length"] == "brief"
+            # The asynchronous receipt writer may already have no remaining
+            # recipients. Check durable delivery, not the pending dispatch queue.
+            await plugin.narrative._io.drain()
+            from contextlib import closing
+            with closing(plugin.narrative.journal._connect()) as db:
+                receipts=[json.loads(row[0]) for row in db.execute("SELECT payload FROM events")]
             assert any(row["type"] == "delivery.success" and row["text"] == event.replies_sent[0]
-                       for row, _ in plugin.narrative.journal.pending())
+                       for row in receipts)
         else:
             assert event.replies_sent == []
     finally:

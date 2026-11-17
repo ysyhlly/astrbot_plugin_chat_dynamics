@@ -21,45 +21,45 @@
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js">
 </script>
-    <title>记忆小本</title>
+    <title data-series-text="记忆小本">记忆小本</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./shell.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
-  </head>
+  <link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head>
   <body>
-<div class="app wire-app plugin-shell">
+<div class="app wire-app plugin-shell series-workspace">
 <div class="plugin-layout">
-<aside class="plugin-side" aria-label="插件页面">
-<p class="plugin-side-label">群聊动态</p>
-<nav id="pluginSideNav" class="plugin-side-nav" aria-label="插件页面导航">
+<header class="plugin-side series-nav">
+          <a class="series-brand" href="#workspace"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航">
 </nav>
-</aside>
-<main class="plugin-main memory-workspace">
-<header class="topbar">
+        </header>
+<main class="plugin-main memory-workspace" id="workspace" tabindex="-1">
+<header class="topbar series-heading">
 <div class="brand-copy">
 <p class="eyebrow">CHAT DYNAMICS / MEMORY</p>
-<h1 id="pageTitle">记忆小本</h1>
-<p class="lede" id="pageDesc">按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。</p>
+<h1 id="pageTitle" data-series-text="记忆小本">记忆小本</h1>
+<p class="lede" id="pageDesc" data-series-text="按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。">按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。</p>
 </div>
 <div class="topbar-tools">
 <div class="connection-state" role="status" aria-live="polite">
 <span class="status-dot" id="linkLamp" aria-hidden="true">
 </span>
-<span id="linkLabel">正在连接</span>
+<span id="linkLabel" data-series-text="正在连接">正在连接</span>
 </div>
-<button type="button" class="button button-quiet" id="btnRefresh">刷新</button>
+<button type="button" class="button button-quiet" id="btnRefresh" data-series-text="刷新">刷新</button>
 </div>
-</header>
+</header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
 <section class="wire-card session-toolbar">
-<label for="sessionSelect">当前会话<select id="sessionSelect">
+<label for="sessionSelect"><span data-series-text="当前会话">当前会话</span><select id="sessionSelect">
 </select>
 </label>
 <div class="session-actions">
-<button type="button" class="button" id="btnMuteTonight" disabled>10 小时不提记忆</button>
-<button type="button" class="button button-quiet hidden" id="btnUnmute" disabled>解除不提记忆</button>
-<button type="button" class="button button-quiet" id="btnLoad" disabled>重新加载</button>
+<button type="button" class="button" id="btnMuteTonight" disabled data-series-text="10 小时不提记忆">10 小时不提记忆</button>
+<button type="button" class="button button-quiet hidden" id="btnUnmute" disabled data-series-text="解除不提记忆">解除不提记忆</button>
+<button type="button" class="button button-quiet" id="btnLoad" disabled data-series-text="重新加载">重新加载</button>
 </div>
 <p class="ops-note" id="sessionNote" role="status" aria-live="polite">
 </p>
@@ -67,77 +67,77 @@
 <section class="wire-card narrative-panel" id="narrativePanel" aria-labelledby="narrativeTitle">
 <div class="card-heading">
 <div>
-<p class="eyebrow">角色生活 · 管理员</p>
-<h2 id="narrativeTitle">持续生活与联系</h2>
+<p class="eyebrow" data-series-text="角色生活 · 管理员">角色生活 · 管理员</p>
+<h2 id="narrativeTitle" data-series-text="持续生活与联系">持续生活与联系</h2>
 </div>
-<button type="button" class="button button-quiet" id="btnNarrativeRefresh" disabled>刷新生活</button>
+<button type="button" class="button button-quiet" id="btnNarrativeRefresh" disabled data-series-text="刷新生活">刷新生活</button>
 </div>
-<p class="section-copy">查看当前会话使用的角色状态、素材来源和实际发送结果。生活状态由同一角色共享，约定和联系按会话保存。</p>
-<p class="ops-note" id="narrativeStatus" role="status" aria-live="polite">请选择会话。</p>
-<div class="narrative-actions" aria-label="生活控制">
-<button type="button" class="button button-quiet" data-narrative-action="pause" disabled>暂停生活推进</button>
-<button type="button" class="button button-quiet" data-narrative-action="resume" disabled>恢复生活推进</button>
-<button type="button" class="button button-quiet" data-narrative-action="pause_outreach" disabled>暂停主动联系</button>
-<button type="button" class="button button-quiet" data-narrative-action="resume_outreach" disabled>恢复主动联系</button>
+<p class="section-copy" data-series-text="查看当前会话使用的角色状态、素材来源和实际发送结果。生活状态由同一角色共享，约定和联系按会话保存。">查看当前会话使用的角色状态、素材来源和实际发送结果。生活状态由同一角色共享，约定和联系按会话保存。</p>
+<p class="ops-note" id="narrativeStatus" role="status" aria-live="polite" data-series-text="请选择会话。">请选择会话。</p>
+<div class="narrative-actions" aria-label="生活控制" data-series-aria-label="生活控制">
+<button type="button" class="button button-quiet" data-narrative-action="pause" disabled data-series-text="暂停生活推进">暂停生活推进</button>
+<button type="button" class="button button-quiet" data-narrative-action="resume" disabled data-series-text="恢复生活推进">恢复生活推进</button>
+<button type="button" class="button button-quiet" data-narrative-action="pause_outreach" disabled data-series-text="暂停主动联系">暂停主动联系</button>
+<button type="button" class="button button-quiet" data-narrative-action="resume_outreach" disabled data-series-text="恢复主动联系">恢复主动联系</button>
 </div>
 <div class="narrative-content hidden" id="narrativeContent">
 <div class="narrative-grid">
 <section class="narrative-block" aria-labelledby="narrativeSnapshotTitle">
-<h3 id="narrativeSnapshotTitle">当前状态</h3>
+<h3 id="narrativeSnapshotTitle" data-series-text="当前状态">当前状态</h3>
 <dl id="narrativeSnapshot" class="narrative-snapshot"></dl>
 <form id="narrativeCorrectForm" class="narrative-correction">
-<h4>纠正当前状态</h4>
-<label for="narrativeActivity">活动<input id="narrativeActivity" name="activity" maxlength="300" placeholder="例如：修改小说草稿" /></label>
-<label for="narrativeAvailability">可交互状态<select id="narrativeAvailability" name="availability">
-<option value="">保持当前状态</option>
-<option value="available">可以交互</option>
-<option value="busy">忙碌</option>
-<option value="asleep">睡眠</option>
-<option value="unknown">未知</option>
+<h4 data-series-text="纠正当前状态">纠正当前状态</h4>
+<label for="narrativeActivity"><span data-series-text="活动">活动</span><input id="narrativeActivity" name="activity" maxlength="300" placeholder="例如：修改小说草稿"  data-series-placeholder="例如：修改小说草稿"/></label>
+<label for="narrativeAvailability"><span data-series-text="可交互状态">可交互状态</span><select id="narrativeAvailability" name="availability">
+<option value="" data-series-text="保持当前状态">保持当前状态</option>
+<option value="available" data-series-text="可以交互">可以交互</option>
+<option value="busy" data-series-text="忙碌">忙碌</option>
+<option value="asleep" data-series-text="睡眠">睡眠</option>
+<option value="unknown" data-series-text="未知">未知</option>
 </select></label>
-<p class="section-copy">只提交填写的字段；纠正会记为新事件，并影响同一角色的其他会话。</p>
-<button type="submit" class="button" id="btnNarrativeCorrect" disabled>记录纠正</button>
+<p class="section-copy" data-series-text="只提交填写的字段；纠正会记为新事件，并影响同一角色的其他会话。">只提交填写的字段；纠正会记为新事件，并影响同一角色的其他会话。</p>
+<button type="submit" class="button" id="btnNarrativeCorrect" disabled data-series-text="记录纠正">记录纠正</button>
 </form>
 </section>
 <section class="narrative-block" aria-labelledby="narrativeMaterialsTitle">
-<h3 id="narrativeMaterialsTitle">本轮素材与来源</h3>
+<h3 id="narrativeMaterialsTitle" data-series-text="本轮素材与来源">本轮素材与来源</h3>
 <div id="narrativeMaterials" class="narrative-list"></div>
 </section>
 <details class="narrative-block narrative-collapsible" id="narrativeDiarySection">
 <summary>
-<h3 id="narrativeDiaryTitle">生活日记</h3>
-<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
-<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+<h3 id="narrativeDiaryTitle" data-series-text="生活日记">生活日记</h3>
+<span class="narrative-expand-label" aria-hidden="true" data-series-text="展开查看">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true" data-series-text="收起">收起</span>
 </summary>
 <div id="narrativeDiary" class="narrative-list" role="region" aria-labelledby="narrativeDiaryTitle" tabindex="0"></div>
 </details>
 <details class="narrative-block narrative-collapsible" id="narrativeCommitmentsSection">
 <summary>
-<h3 id="narrativeCommitmentsTitle">当前会话约定</h3>
-<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
-<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+<h3 id="narrativeCommitmentsTitle" data-series-text="当前会话约定">当前会话约定</h3>
+<span class="narrative-expand-label" aria-hidden="true" data-series-text="展开查看">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true" data-series-text="收起">收起</span>
 </summary>
 <div id="narrativeCommitments" class="narrative-list" role="region" aria-labelledby="narrativeCommitmentsTitle" tabindex="0"></div>
 </details>
 <details class="narrative-block narrative-collapsible" id="narrativeIntentsSection">
 <summary>
-<h3 id="narrativeIntentsTitle">联系意图</h3>
-<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
-<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+<h3 id="narrativeIntentsTitle" data-series-text="联系意图">联系意图</h3>
+<span class="narrative-expand-label" aria-hidden="true" data-series-text="展开查看">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true" data-series-text="收起">收起</span>
 </summary>
 <div id="narrativeIntents" class="narrative-list" role="region" aria-labelledby="narrativeIntentsTitle" tabindex="0"></div>
 </details>
 <details class="narrative-block narrative-collapsible" id="narrativeReceiptsSection">
 <summary>
-<h3 id="narrativeReceiptsTitle">发送回执</h3>
-<span class="narrative-expand-label" aria-hidden="true">展开查看</span>
-<span class="narrative-collapse-label" aria-hidden="true">收起</span>
+<h3 id="narrativeReceiptsTitle" data-series-text="发送回执">发送回执</h3>
+<span class="narrative-expand-label" aria-hidden="true" data-series-text="展开查看">展开查看</span>
+<span class="narrative-collapse-label" aria-hidden="true" data-series-text="收起">收起</span>
 </summary>
 <div id="narrativeReceipts" class="narrative-list" role="region" aria-labelledby="narrativeReceiptsTitle" tabindex="0"></div>
 </details>
 </div>
 <details class="narrative-details">
-<summary>调用统计与待分发回执</summary>
+<summary data-series-text="调用统计与待分发回执">调用统计与待分发回执</summary>
 <pre id="narrativeStats"></pre>
 </details>
 </div>
@@ -145,28 +145,28 @@
 <div class="notebook-workspace">
 <section class="wire-card notebook-browser">
 <div class="card-heading">
-<h2>已记下的事</h2>
-<span class="card-note" id="memoryCount">0 条</span>
+<h2 data-series-text="已记下的事">已记下的事</h2>
+<span class="card-note" id="memoryCount" data-series-text="0 条">0 条</span>
 </div>
-<div class="tabs" role="tablist" aria-label="记忆分类">
-<button type="button" class="tab" id="tab-anniversaries" role="tab" data-tab="anniversaries" aria-selected="true" aria-controls="memoryResults">纪念日</button>
-<button type="button" class="tab" id="tab-reminders" role="tab" data-tab="reminders" aria-selected="false" aria-controls="memoryResults" tabindex="-1">约定</button>
-<button type="button" class="tab" id="tab-slang" role="tab" data-tab="slang" aria-selected="false" aria-controls="memoryResults" tabindex="-1">试用梗</button>
+<div class="tabs" role="tablist" aria-label="记忆分类" data-series-aria-label="记忆分类">
+<button type="button" class="tab" id="tab-anniversaries" role="tab" data-tab="anniversaries" aria-selected="true" aria-controls="memoryResults" data-series-text="纪念日">纪念日</button>
+<button type="button" class="tab" id="tab-reminders" role="tab" data-tab="reminders" aria-selected="false" aria-controls="memoryResults" tabindex="-1" data-series-text="约定">约定</button>
+<button type="button" class="tab" id="tab-slang" role="tab" data-tab="slang" aria-selected="false" aria-controls="memoryResults" tabindex="-1" data-series-text="试用梗">试用梗</button>
 </div>
 <div id="memoryResults" role="tabpanel" aria-labelledby="tab-anniversaries">
 <div id="listHost" class="memory-list" aria-live="polite">
 </div>
-<div class="empty-state hidden" id="listEmpty">这个分类还是空的。</div>
+<div class="empty-state hidden" id="listEmpty" data-series-text="这个分类还是空的。">这个分类还是空的。</div>
 </div>
 </section>
 <section class="wire-card notebook-editor" id="addPanel">
-<p class="eyebrow">新增记录</p>
-<h2 id="addTitle">手写记一条</h2>
-<p class="section-copy">为当前会话添加一条公共记忆。</p>
+<p class="eyebrow" data-series-text="新增记录">新增记录</p>
+<h2 id="addTitle" data-series-text="手写记一条">手写记一条</h2>
+<p class="section-copy" data-series-text="为当前会话添加一条公共记忆。">为当前会话添加一条公共记忆。</p>
 <form id="addForm" class="field-grid">
 <div id="addFields">
 </div>
-<button type="submit" class="button button-primary" id="btnAdd" disabled>保存记录</button>
+<button type="submit" class="button button-primary" id="btnAdd" disabled data-series-text="保存记录">保存记录</button>
 </form>
 <p class="ops-note" id="addNote" role="status" aria-live="polite">
 </p>
