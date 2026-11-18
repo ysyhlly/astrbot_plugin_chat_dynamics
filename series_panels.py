@@ -1,4 +1,4 @@
-"""Companion presence, series defaults and cooperative dashboard navigation."""
+"""Read-only companion presence and series defaults. Panels can also cooperate inside the stock view."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import inspect
 import re
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 
 from astrbot.api.web import json_response, request
@@ -51,7 +52,9 @@ LEGACY_CONFLICTS = (
     ("astrbot_plugin_what_to_eat", "是啊，吃什么", "astrbot_plugin_dynamics_games"),
 )
 LEGACY_GAME_IDS = frozenset(
-    identity for identity, _label, owner in LEGACY_CONFLICTS if owner == "astrbot_plugin_dynamics_games"
+    identity
+    for identity, _label, owner in LEGACY_CONFLICTS
+    if owner == "astrbot_plugin_dynamics_games"
 )
 
 CHAT_DYNAMICS_ID = "astrbot_plugin_chat_dynamics"
@@ -67,7 +70,9 @@ _SHARED_STR_KEYS = (
 
 
 def value(row, key, default=None):
-    return row.get(key, default) if isinstance(row, dict) else getattr(row, key, default)
+    return (
+        row.get(key, default) if isinstance(row, dict) else getattr(row, key, default)
+    )
 
 
 def registered_names(key, row):
@@ -126,7 +131,11 @@ def _owner_plugin_dirs(owner) -> tuple[Path, ...]:
         for ancestor in (parent, parent.parent, parent.parent.parent):
             if ancestor in seen or ancestor == ancestor.parent:
                 continue
-            if (ancestor / "pages").is_dir() or (ancestor / "views").is_dir() or (ancestor / "metadata.yaml").is_file():
+            if (
+                (ancestor / "pages").is_dir()
+                or (ancestor / "views").is_dir()
+                or (ancestor / "metadata.yaml").is_file()
+            ):
                 seen.add(ancestor)
                 candidates.append(ancestor)
                 break
@@ -222,7 +231,9 @@ def _find_chat_dynamics_owner(context):
     if registered_entries:
         matches = []
         for names, row in registered_entries:
-            if CHAT_DYNAMICS_ID in names and all(existing is not row for existing in matches):
+            if CHAT_DYNAMICS_ID in names and all(
+                existing is not row for existing in matches
+            ):
                 matches.append(row)
         if len(matches) == 1:
             row = matches[0]
@@ -300,7 +311,9 @@ def inherit_provider(explicit, context, role: str = "reply") -> str:
     if not defaults:
         return ""
     if role == "decision":
-        return str(defaults.get("decision_provider") or defaults.get("reply_provider") or "")
+        return str(
+            defaults.get("decision_provider") or defaults.get("reply_provider") or ""
+        )
     return str(defaults.get("reply_provider") or "")
 
 
@@ -338,9 +351,14 @@ def presence(context, current, root=None):
             data["activated"] = value(row, "activated", False) is True
             data["version"] = str(value(row, "version", "") or "")[:128]
             owner = _extract_owner(row)
-            revision = getattr(getattr(owner, "_series_panels", None), "source_commit", "")
+            revision = getattr(
+                getattr(owner, "_series_panels", None), "source_commit", ""
+            )
             data["source_commit"] = (
-                revision if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{7,12}", revision) else ""
+                revision
+                if isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{7,12}", revision)
+                else ""
             )
             data["loaded"] = owner is not None
             candidate_dirs = [root / identity]
@@ -376,8 +394,16 @@ def presence(context, current, root=None):
                             and type(caps.get("schema_version")) is int
                             and caps["schema_version"] == 1
                         ):
-                            data["ready"] = caps.get("ready") if type(caps.get("ready")) is bool else None
-                            data["runtime_enabled"] = caps.get("enabled") if type(caps.get("enabled")) is bool else None
+                            data["ready"] = (
+                                caps.get("ready")
+                                if type(caps.get("ready")) is bool
+                                else None
+                            )
+                            data["runtime_enabled"] = (
+                                caps.get("enabled")
+                                if type(caps.get("enabled")) is bool
+                                else None
+                            )
                             data["state"] = (
                                 "inactive"
                                 if data["runtime_enabled"] is False
@@ -392,7 +418,10 @@ def presence(context, current, root=None):
         output.append(data)
 
     active_ids = {
-        identity for names, row in registered_entries if value(row, "activated", False) is True for identity in names
+        identity
+        for names, row in registered_entries
+        if value(row, "activated", False) is True
+        for identity in names
     }
     conflicts = [
         {"id": identity, "label": label, "owner": owner}
@@ -413,7 +442,9 @@ def presence(context, current, root=None):
 def _installed_commit(root: Path) -> str:
     try:
         metadata = (root / "metadata.yaml").read_text(encoding="utf-8-sig")
-        match = re.search(r"^# source-commit: ([0-9a-f]{40}|[0-9a-f]{64})$", metadata, re.MULTILINE)
+        match = re.search(
+            r"^# source-commit: ([0-9a-f]{40}|[0-9a-f]{64})$", metadata, re.MULTILINE
+        )
         if match:
             return match.group(1)[:12]
         if (root / ".git").exists():
@@ -435,9 +466,7 @@ class SeriesPanels:
         self.owner = owner
         self.identity = identity
         self.source_commit = _installed_commit(Path(__file__).resolve().parent)
-        from importlib import import_module
-
-        module = f"{__package__}.series_workspace" if __package__ else "series_workspace"
+        module = ".".join(filter(None, (__package__, "series_workspace")))
         self.workspace = import_module(module).PanelWorkspace(self)
         self.path = "/" + identity + "/series_presence"
 
@@ -449,17 +478,23 @@ class SeriesPanels:
             if raw is None:
                 raise PermissionError()
             username = await require_dashboard_user(raw)
-            expected = self.owner.context.get_config().get("dashboard", {}).get("username")
+            expected = (
+                self.owner.context.get_config().get("dashboard", {}).get("username")
+            )
             if not username or expected and username != expected:
                 raise PermissionError()
-            return json_response({"status": "ok", "data": presence(self.owner.context, self.identity)})
+            return json_response(
+                {"status": "ok", "data": presence(self.owner.context, self.identity)}
+            )
         except PermissionError:
             return json_response(
                 {"status": "error", "message": "需要 Dashboard 管理员登录"},
                 status_code=403,
             )
         except Exception:
-            return json_response({"status": "error", "message": "互通状态暂不可用"}, status_code=503)
+            return json_response(
+                {"status": "error", "message": "互通状态暂不可用"}, status_code=503
+            )
 
     def close(self):
         self.workspace.close()
@@ -468,7 +503,11 @@ class SeriesPanels:
             registered[:] = [
                 r
                 for r in registered
-                if not (len(r) >= 2 and r[0] == self.path and getattr(r[1], "__self__", None) is self)
+                if not (
+                    len(r) >= 2
+                    and r[0] == self.path
+                    and getattr(r[1], "__self__", None) is self
+                )
             ]
 
 
@@ -478,5 +517,7 @@ def register_series_panels(owner, identity):
         old.close()
     panel = SeriesPanels(owner, identity)
     owner._series_panels = panel
-    owner.context.register_web_api(panel.path, panel.status, ["GET"], "群间系列插件状态")
+    owner.context.register_web_api(
+        panel.path, panel.status, ["GET"], "群间系列插件状态"
+    )
     panel.workspace.register()
