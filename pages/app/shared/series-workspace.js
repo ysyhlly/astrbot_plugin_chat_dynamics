@@ -83,6 +83,14 @@
     const tasks = [...pendingStreams, ...Array.from(streams, id => bridge.unsubscribeSSE(id))];
     await Promise.allSettled(tasks);
   }
+  async function withTimeout(operation) {
+    let timer;
+    try {
+      return await Promise.race([operation, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error(window.DynamicsUI?.tr("请求超时，请刷新重试") || "请求超时，请刷新重试")), 8000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
   function destinationPath(data, id, page) {
     if (data?.plugin !== id || data?.view !== page || typeof data.path !== "string"
         || !data.path.startsWith("/") || data.path.startsWith("//")) throw Error("目标面板地址无效");
@@ -95,7 +103,7 @@
   async function open(id, page, options, transition) {
     // This is always the entry plugin's normal authenticated API. Only a
     // participating destination can offer its own view and its panel operations.
-    const response = await native.apiGet("series_workspace/open/" + encodeURIComponent(id), { lang: options.locale });
+    const response = await withTimeout(native.apiGet("series_workspace/open/" + encodeURIComponent(id), { lang: options.locale }));
     if (response?.status === "error") throw Error(response.message);
     const url = destinationPath(response?.data ?? response, id, page);
     url.searchParams.set("series_entry", entry || plugin);
@@ -104,8 +112,7 @@
     }
     if (options.ui) url.searchParams.set("theme", options.ui === "night" ? "dark" : "light");
     if (transition) await transition();
-    await stopStreams();
-    try { window.location.assign(url.href); }
+    try { await withTimeout(stopStreams()); window.location.assign(url.href); }
     catch (error) { stopping = false; throw error; }
     return { navigating: true };
   }

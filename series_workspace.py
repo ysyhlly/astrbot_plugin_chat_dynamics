@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from importlib import import_module
 
 VERSION = 1
 _PARAM = re.compile(r"<([a-zA-Z_]\w*)>")
+
+
+def _series():
+    return import_module(
+        f"{__package__}.series_panels" if __package__ else "series_panels"
+    )
 
 
 def register_panel_api(owner, register, route, handler, methods, description):
@@ -73,27 +80,21 @@ class PanelWorkspace:
             expected = self.panel.owner.context.get_config()["dashboard"]["username"]
         except Exception:
             return None
-        return (
-            username if username and username == expected == request.username else None
-        )
+        if not username or username != expected or username != request.username:
+            return None
+        return username if self._target(self.panel.identity) is self else None
 
     def _target(self, target):
-        from .series_panels import (
-            CATALOG,
-            _extract_owner,
-            _iter_registered_entries,
-            value,
-        )
-
-        if not any(name == target and page for name, _, page, _ in CATALOG):
+        series = _series()
+        if not any(name == target and page for name, _, page, _ in series.CATALOG):
             return None
         rows = []
-        for names, row in _iter_registered_entries(self.panel.owner.context):
+        for names, row in series._iter_registered_entries(self.panel.owner.context):
             if target in names and not any(row is other for other in rows):
                 rows.append(row)
-        if len(rows) != 1 or value(rows[0], "activated", False) is not True:
+        if len(rows) != 1 or series.value(rows[0], "activated", False) is not True:
             return None
-        owner = _extract_owner(rows[0])
+        owner = series._extract_owner(rows[0])
         panel = getattr(owner, "_series_panels", None)
         workspace = getattr(panel, "workspace", None)
         if (
@@ -121,10 +122,8 @@ class PanelWorkspace:
         # Only ask AstrBot for this participating plugin's own declared view.
         from astrbot.api.web import json_response, request
 
-        from .series_panels import CATALOG
-
         identity = self.panel.identity
-        view = next(page for name, _, page, _ in CATALOG if name == identity)
+        view = next(page for name, _, page, _ in _series().CATALOG if name == identity)
         locale = {"zh": "zh-CN", "en": "en-US", "ja": "ja-JP", "ru": "ru-RU"}.get(
             request.query.get("lang"), "zh-CN"
         )
