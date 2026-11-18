@@ -158,7 +158,8 @@ def test_legacy_archive_cursor_resumes_without_compacting_unarchived_rows(tmp_pa
     j.ensure_indexes()
     with j._tx(write=True) as db:
         for i in range(4):
-            payload = json.dumps({"character": {}, "context_items": [], "original": i})
+            payload = json.dumps({"scope": {"umo": "s", "persona_id": "p", "instance_id": "i", "platform": "test"},
+                                  "character": {}, "context_items": [], "original": i})
             db.execute("INSERT INTO bundles VALUES (?,?,?,?,?)", (str(i), str(i), "s", payload, 1))
     for i in range(4):
         assert j.maintain(20 * 86400, limit=1)["compressed"] == 1
