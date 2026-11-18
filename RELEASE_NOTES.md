@@ -1,4 +1,6 @@
-# astrbot_plugin_chat_dynamics v1.19.0-rc.2
+# astrbot_plugin_chat_dynamics v1.19.0-rc.3
+
+CI 使用与发布批次对应的视觉工坊提交运行真实 SDK 图文联动测试。
 
 叙事快照按游标小批回填，并按待精简状态索引归档记录。面板提供安装版本与源码提交号。
 

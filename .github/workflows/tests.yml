@@ -11,8 +11,22 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/astrbot_plugin_chat_dynamics
+    env:
+      PYTHONPATH: ${{ github.workspace }}/plugins
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: plugins/astrbot_plugin_chat_dynamics
+      - name: Check out the visual media integration dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ysyhlly/astrbot_plugin_visual_media
+          ref: 17c76ad58f64473aa6223ea0995285d02e2e2460
+          path: plugins/astrbot_plugin_visual_media
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -28,7 +42,7 @@ jobs:
         if: always()
         with:
           name: backend-results
-          path: artifacts/
+          path: plugins/astrbot_plugin_chat_dynamics/artifacts/
 
   browser:
     runs-on: ubuntu-latest
