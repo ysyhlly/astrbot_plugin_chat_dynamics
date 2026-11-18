@@ -67,7 +67,7 @@
   }
 
   async function request(method, body) {
-    const bridge = window.AstrBotPluginPage;
+    const bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
     if (!bridge || typeof bridge[method] !== "function") throw new Error("bridge unavailable");
     if (typeof bridge.ready === "function") await timeout(bridge.ready());
     const result = await timeout(bridge[method]("ui_preferences", body));
@@ -103,7 +103,7 @@
     try {
       const result = await request("apiGet", {});
       if (revision !== ownRevision) return; // An in-flight restore must never undo a click.
-      const hostContext = window.AstrBotPluginPage?.getContext?.() || {};
+      const hostContext = (window.DynamicsPanelBridge || window.AstrBotPluginPage)?.getContext?.() || {};
       if (hostContext.uiOverride === true) {
         renderStatus("");
         return;

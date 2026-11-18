@@ -23,7 +23,7 @@ function svgIcon(paths){
  return svg;
 }
 let loading=false,navigating=false,edited=false,cached=null,refreshRequest,scopePill;
-const getBridge=()=>window.AstrBotPluginPage||window.AstrBotPluginView;
+const getBridge=()=>(window.DynamicsPanelBridge || window.AstrBotPluginPage||window.AstrBotPluginView);
 for(const type of ['input','change'])document.addEventListener(type,event=>{
  const target=event.target;
  // Searches and filters are navigation state, not unsaved edits.
@@ -75,19 +75,25 @@ function render(data){
   if(plugin.current)button.setAttribute('aria-current','page');
   button.seriesNavigate=async(transition)=>{if(navigating||plugin.current||!plugin.can_open)return false;button.disabled=true;navigating=true;try{
    const bridge=getBridge();
-   if(typeof bridge?.navigateToPlugin!=='function')throw Error(tr('当前宿主未提供跨插件导航。请先整页刷新；仍不可用时可从左侧插件菜单打开。'));
-   const hostGuard=bridge.getContext?.()?.supportsNavigationGuard===true;
+   const nativeNavigation=typeof bridge?.navigateToPlugin==='function';
+   if(!nativeNavigation&&!window.DynamicsWorkspace)throw Error(tr('请更新入口和目标群间插件后重试。'));
+   const hostGuard=nativeNavigation&&bridge.getContext?.()?.supportsNavigationGuard===true;
    if(!hostGuard&&!await beforeNavigate({pluginName:plugin.id,pageName:plugin.page})){
     feedback(note,msg('已取消跳转，保留当前编辑。'));
     return false;
    }
    feedback(note,msg('正在打开{0}…',names[plugin.id]?msg(names[plugin.id]):plugin.label),'loading');
-   if(transition)await transition();
-   const operation=bridge.navigateToPlugin(plugin.id,plugin.page,{
+   const options={
     ui:document.documentElement.dataset.uiTheme,
     locale:getLanguage(),
     scope:getSharedScope()||undefined,
-   });
+   };
+   if(!nativeNavigation){
+    await window.DynamicsWorkspace.open(plugin.id,plugin.page,options,transition);
+    return true;
+   }
+   if(transition)await transition();
+   const operation=bridge.navigateToPlugin(plugin.id,plugin.page,options);
    const result=hostGuard?await operation:await timed(operation);
    if(result?.navigating===false&&!result?.updated){
     feedback(note,msg('已取消跳转，保留当前编辑。'));

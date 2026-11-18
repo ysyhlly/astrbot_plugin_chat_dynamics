@@ -141,6 +141,7 @@ def iter_release_files(root: Path) -> Iterable[Path]:
         "main.py",
         "reload_bootstrap.py",
         "series_panels.py",
+        "series_workspace.py",
         "_conf_schema.json",
         "metadata.yaml",
         "README.md",

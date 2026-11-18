@@ -358,7 +358,7 @@ const els = {
   btnDiffSave: document.getElementById("btnDiffSave"),
 };
 
-let bridge = window.AstrBotPluginPage || null;
+let bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage) || null;
 
 async function wirePageNav(currentPage) {
   const mod = await import("./plugin_nav.js");
@@ -604,7 +604,7 @@ function setLink(ok, label) {
 }
 
 async function apiGet(endpoint, params = {}) {
-  if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+  if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
   if (bridge && typeof bridge.apiGet === "function") {
     return unwrap(await withTimeout(bridge.apiGet(endpoint, params)));
   }
@@ -612,7 +612,7 @@ async function apiGet(endpoint, params = {}) {
 }
 
 async function apiPost(endpoint, body = {}) {
-  if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+  if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
   if (bridge && typeof bridge.apiPost === "function") {
     return unwrap(await withTimeout(bridge.apiPost(endpoint, body)));
   }

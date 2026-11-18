@@ -28,7 +28,7 @@ export const OCCASION_LABEL = {
   serious_inquiry: "严肃探讨",
 };
 
-let bridge = window.AstrBotPluginPage || null;
+let bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage) || null;
 
 export function escapeHtml(value) {
   return String(value ?? "")
@@ -75,7 +75,7 @@ export function withTimeout(promise, timeoutMs = REQUEST_TIMEOUT_MS) {
 // `timeoutMs` is overridable per call: 8s is right for a panel read, and far
 // too short for a call that waits on a model.
 export async function apiGet(endpoint, params = {}, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
-  if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+  if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
   if (bridge && typeof bridge.apiGet === "function") {
     return unwrap(await withTimeout(bridge.apiGet(endpoint, params), timeoutMs));
   }
@@ -83,7 +83,7 @@ export async function apiGet(endpoint, params = {}, { timeoutMs = REQUEST_TIMEOU
 }
 
 export async function apiPost(endpoint, body = {}, { timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
-  if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+  if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
   if (bridge && typeof bridge.apiPost === "function") {
     return unwrap(await withTimeout(bridge.apiPost(endpoint, body), timeoutMs));
   }
@@ -91,7 +91,7 @@ export async function apiPost(endpoint, body = {}, { timeoutMs = REQUEST_TIMEOUT
 }
 
 export async function readyBridge() {
-  if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+  if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
   if (bridge && typeof bridge.ready === "function") {
     await withTimeout(bridge.ready());
   }

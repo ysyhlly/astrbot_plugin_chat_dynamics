@@ -155,6 +155,8 @@ class ConsoleWebAPI:
         return f"{route}@{normalized}"
 
     def register(self) -> None:
+        from ..series_workspace import register_panel_api
+
         if self.registered:
             return
         context = getattr(self.plugin, "context", None)
@@ -197,7 +199,7 @@ class ConsoleWebAPI:
             if key in self._registered_endpoints:
                 continue
             try:
-                context.register_web_api(route, handler, methods, desc)
+                register_panel_api(self.plugin, context.register_web_api, route, handler, methods, desc)
             except Exception as exc:
                 logger.error(
                     "[ChatDynamics] Web API registration failed code=CD_WEB_REGISTER endpoint=%s methods=%s type=%s",
@@ -612,7 +614,7 @@ class ConsoleWebAPI:
         if not isinstance(username, str) or not username.strip():
             return _json_err("unauthorized", 401)
 
-        plugin_name = getattr(plugin_req, "plugin_name", None) or PLUGIN_NAME
+        plugin_name = PLUGIN_NAME
         raw = getattr(plugin_req, "_request", None)
         if raw is None:
             return _json_err("underlying request unavailable", 503)

@@ -16,10 +16,12 @@ SERIES_WEB_FILES = (
     "series-ui.js",
     "series-messages.js",
     "series-panels.js",
+    "series-workspace.js",
 )
 SERIES_PY_FILES = (
     "reload_bootstrap.py",
     "series_panels.py",
+    "series_workspace.py",
 )
 COMPANION_PLUGINS = (
     "astrbot_plugin_dynamics_learning",

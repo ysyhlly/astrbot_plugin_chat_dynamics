@@ -1,4 +1,4 @@
-"""Read-only companion presence and series defaults. Navigation is handled by the host bridge."""
+"""Companion presence, series defaults and cooperative dashboard navigation."""
 
 from __future__ import annotations
 
@@ -465,6 +465,9 @@ class SeriesPanels:
         self.owner = owner
         self.identity = identity
         self.source_commit = _installed_commit(Path(__file__).resolve().parent)
+        from .series_workspace import PanelWorkspace
+
+        self.workspace = PanelWorkspace(self)
         self.path = "/" + identity + "/series_presence"
 
     async def status(self):
@@ -494,6 +497,7 @@ class SeriesPanels:
             )
 
     def close(self):
+        self.workspace.close()
         registered = getattr(self.owner.context, "registered_web_apis", None)
         if isinstance(registered, list):
             registered[:] = [
@@ -516,3 +520,4 @@ def register_series_panels(owner, identity):
     owner.context.register_web_api(
         panel.path, panel.status, ["GET"], "群间系列插件状态"
     )
+    panel.workspace.register()

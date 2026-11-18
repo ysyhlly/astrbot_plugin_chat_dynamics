@@ -1,6 +1,6 @@
 # 群间 · Chat Dynamics
 
-> 发布候选：`v1.19.0-rc.3`。升级说明与验证边界见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+> 发布候选：`v1.19.0-rc.4`。升级说明与验证边界见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
 让 AstrBot 跟上群聊节奏：合并连续消息、识别对话对象和话题，判断何时接话，再由主 Agent 生成回复。
 

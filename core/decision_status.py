@@ -66,6 +66,8 @@ def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_conten
 
 class DecisionStatusWebAPI(web.ConsoleWebAPI):
     def register(self):
+        from ..series_workspace import register_panel_api
+
         context = getattr(self.plugin, "context", None)
         if not context or not hasattr(context, "register_web_api"):
             return
@@ -78,7 +80,7 @@ class DecisionStatusWebAPI(web.ConsoleWebAPI):
             route = f"/{web.PLUGIN_NAME}/decision/{name}"
             key = self._endpoint_key(route, methods)
             if key not in self._registered_endpoints:
-                context.register_web_api(route, handler, methods, "Jev 决策状态")
+                register_panel_api(self.plugin, context.register_web_api, route, handler, methods, "Jev 决策状态")
                 self._registered_endpoints.add(key)
         self.registered = len(self._registered_endpoints) == len(routes)
 

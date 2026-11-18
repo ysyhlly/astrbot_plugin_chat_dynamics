@@ -88,6 +88,8 @@ export function signedContentHref(contentPath, theme, baseHref) {
   if (!raw) return "";
 
   const applyTheme = (params) => {
+    const entry = new URLSearchParams(window.location.search).get("series_entry");
+    if (entry) params.set("series_entry", entry);
     if (theme) params.set("theme", theme);
     params.set("ui", resolvedUi());
     const scope = window.DynamicsGetActiveScope?.() ?? window.DynamicsUI?.getSharedScope?.();
@@ -175,7 +177,7 @@ export async function navigateToPluginPage(pageName, button = null) {
   }
   setNavNote(`正在打开「${label}」…`);
   try {
-    let bridge = window.AstrBotPluginPage || null;
+    let bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage) || null;
     if (bridge && typeof bridge.ready === "function") {
       try {
         await withTimeout(bridge.ready());
@@ -183,7 +185,7 @@ export async function navigateToPluginPage(pageName, button = null) {
         /* ready is optional; apiGet may still work */
       }
     }
-    if (!bridge && window.AstrBotPluginPage) bridge = window.AstrBotPluginPage;
+    if (!bridge && (window.DynamicsPanelBridge || window.AstrBotPluginPage)) bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage);
     if (bridge && typeof bridge.apiGet === "function") {
       const params = { page: pageName };
       if (theme) params.theme = theme;

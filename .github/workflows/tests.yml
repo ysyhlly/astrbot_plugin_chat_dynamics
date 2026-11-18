@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ysyhlly/astrbot_plugin_visual_media
-          ref: 3a9aa56d0dfaf1022268ce05687a277719b49fab
+          ref: 581d1965ed0e08c33a0956ca2bac0e7898adf942
           path: plugins/astrbot_plugin_visual_media
           persist-credentials: false
       - uses: actions/setup-python@v5

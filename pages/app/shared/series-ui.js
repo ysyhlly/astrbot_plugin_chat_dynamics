@@ -6,7 +6,7 @@ const normalize=value=>String(value||'').toLowerCase().split(/[-_]/)[0];
 const stored=()=>{try{return localStorage.getItem(LANG_KEY)||localStorage.getItem(LEGACY_LANG_KEY);}catch{return null;}};
 const query=new URLSearchParams(location.search);
 const queryLanguage=normalize(query.get('lang'));
-const bridge=()=>window.AstrBotPluginPage||window.AstrBotPluginView;
+const bridge=()=>(window.DynamicsPanelBridge || window.AstrBotPluginPage||window.AstrBotPluginView);
 const nativeLanguage=typeof window.getLanguage==='function';
 let context={};try{context=bridge()?.getContext?.()||{};}catch{}
 let language=[queryLanguage,normalize(context.localeOverride),normalize(context.locale),stored(),normalize(document.documentElement.lang),normalize(navigator.language),'zh'].find(v=>languages.includes(v));
