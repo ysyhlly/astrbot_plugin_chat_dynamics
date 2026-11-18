@@ -113,8 +113,9 @@ def safe_livingmemory_recall_diagnostics(diagnostics):
     if not isinstance(diagnostics, dict):
         return {}
     result = {}
-    if type(diagnostics.get("baseline_preserved")) is bool:
-        result["baseline_preserved"] = diagnostics["baseline_preserved"]
+    for field in ("baseline_preserved", "local_reply_fast_path"):
+        if type(diagnostics.get(field)) is bool:
+            result[field] = diagnostics[field]
     for key, maximum in (("elapsed_ms", 120000), ("inflight_count", 1024)):
         value = diagnostics.get(key)
         if type(value) is int and 0 <= value <= maximum:

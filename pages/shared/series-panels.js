@@ -125,6 +125,12 @@ function render(data){
    const conflictNames=(data.legacy_conflicts||[]).map(conflict=>conflict.label);
    if(conflictNames.length)pop.append(node('p',conflictNames.join('、'),'sp-warning'));
   }
+  for(const plugin of data.plugins.filter(p=>p.version&&names[p.id])){
+   const version=node('p');
+   version.append(node('span',msg(names[plugin.id])+' · '),node('code',
+    [plugin.version,plugin.source_commit].filter(Boolean).join(' · ')));
+   pop.append(version);
+  }
   extra.append(pop);
   tools.append(extra);
  }

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -348,6 +350,15 @@ def presence(context, current, root=None):
             data["activated"] = value(row, "activated", False) is True
             data["version"] = str(value(row, "version", "") or "")[:128]
             owner = _extract_owner(row)
+            revision = getattr(
+                getattr(owner, "_series_panels", None), "source_commit", ""
+            )
+            data["source_commit"] = (
+                revision
+                if isinstance(revision, str)
+                and re.fullmatch(r"[0-9a-f]{7,12}", revision)
+                else ""
+            )
             data["loaded"] = owner is not None
             candidate_dirs = [root / identity]
             custom_dir = _safe_dir_segment(value(row, "root_dir_name"))
@@ -427,10 +438,33 @@ def presence(context, current, root=None):
     }
 
 
+def _installed_commit(root: Path) -> str:
+    try:
+        metadata = (root / "metadata.yaml").read_text(encoding="utf-8-sig")
+        match = re.search(
+            r"^# source-commit: ([0-9a-f]{40}|[0-9a-f]{64})$", metadata, re.MULTILINE
+        )
+        if match:
+            return match.group(1)[:12]
+        if (root / ".git").exists():
+            revision = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                text=True,
+            ).strip()
+            if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+                return revision[:12]
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
 class SeriesPanels:
     def __init__(self, owner, identity):
         self.owner = owner
         self.identity = identity
+        self.source_commit = _installed_commit(Path(__file__).resolve().parent)
         self.path = "/" + identity + "/series_presence"
 
     async def status(self):

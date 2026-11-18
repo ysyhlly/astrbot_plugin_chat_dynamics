@@ -148,3 +148,29 @@ def test_storage_status_exposes_sizes_without_message_content(tmp_path):
     assert status["database_bytes"] > 0 and status["legacy_database_bytes"] == 6
     assert status["free_bytes"] > 0
     assert status["retention_policy"] == "compact_online_keep_verified_archive_and_receipts"
+
+
+def test_legacy_archive_cursor_resumes_without_compacting_unarchived_rows(tmp_path):
+    import json
+
+    path = tmp_path / "journal.db"
+    j = NarrativeJournal(path)
+    j.ensure_indexes()
+    with j._tx(write=True) as db:
+        for i in range(4):
+            payload = json.dumps({"character": {}, "context_items": [], "original": i})
+            db.execute("INSERT INTO bundles VALUES (?,?,?,?,?)", (str(i), str(i), "s", payload, 1))
+    for i in range(4):
+        assert j.maintain(20 * 86400, limit=1)["compressed"] == 1
+        assert j.full_bundle(str(i))["original"] == i
+        j.close()
+        j = NarrativeJournal(path)
+    assert j.maintain(20 * 86400, limit=1)["compressed"] == 0
+    with j._tx() as db:
+        assert db.execute("SELECT value FROM maintenance WHERE name='bundle_backfill_cursor'").fetchone()[0] == "4"
+        plan = db.execute("EXPLAIN QUERY PLAN SELECT q.bundle_id FROM bundle_compaction_queue q "
+                          "JOIN bundles b ON b.bundle_id=q.bundle_id WHERE q.captured_at<? "
+                          "ORDER BY q.captured_at LIMIT ?", (4, 1))
+        assert any("bundle_compaction_due" in row[-1] for row in plan)
+        assert db.execute("SELECT count(*) FROM bundle_compaction_queue").fetchone()[0] == 0
+    j.close()

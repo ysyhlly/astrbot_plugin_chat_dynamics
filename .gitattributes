@@ -37,3 +37,4 @@
 *.sqlite binary
 *.sqlite3 binary
 *.whl binary
+/metadata.yaml export-subst

@@ -46,6 +46,9 @@ class NarrativeJournal:
                 CREATE TABLE IF NOT EXISTS context_archive (
                     bundle_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, payload BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS maintenance (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS bundle_compaction_queue (
+                    bundle_id TEXT PRIMARY KEY, captured_at REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS bundle_compaction_due ON bundle_compaction_queue(captured_at);
                 CREATE INDEX IF NOT EXISTS delivered_message_lookup ON events(
                     json_extract(payload,'$.scope.umo'),json_extract(payload,'$.data.message_id'))
                     WHERE json_extract(payload,'$.type')='delivery.success';
@@ -148,8 +151,10 @@ class NarrativeJournal:
         with self._tx(write=True) as db:
             db.execute("INSERT OR IGNORE INTO context_archive VALUES (?,?,?)",
                        (bundle_id, hashlib.sha256(raw).hexdigest(), gzip.compress(raw, compresslevel=3)))
-            db.execute("INSERT OR IGNORE INTO bundles VALUES (?,?,?,?,?)",
-                       (bundle_id, turn_id, umo, json.dumps(summary, ensure_ascii=False), captured))
+            inserted = db.execute("INSERT OR IGNORE INTO bundles VALUES (?,?,?,?,?)",
+                                  (bundle_id, turn_id, umo, json.dumps(summary, ensure_ascii=False), captured))
+            if inserted.rowcount:
+                db.execute("INSERT OR IGNORE INTO bundle_compaction_queue VALUES (?,?)", (bundle_id, captured))
 
     def record_turn_diagnostic(self, *, scope, turn_id, bundle_id, character_fingerprint,
                                projection, plan, material_count, material_char_count, now):
@@ -246,6 +251,9 @@ class NarrativeJournal:
             inflight = lm_recall.get("inflight_count")
             if type(inflight) is int and 0 <= inflight <= 1024:
                 safe_lm_recall["inflight_count"] = inflight
+            fast_path = lm_recall.get("local_reply_fast_path")
+            if isinstance(fast_path, bool):
+                safe_lm_recall["local_reply_fast_path"] = fast_path
             route_names = {"scope_auth", "history_legacy", "history_managed", "narrative_events",
                            "narrative_sources", "candidate_recheck", "evidence_view",
                            "ready_baseline", "semantic_legacy", "semantic_managed", "revision_peek",
@@ -386,9 +394,28 @@ class NarrativeJournal:
         from .narrative_projection import reply_material
         cutoff = now - max(1, retention_days) * 86400
         with self._tx(write=True) as db:
-            rows = db.execute('SELECT * FROM bundles WHERE bundle_id NOT IN '
-                              '(SELECT bundle_id FROM context_archive) LIMIT ?', (limit,)).fetchall()
-            for row in rows:
+            cursor = db.execute("SELECT value FROM maintenance WHERE name='bundle_backfill_cursor'").fetchone()
+            # Inspect a bounded range even when every legacy row already has its archive.
+            # New bundles write their complete archive in the same transaction.
+            window = db.execute(
+                "SELECT b.rowid AS seq,b.bundle_id,b.captured_at,a.bundle_id AS archived, "
+                "json_extract(b.payload,'$.archive_only') AS compacted FROM bundles AS b "
+                "LEFT JOIN context_archive AS a ON a.bundle_id=b.bundle_id "
+                "WHERE b.rowid>? ORDER BY b.rowid LIMIT ?",
+                (int(cursor[0]) if cursor else 0, min(256, max(1, limit) * 4)),
+            ).fetchall()
+            compressed = 0
+            last_seq = None
+            for candidate in window:
+                if compressed >= limit:
+                    break
+                last_seq = candidate['seq']
+                if candidate['archived'] is not None:
+                    if not candidate['compacted']:
+                        db.execute("INSERT OR IGNORE INTO bundle_compaction_queue VALUES (?,?)",
+                                   (candidate['bundle_id'], candidate['captured_at']))
+                    continue
+                row = db.execute("SELECT bundle_id,payload FROM bundles WHERE rowid=?", (last_seq,)).fetchone()
                 raw = row['payload'].encode('utf-8')
                 data = json.loads(raw)
                 compact = dict(reply_material(data), archive_id=row['bundle_id'],
@@ -398,8 +425,16 @@ class NarrativeJournal:
                            (row['bundle_id'], hashlib.sha256(raw).hexdigest(), gzip.compress(raw)))
                 db.execute('UPDATE bundles SET payload=? WHERE bundle_id=?',
                            (json.dumps(compact, ensure_ascii=False), row['bundle_id']))
-            old = db.execute("SELECT bundle_id,payload FROM bundles WHERE captured_at<? "
-                             "AND json_extract(payload,'$.archive_only') IS NULL LIMIT ?",
+                db.execute("INSERT OR IGNORE INTO bundle_compaction_queue VALUES (?,?)",
+                           (candidate['bundle_id'], candidate['captured_at']))
+                compressed += 1
+            if last_seq is not None:
+                db.execute("INSERT OR REPLACE INTO maintenance(name,value) VALUES('bundle_backfill_cursor',?)",
+                           (str(last_seq),))
+            old = db.execute("SELECT b.bundle_id,b.payload FROM bundle_compaction_queue AS q "
+                             "JOIN bundles AS b ON b.bundle_id=q.bundle_id "
+                             "JOIN context_archive AS a ON a.bundle_id=b.bundle_id "
+                             "WHERE q.captured_at<? ORDER BY q.captured_at LIMIT ?",
                              (cutoff, limit)).fetchall()
             for row in old:
                 brief = json.loads(row['payload'])
@@ -408,12 +443,20 @@ class NarrativeJournal:
                 brief['archive_only'] = True
                 db.execute('UPDATE bundles SET payload=? WHERE bundle_id=?',
                            (json.dumps(brief, ensure_ascii=False), row['bundle_id']))
+                db.execute("DELETE FROM bundle_compaction_queue WHERE bundle_id=?", (row['bundle_id'],))
+            # Revisit old rows on each sweep. A pending receipt may become terminal later.
+            sweep = db.execute("SELECT value FROM maintenance WHERE name='event_expiry_cursor'").fetchone()
+            start = int(sweep[0]) if sweep else 0
+            scanned = db.execute("SELECT rowid FROM events WHERE rowid>? ORDER BY rowid LIMIT ?",
+                                 (start, limit * 5)).fetchall()
+            end = scanned[-1][0] if scanned else 0
             pruned_events = db.execute(
-                "DELETE FROM events WHERE event_id IN ("
-                "SELECT event_id FROM events WHERE recipients='[]' AND created_at<? "
-                "AND COALESCE(json_extract(payload,'$.data.effect_kind'),'')!='reminder.created' LIMIT ?)",
-                (cutoff, limit * 5),
+                "DELETE FROM events WHERE rowid>? AND rowid<=? AND recipients='[]' AND created_at<? "
+                "AND COALESCE(json_extract(payload,'$.data.effect_kind'),'')!='reminder.created'",
+                (start, end, cutoff),
             ).rowcount
+            db.execute("INSERT OR REPLACE INTO maintenance(name,value) VALUES('event_expiry_cursor',?)",
+                       (str(end),))
             pruned_attempts = db.execute(
                 "DELETE FROM attempts WHERE attempt_id IN ("
                 "SELECT attempt_id FROM attempts WHERE status IN ('success','failed','cancelled') "
@@ -428,7 +471,7 @@ class NarrativeJournal:
             ).rowcount
             db.execute("DELETE FROM intent_retries WHERE intent_id NOT IN (SELECT intent_id FROM intents)")
         return {
-            'compressed': len(rows),
+            'compressed': compressed,
             'archived': len(old),
             'pruned_events': pruned_events,
             'pruned_attempts': pruned_attempts,

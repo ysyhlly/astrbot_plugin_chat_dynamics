@@ -1769,6 +1769,8 @@ class AstrBotAgentBridge:
                     )
                     if isinstance(raw_lm_diagnostics, dict):
                         safe_lm_diagnostics = {}
+                        if type(raw_lm_diagnostics.get("local_reply_fast_path")) is bool:
+                            safe_lm_diagnostics["local_reply_fast_path"] = raw_lm_diagnostics["local_reply_fast_path"]
                         elapsed = raw_lm_diagnostics.get("elapsed_ms")
                         if type(elapsed) is int and 0 <= elapsed <= 120000:
                             safe_lm_diagnostics["elapsed_ms"] = elapsed
