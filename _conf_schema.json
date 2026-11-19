@@ -1301,5 +1301,51 @@
     "condition": {
       "show_advanced_options": true
     }
+  },
+  "stream_safe_strip_tools": {
+    "description": "流式快路径移除工具（可能影响前缀缓存）",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭以保持同一会话内工具列表恒定，提升模型前缀缓存命中率。开启后在简单闲聊与纯戳一戳回合恢复移除工具的快路径。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "history_cache_high_rounds": {
+    "description": "历史前缀缓存裁剪高水位（轮数）",
+    "type": "int",
+    "default": 36,
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 2
+    },
+    "hint": "完成的历史轮数超过高水位时按块一次性裁剪至低水位，使高低水位之间前缀保持逐轮追加不变。设为 0 表示不启用插件侧滞回裁剪。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "history_cache_low_rounds": {
+    "description": "历史前缀缓存裁剪低水位（轮数）",
+    "type": "int",
+    "default": 20,
+    "slider": {
+      "min": 0,
+      "max": 199,
+      "step": 2
+    },
+    "hint": "触发滞回裁剪后保留的最近历史轮数，须小于高水位（默认 20）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "force_refine_host_caption": {
+    "description": "强制对宿主识图描述二次精修",
+    "type": "bool",
+    "default": false,
+    "hint": "默认关闭：非人设模式下若宿主已提供可用的 <image_caption>，跳过重复的二次识图模型调用。开启后总是执行二次精修。",
+    "condition": {
+      "show_advanced_options": true
+    }
   }
 }

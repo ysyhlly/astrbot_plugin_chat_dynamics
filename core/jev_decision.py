@@ -155,6 +155,30 @@ def target_options(turn: TurnContext, *, limit: int = MAX_TARGET_OPTIONS) -> dic
     return dict(reversed(tuple(options.items())))
 
 
+STATIC_STATE_KEYS = (
+    "identity_policy",
+    "participation_policy",
+    "decision_prompt",
+    "persona",
+    "character_rules",
+    "affection_policy",
+)
+
+
+def _order_state_static_first(state: dict) -> dict:
+    """Place session-static policies/persona before volatile per-turn fields."""
+    ordered: dict = {}
+    for key in STATIC_STATE_KEYS:
+        if key in state:
+            ordered[key] = state[key]
+    for key, value in state.items():
+        if key not in ordered and key != "conversation":
+            ordered[key] = value
+    if "conversation" in state:
+        ordered["conversation"] = state["conversation"]
+    return ordered
+
+
 def build_state(
     turn: TurnContext,
     *,
@@ -170,30 +194,31 @@ def build_state(
     character_rules: str | None = None,
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
-    state = {
-        "conversation": turn.payload(),
+    relationship = normalize_affection(affection, user_id=turn.author)
+    state: dict[str, Any] = {
         "identity_policy": IDENTITY_INSTRUCTIONS,
         "participation_policy": participation_policy(presence),
         "decision_prompt": str(decision_prompt or DEFAULT_DECISION_PROMPT).strip()[:MAX_PROMPT_CHARS],
-        "previous_state": str(previous_state or "observing")[:32],
-        "observations": dict(observations or {}),
         "persona": decision_persona_summary(str(persona_prompt or "")),
     }
+    if character_rules is not None:
+        state["character_rules"] = character_rules[:2000]
+    if relationship is not None:
+        state["affection_policy"] = AFFECTION_INSTRUCTIONS
+    state["previous_state"] = str(previous_state or "observing")[:32]
+    state["observations"] = dict(observations or {})
+    if active_topics is not None:
+        state["active_topics"] = dict(active_topics)
+    if character_state is not None:
+        state["character_state"] = dict(character_state)
+    if relationship is not None:
+        state["affection"] = relationship
+    state["conversation"] = turn.payload()
     from .nearby_context import decision_payload, POLICY
     nearby = decision_payload(turn)
     if nearby:
         state['conversation']['nearby_context'] = nearby
         state['conversation']['nearby_context_policy'] = POLICY
-    if active_topics is not None:
-        state["active_topics"] = dict(active_topics)
-    if character_state is not None:
-        state["character_state"] = dict(character_state)
-    if character_rules is not None:
-        state["character_rules"] = character_rules[:2000]
-    relationship = normalize_affection(affection, user_id=turn.author)
-    if relationship is not None:
-        state["affection"] = relationship
-        state["affection_policy"] = AFFECTION_INSTRUCTIONS
     return _shrink(_compact_state(state), max_chars)
 
 
@@ -373,7 +398,7 @@ def _compact_state(state: dict) -> dict:
     state.setdefault("persona", "")
     if has_topics:
         state.setdefault("active_topics", {})
-    return state
+    return _order_state_static_first(state)
 
 
 def _drop_optional_topic(topics: dict) -> bool:

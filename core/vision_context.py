@@ -1,8 +1,12 @@
 """Detailed visual grounding shared by caption providers and the main agent."""
 
 import asyncio
+import re
 
 from .platform_bridge import collect_media_urls
+
+_IMAGE_CAPTION_RE = re.compile(r"<image_caption>(.*?)</image_caption>", re.DOTALL | re.IGNORECASE)
+USABLE_HOST_CAPTION_MIN_CHARS = 12
 
 
 VISION_REQUIREMENTS = """请仔细识别图片，为后续主模型提供具体、可核对的视觉信息，不要只写大概概述。
@@ -25,14 +29,46 @@ def caption_settings(settings: dict) -> dict:
     return copied
 
 
-async def refine_host_caption(context, event, request) -> str:
-    """Older native pipelines caption before request hooks; refine only that case.
+def extract_host_captions(request) -> list[str]:
+    """Return stripped text bodies inside host <image_caption> tags."""
+    parts = getattr(request, "extra_user_content_parts", ()) or ()
+    found: list[str] = []
+    for part in parts:
+        text = getattr(part, "text", "")
+        if not isinstance(text, str) or "<image_caption>" not in text:
+            continue
+        for match in _IMAGE_CAPTION_RE.finditer(text):
+            body = match.group(1).strip()
+            if body:
+                found.append(body)
+    return found
 
-    Return supplemental data without modifying existing captions on failure.
+
+def has_usable_host_caption(request, *, min_chars: int = USABLE_HOST_CAPTION_MIN_CHARS) -> bool:
+    """True when the host already supplied a non-trivial <image_caption>."""
+    threshold = max(1, int(min_chars))
+    return any(len(body) >= threshold for body in extract_host_captions(request))
+
+
+async def refine_host_caption(
+    context,
+    event,
+    request,
+    *,
+    force: bool = False,
+    min_usable_chars: int = USABLE_HOST_CAPTION_MIN_CHARS,
+) -> str:
+    """Older native pipelines caption before request hooks; refine only when needed.
+
+    Skips the redundant second VLM call when a usable host ``<image_caption>`` is
+    already present unless ``force=True``. Returns supplemental data without
+    modifying existing captions on failure.
     """
     parts = getattr(request, "extra_user_content_parts", ()) or ()
     captions = [getattr(part, "text", "") for part in parts]
     if not any("<image_caption>" in text for text in captions):
+        return ""
+    if not force and has_usable_host_caption(request, min_chars=min_usable_chars):
         return ""
     settings = context.get_config(umo=event.unified_msg_origin).get("provider_settings", {})
     provider_id = settings.get("default_image_caption_provider_id")

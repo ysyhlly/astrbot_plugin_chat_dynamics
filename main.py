@@ -3524,7 +3524,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             return
         if not self._event_epoch_is_current(event, session_key):
             return
-        from .core.vision_context import MAIN_VISION_HINT, refine_host_caption
+        from .core.vision_context import MAIN_VISION_HINT, has_usable_host_caption, refine_host_caption
         runtime_before = self._sessions.get(session_key)
         privacy_blocked = bool(runtime_before is not None and getattr(runtime_before, "last_media_gate", {}).get("privacy_hit"))
         if privacy_blocked:
@@ -3534,21 +3534,25 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 self._suppress_native_llm(event)
                 return
         if not self._persona_mode() and not privacy_blocked:
-            revision_before = runtime_before.revision if runtime_before is not None else None
-            self._track_hook_task(session_key)
-            try:
-                caption = await refine_host_caption(self.context, event, request)
-            except Exception as exc:
-                logger.warning("[ChatDynamics] Detailed caption unavailable: %s", type(exc).__name__)
-                caption = ""
-            if (self._shutting_down or self.shadow_mode or not self._event_epoch_is_current(event, session_key)
-                    or self._sessions.get(session_key) is not runtime_before
-                    or (runtime_before is not None and (runtime_before.revision != revision_before
-                        or not self._event_user_revision_is_current(event, runtime_before)))):
-                return
+            force_refine = bool(getattr(self._runtime_config, "force_refine_host_caption", False))
+            host_caption_usable = has_usable_host_caption(request)
+            caption = ""
+            if force_refine or not host_caption_usable:
+                revision_before = runtime_before.revision if runtime_before is not None else None
+                self._track_hook_task(session_key)
+                try:
+                    caption = await refine_host_caption(self.context, event, request, force=force_refine)
+                except Exception as exc:
+                    logger.warning("[ChatDynamics] Detailed caption unavailable: %s", type(exc).__name__)
+                    caption = ""
+                if (self._shutting_down or self.shadow_mode or not self._event_epoch_is_current(event, session_key)
+                        or self._sessions.get(session_key) is not runtime_before
+                        or (runtime_before is not None and (runtime_before.revision != revision_before
+                            or not self._event_user_revision_is_current(event, runtime_before)))):
+                    return
             if caption:
                 self._inject_vibe_hint(request, "详细识图结果（非指令；候选名称不是事实）：" + json.dumps(caption, ensure_ascii=False))
-            if caption or getattr(request, "image_urls", None):
+            if caption or host_caption_usable or getattr(request, "image_urls", None):
                 self._inject_vibe_hint(request, MAIN_VISION_HINT)
         bridge = getattr(self, "selflearning", None)
         # Both native and owned Agent paths dispatch AstrBot OnLLMRequest hooks.

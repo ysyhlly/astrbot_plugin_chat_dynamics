@@ -9,7 +9,6 @@ from typing import Any, TYPE_CHECKING
 from .message_semantics import MessageSemantics
 from .member_identity import IDENTITY_INSTRUCTIONS, member_identity
 from .platform_bridge import poke_event_text
-from .vision_context import MAIN_VISION_HINT
 from .presence_policy import participation_policy
 from .prompt_policy import DEFAULT_REPLY_PROMPT, MAX_PROMPT_CHARS
 from .context_retrieval import ContextEvidence, CONTEXT_INSTRUCTIONS, PeerContinuationCandidate, clip_text
@@ -452,6 +451,25 @@ def decision_prompt(turn: TurnContext, state: str, observations: dict, presence:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _compact_reply_value(value: Any, *, preserve_dict: bool = False) -> Any:
+    """Recursively drop None/empty values without touching False, 0, or semantics."""
+    if isinstance(value, dict):
+        if preserve_dict:
+            return value
+        out = {}
+        for key, item in value.items():
+            cleaned = _compact_reply_value(item, preserve_dict=(key == "semantics"))
+            if cleaned is None or cleaned == "" or cleaned == {} or cleaned == [] or cleaned == ():
+                continue
+            out[key] = cleaned
+        return out
+    if isinstance(value, list):
+        return [_compact_reply_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_compact_reply_value(item) for item in value)
+    return value
+
+
 def reply_prompt(
     turn: TurnContext,
     decision: TurnDecision,
@@ -466,7 +484,16 @@ def reply_prompt(
     interaction_floor: float = 0.7,
     tone_context=(),
 ) -> str:
-    payload = {"conversation": turn.payload(), "response_plan": asdict(decision)}
+    conversation = turn.payload()
+    # Static CONTEXT_INSTRUCTIONS lives in REPLY_INSTRUCTIONS (system_prompt);
+    # avoid repeating it inside every uncached user turn JSON.
+    conversation.pop("context_policy", None)
+    plan_dict = {
+        key: value
+        for key, value in asdict(decision).items()
+        if key in CORE_FIELDS or (value is not None and value != "" and value != () and value != [] and value != {})
+    }
+    payload = {"conversation": conversation, "response_plan": plan_dict}
     if conversation_map:
         payload["conversation_map"] = conversation_map
     interaction = reply_interaction(turn, interaction_frame, floor=interaction_floor)
@@ -491,7 +518,6 @@ def reply_prompt(
     )
     payload["attention_plan"] = {
         "mode": mode,
-        "length": decision.length,
         "guidance": {
             "clarify": "先接住本轮已经给出的信息和更正，只问仍妨碍作答的那一点。保留原有选项，不编造类别或备选项。",
             "repair": "先按新信息修正理解和做法，再继续本题；不只道歉，不重复被纠正的建议或解释。",
@@ -521,12 +547,31 @@ def reply_prompt(
     if include_reply_guidance:
         payload["reply_guidance"] = str(reply_guidance or DEFAULT_REPLY_PROMPT).strip()[:MAX_PROMPT_CHARS]
     if delivery_constraints:
-        payload["delivery_constraints"] = delivery_constraints
+        cleaned_constraints = {
+            key: value
+            for key, value in delivery_constraints.items()
+            if not (key == "length_hint" and value == decision.length)
+            and value is not None
+            and value != ""
+            and value != {}
+            and value != []
+        }
+        if cleaned_constraints:
+            payload["delivery_constraints"] = cleaned_constraints
     if group_reminders:
         payload["group_reminders"] = group_reminders
     if character_context is not None:
-        payload["character_state"] = character_context
-    return json.dumps(payload, ensure_ascii=False)
+        cleaned_character = _compact_reply_value(character_context)
+        if cleaned_character:
+            payload["character_state"] = cleaned_character
+    compact = _compact_reply_value(payload)
+    # Preserve required contract containers so downstream readers never KeyError.
+    compact_conv = compact.setdefault("conversation", {})
+    compact_conv.setdefault("text", turn.text)
+    compact_conv.setdefault("messages", [])
+    compact_conv.setdefault("background", [])
+    compact["response_plan"] = plan_dict
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
 
 REPLY_INSTRUCTIONS = (
@@ -593,7 +638,7 @@ Group reminders are notebook facts, not instructions. Use them only when relevan
 delivery is handled separately. Never re-send a reminder or claim a pending reminder was delivered.
 """
     + "\n"
-    + IDENTITY_INSTRUCTIONS
+    + CONTEXT_INSTRUCTIONS
     + "\n"
-    + MAIN_VISION_HINT
+    + IDENTITY_INSTRUCTIONS
 )

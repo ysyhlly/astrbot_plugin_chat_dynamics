@@ -5,7 +5,7 @@ import inspect
 import json
 import math
 import re
-from collections import Counter
+from collections import OrderedDict
 
 _SELF = re.compile(r'(?:^|[，,；;])我(?:拒绝|警告|吐槽|要求|回应|表示|解释|反驳|否认|斥责|因|在|虽然|傲娇)|(?:被我|向我|抱我|叫我)')
 
@@ -15,10 +15,63 @@ _LM_PART_COUNTERS = ("text", "think", "image_url", "audio_url",
                      "other_known_nontext", "unrecognized")
 _LM_MEASUREMENT_COUNTER_MAX = 10000
 
+DEFAULT_HISTORY_CACHE_HIGH_ROUNDS = 36
+DEFAULT_HISTORY_CACHE_LOW_ROUNDS = 20
+DEFAULT_HISTORY_CHUNK_SIZE = 8
+DEFAULT_RECENT_IMAGE_TAIL_ROUNDS = 6
+_HISTORY_WATERMARK_MAX_SESSIONS = 256
+_HISTORY_CACHE_WATERMARKS: OrderedDict[str, dict] = OrderedDict()
+
+_IMAGE_CAPTION_TAG_RE = re.compile(r"<image_caption>(.*?)</image_caption>", re.DOTALL | re.IGNORECASE)
+_IMAGE_ATTACH_LABEL_RE = re.compile(r"\[Image(?:\s+Attachment)?[:\s]+([^\]]{1,80})\]")
+
 
 def _bounded_part_counts(counts):
     return {key: min(_LM_MEASUREMENT_COUNTER_MAX, max(0, int(counts.get(key, 0))))
             for key in _LM_PART_COUNTERS}
+
+
+def _strip_empty_material_fields(value):
+    """Recursively drop None/empty containers/strings while keeping False and 0."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            stripped = _strip_empty_material_fields(item)
+            if stripped is None or stripped == "" or stripped == {} or stripped == [] or stripped == ():
+                continue
+            cleaned[key] = stripped
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_empty_material_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_empty_material_fields(item) for item in value)
+    return value
+
+
+def _compact_lm_material(material):
+    """Strip empty fields and static policy prose already covered by system_prompt/reply_prompt."""
+    compact = copy.deepcopy(material)
+    if compact.get("evidence_detail") == "available_in_local_turn_journal":
+        compact.pop("evidence_detail", None)
+    member_profile = compact.get("member_profile")
+    if isinstance(member_profile, dict):
+        member_profile.pop("usage", None)
+    interaction_basis = compact.get("current_interaction_basis")
+    if isinstance(interaction_basis, dict):
+        interaction_basis.pop("guidance", None)
+    adaptation = compact.get("conversation_adaptation")
+    if isinstance(adaptation, dict):
+        adaptation.pop("usage", None)
+        adaptation.pop("priority", None)
+        adaptation.pop("member_profile_path", None)
+        shared = adaptation.get("shared_context")
+        if isinstance(shared, dict):
+            shared.pop("usage", None)
+        rhythm = adaptation.get("rhythm")
+        if isinstance(rhythm, dict):
+            for dup_key in ("authority", "action", "length", "mode"):
+                rhythm.pop(dup_key, None)
+    return _strip_empty_material_fields(compact)
 
 
 def build_lm_final_material_payload(material, managed):
@@ -29,18 +82,20 @@ def build_lm_final_material_payload(material, managed):
     """
     if not isinstance(material, dict) or not isinstance(managed, dict):
         return _LM_MATERIAL_PREFIX + "{}", {"schema_version": 1, "entries": {}}
-    material=dict(material)
-    omitted=material.pop('_reply_usage_omitted',[])
-    serialized = json.dumps(material, ensure_ascii=False)
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    material = dict(material)
+    omitted = material.pop('_reply_usage_omitted', [])
     counts = _lm_material_counts(material, managed)
     from .reply_adaptation import counts as adaptation_counts, usage as adaptation_usage
-    adaptation=adaptation_counts(material)
+    adaptation = adaptation_counts(material)
+    usage_entry = adaptation_usage(material, omitted) if adaptation is not None else None
+    compact = _compact_lm_material(material)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     return _LM_MATERIAL_PREFIX + serialized, {
         "schema_version": 1,
         "entries": {digest: counts},
-        "adaptation_entries":{digest:adaptation} if adaptation is not None else {},
-        "usage_entries":{digest:adaptation_usage(material,omitted)} if adaptation is not None else {},
+        "adaptation_entries": {digest: adaptation} if adaptation is not None else {},
+        "usage_entries": {digest: usage_entry} if adaptation is not None else {},
     }
 
 
@@ -733,12 +788,330 @@ def _evidence_source_record(round_messages, history_projection, evidence_view, s
     return {"role": "user", "content": content}, ("degraded" if degraded else "projected")
 
 
-def _history_without_unverified_assistant(contexts, raw_prefix, spans, groups, protected):
+def _round_fingerprint(messages) -> str:
+    encoded = json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _resolve_hysteresis_window(
+    groups,
+    protected,
+    *,
+    session_key: str = "",
+    high_rounds: int = DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+    low_rounds: int = DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+    watermark_store: dict | None = None,
+):
+    """Track a per-session trim watermark for append-only hysteresis chunk trimming.
+
+    Protected rounds (e.g. persona few-shot examples) are never trimmed.
+    Non-protected history stays strictly append-only while kept rounds <= high_rounds,
+    then drops in one step back to low_rounds.
+    """
+    history_indices = [
+        gi for gi, (raw_start, raw_end, _messages) in enumerate(groups)
+        if not any(index in protected for index in range(raw_start, raw_end))
+    ]
+    fps = [_round_fingerprint(groups[gi][2]) for gi in history_indices]
+    trim_enabled = (
+        isinstance(high_rounds, int)
+        and isinstance(low_rounds, int)
+        and high_rounds > 0
+        and 0 < low_rounds < high_rounds
+    )
+    store = watermark_store if watermark_store is not None else (_HISTORY_CACHE_WATERMARKS if session_key else None)
+
+    start_pos = 0
+    abs_base = 0
+    if store is not None and session_key and session_key in store:
+        state = store[session_key]
+        anchor_fps = tuple(state.get("anchor_fps") or ())
+        prev_abs_base = int(state.get("abs_base", 0) or 0)
+        prev_start_pos = int(state.get("last_start_pos", 0) or 0)
+        matched_pos = None
+        if anchor_fps and fps:
+            # Prefer a full anchor match (up to 3 consecutive rounds); fall back to shorter prefix if history shrank.
+            for width in range(min(len(anchor_fps), len(fps)), 0, -1):
+                target = anchor_fps[:width]
+                candidates = [
+                    pos for pos in range(0, len(fps) - width + 1)
+                    if tuple(fps[pos:pos + width]) == target
+                ]
+                if candidates:
+                    # Prefer match at or before prev_start_pos (host truncation shifts left, never right).
+                    prior = [pos for pos in candidates if pos <= prev_start_pos]
+                    matched_pos = max(prior) if prior else min(candidates, key=lambda pos: abs(pos - prev_start_pos))
+                    break
+        if matched_pos is not None:
+            start_pos = matched_pos
+            abs_base = prev_abs_base
+
+    kept_count = len(history_indices) - start_pos
+    if trim_enabled and kept_count > high_rounds:
+        drop_delta = kept_count - low_rounds
+        start_pos += drop_delta
+        abs_base += drop_delta
+
+    if store is not None and session_key:
+        if start_pos < len(history_indices):
+            new_anchor = tuple(fps[start_pos:start_pos + 3])
+            store[session_key] = {
+                "anchor_fps": new_anchor,
+                "abs_base": abs_base,
+                "last_start_pos": start_pos,
+            }
+            if isinstance(store, OrderedDict):
+                store.move_to_end(session_key)
+                while len(store) > _HISTORY_WATERMARK_MAX_SESSIONS:
+                    store.popitem(last=False)
+        else:
+            store.pop(session_key, None)
+
+    dropped_groups = set(history_indices[:start_pos])
+    kept_abs_by_group = {
+        gi: abs_base + offset for offset, gi in enumerate(history_indices[start_pos:])
+    }
+    abs_end = abs_base + (len(history_indices) - start_pos)
+    return dropped_groups, kept_abs_by_group, abs_end, abs_base
+
+
+def _strip_before_boundary(
+    abs_end: int,
+    chunk_size: int = DEFAULT_HISTORY_CHUNK_SIZE,
+    recent_image_tail_rounds: int = DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+) -> int:
+    """Return the exclusive absolute round boundary before which stale images are replaced.
+
+    Advances ONLY in multiples of ``chunk_size`` so image stripping never shifts turn-by-turn.
+    """
+    if not isinstance(chunk_size, int) or chunk_size <= 0:
+        return 0
+    tail = max(0, int(recent_image_tail_rounds))
+    eligible = abs_end - tail
+    if eligible < chunk_size:
+        return 0
+    return (eligible // chunk_size) * chunk_size
+
+
+def _group_context_span(spans, raw_start: int, raw_end: int, limit: int):
+    if raw_start >= raw_end or raw_start < 0 or raw_end > len(spans):
+        return None
+    start = spans[raw_start][0]
+    end = spans[raw_end - 1][1]
+    if start < 0 or end < start or end > limit:
+        return None
+    return start, end
+
+
+def _is_inline_image_part(part) -> bool:
+    if isinstance(part, dict):
+        kind = str(part.get("type") or "").casefold()
+        return kind in {"image_url", "image"} or "image_url" in part
+    kind_val = getattr(part, "type", "")
+    if not isinstance(kind_val, str):
+        kind_val = getattr(kind_val, "value", kind_val)
+    kind = str(kind_val or "").casefold()
+    cls_name = part.__class__.__name__.casefold()
+    return kind in {"image_url", "image"} or cls_name in {"imageurlpart", "imagepart"}
+
+
+def _part_text_if_any(part) -> str:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        text = part.get("text")
+        return text if isinstance(text, str) else ""
+    text = getattr(part, "text", None)
+    return text if isinstance(text, str) else ""
+
+
+def _image_placeholder_text(part, sibling_text: str = "") -> str:
+    label = ""
+    for attr in ("caption", "alt", "filename", "name"):
+        value = part.get(attr) if isinstance(part, dict) else getattr(part, attr, None)
+        if isinstance(value, str) and value.strip():
+            label = value.strip()[:120]
+            break
+    if not label:
+        img_url = part.get("image_url") if isinstance(part, dict) else getattr(part, "image_url", None)
+        url = ""
+        if isinstance(img_url, dict):
+            url = str(img_url.get("url") or "")
+        elif isinstance(img_url, str):
+            url = img_url
+        else:
+            url = str(getattr(img_url, "url", "") or "")
+        if url and not url.startswith("data:"):
+            tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if tail and len(tail) <= 80 and "." in tail:
+                label = tail
+    if not label and sibling_text:
+        caption_match = _IMAGE_CAPTION_TAG_RE.search(sibling_text)
+        if caption_match and caption_match.group(1).strip():
+            label = caption_match.group(1).strip()[:120]
+        else:
+            attach_match = _IMAGE_ATTACH_LABEL_RE.search(sibling_text)
+            if attach_match and attach_match.group(1).strip():
+                label = attach_match.group(1).strip()[:80]
+    if label:
+        return f"[历史图片已省略: {label}]"
+    return "[历史图片已省略]"
+
+
+def _approx_part_size(part) -> int:
+    try:
+        if isinstance(part, dict):
+            return len(json.dumps(part, ensure_ascii=False, default=str))
+        dump = getattr(part, "model_dump", None)
+        if callable(dump):
+            return len(json.dumps(dump(), ensure_ascii=False, default=str))
+        return len(str(part))
+    except Exception:
+        return 0
+
+
+def _make_text_part_like(example_part, text: str):
+    if isinstance(example_part, dict):
+        return {"type": "text", "text": text}
+    try:
+        from astrbot.core.agent.message import TextPart
+        return TextPart(text=text)
+    except Exception:
+        return {"type": "text", "text": text}
+
+
+def _strip_stale_images_from_message(message):
+    """Replace inline image parts in one historical message with compact text placeholders."""
+    is_dict = isinstance(message, dict)
+    content = message.get("content") if is_dict else getattr(message, "content", None)
+    if not isinstance(content, list):
+        return message, 0, 0
+    if not any(_is_inline_image_part(part) for part in content):
+        return message, 0, 0
+    sibling_text = "\n".join(text for part in content if (text := _part_text_if_any(part)))
+    new_parts = []
+    stripped = 0
+    chars_saved = 0
+    for part in content:
+        if _is_inline_image_part(part):
+            placeholder = _image_placeholder_text(part, sibling_text)
+            replacement = _make_text_part_like(part, placeholder)
+            stripped += 1
+            chars_saved += max(0, _approx_part_size(part) - len(placeholder))
+            new_parts.append(replacement)
+        else:
+            new_parts.append(part)
+    if is_dict:
+        updated = dict(message)
+        updated["content"] = new_parts
+        return updated, stripped, chars_saved
+    try:
+        updated = copy.copy(message)
+        updated.content = new_parts
+        return updated, stripped, chars_saved
+    except Exception:
+        return message, 0, 0
+
+
+def _strip_stale_images_in_slice(result, start: int, end: int):
+    new_slice = []
+    total_stripped = 0
+    total_saved = 0
+    for index in range(start, end):
+        updated, stripped, saved = _strip_stale_images_from_message(result[index])
+        new_slice.append(updated)
+        total_stripped += stripped
+        total_saved += saved
+    if total_stripped == 0:
+        return None, 0, 0
+    return new_slice, total_stripped, total_saved
+
+
+def _approx_slice_chars(items) -> int:
+    total = 0
+    for item in items:
+        dumped = _message_dict(item)
+        try:
+            total += len(json.dumps(dumped if dumped is not None else str(item), ensure_ascii=False, default=str))
+        except Exception:
+            total += len(str(item))
+    return total
+
+
+def _collect_trim_and_image_edits(
+    result,
+    spans,
+    groups,
+    prefix_count: int,
+    dropped_groups: set[int],
+    kept_abs_by_group: dict[int, int],
+    converted_groups: set[int],
+    strip_before_abs: int,
+):
+    edits = []
+    trimmed_rounds = 0
+    stripped_images = 0
+    chars_saved = 0
+    for gi, (raw_start, raw_end, _messages) in enumerate(groups):
+        span = _group_context_span(spans, raw_start, raw_end, prefix_count)
+        if span is None:
+            continue
+        start, end = span
+        if gi in dropped_groups:
+            if end > start:
+                chars_saved += _approx_slice_chars(result[start:end])
+                edits.append((start, end, []))
+                trimmed_rounds += 1
+            continue
+        if gi in converted_groups:
+            continue
+        abs_idx = kept_abs_by_group.get(gi)
+        if abs_idx is not None and abs_idx < strip_before_abs and end > start:
+            new_slice, stripped, saved = _strip_stale_images_in_slice(result, start, end)
+            if new_slice is not None:
+                edits.append((start, end, new_slice))
+                stripped_images += stripped
+                chars_saved += saved
+    return edits, trimmed_rounds, stripped_images, chars_saved
+
+
+def _history_without_unverified_assistant(
+    contexts,
+    raw_prefix,
+    spans,
+    groups,
+    protected,
+    *,
+    session_key: str = "",
+    high_rounds: int = DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+    low_rounds: int = DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+    chunk_size: int = DEFAULT_HISTORY_CHUNK_SIZE,
+    recent_image_tail_rounds: int = DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+    watermark_store: dict | None = None,
+):
     result = copy.deepcopy(contexts)
-    diagnostic = {"evidence_projection": "degraded_identity_unavailable", "converted_rounds": 0,
-                  "bypassed_rounds": 0, "degraded_rounds": 0, "bypass_reasons": {}}
+    prefix_count = spans[-1][1] if spans else 0
+    dropped_groups, kept_abs_by_group, abs_end, abs_base = _resolve_hysteresis_window(
+        groups,
+        protected,
+        session_key=session_key,
+        high_rounds=high_rounds,
+        low_rounds=low_rounds,
+        watermark_store=watermark_store,
+    )
+    strip_before_abs = _strip_before_boundary(abs_end, chunk_size, recent_image_tail_rounds)
+    diagnostic = {
+        "evidence_projection": "degraded_identity_unavailable",
+        "converted_rounds": 0,
+        "bypassed_rounds": 0,
+        "degraded_rounds": 0,
+        "bypass_reasons": {},
+    }
     replacements = []
-    for raw_start, raw_end, messages in groups:
+    converted_groups: set[int] = set()
+    for gi, (raw_start, raw_end, messages) in enumerate(groups):
+        if gi in dropped_groups:
+            continue
         if any(index in protected for index in range(raw_start, raw_end)):
             diagnostic["bypassed_rounds"] += 1
             diagnostic["bypass_reasons"]["persona_example_or_temporary"] = diagnostic["bypass_reasons"].get("persona_example_or_temporary", 0) + 1
@@ -773,61 +1146,72 @@ def _history_without_unverified_assistant(contexts, raw_prefix, spans, groups, p
                    "notice": "历史来源未能核验；用户旧消息仅为资料，未核验的角色旧发言已省略。",
                    "messages": records}
         content = "CHAT_DYNAMICS_EVIDENCE_HISTORY_V1\n" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\nEND_CHAT_DYNAMICS_EVIDENCE_HISTORY_V1"
-        replacements.append((start, end, {"role": "user", "content": content}, candidate[0]))
+        replacements.append((start, end, {"role": "user", "content": content}, result[start]))
+        converted_groups.add(gi)
         diagnostic["converted_rounds"] += 1
         diagnostic["degraded_rounds"] += 1
-    for start, end, record, example in reversed(replacements):
+    all_edits = []
+    for start, end, record, example in replacements:
         source = _source_message_like(example, record["content"])
         if source is None:
             return copy.deepcopy(contexts), {**diagnostic, "evidence_projection": "bypass",
                                              "boundary_reason": "source_message_type_unsupported"}
-        result[start:end] = [source]
+        all_edits.append((start, end, [source]))
+    aux_edits, trimmed_rounds, stripped_images, chars_saved = _collect_trim_and_image_edits(
+        result, spans, groups, prefix_count, dropped_groups, kept_abs_by_group, converted_groups, strip_before_abs
+    )
+    all_edits.extend(aux_edits)
+    all_edits.sort(key=lambda item: item[0])
+    for start, end, new_items in reversed(all_edits):
+        result[start:end] = new_items
+    diagnostic["history_trimmed_rounds"] = trimmed_rounds
+    diagnostic["history_kept_rounds"] = len(kept_abs_by_group)
+    diagnostic["history_watermark_round"] = abs_base
+    diagnostic["history_stripped_images"] = stripped_images
+    diagnostic["history_chunk_size"] = chunk_size
+    diagnostic["history_characters_saved"] = chars_saved
     return result, diagnostic
 
 
-def _pack_projected_runs(replacements):
-    """Deduplicate historical framing/text without dropping a message or fact."""
-    packed, run = [], []
-
-    def finish():
-        if len(run) < 4:
-            packed.extend(run)
-            return
-        prefix, suffix = "CHAT_DYNAMICS_EVIDENCE_HISTORY_V1\n", "\nEND_CHAT_DYNAMICS_EVIDENCE_HISTORY_V1"
-        payloads = [json.loads(row[2]["content"][len(prefix):-len(suffix)]) for row in run]
-        counts = Counter(m["content"] for p in payloads for m in p["messages"])
-        pool = {f"T{i}": text for i, text in enumerate(text for text, n in counts.items() if n > 1 and len(text) >= 80)}
-        refs = {text: key for key, text in pool.items()}
-        rounds = []
-        for payload in payloads:
-            messages = [{**{k: v for k, v in message.items() if k != "content"}, "text_ref": refs[message["content"]]}
-                        if message["content"] in refs else message for message in payload["messages"]]
-            rounds.append({"projection_status": payload["projection_status"], "messages": messages})
-        content = "CHAT_DYNAMICS_EVIDENCE_HISTORY_COMPACT_V1\n" + json.dumps({
-            "schema": "evidence_history_compact_v1", "source": "completed_host_history",
-            "notice": payloads[0]["notice"] + " text_ref逐字引用text_pool对应原文；rounds保持时间顺序与说话者归属。",
-            "text_pool": pool, "rounds": rounds}, ensure_ascii=False, separators=(",", ":")) + "\nEND_CHAT_DYNAMICS_EVIDENCE_HISTORY_COMPACT_V1"
-        original_size = sum(len(row[2]["content"]) for row in run)
-        if len(content) + 1024 < original_size:
-            packed.append((run[0][0], run[-1][1], {"role": "user", "content": content}, run[0][3]))
-        else:
-            packed.extend(run)
-
-    for row in replacements:
-        if run and run[-1][1] != row[0]:
-            finish()
-            run = []
-        run.append(row)
-    finish()
-    return packed
-
-
-def _evidence_history_view(contexts, raw_prefix, spans, groups, evidence_view, protected=(), position_offset=0):
+def _evidence_history_view(
+    contexts,
+    raw_prefix,
+    spans,
+    groups,
+    evidence_view,
+    protected=(),
+    position_offset=0,
+    *,
+    session_key: str = "",
+    high_rounds: int = DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+    low_rounds: int = DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+    chunk_size: int = DEFAULT_HISTORY_CHUNK_SIZE,
+    recent_image_tail_rounds: int = DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+    watermark_store: dict | None = None,
+):
     result = copy.deepcopy(contexts)
-    diagnostic = {"evidence_projection": "active", "converted_rounds": 0,
-                  "bypassed_rounds": 0, "degraded_rounds": 0, "bypass_reasons": {}}
+    prefix_count = spans[-1][1] if spans else 0
+    dropped_groups, kept_abs_by_group, abs_end, abs_base = _resolve_hysteresis_window(
+        groups,
+        protected,
+        session_key=session_key,
+        high_rounds=high_rounds,
+        low_rounds=low_rounds,
+        watermark_store=watermark_store,
+    )
+    strip_before_abs = _strip_before_boundary(abs_end, chunk_size, recent_image_tail_rounds)
+    diagnostic = {
+        "evidence_projection": "active",
+        "converted_rounds": 0,
+        "bypassed_rounds": 0,
+        "degraded_rounds": 0,
+        "bypass_reasons": {},
+    }
     replacements = []
-    for raw_start, raw_end, messages in groups:
+    converted_groups: set[int] = set()
+    for gi, (raw_start, raw_end, messages) in enumerate(groups):
+        if gi in dropped_groups:
+            continue
         if any(index in protected for index in range(raw_start, raw_end)):
             diagnostic["bypassed_rounds"] += 1
             diagnostic["bypass_reasons"]["persona_example_or_temporary"] = diagnostic["bypass_reasons"].get("persona_example_or_temporary", 0) + 1
@@ -868,24 +1252,49 @@ def _evidence_history_view(contexts, raw_prefix, spans, groups, evidence_view, p
             diagnostic["bypassed_rounds"] += 1
             diagnostic["bypass_reasons"][state] = diagnostic["bypass_reasons"].get(state, 0) + 1
             continue
-        replacements.append((start, end, source, candidate[0]))
+        # Keep each projected round as an immutable, append-only CHAT_DYNAMICS_EVIDENCE_HISTORY_V1
+        # message so prior turns never mutate when new rounds arrive (prefix cache stability).
+        replacements.append((start, end, source, result[start]))
+        converted_groups.add(gi)
         diagnostic["converted_rounds"] += 1
         if state == "degraded":
             diagnostic["degraded_rounds"] += 1
-    if evidence_view.get("purpose") != "history_quote":
-        original_size = sum(len(row[2]["content"]) for row in replacements)
-        replacements = _pack_projected_runs(replacements)
-        diagnostic["history_characters_saved"] = original_size - sum(len(row[2]["content"]) for row in replacements)
-    for start, end, record, example in reversed(replacements):
+
+    all_edits = []
+    for start, end, record, example in replacements:
         source = _source_message_like(example, record["content"])
         if source is None:
             return copy.deepcopy(contexts), {**diagnostic, "evidence_projection": "bypass",
                                              "boundary_reason": "source_message_type_unsupported"}
-        result[start:end] = [source]
+        all_edits.append((start, end, [source]))
+    aux_edits, trimmed_rounds, stripped_images, chars_saved = _collect_trim_and_image_edits(
+        result, spans, groups, prefix_count, dropped_groups, kept_abs_by_group, converted_groups, strip_before_abs
+    )
+    all_edits.extend(aux_edits)
+    all_edits.sort(key=lambda item: item[0])
+    for start, end, new_items in reversed(all_edits):
+        result[start:end] = new_items
+    diagnostic["history_trimmed_rounds"] = trimmed_rounds
+    diagnostic["history_kept_rounds"] = len(kept_abs_by_group)
+    diagnostic["history_watermark_round"] = abs_base
+    diagnostic["history_stripped_images"] = stripped_images
+    diagnostic["history_chunk_size"] = chunk_size
+    diagnostic["history_characters_saved"] = chars_saved
     return result, diagnostic
 
 
-def project_host_history_contexts(contexts, expected_rows, evidence_view):
+def project_host_history_contexts(
+    contexts,
+    expected_rows,
+    evidence_view,
+    *,
+    session_key: str = "",
+    high_rounds: int = DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+    low_rounds: int = DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+    chunk_size: int = DEFAULT_HISTORY_CHUNK_SIZE,
+    recent_image_tail_rounds: int = DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+    watermark_store: dict | None = None,
+):
     """Project native request history only when it exactly matches its snapshot."""
     if not isinstance(contexts, list) or not isinstance(expected_rows, list):
         return copy.deepcopy(contexts), {"evidence_projection": "bypass", "reason": "history_shape_unknown"}
@@ -909,11 +1318,35 @@ def project_host_history_contexts(contexts, expected_rows, evidence_view):
         return copy.deepcopy(contexts), {"evidence_projection": "bypass", "reason": "snapshot_mismatch"}
     spans = [(index, index + 1) for index in range(len(raw))]
     _, groups = _logical_rounds(raw)
-    return _evidence_history_view(contexts, raw, spans, groups, evidence_view,
-                                  protected=protected, position_offset=position_offset)
+    return _evidence_history_view(
+        contexts,
+        raw,
+        spans,
+        groups,
+        evidence_view,
+        protected=protected,
+        position_offset=position_offset,
+        session_key=session_key,
+        high_rounds=high_rounds,
+        low_rounds=low_rounds,
+        chunk_size=chunk_size,
+        recent_image_tail_rounds=recent_image_tail_rounds,
+        watermark_store=watermark_store,
+    )
 
 
-def history_view(contexts, boundary=None, provider=None):
+def history_view(
+    contexts,
+    boundary=None,
+    provider=None,
+    *,
+    session_key: str = "",
+    high_rounds: int = DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+    low_rounds: int = DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+    chunk_size: int = DEFAULT_HISTORY_CHUNK_SIZE,
+    recent_image_tail_rounds: int = DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+    watermark_store: dict | None = None,
+):
     """Project complete, plain chat history in a provider-only deep copy."""
     diagnostic = {"version": HISTORY_PROJECTION_VERSION, "boundary_state": "bypass",
                   "boundary_reason": "boundary_missing", "converted_rounds": 0,
@@ -953,16 +1386,40 @@ def history_view(contexts, boundary=None, provider=None):
         return copy.deepcopy(contexts), diagnostic
     _, groups = _logical_rounds(raw_prefix)
     protected = set(protected)
+    cache_kwargs = {
+        "session_key": session_key,
+        "high_rounds": high_rounds,
+        "low_rounds": low_rounds,
+        "chunk_size": chunk_size,
+        "recent_image_tail_rounds": recent_image_tail_rounds,
+        "watermark_store": watermark_store,
+    }
     if boundary.get("evidence_identity") == "matched" and isinstance(boundary.get("evidence_view"), dict):
         offset = boundary.get("evidence_position_offset", 0)
         if type(offset) is not int or offset < 0:
             offset = 0
-        return _evidence_history_view(contexts, raw_prefix, spans, groups, boundary["evidence_view"], protected, offset)
+        return _evidence_history_view(
+            contexts, raw_prefix, spans, groups, boundary["evidence_view"], protected, offset, **cache_kwargs
+        )
     if boundary.get("evidence_required"):
-        return _history_without_unverified_assistant(contexts, raw_prefix, spans, groups, protected)
+        return _history_without_unverified_assistant(
+            contexts, raw_prefix, spans, groups, protected, **cache_kwargs
+        )
     result = copy.deepcopy(contexts)
+    dropped_groups, kept_abs_by_group, abs_end, abs_base = _resolve_hysteresis_window(
+        groups,
+        protected,
+        session_key=session_key,
+        high_rounds=high_rounds,
+        low_rounds=low_rounds,
+        watermark_store=watermark_store,
+    )
+    strip_before_abs = _strip_before_boundary(abs_end, chunk_size, recent_image_tail_rounds)
     operations = []
-    for raw_start, raw_end, messages in groups:
+    converted_groups: set[int] = set()
+    for gi, (raw_start, raw_end, messages) in enumerate(groups):
+        if gi in dropped_groups:
+            continue
         if any(index in protected for index in range(raw_start, raw_end)):
             diagnostic["bypassed_rounds"] += 1
             reason = "persona_example_or_temporary"
@@ -977,32 +1434,39 @@ def history_view(contexts, boundary=None, provider=None):
                     [message.get("role") for message in context_messages] == [m.get("role") for m in messages] and
                     [message.get("content") for message in context_messages] == [m.get("content") for m in messages]):
                 operations.append((start, end, messages, result[start]))
+                converted_groups.add(gi)
                 diagnostic["converted_rounds"] += 1
                 continue
             reason = "raw_to_context_identity_mismatch"
         diagnostic["bypassed_rounds"] += 1
         diagnostic["bypass_reasons"][reason] = diagnostic["bypass_reasons"].get(reason, 0) + 1
-    # Merge adjacent eligible rounds, reducing wrapper overhead without dropping evidence.
-    merged = []
-    for operation in operations:
-        if merged and merged[-1][1] == operation[0]:
-            merged[-1] = (merged[-1][0], operation[1], [*merged[-1][2], operation[2]], merged[-1][3])
-        else:
-            merged.append((operation[0], operation[1], [operation[2]], operation[3]))
-    replacements = []
-    for start, end, rounds, example in merged:
-        record = _source_record(rounds)
+    # Emit each eligible round independently (append-only, never re-merging prior rounds)
+    # so the serialized history prefix stays byte-identical across consecutive turns.
+    all_edits = []
+    for start, end, messages, example in operations:
+        record = _source_record([messages])
         source = _source_message_like(example, record["content"])
         if source is None:
             diagnostic["boundary_state"] = "bypass"
             diagnostic["boundary_reason"] = "source_message_type_unsupported"
-            diagnostic["bypass_reasons"]["source_message_type_unsupported"] = len(rounds)
-            diagnostic["bypassed_rounds"] += len(rounds)
+            diagnostic["bypass_reasons"]["source_message_type_unsupported"] = 1
+            diagnostic["bypassed_rounds"] += 1
             diagnostic["converted_rounds"] = 0
             return copy.deepcopy(contexts), diagnostic
-        replacements.append((start, end, source))
-    for start, end, source in reversed(replacements):
-        result[start:end] = [source]
+        all_edits.append((start, end, [source]))
+    aux_edits, trimmed_rounds, stripped_images, chars_saved = _collect_trim_and_image_edits(
+        result, spans, groups, prefix_count, dropped_groups, kept_abs_by_group, converted_groups, strip_before_abs
+    )
+    all_edits.extend(aux_edits)
+    all_edits.sort(key=lambda item: item[0])
+    for start, end, new_items in reversed(all_edits):
+        result[start:end] = new_items
+    diagnostic["history_trimmed_rounds"] = trimmed_rounds
+    diagnostic["history_kept_rounds"] = len(kept_abs_by_group)
+    diagnostic["history_watermark_round"] = abs_base
+    diagnostic["history_stripped_images"] = stripped_images
+    diagnostic["history_chunk_size"] = chunk_size
+    diagnostic["history_characters_saved"] = chars_saved
     return result, diagnostic
 
 
@@ -1041,8 +1505,24 @@ def _body_free_provider_input_diagnostic(kwargs):
 
 class HistoryViewProvider:
     """Transform only the outgoing provider arguments; the runner retains original history."""
-    def __init__(self, provider, boundary_callback=None, diagnostic_state=None, capture=None,
-                 revision_check=None, diagnostic_callback=None, lm_material_provenance=None, turn_id=""):
+    def __init__(
+        self,
+        provider,
+        boundary_callback=None,
+        diagnostic_state=None,
+        capture=None,
+        revision_check=None,
+        diagnostic_callback=None,
+        lm_material_provenance=None,
+        turn_id="",
+        *,
+        session_key="",
+        high_rounds=DEFAULT_HISTORY_CACHE_HIGH_ROUNDS,
+        low_rounds=DEFAULT_HISTORY_CACHE_LOW_ROUNDS,
+        chunk_size=DEFAULT_HISTORY_CHUNK_SIZE,
+        recent_image_tail_rounds=DEFAULT_RECENT_IMAGE_TAIL_ROUNDS,
+        watermark_store=None,
+    ):
         self.provider = provider
         self.boundary_callback = boundary_callback
         self.diagnostic_state = diagnostic_state if diagnostic_state is not None else {}
@@ -1051,6 +1531,12 @@ class HistoryViewProvider:
         self.diagnostic_callback = diagnostic_callback
         self.lm_material_provenance = lm_material_provenance
         self.turn_id = turn_id
+        self.session_key = str(session_key or "")
+        self.high_rounds = high_rounds
+        self.low_rounds = low_rounds
+        self.chunk_size = chunk_size
+        self.recent_image_tail_rounds = recent_image_tail_rounds
+        self.watermark_store = watermark_store
         self._skip_next_history_projection = ""
     def __getattr__(self,name):return getattr(self.provider,name)
     @property
@@ -1078,7 +1564,22 @@ class HistoryViewProvider:
                         boundary = self.boundary_callback(result['contexts'], self.provider)
                     except Exception as exc:
                         boundary = {"state": "bypass", "reason": type(exc).__name__}
-                result['contexts'], diagnostic = history_view(result['contexts'], boundary, self.provider)
+                effective_session_key = self.session_key
+                if not effective_session_key and isinstance(boundary, dict):
+                    view = boundary.get("evidence_view")
+                    if isinstance(view, dict) and isinstance(view.get("scope_key"), str):
+                        effective_session_key = view["scope_key"]
+                result['contexts'], diagnostic = history_view(
+                    result['contexts'],
+                    boundary,
+                    self.provider,
+                    session_key=effective_session_key,
+                    high_rounds=self.high_rounds,
+                    low_rounds=self.low_rounds,
+                    chunk_size=self.chunk_size,
+                    recent_image_tail_rounds=self.recent_image_tail_rounds,
+                    watermark_store=self.watermark_store,
+                )
             if isinstance(self.diagnostic_state.get("member_boundary"), dict):
                 diagnostic["member_boundary"] = copy.deepcopy(self.diagnostic_state["member_boundary"])
             diagnostic.update(_body_free_provider_input_diagnostic(result))

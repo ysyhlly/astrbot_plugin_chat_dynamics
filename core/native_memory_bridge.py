@@ -1045,12 +1045,22 @@ def _install_projection(plugin, event, request, result, *, allow_history_project
                                provider_projection=diagnostic)
             setattr(request, "_cd_memory_feedback_v1", dict(current, diagnostics=diagnostics))
 
+    runtime_cfg = getattr(plugin, "_runtime_config", None)
+    history_high = int(getattr(runtime_cfg, "history_cache_high_rounds", 36))
+    history_low = int(getattr(runtime_cfg, "history_cache_low_rounds", 20))
+    history_session_key = f"{expected_scope_key}:{getattr(request, 'session_id', '')}"
     runner.provider = HistoryViewProvider(runner.provider, boundary_callback, state,
                                           revision_check=revision_check,
-                                          diagnostic_callback=record_provider_projection)
+                                          diagnostic_callback=record_provider_projection,
+                                          session_key=history_session_key,
+                                          high_rounds=history_high,
+                                          low_rounds=history_low)
     runner.fallback_providers = [HistoryViewProvider(provider, boundary_callback, state,
                                                        revision_check=revision_check,
-                                                       diagnostic_callback=record_provider_projection)
+                                                       diagnostic_callback=record_provider_projection,
+                                                       session_key=history_session_key,
+                                                       high_rounds=history_high,
+                                                       low_rounds=history_low)
                                  for provider in getattr(runner, "fallback_providers", ())]
     if native_guard_needed and not getattr(runner, "_cd_native_memory_validation_v1", False):
         return False

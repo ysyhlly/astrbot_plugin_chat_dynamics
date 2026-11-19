@@ -7,7 +7,7 @@ import math
 import time
 
 from .discussion_reranker import provider_stamp
-from .jev_decision import MAX_TOTAL_REQUEST_CHARS, request_size
+from .jev_decision import ADDRESSEE_PREFIX, MAX_TOTAL_REQUEST_CHARS, STATIC_STATE_KEYS, request_size
 from .llm_adapter import LLMAdapter, require_completion_text
 from .systemone.client import SystemOneError, validate_answers
 from .systemone.native import is_decision_provider
@@ -33,6 +33,41 @@ Confidence and probabilities are self-reported estimates, not measured calibrati
 If evidence is insufficient, use conservative choices and low confidence, not invented facts.
 Respect the question rubrics independently: uncertainty about style must not force silence.
 The caller enforces actual mentions, privacy, stop and delivery rules independently."""
+
+
+_DYNAMIC_QUESTION_KEYS = frozenset({"target", "topic"})
+
+
+def _is_dynamic_question(question_id: str) -> bool:
+    return question_id in _DYNAMIC_QUESTION_KEYS or question_id.startswith(ADDRESSEE_PREFIX)
+
+
+def split_decision_payload(state: dict, questions: dict) -> tuple[str, str]:
+    """Split static policies/persona/rubrics into system_prompt and volatile data into prompt."""
+    static_state = {key: state[key] for key in STATIC_STATE_KEYS if key in state}
+    volatile_state = {key: value for key, value in state.items() if key not in static_state}
+    static_questions = {qid: spec for qid, spec in questions.items() if not _is_dynamic_question(str(qid))}
+    dynamic_questions = {qid: spec for qid, spec in questions.items() if _is_dynamic_question(str(qid))}
+
+    system_parts = [SYSTEM]
+    static_envelope: dict = {}
+    if static_state:
+        static_envelope["static_context"] = static_state
+    if static_questions:
+        static_envelope["questions"] = static_questions
+    if static_envelope:
+        system_parts.append(
+            "Static policies, persona, and question rubrics (answer every question ID declared here "
+            "plus any additional per-turn questions in the user message):\n"
+            + json.dumps(static_envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        )
+    system_prompt = "\n\n".join(system_parts)
+
+    user_envelope: dict = {"state": volatile_state}
+    if dynamic_questions:
+        user_envelope["questions"] = dynamic_questions
+    user_prompt = json.dumps(user_envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return system_prompt, user_prompt
 
 
 def _unique_object(pairs):
@@ -152,7 +187,7 @@ class LLMDecisionClient:
                 raise ValueError('invalid_chat_provider')
             self._last_identity, self._last_provider_id = identity, provider_id
             self._status_stamp = (id(cfg), generation)
-            prompt = json.dumps({'state': state, 'questions': questions}, ensure_ascii=False, allow_nan=False)
+            system_prompt, prompt = split_decision_payload(state, questions)
 
             async def invoke():
                 nonlocal invoked
@@ -160,7 +195,9 @@ class LLMDecisionClient:
                     return None
                 self.calls += 1
                 invoked = True
-                return await self.host.context.llm_generate(chat_provider_id=provider_id, prompt=prompt, system_prompt=SYSTEM)
+                return await self.host.context.llm_generate(
+                    chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt
+                )
 
             output = await adapter.provider_budget.run(provider_id, 'routing', invoke)
             if not self._current(identity):

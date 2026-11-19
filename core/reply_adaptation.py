@@ -46,7 +46,7 @@ def split_prompt(prompt):
     horizons = payload.pop("_horizons_v1", None)
     if packet is not None or horizons is not None:
         payload.pop("reviewed_learning_context", None)
-        prompt = json.dumps(payload, ensure_ascii=False)
+        prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if isinstance(horizons, dict) and horizons:
         payload = dict(payload, _horizons_v1=horizons)
     return prompt, payload, packet

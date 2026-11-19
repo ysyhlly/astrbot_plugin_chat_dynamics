@@ -150,6 +150,10 @@ class RuntimeConfig:
     narrative_context_retention_days: int = 7
     narrative_rpc_timeout_seconds: int = 5
     narrative_evidence_timeout_seconds: int = 10
+    stream_safe_strip_tools: bool = False
+    history_cache_high_rounds: int = 36
+    history_cache_low_rounds: int = 20
+    force_refine_host_caption: bool = False
 
 
 def _get(raw: Any, key: str, default: Any) -> Any:
@@ -295,6 +299,12 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
     if hover >= strong:
         warnings.append("addressivity thresholds overlap; using defaults 0.40/0.70")
         hover, strong = 0.40, 0.70
+
+    history_high = _integer(raw, "history_cache_high_rounds", 36, 0, 200, warnings)
+    history_low = _integer(raw, "history_cache_low_rounds", 20, 0, 199, warnings)
+    if history_high > 0 and (history_low <= 0 or history_low >= history_high):
+        warnings.append("history_cache_low_rounds must be below history_cache_high_rounds; using defaults 36/20")
+        history_high, history_low = 36, 20
 
     names = _strings(_get(raw, "bot_names", []))
     takeover = _strings(_get(raw, "takeover_groups", []))
@@ -477,5 +487,9 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         rhythm_insomnia_enabled=_bool(_get(raw, "rhythm_insomnia_enabled", False), False),
         rhythm_force_sleep=_bool(_get(raw, "rhythm_force_sleep", False), False),
         rhythm_skip_morning_hi_tonight=_bool(_get(raw, "rhythm_skip_morning_hi_tonight", False), False),
+        stream_safe_strip_tools=_bool(_get(raw, "stream_safe_strip_tools", False), False),
+        history_cache_high_rounds=history_high,
+        history_cache_low_rounds=history_low,
+        force_refine_host_caption=_bool(_get(raw, "force_refine_host_caption", False), False),
     )
     return config, tuple(warnings)
