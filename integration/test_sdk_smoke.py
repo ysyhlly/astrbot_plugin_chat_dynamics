@@ -166,8 +166,15 @@ async def test_real_sdk_plugin_contract_smoke():
             for route, _, methods, _ in context.routes if "/series_workspace/" in route} == {
         ("open/<target>", ("GET",)), ("panel/<target>/<path:operation>", ("GET", "POST")),
     }
+    assert {(route.split("/setup/", 1)[1], tuple(methods))
+            for route, _, methods, _ in context.routes if "/setup/" in route} == {
+        ("groups", ("GET",)),
+        ("probe", ("POST",)),
+    }
     assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes
-            if "/decision/" not in route and "/series_workspace/" not in route} == {
+            if "/decision/" not in route
+            and "/series_workspace/" not in route
+            and "/setup/" not in route} == {
         "overview",
         "sessions",
         "session",
