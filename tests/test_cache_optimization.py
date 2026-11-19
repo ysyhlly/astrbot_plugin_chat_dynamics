@@ -630,3 +630,66 @@ async def test_on_llm_request_non_persona_mode_skips_redundant_caption_refine(mo
         assert "精修补充说明" in injected2
     finally:
         await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_reply_attribution_provider_invokes_observer_and_noop_when_absent():
+    from contextlib import contextmanager
+
+    from astrbot_plugin_chat_dynamics.core.reply_attribution import (
+        ReplyAttributionProvider,
+        bind_reply_attribution,
+    )
+
+    events = []
+    valid_turn_id = "0123456789abcdef0123456789abcdef"
+
+    class ObservedProvider:
+        def __init__(self, tag):
+            self.tag = tag
+
+        @contextmanager
+        def _series_attributed_call_v1(self, caller, *, scope, operation_id):
+            events.append(("enter", self.tag, caller, scope, operation_id))
+            try:
+                yield
+            finally:
+                events.append(("exit", self.tag, caller, scope, operation_id))
+
+        async def text_chat(self, **kwargs):
+            events.append(("chat", self.tag))
+            return SimpleNamespace(completion_text="ok")
+
+        async def text_chat_stream(self, **kwargs):
+            events.append(("stream_item", self.tag))
+            yield SimpleNamespace(completion_text="chunk")
+
+    class PlainProvider:
+        async def text_chat(self, **kwargs):
+            return SimpleNamespace(completion_text="plain")
+
+    primary = ObservedProvider("primary")
+    fallback = ObservedProvider("fallback")
+    plain = PlainProvider()
+    runner = SimpleNamespace(provider=primary, fallback_providers=[fallback, plain])
+
+    bind_reply_attribution(runner, "qq:GroupMessage:123", "", valid_turn_id)
+    assert isinstance(runner.provider, ReplyAttributionProvider)
+    assert isinstance(runner.fallback_providers[0], ReplyAttributionProvider)
+    # Strict no-op when _series_attributed_call_v1 is absent.
+    assert runner.fallback_providers[1] is plain
+
+    # Works cleanly wrapped inside HistoryViewProvider.
+    wrapped = HistoryViewProvider(runner.provider, session_key="s:attr", watermark_store={})
+    await wrapped.text_chat(contexts=[{"role": "user", "content": "hi"}])
+    chunks = [item async for item in wrapped.text_chat_stream(contexts=[{"role": "user", "content": "hi"}])]
+    assert len(chunks) == 1
+    assert ("enter", "primary", "chat_dynamics.reply", "qq:GroupMessage:123", valid_turn_id) in events
+    assert ("exit", "primary", "chat_dynamics.reply", "qq:GroupMessage:123", valid_turn_id) in events
+    assert ("chat", "primary") in events
+    assert ("stream_item", "primary") in events
+
+    # Invalid turn_id or empty scope is a strict no-op even on observed providers.
+    runner2 = SimpleNamespace(provider=primary, fallback_providers=[fallback])
+    bind_reply_attribution(runner2, "qq:GroupMessage:123", "not-a-hex-id")
+    assert runner2.provider is primary and runner2.fallback_providers == [fallback]

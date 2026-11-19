@@ -340,6 +340,40 @@ async def test_live_gpt_visual_policy_tuple_and_tool_ordering_and_scope_guard(ho
 
 
 @pytest.mark.asyncio
+async def test_bridge_binds_reply_attribution_when_observer_present_and_noop_when_absent(host_fixture):
+    from contextlib import contextmanager
+
+    ctx, event, calls = host_fixture
+    turn_id = "abcdef0123456789abcdef0123456789"
+    event._extras["_cd_pipeline_turn_id_v1"] = turn_id
+    bridge = AstrBotAgentBridge(ctx)
+    persona = await bridge.snapshot(event)
+    t1 = TurnContext(event.unified_msg_origin, "u", "你好", (MessageSnapshot("m1", "u", "你好"),), (), 0, 0, 0, True)
+    p1 = reply_prompt(t1, TurnDecision.fallback(t1, "at"))
+
+    # Case 1: stock provider without _series_attributed_call_v1 -> strict no-op, reply succeeds.
+    out_plain = await bridge.generate(event, (event,), p1, persona, "provider")
+    assert out_plain.text and len(calls) == 1
+
+    # Case 2: provider exposing _series_attributed_call_v1 + managed HistoryViewProvider wrapper chain.
+    observed = []
+
+    @contextmanager
+    def observe(caller, *, scope, operation_id):
+        observed.append((caller, scope, operation_id))
+        yield
+
+    ctx.provider._series_attributed_call_v1 = observe
+    event._extras["_narrative_managed_v1"] = _managed_payload(event, persona, purpose="reply")
+    event._extras["_narrative_managed_v1"]["turn_id"] = turn_id
+    ctx.conv.history = "[]"
+    notifier = SimpleNamespace(evidence_current=lambda _: True)
+    out_obs = await bridge.generate(event, (event,), p1, persona, "provider", narrative_override=notifier)
+    assert out_obs.text and len(calls) == 2
+    assert observed == [("chat_dynamics.reply", event.unified_msg_origin, turn_id)]
+
+
+@pytest.mark.asyncio
 async def test_legacy_visual_media_without_static_flag_gets_full_fallback(host_fixture, monkeypatch):
     ctx, event, calls = host_fixture
 

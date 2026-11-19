@@ -21,6 +21,7 @@ from .agent_timings import TimedContext, TimedHookTrace
 from .agent_timings import emit as emit_timing
 from .llm_adapter import LLMErrorResponse, is_error_response
 from .platform_bridge import iter_message_components
+from .reply_attribution import bind_reply_attribution
 from .reply_failure import ModelReplyFailure, provider_failure_code
 from .reply_request_prompt import assemble_reply_prompts, internal_reply
 from .turn_decision import PersonaSnapshot
@@ -1130,6 +1131,12 @@ class AstrBotAgentBridge:
             except AgentBridgeUnavailable:
                 source_failure_sink()
                 raise
+            bind_reply_attribution(
+                runner,
+                agent_event.unified_msg_origin,
+                (managed or {}).get("turn_id", ""),
+                getattr(agent_event, "_extras", {}).get("_cd_pipeline_turn_id_v1", ""),
+            )
             if plain_stream is not None:
                 runner.streaming = True
             tool_source_registry = getattr(runner, "_cd_tool_memory_sources_registry_v1", None)
