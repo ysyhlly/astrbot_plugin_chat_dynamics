@@ -258,6 +258,88 @@ async def test_stream_safe_tool_stripping_respects_config_toggle(host_fixture, m
 
 
 @pytest.mark.asyncio
+async def test_live_gpt_visual_policy_tuple_and_tool_ordering_and_scope_guard(host_fixture, monkeypatch):
+    """Verify preserved live GPT features work alongside CD-1/CD-2 zero-jitter guarantees."""
+    from astrbot_plugin_chat_dynamics.core.agent_bridge import AgentBridgeUnavailable
+
+    ctx, event, calls = host_fixture
+    ctx.conv.history = "[]"
+    # Register tools out of alphabetical order to verify deterministic sorting via _order_request_tools.
+    for name in ("zeta_tool", "alpha_tool", "set_interaction_boundary"):
+        ctx.tools[name] = FunctionTool(name=name, description=name, parameters={"type": "object", "properties": {}})
+        ctx.persona_manager.personas_v3[0]["tools"].append(name)
+
+    candidate_ids = []
+    seen_flags = []
+
+    async def visual_tuple_hook(incoming, _kind, req):
+        seen_flags.append((
+            getattr(incoming, "_cd_visual_reply_policy_supported_v1", False),
+            getattr(incoming, "_cd_joint_meme_supported_v1", False),
+            incoming.get_extra("visual_media_policy_v1", False),
+        ))
+        plan = SimpleNamespace(
+            _reply_actions_v1=True,
+            candidates=[{"id": i} for i in candidate_ids],
+            resolve=lambda raw: (raw, []),
+        )
+        incoming._stealer_joint_meme_plan_v1 = plan
+        incoming.set_extra("visual_media_policy_v1", True)
+        incoming.set_extra("_visual_media_static_policy_v1", True)
+        req._stealer_joint_meme_current_ids_v1 = lambda: tuple(candidate_ids)
+        req._cd_visual_reply_policy_v1 = (
+            plan,
+            "[本轮统一视觉表达] 静态媒体策略",
+            lambda ids, _tools: f"本轮有 {len(ids)} 张现成表情候选。" if ids else "本轮没有可用现成表情候选。",
+        )
+        return False
+
+    monkeypatch.setattr(context_utils, "call_event_hook", visual_tuple_hook)
+    ctx.provider.text_chat = lambda **kwargs: (
+        calls.append(kwargs)
+        or _async_return(LLMResponse(role="assistant", completion_text='{"reply_mode":"text","text":"好","meme_id":null,"narration":""}'))
+    )
+    bridge = AstrBotAgentBridge(ctx)
+    persona = await bridge.snapshot(event)
+    # Seed a forged visual_media_policy_v1 on caller event; bridge must strip it before hooks.
+    event._extras["visual_media_policy_v1"] = True
+
+    t1 = TurnContext(event.unified_msg_origin, "u", "你好", (MessageSnapshot("m1", "u", "你好"),), (), 0, 0, 0, True)
+    p1 = reply_prompt(t1, TurnDecision.fallback(t1, "at"))
+
+    # Turn 1: 0 candidates
+    candidate_ids[:] = []
+    await bridge.generate(event, (event,), p1, persona, "provider")
+    # Turn 2: 3 candidates
+    candidate_ids[:] = [1, 2, 3]
+    await bridge.generate(event, (event,), p1, persona, "provider")
+
+    assert seen_flags == [(True, True, False), (True, True, False)]
+    # 100% byte-identical system_prompt across 0 vs 3 candidates with 3-tuple protocol!
+    sys0, sys1 = _extract_system(calls[0]), _extract_system(calls[1])
+    assert sys0 == sys1
+    assert "[本轮统一视觉表达] 静态媒体策略" in sys0
+    assert "本轮有 3 张" not in sys0 and "本轮没有可用现成表情候选" not in sys0
+    # Dynamic candidate state & per-turn allowed modes live strictly in temp user parts!
+    usr0, usr1 = _extract_user_text(calls[0]), _extract_user_text(calls[1])
+    assert "本轮没有可用现成表情候选" in usr0 and "meme_only" not in usr0
+    assert "本轮有 3 张现成表情候选" in usr1 and "meme_only" in usr1
+    # Deterministic alphabetical tool ordering!
+    tool_names = [tool.name for tool in calls[0]["func_tool"].tools]
+    assert tool_names == sorted(tool_names)
+    assert tool_names == ["allowed", "alpha_tool", "set_interaction_boundary", "zeta_tool"]
+
+    # Security guard: hook mutating internal scope raises reply_scope_changed
+    async def scope_mutating_hook(incoming, _kind, _req):
+        incoming._extras["_horizons_internal_v1"] = True
+        return False
+
+    monkeypatch.setattr(context_utils, "call_event_hook", scope_mutating_hook)
+    with pytest.raises(AgentBridgeUnavailable, match="reply_scope_changed"):
+        await bridge.generate(event, (event,), p1, persona, "provider")
+
+
+@pytest.mark.asyncio
 async def test_legacy_visual_media_without_static_flag_gets_full_fallback(host_fixture, monkeypatch):
     ctx, event, calls = host_fixture
 
@@ -273,7 +355,8 @@ async def test_legacy_visual_media_without_static_flag_gets_full_fallback(host_f
     await bridge.generate(event, (event,), p1, persona, "provider")
     system = _extract_system(calls[0])
     assert "[已开启的视觉表达权限]" in system
-    assert "[本轮回应方式]" in system
+    assert "本轮回应方式" in system
+    assert "发送表情只能用本轮附带的候选" in system
 
 
 async def _async_return(value):
