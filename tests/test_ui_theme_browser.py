@@ -228,8 +228,16 @@ def test_real_opaque_iframe_restores_account_theme(browser, page_server):
     with browser.new_context() as context:
         setup(context, state)
         page = context.new_page()
-        page.goto(page_server)
-        page.set_content(f'<iframe sandbox="allow-scripts" src="{page_server}/learning/index.html"></iframe>')
+        host_url = f"{page_server}/__opaque_host__"
+        page.route(
+            host_url,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html; charset=utf-8",
+                body=f'<!doctype html><iframe sandbox="allow-scripts" src="{page_server}/learning/index.html"></iframe>',
+            ),
+        )
+        page.goto(host_url)
         frame = page.frame_locator("iframe")
         frame.locator("#uiThemeStatus").filter(has_text="已恢复账号偏好").wait_for()
         assert frame.locator("html").get_attribute("data-ui-theme") == "night"
