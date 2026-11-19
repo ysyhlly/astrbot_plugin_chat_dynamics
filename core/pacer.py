@@ -6,6 +6,7 @@ human typing latencies (thinking pause + character counts) to eradicate instant 
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from typing import List, Optional
@@ -253,9 +254,27 @@ class PacingShaper:
         fragment_text: str = "",
         mpm: float = 0.0,
         delay_scale: float = 1.0,
+        *,
+        jitter: bool = False,
+        jitter_seed: str = "",
     ) -> float:
         """Calculates delay between consecutive fragmented messages."""
-        length_adjustment = min(0.6, len((fragment_text or "").strip()) / 400.0)
+        clean = (fragment_text or "").strip()
+        if jitter:
+            # Typing-aware delay: short bursts go faster, longer bursts take realistic typing time.
+            typing_time = len(clean) / max(8.0, min(self.chars_per_second, 22.0))
+            base = max(0.55, self.inter_burst_interval * 0.65) + min(2.4, typing_time)
+            if mpm >= 12.0:
+                base *= 0.80
+            elif 0.0 < mpm <= 3.0:
+                base *= 1.15
+            if mode == GroupChatMode.FAST_BANTER:
+                base *= 0.85
+            digest = hashlib.sha1(f"{jitter_seed}:{clean[:40]}".encode("utf-8")).digest()
+            ratio = 0.85 + (digest[0] / 255.0) * 0.30  # [0.85, 1.15]
+            bounded = round(max(0.5, min(max(3.6, self.inter_burst_interval * 2.5), base * ratio)), 2)
+            return scale_delay(bounded, delay_scale)
+        length_adjustment = min(0.6, len(clean) / 400.0)
         if mpm <= 0.0:
             rate_adjustment = 0.0
         elif mpm >= 12.0:
@@ -268,4 +287,42 @@ class PacingShaper:
         if mode == GroupChatMode.FAST_BANTER:
             delay *= 0.85
         bounded = round(max(0.6, min(max(2.0, self.inter_burst_interval), delay)), 2)
+        return scale_delay(bounded, delay_scale)
+
+    def calculate_online_target_delay(
+        self,
+        *,
+        first_fragment: str = "",
+        input_text: str = "",
+        mode: GroupChatMode = GroupChatMode.CHILL_FADE,
+        idle_seconds: float = 0.0,
+        mpm: float = 0.0,
+        delay_scale: float = 1.0,
+        jitter_seed: str = "",
+    ) -> float:
+        """Compute target human reaction time for the opening burst while online.
+
+        Callers subtract already-elapsed generation latency so fast replies feel
+        human-paced while slow LLM calls never incur unnecessary stacked sleep.
+        """
+        in_len = len((input_text or "").strip())
+        out_len = len((first_fragment or "").strip())
+        # Reading time scales gently with input length; capped so long pastes don't stall.
+        read_time = min(2.4, in_len / 45.0)
+        # Active back-and-forth is snappy; picking up after a quiet gap takes a brief beat.
+        if idle_seconds <= 15.0:
+            pickup = 0.35
+        elif idle_seconds <= 120.0:
+            pickup = 0.85
+        else:
+            pickup = 1.5
+        typing_time = min(2.0, out_len / max(10.0, min(self.chars_per_second, 24.0)))
+        target = self.base_thinking_delay + read_time + pickup + typing_time
+        if mode == GroupChatMode.FAST_BANTER or mpm >= 12.0:
+            target *= 0.72
+        elif 0.0 < mpm <= 2.5:
+            target *= 1.12
+        digest = hashlib.sha1(f"{jitter_seed}:{in_len}:{out_len}".encode("utf-8")).digest()
+        jitter_factor = 0.88 + (digest[0] / 255.0) * 0.24  # [0.88, 1.12]
+        bounded = round(max(0.4, min(6.5, target * jitter_factor)), 2)
         return scale_delay(bounded, delay_scale)

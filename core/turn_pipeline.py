@@ -281,6 +281,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
                 "sender_name": parsed.sender_name,
                 "sender_platform": parsed.platform,
                 "platform_message_id": bool(parsed.message_id),
+                "wall_timestamp": host.time_service.wall_time(),
             },
         )
         current_node.metadata["platform_message_id"] = bool(parsed.message_id)
@@ -363,6 +364,18 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
     # Resolve all fragments before constructing the immutable persona snapshot.
     for turn_node in turn_nodes or [node]:
         host._route_message(runtime, turn_node)
+    rhythm_ctrl = getattr(host, "natural_rhythm", None)
+    if rhythm_ctrl is not None and not host.shadow_mode:
+        rhythm_ctrl.on_user_message_observed(
+            runtime,
+            msg_id=node.msg_id,
+            user_id=user_id,
+            text=analysis_text,
+            topic_id=str((node.metadata.get("routing") or {}).get("topic_id") or ""),
+            reply_to_id=str(node.reply_to_id or ""),
+            directed=bool(is_wake),
+            private_direct=False,
+        )
     task = host._schedule_neural_embed(session_id, node)
     for turn_node in turn_nodes:
         if turn_node is not node:
@@ -496,6 +509,7 @@ def _prepare_private_turn_locked(host, result: DebounceResult):
                 "sender_name": parsed.sender_name, "sender_platform": parsed.platform,
                 "platform_message_id": bool(parsed.message_id), "scope_kind": "private",
                 "decision_source": "private_direct",
+                "wall_timestamp": host.time_service.wall_time(),
             },
         )
         if previous is not None and not parsed.reply_to_id:
@@ -507,6 +521,17 @@ def _prepare_private_turn_locked(host, result: DebounceResult):
     node = turn_nodes[-1]
     node.metadata["consolidated_text"] = host._bounded_text(result.consolidated_text, _MAX_TURN_CHARS)
     host._mark_panel_runtime_dirty()
+    rhythm_ctrl = getattr(host, "natural_rhythm", None)
+    if rhythm_ctrl is not None and not host.shadow_mode:
+        rhythm_ctrl.on_user_message_observed(
+            runtime,
+            msg_id=node.msg_id,
+            user_id=result.user_id,
+            text=result.consolidated_text,
+            reply_to_id=str(node.reply_to_id or ""),
+            directed=True,
+            private_direct=True,
+        )
     if silence_seen:
         host._metric("boundary_silence_observed")
         return None

@@ -53,7 +53,7 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024
 RUNTIME_FIELDS = ('scope_kind', 'last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
                   'vibe_message_count', 'turn_sequence', 'model_diagnostic', 'topic_stop_revisions',
-                  'peer_bot_rounds')
+                  'peer_bot_rounds', 'natural_rhythm_state')
 TOPIC_FIELDS = ('topic_id', 'message_ids', 'participants', 'updated_at', 'label',
                 'generated_title', 'title_attempted', 'label_requested', 'human_updated_at', 'created_at', 'exemplar_messages',
                 'centroid_vector', 'recent_message_ids', 'keywords', 'centroid_space',
@@ -87,7 +87,8 @@ _WRITTEN_META_FIELDS = ('topic_id', 'routing', 'outcome', 'reply_choice',
                        'sender_name', 'sender_platform', 'actual_mentions',
                        'platform_message_id', 'dialogue_delivered', 'dialogue_stop_revision',
                        'sender_is_bot', 'bot_identity_pending', 'reminder_id',
-                       'dialogue_state', 'dialogue_action')
+                       'dialogue_state', 'dialogue_action',
+                       'wall_timestamp', 'recalled', 'rhythm_trace')
 # Restored for snapshots written by earlier builds, which carried a richer node
 # metadata. Nothing in this version writes or reads them; they stay so a round trip
 # through an older release does not silently drop fields that release preserved.
@@ -233,6 +234,14 @@ def export_runtime_state(plugin) -> dict:
         item['last_bot_topic_id'] = runtime.routing_state.last_bot_topic_id
         for name in ('last_occasion', 'last_manners'):
             item[name] = _json(dict(getattr(runtime, name, {}) or {}))
+        rhythm_ctrl = getattr(plugin, 'natural_rhythm', None)
+        if rhythm_ctrl is not None and hasattr(rhythm_ctrl, 'export_session_state'):
+            try:
+                exported_rhythm = rhythm_ctrl.export_session_state(runtime.session_key)
+                if exported_rhythm:
+                    item['natural_rhythm_state'] = _json(exported_rhythm)
+            except Exception:
+                pass
         vibe = getattr(plugin, 'vibe_analyzer', None)
         if vibe is not None:
             mode = vibe._current_modes.get(runtime.session_key)
@@ -473,6 +482,15 @@ def restore_runtime_state(plugin, payload) -> None:
             value = metrics.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**63 - 1:
                 plugin._metrics[key] = value
+    rhythm_ctrl = getattr(plugin, 'natural_rhythm', None)
+    if rhythm_ctrl is not None and hasattr(rhythm_ctrl, 'restore_session_state'):
+        for key in restored_keys:
+            rt = plugin._registry.runtimes.get(key)
+            if rt is not None and rt.natural_rhythm_state:
+                try:
+                    rhythm_ctrl.restore_session_state(rt, rt.natural_rhythm_state)
+                except Exception:
+                    pass
     occasion = getattr(getattr(plugin, 'decision_gate', None), 'occasion', None)
     restorer = getattr(occasion, 'restore_cool_until', None)
     if callable(restorer):

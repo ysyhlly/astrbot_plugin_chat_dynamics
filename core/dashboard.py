@@ -352,7 +352,13 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
             "pace_align": bool(getattr(plugin, "pace_align_enabled", True)),
             "proactive_quota": bool(getattr(plugin, "proactive_quota_enabled", True)),
             "daily_rhythm": bool(getattr(plugin, "daily_rhythm_enabled", True)),
+            "natural_reply_rhythm": bool(getattr(plugin, "natural_reply_rhythm_enabled", False)),
         },
+        "natural_rhythm": (
+            plugin.natural_rhythm.status()
+            if getattr(plugin, "natural_rhythm", None) is not None and hasattr(plugin.natural_rhythm, "status")
+            else {"enabled": False}
+        ),
         "useful_proactive": {
             "gap_fill": bool(getattr(plugin, "gap_fill_proactive_enabled", True)),
             "cold_nudge": bool(getattr(plugin, "cold_memory_nudge_enabled", True)),
@@ -754,6 +760,8 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
                 "ambiguous": bool(routing.get("topic_ambiguous", routing.get("ambiguous", False))),
                 "topic_status": routing.get("topic_status", "committed"),
                 "candidates": routing.get("topic_candidates", routing.get("candidates", [])),
+                "recalled": bool(node.metadata.get("recalled", False)),
+                **({"rhythm_trace": dict(node.metadata["rhythm_trace"])} if isinstance(node.metadata.get("rhythm_trace"), dict) else {}),
             })
     for event in events:
         sid = str(event.get("session_id") or selected)
@@ -799,6 +807,21 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
                 )
         except Exception as exc:
             logger.warning("replay.why_silent_rows failed: %s", type(exc).__name__)
+    natural_rhythm = getattr(plugin, "natural_rhythm", None)
+    if natural_rhythm is not None and hasattr(natural_rhythm, "replay_rows"):
+        try:
+            for item in natural_rhythm.replay_rows(selected, limit=32):
+                events.append(
+                    {
+                        "ts": item.get("ts"),
+                        "reason_code": item.get("reason_code") or "",
+                        "reason_zh": item.get("reason_zh") or "自然回复节奏",
+                        "action": str(item.get("action") or "silent"),
+                        "session_id": selected or item.get("session_id") or "",
+                    }
+                )
+        except Exception as exc:
+            logger.warning("replay.natural_rhythm_rows failed: %s", type(exc).__name__)
     seen: Set[tuple] = set()
     ordered: List[Dict[str, Any]] = []
     for item in sorted(events, key=lambda row: float(row.get("ts") or 0)):

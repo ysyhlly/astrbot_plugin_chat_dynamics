@@ -141,6 +141,20 @@ class RuntimeConfig:
     rhythm_insomnia_enabled: bool = False
     rhythm_force_sleep: bool = False
     rhythm_skip_morning_hi_tonight: bool = False
+    natural_reply_rhythm_enabled: bool = False
+    rhythm_catchup_enabled: bool = True
+    rhythm_afterthought_enabled: bool = True
+    rhythm_micro_pacing_enabled: bool = True
+    rhythm_lookback_minutes: int = 30
+    rhythm_direct_lookback_minutes: int = 120
+    rhythm_distract_min_seconds: float = 60.0
+    rhythm_distract_max_seconds: float = 300.0
+    rhythm_distract_probability: float = 0.30
+    rhythm_catchup_max_items: int = 2
+    rhythm_afterthought_min_seconds: float = 60.0
+    rhythm_afterthought_max_seconds: float = 240.0
+    rhythm_afterthought_cooldown_seconds: float = 1500.0
+    rhythm_afterthought_probability: float = 0.25
     narrative_enabled: bool = False
     narrative_all_groups: bool = False
     narrative_private_chat_enabled: bool = False
@@ -154,6 +168,7 @@ class RuntimeConfig:
     history_cache_high_rounds: int = 36
     history_cache_low_rounds: int = 20
     force_refine_host_caption: bool = False
+    isolate_volatile_system_tail: bool = True
 
 
 def _get(raw: Any, key: str, default: Any) -> Any:
@@ -487,9 +502,38 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         rhythm_insomnia_enabled=_bool(_get(raw, "rhythm_insomnia_enabled", False), False),
         rhythm_force_sleep=_bool(_get(raw, "rhythm_force_sleep", False), False),
         rhythm_skip_morning_hi_tonight=_bool(_get(raw, "rhythm_skip_morning_hi_tonight", False), False),
+        natural_reply_rhythm_enabled=_bool(_get(raw, "natural_reply_rhythm_enabled", False), False),
+        rhythm_catchup_enabled=_bool(_get(raw, "rhythm_catchup_enabled", True), True),
+        rhythm_afterthought_enabled=_bool(_get(raw, "rhythm_afterthought_enabled", True), True),
+        rhythm_micro_pacing_enabled=_bool(_get(raw, "rhythm_micro_pacing_enabled", True), True),
+        rhythm_lookback_minutes=_integer(raw, "rhythm_lookback_minutes", 30, 5, 240, warnings),
+        rhythm_direct_lookback_minutes=_integer(raw, "rhythm_direct_lookback_minutes", 120, 5, 480, warnings),
+        rhythm_distract_min_seconds=_number(
+            raw, "rhythm_distract_min_seconds", 60.0, lambda value: 5 <= value <= 1800, warnings
+        ),
+        rhythm_distract_max_seconds=_number(
+            raw, "rhythm_distract_max_seconds", 300.0, lambda value: 5 <= value <= 3600, warnings
+        ),
+        rhythm_distract_probability=_number(
+            raw, "rhythm_distract_probability", 0.30, lambda value: 0.0 <= value <= 1.0, warnings
+        ),
+        rhythm_catchup_max_items=_integer(raw, "rhythm_catchup_max_items", 2, 1, 5, warnings),
+        rhythm_afterthought_min_seconds=_number(
+            raw, "rhythm_afterthought_min_seconds", 60.0, lambda value: 5 <= value <= 1800, warnings
+        ),
+        rhythm_afterthought_max_seconds=_number(
+            raw, "rhythm_afterthought_max_seconds", 240.0, lambda value: 5 <= value <= 3600, warnings
+        ),
+        rhythm_afterthought_cooldown_seconds=_number(
+            raw, "rhythm_afterthought_cooldown_seconds", 1500.0, lambda value: 0 <= value <= 14400, warnings
+        ),
+        rhythm_afterthought_probability=_number(
+            raw, "rhythm_afterthought_probability", 0.25, lambda value: 0.0 <= value <= 1.0, warnings
+        ),
         stream_safe_strip_tools=_bool(_get(raw, "stream_safe_strip_tools", False), False),
         history_cache_high_rounds=history_high,
         history_cache_low_rounds=history_low,
         force_refine_host_caption=_bool(_get(raw, "force_refine_host_caption", False), False),
+        isolate_volatile_system_tail=_bool(_get(raw, "isolate_volatile_system_tail", True), True),
     )
     return config, tuple(warnings)

@@ -1674,9 +1674,16 @@ class PersonaEngine:
             return
         if any(
             outcomes.read_outcome(node).get("delivered")
+            or str(outcomes.read_outcome(node).get("suppression_reason") or "").startswith(
+                ("rhythm_deferred_", "rhythm_catchup_skipped_")
+            )
             or node.metadata.get("reply_choice", {}).get("no_reply") is True
             or node.metadata.get("reply_choice", {}).get("intentional_nonverbal") is True
             for node in nodes
+        ):
+            return
+        if str(runtime.model_diagnostic.get("reason_code") or "").startswith(
+            ("rhythm_deferred_", "rhythm_catchup_skipped_")
         ):
             return
         failure = next(
@@ -1791,6 +1798,47 @@ class PersonaEngine:
             )
             item = replace(item, narrative_bundle=bundle)
         interaction_state = runtime.interaction_state
+        rhythm_ctrl = getattr(p, "natural_rhythm", None)
+        rhythm_urgent_breakthrough = False
+        if rhythm_ctrl is not None and not item.shadow and not item.observations.get("rhythm_catchup"):
+            avail_now = "available"
+            if bundle is not None:
+                snap = bundle.snapshot
+                if not snap.get("stale"):
+                    avail_now = str(snap.get("availability") or "available").lower()
+            else:
+                avail_now = await rhythm_ctrl._probe_world_availability(runtime)
+            if avail_now == "available":
+                rhythm_ctrl.on_availability_changed(runtime, avail_now)
+            primary_mid = turn.messages[-1].message_id if turn.messages else ""
+            primary_node = _dag_node(runtime, primary_mid)
+            primary_topic = str((getattr(primary_node, "metadata", None) or {}).get("routing", {}).get("topic_id") or "")
+            pacing = rhythm_ctrl.evaluate_ingress_pacing(
+                runtime,
+                msg_id=primary_mid,
+                user_id=str(turn.author or ""),
+                text=str(turn.text or ""),
+                topic_id=primary_topic,
+                wake_kind=str(turn.wake_kind or "none"),
+                directed=bool(item.private_direct or turn.mandatory_reply or turn.soft_wake or turn.explicit),
+                private_direct=bool(item.private_direct),
+                availability=avail_now,
+                persona_fingerprint=persona.fingerprint,
+                node=primary_node,
+                live_event=event,
+            )
+            rhythm_urgent_breakthrough = bool(pacing.urgent_breakthrough)
+            if pacing.defer:
+                p.debounce.finish_result(item.debounce_result)
+                record_outcome(runtime, item, outcomes.mark_suppressed, pacing.reason_code, stage="gate")
+                self.diagnostic(
+                    runtime,
+                    pacing.reason_code,
+                    action="ignore",
+                    reason_zh=pacing.reason_zh,
+                    wake_at_wall=pacing.wake_at_wall,
+                )
+                return
         dynamics_learning.begin(p, runtime, item, judgement_persona)
         dynamics_horizons.begin(p, runtime, item, judgement_persona)
         private_outreach_observer = None
@@ -2099,7 +2147,12 @@ class PersonaEngine:
                     availability = bundle.snapshot.get("availability", "unknown")
                     if availability == "asleep" and not sleep_wake_admitted:
                         decision = replace(decision, action="ignore", reason_code="narrative_asleep")
-                    elif availability in {"asleep", "busy"} and sleep_wake_admitted and decision.action != "ignore":
+                    elif (
+                        availability in {"asleep", "busy"}
+                        and sleep_wake_admitted
+                        and decision.action != "ignore"
+                        and not (availability == "busy" and rhythm_urgent_breakthrough)
+                    ):
                         decision = replace(
                             decision,
                             action="acknowledge",
@@ -2424,6 +2477,7 @@ class PersonaEngine:
                                 "length_hint": decision.length,
                                 "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
                                 "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
+                                **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
                             },
                             reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
                             group_reminders=reminder_context,
@@ -2554,11 +2608,19 @@ class PersonaEngine:
             delivered = []
             delivered_message_ids = []
             send_cancellation = None
+            send_failed_in_turn = False
+            delivery_uncertain_in_turn = False
+            committed = False
+            last_bot_msg_id = ""
             target_id = decision.target_message_ids[0]
             target_node = _dag_node(runtime, target_id)
             dag_parent_id = target_id if target_node is not None else None
             platform_target_id = _platform_reply_id(runtime, item, target_id)
-            first_quote_id = _automatic_group_reply_id(runtime, item, platform_target_id)
+            first_quote_id = (
+                platform_target_id
+                if (item.observations.get("rhythm_force_quote") and platform_target_id)
+                else _automatic_group_reply_id(runtime, item, platform_target_id)
+            )
             send_options = {}
             target_author = getattr(target_node, "user_id", None)
             if target_author and target_author not in {turn.author, runtime.bot_id}:
@@ -2600,8 +2662,49 @@ class PersonaEngine:
                     ),
                     fragments,
                 ):
-                    delay = p.pacer.inter_burst_interval if index else 0.0
-                    delay = scale_delay(delay, delay_scale)
+                    frag_text = fragment if isinstance(fragment, str) else chain_plain_text(fragment)
+                    if rhythm_ctrl is not None and rhythm_ctrl.micro_pacing_enabled():
+                        from .vibe_analyzer import GroupChatMode as _GCM
+                        cur_mpm = 0.0
+                        cur_mode = _GCM.CHILL_FADE
+                        try:
+                            cur_mpm = float(p.vibe_analyzer.get_telemetrics(runtime.session_key).mpm or 0.0)
+                            cur_mode = p.vibe_analyzer.peek_mode(runtime.session_key) or _GCM.CHILL_FADE
+                        except Exception:
+                            pass
+                        if index == 0:
+                            if item.observations.get("rhythm_skip_micro_delay"):
+                                delay = 0.0
+                            else:
+                                idle_gap = (
+                                    max(0.0, p.time_service.time() - float(runtime.last_model_send or 0.0))
+                                    if getattr(runtime, "last_model_send", 0.0)
+                                    else 300.0
+                                )
+                                target_delay = p.pacer.calculate_online_target_delay(
+                                    first_fragment=frag_text,
+                                    input_text=str(turn.text or ""),
+                                    mode=cur_mode,
+                                    idle_seconds=idle_gap,
+                                    mpm=cur_mpm,
+                                    delay_scale=delay_scale,
+                                    jitter_seed=f"{turn.session_key}:{target_id}",
+                                )
+                                elapsed_gen = max(0.0, time.monotonic() - processing_started)
+                                deficit = target_delay - elapsed_gen
+                                delay = round(deficit, 2) if deficit > 0.05 else 0.0
+                        else:
+                            delay = p.pacer.calculate_inter_burst_delay(
+                                mode=cur_mode,
+                                fragment_text=frag_text,
+                                mpm=cur_mpm,
+                                delay_scale=delay_scale,
+                                jitter=True,
+                                jitter_seed=f"{turn.session_key}:{target_id}:{index}",
+                            )
+                    else:
+                        delay = p.pacer.inter_burst_interval if index else 0.0
+                        delay = scale_delay(delay, delay_scale)
                     if delay:
                         await p.time_service.sleep(delay)
                     if not await self.bridge.current(event, effective):
@@ -2697,6 +2800,9 @@ class PersonaEngine:
                                 )
                                 break
                     if not sent.success:
+                        send_failed_in_turn = True
+                        if getattr(sent, "delivery_uncertain", False):
+                            delivery_uncertain_in_turn = True
                         if sent.error == "native_memory_source_invalidated":
                             record_outcome(
                                 runtime, item, outcomes.mark_suppressed,
@@ -2764,8 +2870,10 @@ class PersonaEngine:
                             "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
                             "dialogue_state": decision.state,
                             "dialogue_action": decision.action,
+                            "wall_timestamp": p.time_service.wall_time(),
                         },
                     )
+                    last_bot_msg_id = msg_id
                     bot.metadata["platform_message_id"] = real_message_id is not None
                     if nonverbal_mode:
                         runtime.remember_sent(msg_id)
@@ -2873,3 +2981,253 @@ class PersonaEngine:
                 )
             ):
                 deferred_media.confirm(getattr(output, "native_sources_current", None), text="\n\n".join(delivered))
+            if rhythm_ctrl is not None and delivered and not nonverbal_mode:
+                all_sent = bool(
+                    fragments
+                    and len(delivered) == len(fragments)
+                    and not send_failed_in_turn
+                    and send_cancellation is None
+                )
+                target_topic = str((getattr(target_node, "metadata", None) or {}).get("routing", {}).get("topic_id") or "")
+                high_affection = False
+                if bundle is not None:
+                    try:
+                        hl = bundle.snapshot.get("humanlike") or {}
+                        rel = hl.get("relationship") or {}
+                        high_affection = str(rel.get("stage") or "").lower() in {"close", "intimate", "warm", "trusted"} or float(rel.get("affection", 0) or 0) >= 70
+                    except Exception:
+                        high_affection = False
+                rhythm_ctrl.on_turn_delivered(
+                    runtime,
+                    anchor_bot_msg_id=last_bot_msg_id or str(getattr(getattr(runtime, "last_bot_node", None), "msg_id", "") or ""),
+                    trigger_msg_id=str(target_id or ""),
+                    target_user_id=str(turn.author or ""),
+                    anchor_topic_id=target_topic,
+                    delivered_text="\n\n".join(delivered),
+                    persona_fingerprint=effective.fingerprint,
+                    private_direct=bool(item.private_direct),
+                    all_fragments_delivered=all_sent,
+                    delivery_uncertain=delivery_uncertain_in_turn,
+                    decision_action=str(decision.action or "reply"),
+                    rhythm_action=rhythm_action,
+                    is_afterthought=bool(item.observations.get("rhythm_afterthought")),
+                    high_affection=high_affection,
+                )
+
+    def _synthetic_rhythm_event(self, runtime) -> Any:
+        """Build a lightweight event bound to runtime.umo for background catch-up/afterthought."""
+        p = self.plugin
+        narrative = getattr(p, "narrative", None)
+        if narrative is not None and callable(getattr(narrative, "internal_event", None)):
+            parts = str(runtime.umo or runtime.session_key).split(":", 2)
+            platform = parts[0] if parts and parts[0] else "default"
+            scope = {"platform": platform, "umo": runtime.umo or runtime.session_key}
+            try:
+                return narrative.internal_event(scope)
+            except Exception:
+                pass
+        from types import SimpleNamespace
+
+        umo = runtime.umo or runtime.session_key
+
+        async def _send(chain):
+            return await p.context.send_message(umo, chain)
+
+        return SimpleNamespace(
+            unified_msg_origin=umo,
+            session_id=runtime.session_key,
+            get_sender_id=lambda: str(runtime.bot_id or "bot"),
+            get_group_id=lambda: str(runtime.group_id or ""),
+            get_platform_name=lambda: umo.split(":", 1)[0] if ":" in umo else "default",
+            send=_send,
+            _extras={},
+        )
+
+    async def execute_catchup_item(self, runtime, plan_item, *, live_event=None) -> dict:
+        """Run one chronological catch-up item through the standard PersonaEngine pipeline."""
+        p = self.plugin
+        dag = getattr(runtime, "dag", None)
+        if dag is None:
+            return {"status": "skipped", "reason": "rhythm_catchup_skipped_unworthy"}
+        nodes = [dag.get_node(mid) for mid in plan_item.message_ids]
+        nodes = [n for n in nodes if n is not None]
+        if not nodes:
+            return {"status": "skipped", "reason": "rhythm_catchup_skipped_recalled"}
+        event = live_event if live_event is not None else self._synthetic_rhythm_event(runtime)
+        if getattr(event, "_extras", None) is None:
+            event._extras = {}
+        msgs = tuple(
+            MessageSnapshot(
+                message_id=str(n.msg_id),
+                author=str(n.user_id),
+                text=str(n.text or ""),
+                reply_to=str(n.reply_to_id or ""),
+                timestamp=float(n.timestamp),
+                mentioned_users=tuple(str(u) for u in (getattr(n, "mentioned_users", ()) or ())),
+                author_name=str((getattr(n, "metadata", None) or {}).get("sender_name") or ""),
+                platform=str((getattr(n, "metadata", None) or {}).get("sender_platform") or ""),
+            )
+            for n in nodes
+        )
+        background = _snapshot_background(runtime, nodes)
+        consolidated = "\n".join(str(n.text or "").strip() for n in nodes if str(n.text or "").strip())
+        turn = TurnContext(
+            runtime.session_key,
+            plan_item.author_id,
+            consolidated[:8000],
+            msgs,
+            background,
+            runtime.epoch,
+            runtime.user_revisions.get(plan_item.author_id, 0),
+            float(nodes[0].timestamp),
+            bool(plan_item.directed),
+            wake_kind="private" if plan_item.private_direct else ("at" if plan_item.directed else "none"),
+            bot_id=str(runtime.bot_id or ""),
+            snapshot_at=p.time_service.time(),
+        )
+        platform_ids = frozenset(
+            str(n.msg_id) for n in nodes if (getattr(n, "metadata", None) or {}).get("platform_message_id")
+        )
+        model_turn = ModelTurn(
+            turn,
+            (event,),
+            {
+                "rhythm_catchup": True,
+                "rhythm_force_quote": bool(plan_item.should_quote),
+                "rhythm_skip_micro_delay": True,
+            },
+            shadow=bool(getattr(p, "shadow_mode", False)),
+            platform_message_ids=platform_ids,
+            outcome_nodes=tuple(nodes),
+            private_direct=bool(plan_item.private_direct),
+        )
+        before_last_bot = getattr(getattr(runtime, "last_bot_node", None), "msg_id", None)
+        try:
+            await self.process(runtime, model_turn)
+        except asyncio.CancelledError:
+            return {"status": "uncertain"}
+        except Exception as exc:
+            logger.warning("[ChatDynamics] catchup item failed session=%s type=%s", runtime.session_key, type(exc).__name__)
+            return {"status": "failed"}
+        after_last_bot = getattr(getattr(runtime, "last_bot_node", None), "msg_id", None)
+        if after_last_bot and after_last_bot != before_last_bot:
+            return {"status": "sent", "message_id": str(after_last_bot)}
+        primary_outcome = outcomes.read_outcome(nodes[-1])
+        if primary_outcome.get("final_outcome") == outcomes.VALUE_SUPPRESSED:
+            return {"status": "skipped", "reason": "rhythm_catchup_skipped_unworthy"}
+        return {"status": "failed"}
+
+    async def execute_afterthought(self, runtime, slot, *, quote_self: bool = False) -> dict:
+        """Generate and send at most one lightweight post-delivery supplement."""
+        from .natural_rhythm import NaturalRhythmController, build_afterthought_prompt
+
+        p = self.plugin
+        event = self._synthetic_rhythm_event(runtime)
+        persona = await self.bridge.snapshot(event)
+        if slot.persona_fingerprint and persona.fingerprint != slot.persona_fingerprint:
+            return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
+        dag = getattr(runtime, "dag", None)
+        recent_rows = []
+        if dag is not None:
+            for n in sorted(dag.get_recent_nodes(limit=12), key=lambda x: x.timestamp):
+                if (getattr(n, "metadata", None) or {}).get("recalled") is True:
+                    continue
+                recent_rows.append(
+                    {
+                        "message_id": str(n.msg_id),
+                        "author": str(n.user_id),
+                        "is_bot": bool(runtime.bot_id and str(n.user_id) == str(runtime.bot_id)),
+                        "text": str(n.text or "")[:300],
+                    }
+                )
+        prompt = build_afterthought_prompt(
+            delivered_text=slot.delivered_text,
+            recent_context=recent_rows,
+            private_direct=slot.private_direct,
+            tier=slot.tier,
+            quote_self=quote_self,
+        )
+        turn = TurnContext(
+            runtime.session_key,
+            slot.target_user_id or "bot",
+            slot.delivered_text[:500],
+            (),
+            (),
+            runtime.epoch,
+            runtime.user_revisions.get(slot.target_user_id, 0),
+            p.time_service.time(),
+            False,
+            wake_kind="none",
+            bot_id=str(runtime.bot_id or ""),
+            snapshot_at=p.time_service.time(),
+        )
+        async with self.bridge.session_lock(runtime.session_key):
+            if runtime.epoch != slot.epoch or getattr(p, "_shutting_down", False):
+                return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
+            if not await self.bridge.current(event, persona):
+                return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
+            provider = await p.llm.resolve_provider_id(runtime.session_key)
+            try:
+                output = await self.generate_ready(
+                    runtime,
+                    turn,
+                    event,
+                    (event,),
+                    prompt,
+                    persona,
+                    provider,
+                    execution_log=runtime.tool_executions,
+                    history_text="",
+                    media_understand=False,
+                    context_images=(),
+                    private_direct=slot.private_direct,
+                )
+            except Exception as exc:
+                logger.warning("[ChatDynamics] afterthought generation failed type=%s", type(exc).__name__)
+                return {"status": "skipped", "reason": "rhythm_afterthought_skipped_empty"}
+            if getattr(output, "reply_mode", "") == "silent" or NaturalRhythmController.is_silent_afterthought(
+                str(getattr(output, "text", "") or "")
+            ):
+                return {"status": "skipped", "reason": "rhythm_afterthought_skipped_empty"}
+            text = str(output.text or "").strip()
+            quote_id = None
+            if quote_self and slot.anchor_bot_msg_id and dag is not None:
+                anchor = dag.get_node(slot.anchor_bot_msg_id)
+                if anchor is not None and (getattr(anchor, "metadata", None) or {}).get("platform_message_id"):
+                    quote_id = slot.anchor_bot_msg_id
+            async with runtime.send_lock:
+                if runtime.epoch != slot.epoch or getattr(p, "_shutting_down", False):
+                    return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
+                if runtime.is_recalled(slot.anchor_bot_msg_id) or runtime.is_recalled(slot.trigger_msg_id):
+                    return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_recall"}
+                sent = await p._send_owned(runtime, event, text, reply_to_id=quote_id)
+            if not sent.success:
+                return {"status": "uncertain" if getattr(sent, "delivery_uncertain", False) else "failed"}
+            delivered_text = sent.delivered_text(text)
+            await self.bridge.commit(event, output, delivered_text)
+            real_id = str(sent.message_id) if sent.message_id else None
+            msg_id = real_id or p._next_outgoing_id()
+            if dag is not None:
+                bot = dag.add_message(
+                    msg_id=msg_id,
+                    user_id=runtime.bot_id or "bot",
+                    text=delivered_text,
+                    timestamp=p.time_service.time(),
+                    reply_to_id=slot.anchor_bot_msg_id or None,
+                    metadata={
+                        "platform_message_id": real_id is not None,
+                        "dialogue_delivered": True,
+                        "reply_mode": "text",
+                        "trigger_user_id": slot.target_user_id,
+                        "dialogue_state": "casual",
+                        "dialogue_action": "reply",
+                        "wall_timestamp": p.time_service.wall_time(),
+                    },
+                )
+                runtime.last_bot_node = bot
+                p._last_bot_nodes[runtime.session_key] = bot
+                runtime.remember_sent(msg_id)
+                runtime.last_model_send = p.time_service.time()
+                p._observe_routed_bot(runtime, bot)
+            p._metric("send_succeeded")
+            return {"status": "sent", "message_id": msg_id}

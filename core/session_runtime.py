@@ -224,6 +224,9 @@ class SessionRuntime:
     sent_id_set: Set[str] = field(default_factory=set)
     seen_message_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=1024))
     seen_id_set: Set[str] = field(default_factory=set)
+    recalled_message_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=512))
+    recalled_id_set: Set[str] = field(default_factory=set)
+    natural_rhythm_state: Dict[str, Any] = field(default_factory=dict)
     fallback_fingerprints: Deque[str] = field(default_factory=lambda: deque(maxlen=256))
     fallback_fingerprint_set: Set[str] = field(default_factory=set)
     generation_level: Any = None
@@ -430,6 +433,19 @@ class SessionRuntime:
         self.sent_message_ids.append(message_id)
         self.sent_id_set.add(message_id)
 
+    def mark_recalled(self, message_id: str) -> bool:
+        mid = str(message_id or "").strip()
+        if not mid or mid in self.recalled_id_set:
+            return False
+        if len(self.recalled_message_ids) == self.recalled_message_ids.maxlen:
+            self.recalled_id_set.discard(self.recalled_message_ids[0])
+        self.recalled_message_ids.append(mid)
+        self.recalled_id_set.add(mid)
+        return True
+
+    def is_recalled(self, message_id: str) -> bool:
+        return bool(message_id and str(message_id) in self.recalled_id_set)
+
     def expire_hovers(self, now: float, ttl: float = 120.0) -> None:
         alive = [node for node in self.pending_hovers if 0.0 <= now - node.timestamp <= ttl]
         self.pending_hovers.clear()
@@ -508,6 +524,9 @@ class SessionRuntime:
         self.sent_id_set.clear()
         self.seen_message_ids.clear()
         self.seen_id_set.clear()
+        self.recalled_message_ids.clear()
+        self.recalled_id_set.clear()
+        self.natural_rhythm_state.clear()
         self.fallback_fingerprints.clear()
         self.fallback_fingerprint_set.clear()
         # Receipts describe tool calls made for an earlier conversation; a reset

@@ -2843,6 +2843,9 @@ class NarrativeCoordinator:
                 p._last_bot_nodes[key] = node
                 p._observe_routed_bot(runtime, node)
                 p.arbiter.record_bot_spoke(key, timestamp=p.time_service.time(), user_id=care_target or 'bot')
+                rhythm_ctrl = getattr(p, "natural_rhythm", None)
+                if rhythm_ctrl is not None:
+                    rhythm_ctrl.note_outreach_sent(key)
                 if is_horizon:
                     dynamics_horizons.notify_proactive_delivered(
                         p,

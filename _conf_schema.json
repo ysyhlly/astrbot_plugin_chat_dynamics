@@ -835,6 +835,167 @@
       "daily_rhythm_enabled": true
     }
   },
+  "natural_reply_rhythm_enabled": {
+    "description": "自然回复节奏（暂离回看 / 聊完补话 / 拟真打字）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后作用于已接管的群聊与私聊：忙碌或短暂分心时先放下聊天，回来扫一遍近期进展再挑仍值得接的话；聊完沉默一会儿也有机会想起补一句，且在线打字节奏更接近真人。"
+  },
+  "rhythm_catchup_enabled": {
+    "description": "暂离回来按序回看补回",
+    "type": "bool",
+    "default": true,
+    "hint": "生活状态忙碌/睡眠或偶发分心回来后，查看近期消息并按原先后顺序挑出仍值得接的一两件事（串线带引用、私聊连发合并）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_afterthought_enabled": {
+    "description": "聊完沉默后想起补一句",
+    "type": "bool",
+    "default": true,
+    "hint": "一轮回复最后一段成功发出后，若原话题安静一段时间，有机会结合最新上下文补一句遗漏、改口或新联想（每轮最多一次，绝不催回复）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_micro_pacing_enabled": {
+    "description": "在线微节奏（目标耗时补齐 + 字数打字停顿）",
+    "type": "bool",
+    "default": true,
+    "hint": "在线回复按阅读和打字长度动态补齐反应耗时（扣除模型已花耗时），后续分段按字数和群聊语速拟真停顿。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_lookback_minutes": {
+    "description": "公开话题回看窗口（分钟）",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 5,
+      "max": 240,
+      "step": 5
+    },
+    "hint": "暂离回来时，群聊公开闲聊只回看该时间窗内的新消息，避免翻旧账。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_direct_lookback_minutes": {
+    "description": "私聊/@/引用回看窗口（分钟）",
+    "type": "int",
+    "default": 120,
+    "slider": {
+      "min": 5,
+      "max": 480,
+      "step": 10
+    },
+    "hint": "长忙或睡醒后，对明确指向自己的私聊、@ 或引用放宽回看窗口。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_distract_min_seconds": {
+    "description": "短暂分心最小时长（秒）",
+    "type": "float",
+    "default": 60.0,
+    "hint": "自然收尾后偶发“没看手机”的最短时长（默认 60 秒）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_distract_max_seconds": {
+    "description": "短暂分心最大时长（秒）",
+    "type": "float",
+    "default": 300.0,
+    "hint": "自然收尾后偶发“没看手机”的最长时长（默认 300 秒）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_distract_probability": {
+    "description": "闲置触发短暂分心概率",
+    "type": "float",
+    "default": 0.3,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "控制平时偶尔放下手机的频率（默认 0.3，带会话冷却，避免每次开聊都慢半拍）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_catchup_max_items": {
+    "description": "单次回看最多接几件",
+    "type": "int",
+    "default": 2,
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    },
+    "hint": "暂离回来时常规最多挑选几条仍值得接的旧消息（多条强指向时自动放宽至 3 条）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_afterthought_min_seconds": {
+    "description": "延迟补话最短安静等待（秒）",
+    "type": "float",
+    "default": 60.0,
+    "hint": "从最后一段成功发出起算的最短安静时间（默认 60 秒）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_afterthought_max_seconds": {
+    "description": "延迟补话最长安静等待（秒）",
+    "type": "float",
+    "default": 240.0,
+    "hint": "从最后一段成功发出起算的最长安静时间（默认 240 秒）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_afterthought_cooldown_seconds": {
+    "description": "延迟补话会话冷却（秒）",
+    "type": "float",
+    "default": 1500.0,
+    "hint": "同一会话两次延迟补话之间的最短间隔（默认 1500 秒 / 25 分钟）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
+  "rhythm_afterthought_probability": {
+    "description": "延迟补话触发概率",
+    "type": "float",
+    "default": 0.25,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "满足冷却且最后一段完整送达后，尝试延迟补话的概率（默认 0.25）。",
+    "condition": {
+      "show_advanced_options": true,
+      "natural_reply_rhythm_enabled": true
+    }
+  },
   "group_memory_enabled": {
     "description": "群记忆小本（纪念日/约定）",
     "type": "bool",
@@ -1344,6 +1505,15 @@
     "type": "bool",
     "default": false,
     "hint": "默认关闭：非人设模式下若宿主已提供可用的 <image_caption>，跳过重复的二次识图模型调用。开启后总是执行二次精修。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "isolate_volatile_system_tail": {
+    "description": "隔离系统提示词中的易变尾部（前缀缓存保护）",
+    "type": "bool",
+    "default": true,
+    "hint": "默认开启：将宿主注入的分钟级当前时间行以及第三方请求钩子动态追加的非静态尾巴转移至本轮临时上下文（不丢内容），使同一会话的 system_prompt 跨分钟、跨发言人保持字节恒定，显著提升前缀缓存命中率。",
     "condition": {
       "show_advanced_options": true
     }

@@ -102,6 +102,7 @@ from .core.session_runtime import FollowupBatch  # noqa: F401 (compatibility re-
 from .core.style_shaper import StyleShaper
 from .core.telemetrics import TelemetricsTracker
 from .core.topic_annotations import TopicAnnotations
+from .core.natural_rhythm import NaturalRhythmController
 from .core.time_service import SystemClock, TimeService
 from .core.vibe_analyzer import GroupChatMode, VibeAnalyzer
 from .core.web_api import ConsoleWebAPI, PLUGIN_NAME  # noqa: F401
@@ -127,6 +128,13 @@ elif EventMessageType and hasattr(EventMessageType, "PRIVATE_MESSAGE"):
     _PRIVATE_MESSAGE_TYPE = EventMessageType.PRIVATE_MESSAGE
 else:
     _PRIVATE_MESSAGE_TYPE = "PRIVATE_MESSAGE"
+
+if hasattr(filter, "EventMessageType") and hasattr(filter.EventMessageType, "ALL"):
+    _ALL_MESSAGE_TYPE = filter.EventMessageType.ALL
+elif EventMessageType and hasattr(EventMessageType, "ALL"):
+    _ALL_MESSAGE_TYPE = EventMessageType.ALL
+else:
+    _ALL_MESSAGE_TYPE = "ALL"
 
 _HOOK_PRIORITY = 100
 
@@ -261,6 +269,13 @@ _METRIC_NAMES = (
     "first_sentence_before_agent_finalize",
     "agent_finalize_failed_after_output",
     "routing_embedding_wait_skipped",
+    "rhythm_deferred",
+    "rhythm_catchup_sent",
+    "rhythm_catchup_skipped",
+    "rhythm_afterthought_sent",
+    "rhythm_afterthought_skipped",
+    "rhythm_recall_cancelled",
+    "rhythm_reload_dedup_skipped",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -304,6 +319,10 @@ _DIRECT_RUNTIME_ATTRS = (
     "rhythm_insomnia_enabled",
     "rhythm_force_sleep",
     "rhythm_skip_morning_hi_tonight",
+    "natural_reply_rhythm_enabled",
+    "rhythm_catchup_enabled",
+    "rhythm_afterthought_enabled",
+    "rhythm_micro_pacing_enabled",
     "mood_memory_enabled",
     "slang_trial_enabled",
     "group_memory_enabled",
@@ -502,6 +521,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.topic_annotations = TopicAnnotations(self)
         self._decision_history_path = data_root / "decision-learning.sqlite3"
         self.narrative = NarrativeCoordinator(self, data_root / "narrative-delivery.sqlite3")
+        self.natural_rhythm = NaturalRhythmController(self)
         self._web = ConsoleWebAPI(self)
         self._web.register()
         self._web_apis_registered = self._web.registered
@@ -1809,6 +1829,12 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
 
     async def _shutdown_work(self) -> None:
         """Stop background work and release hosts before the final snapshot."""
+        rhythm_ctrl = getattr(self, "natural_rhythm", None)
+        if rhythm_ctrl is not None:
+            try:
+                await rhythm_ctrl.stop()
+            except Exception:
+                pass
         if self._runtime_persist_task is not None:
             await asyncio.gather(self._runtime_persist_task, return_exceptions=True)
             self._runtime_persist_task = None
@@ -1875,6 +1901,51 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                     close_error = close_error or exc
         if close_error is not None:
             raise close_error
+
+    @filter.event_message_type(_ALL_MESSAGE_TYPE, priority=_HOOK_PRIORITY - 1)
+    async def on_platform_recall_notice(self, event: AstrMessageEvent) -> None:
+        """Observe platform message recall notices (e.g. OneBot group_recall/friend_recall)."""
+        if self._shutting_down or not self.enabled:
+            return
+        msg_obj = getattr(event, "message_obj", None)
+        raw = getattr(msg_obj, "raw_message", None)
+        if not raw:
+            return
+        get_raw = raw.get if isinstance(raw, dict) else (lambda k, d=None: getattr(raw, k, d))
+        post_type = get_raw("post_type")
+        if post_type not in (None, "notice"):
+            return
+        notice_type = str(get_raw("notice_type") or "")
+        if notice_type not in {"group_recall", "friend_recall"}:
+            return
+        recalled_id = str(get_raw("message_id") or "").strip()
+        if not recalled_id:
+            return
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        runtime = self._sessions.get(umo) if umo else None
+        if runtime is None:
+            group_id = str(get_raw("group_id") or "").strip()
+            user_id = str(get_raw("user_id") or "").strip()
+            for candidate in self._sessions.values():
+                if notice_type == "group_recall" and group_id and str(candidate.group_id) == group_id:
+                    runtime = candidate
+                    break
+                if (
+                    notice_type == "friend_recall"
+                    and user_id
+                    and candidate.scope_kind == "private"
+                    and candidate.umo.endswith(f":{user_id}")
+                ):
+                    runtime = candidate
+                    break
+        if runtime is None:
+            return
+        async with runtime.state_lock:
+            rhythm_ctrl = getattr(self, "natural_rhythm", None)
+            if rhythm_ctrl is not None:
+                rhythm_ctrl.on_message_recalled(runtime.session_key, recalled_id, runtime=runtime)
+            else:
+                runtime.mark_recalled(recalled_id)
 
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
@@ -3928,6 +3999,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             if pending is not None and str(pending_owner or "") == user_id:
                 runtime.latest_pending = None
             runtime.invalidate_followups_for_user(user_id)
+            rhythm_ctrl = getattr(self, "natural_rhythm", None)
+            if rhythm_ctrl is not None:
+                rhythm_ctrl.on_member_stopped(session_key, user_id)
             runtime.touch(self.time_service.time())
 
         await self._reply_owned_text(runtime, event, "已停止你尚未发送的回复内容。")

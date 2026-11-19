@@ -10,6 +10,7 @@ from collections import OrderedDict
 _SELF = re.compile(r'(?:^|[，,；;])我(?:拒绝|警告|吐槽|要求|回应|表示|解释|反驳|否认|斥责|因|在|虽然|傲娇)|(?:被我|向我|抱我|叫我)')
 
 _LM_MATERIAL_PREFIX = "角色状态与有来源的背景数据：\n"
+_HISTORICAL_ITEM_PREFIX = "历史材料，仅说明当时记录，不示范本轮口吻：\n"
 _LM_MEASUREMENT_STAGE = "provider_kwargs_after_boundaries"
 _LM_PART_COUNTERS = ("text", "think", "image_url", "audio_url",
                      "other_known_nontext", "unrecognized")
@@ -49,16 +50,46 @@ def _strip_empty_material_fields(value):
 
 
 def _compact_lm_material(material):
-    """Strip empty fields and static policy prose already covered by system_prompt/reply_prompt."""
+    """Strip empty fields, telemetry, and static prose hoisted into system_prompt."""
     compact = copy.deepcopy(material)
     if compact.get("evidence_detail") == "available_in_local_turn_journal":
         compact.pop("evidence_detail", None)
+    compact.pop("evidence_diagnostics", None)
+    compact.pop("evidence_slot_diagnostics", None)
+    source_scope = compact.get("source_scope") if isinstance(compact.get("source_scope"), dict) else {}
+    top_speaker = compact.get("speaker_id")
     member_profile = compact.get("member_profile")
     if isinstance(member_profile, dict):
         member_profile.pop("usage", None)
+    rel_cue = compact.get("current_relationship_cue")
+    if isinstance(rel_cue, dict):
+        rel_cue.pop("interpretation", None)
+        if source_scope and rel_cue.get("scope") == source_scope:
+            rel_cue.pop("scope", None)
+        if source_scope.get("umo") and rel_cue.get("source_umo") == source_scope.get("umo"):
+            rel_cue.pop("source_umo", None)
     interaction_basis = compact.get("current_interaction_basis")
     if isinstance(interaction_basis, dict):
         interaction_basis.pop("guidance", None)
+        if source_scope.get("umo") and interaction_basis.get("scope_umo") == source_scope.get("umo"):
+            interaction_basis.pop("scope_umo", None)
+        if top_speaker and interaction_basis.get("speaker_id") == top_speaker:
+            interaction_basis.pop("speaker_id", None)
+    memory_retrieval = compact.get("memory_retrieval")
+    if isinstance(memory_retrieval, dict):
+        memory_retrieval.pop("guidance", None)
+    snapshot = compact.get("snapshot")
+    if isinstance(snapshot, dict):
+        recent_interaction = snapshot.get("recent_interaction")
+        if isinstance(recent_interaction, dict):
+            recent_interaction.pop("interpretation", None)
+    context_items = compact.get("context_items")
+    if isinstance(context_items, list):
+        for row in context_items:
+            if isinstance(row, dict) and isinstance(row.get("text"), str):
+                text = row["text"]
+                if text.startswith(_HISTORICAL_ITEM_PREFIX):
+                    row["text"] = text[len(_HISTORICAL_ITEM_PREFIX) :]
     adaptation = compact.get("conversation_adaptation")
     if isinstance(adaptation, dict):
         adaptation.pop("usage", None)
@@ -67,6 +98,17 @@ def _compact_lm_material(material):
         shared = adaptation.get("shared_context")
         if isinstance(shared, dict):
             shared.pop("usage", None)
+            dialogue_ref = shared.get("dialogue_ref")
+            if isinstance(dialogue_ref, dict):
+                dialogue_ref.pop("attribution", None)
+                if dialogue_ref.get("path") == "conversation.dialogue":
+                    dialogue_ref.pop("path", None)
+            for ref_key in ("memory_refs", "boundary_refs"):
+                refs = shared.get(ref_key)
+                if isinstance(refs, list):
+                    for pointer in refs:
+                        if isinstance(pointer, dict):
+                            pointer.pop("attribution", None)
         rhythm = adaptation.get("rhythm")
         if isinstance(rhythm, dict):
             for dup_key in ("authority", "action", "length", "mode"):

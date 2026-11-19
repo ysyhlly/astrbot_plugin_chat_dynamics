@@ -448,6 +448,9 @@ class PluginWebAndAdminMixin:
             self.decision_gate.reset_session(key)
         except Exception:
             pass
+        rhythm_ctrl = getattr(self, "natural_rhythm", None)
+        if rhythm_ctrl is not None:
+            rhythm_ctrl.reset_session(key)
         self._last_bot_nodes.pop(key, None)
         self._vibe_msg_counts.pop(key, None)
         drop_poke_streaks(self._poke_streaks, key)

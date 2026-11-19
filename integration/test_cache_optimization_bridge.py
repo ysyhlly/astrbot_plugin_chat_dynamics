@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections import deque
 from types import SimpleNamespace
 
@@ -391,6 +392,159 @@ async def test_legacy_visual_media_without_static_flag_gets_full_fallback(host_f
     assert "[已开启的视觉表达权限]" in system
     assert "本轮回应方式" in system
     assert "发送表情只能用本轮附带的候选" in system
+
+
+@pytest.mark.asyncio
+async def test_phase2_isolate_volatile_system_tail_across_minutes_speakers_and_tools(host_fixture, monkeypatch):
+    ctx, event, calls = host_fixture
+    from astrbot.core.agent.tool import FunctionTool, ToolSet
+
+    def make_tool(name):
+        class _T(FunctionTool):
+            async def call(self, context, **kwargs):
+                return "ok"
+
+        return _T(name=name, description=name, parameters={"type": "object", "properties": {}})
+
+    turn_idx = {"n": 0}
+    auto_life = "忙闲与时效只用于把握回应长短和时机。直接回应当前话题。"
+    vm_static = "[本轮统一视觉表达]\n结合当前发言主动选择表达载体。"
+
+    async def noisy_third_party_hooks(_incoming, _kind, req):
+        n = turn_idx["n"]
+        turn_idx["n"] += 1
+        # Simulate host/hook datetime + static series blocks + volatile third-party tails
+        req.system_prompt += (
+            f"\nCurrent datetime: 2026-11-20 01:0{n} (CST), Weekday: Friday"
+            f"\n{auto_life}"
+            f"\n[Portrayal]\n当前发言者：Speaker_{n}（兴趣=Topic_{n}）"
+            f"\n\n{vm_static}"
+            f"\n\n[自主屏蔽状态]\nSpeaker_{n} 警告={n}"
+            f"\n\n[Worldbook 动态场景]\n动态场景词=Scene_{n}"
+        )
+        # Also fluctuate set_interaction_boundary tool availability across turns
+        if n % 2 == 0:
+            req.func_tool = ToolSet([make_tool("alpha_tool"), make_tool("set_interaction_boundary")])
+        else:
+            req.func_tool = ToolSet([make_tool("alpha_tool")])
+        return False
+
+    monkeypatch.setattr(context_utils, "call_event_hook", noisy_third_party_hooks)
+    bridge = AstrBotAgentBridge(ctx)
+    persona = await bridge.snapshot(event)
+    host_default = SimpleNamespace(_runtime_config=SimpleNamespace(isolate_volatile_system_tail=True))
+
+    for idx in range(3):
+        turn = TurnContext(
+            event.unified_msg_origin,
+            f"u{idx}",
+            f"你好第{idx}轮",
+            (MessageSnapshot(f"m{idx}", f"u{idx}", f"你好第{idx}轮"),),
+            (),
+            0,
+            0,
+            0,
+            True,
+        )
+        prompt = reply_prompt(turn, TurnDecision.fallback(turn, "at"), reply_guidance="保持温和自然的群聊口吻。")
+        output = await bridge.generate(event, (event,), prompt, persona, "provider", boundary_host=host_default)
+        assert await bridge.commit(event, output, "delivered")
+
+    sys_prompts = [_extract_system(call) for call in calls]
+    # 100% byte-identical system_prompt across minutes, speakers, third-party tails, and boundary tool flips!
+    assert sys_prompts[0] == sys_prompts[1] == sys_prompts[2]
+    # Static series blocks + hoisted reply_guidance + BOUNDARY_AUTHORIZATION stay cached in system_prompt
+    assert auto_life in sys_prompts[0]
+    assert vm_static in sys_prompts[0]
+    assert "交互边界授权" in sys_prompts[0]
+    assert "保持温和自然的群聊口吻。" in sys_prompts[0]
+    # Zero volatile datetime / speaker / dynamic worldbook leakage into system_prompt
+    for token in ("01:00", "01:01", "01:02", "Speaker_0", "Speaker_1", "Scene_0", "Scene_2", "Portrayal"):
+        assert token not in sys_prompts[0]
+        assert token not in sys_prompts[1]
+        assert token not in sys_prompts[2]
+    # All volatile context is preserved in contexts (temp user parts) and NEVER persisted to ctx.saved
+    for idx in range(3):
+        ctx_text = _extract_user_text(calls[idx])
+        assert f"01:0{idx}" in ctx_text
+        assert f"Speaker_{idx}" in ctx_text
+        assert f"Scene_{idx}" in ctx_text
+        assert f"警告={idx}" in ctx_text
+    assert "Portrayal" not in str(ctx.saved)
+    assert "Scene_0" not in str(ctx.saved)
+
+    # Opt-out toggle: isolate_volatile_system_tail=False keeps third-party tail in system_prompt
+    host_off = SimpleNamespace(_runtime_config=SimpleNamespace(isolate_volatile_system_tail=False))
+    turn = TurnContext(event.unified_msg_origin, "u9", "关闭隔离测试", (MessageSnapshot("m9", "u9", "关闭隔离测试"),), (), 0, 0, 0, True)
+    prompt = reply_prompt(turn, TurnDecision.fallback(turn, "at"))
+    await bridge.generate(event, (event,), prompt, persona, "provider", boundary_host=host_off)
+    assert "Speaker_3" in _extract_system(calls[-1])
+
+
+@pytest.mark.asyncio
+async def test_phase2_bridge_curb_dedup_shrinks_payload_with_valid_provenance(host_fixture):
+    ctx, event, calls = host_fixture
+    repeated_msgs = [
+        f"历史群聊第{i}条较长的完整讨论内容，包含了详细的排查步骤、日志现象、回滚方案以及各模块配置参数说明，用于验证当前回合上下文去重后显著减小未缓存体积。"
+        for i in range(6)
+    ]
+    quoted_msg = "这是当前发言直接引用的那条背景记录，长度超过十六字且必须原样保留正文。"
+    # Seed real AstrBot conversation history with those 6 turns
+    seeded = []
+    for i, text in enumerate(repeated_msgs):
+        seeded.append({"role": "user", "content": text})
+        seeded.append({"role": "assistant", "content": f"收到第{i}条的回复说明，内容也保留在历史里。"})
+    ctx.conv.history = json.dumps(seeded, ensure_ascii=False)
+
+    bridge = AstrBotAgentBridge(ctx)
+    persona = await bridge.snapshot(event)
+    event._extras["_narrative_managed_v1"] = _managed_payload(event, persona, purpose="reply")
+    notifier = SimpleNamespace(evidence_current=lambda _: True)
+
+    background = tuple(MessageSnapshot(f"bg-{i}", "u2", text) for i, text in enumerate(repeated_msgs)) + (
+        MessageSnapshot("bg-q", "u3", quoted_msg),
+    )
+    turn = TurnContext(
+        event.unified_msg_origin,
+        "u1",
+        "接着刚才聊的往下说",
+        (MessageSnapshot("m-cur", "u1", "接着刚才聊的往下说", reply_to="bg-q"),),
+        background,
+        0,
+        0,
+        0,
+        True,
+    )
+    raw_prompt = reply_prompt(turn, TurnDecision.fallback(turn, "at"), reply_guidance="自然简洁回应，不要客套。" * 6)
+    await bridge.generate(event, (event,), raw_prompt, persona, "provider", narrative_override=notifier)
+
+    assert len(calls) == 1
+    system = _extract_system(calls[0])
+    assert "自然简洁回应，不要客套。" in system
+
+    # Find the final user message JSON sent to the provider
+    user_texts = _extract_user_text(calls[0])
+    assert '"in_history":true' in user_texts
+    assert quoted_msg in user_texts
+    # Measure actual compacted curB JSON vs uncompacted raw_prompt
+    last_msg = calls[0]["contexts"][-1]
+    parts = last_msg["content"] if isinstance(last_msg["content"], list) else [last_msg["content"]]
+    sent_json = next(
+        (p["text"] if isinstance(p, dict) else p)
+        for p in parts
+        if isinstance((p["text"] if isinstance(p, dict) else p), str)
+        and (p["text"] if isinstance(p, dict) else p).startswith('{"conversation":')
+    )
+    assert len(sent_json.encode("utf-8")) < len(raw_prompt.encode("utf-8")) * 0.60
+    parsed_sent = json.loads(sent_json)
+    assert "reply_guidance" not in parsed_sent
+    assert all(
+        row.get("in_history") is True and "text" not in row
+        for row in parsed_sent["conversation"]["background"]
+        if row["message_id"].startswith("bg-") and row["message_id"] != "bg-q"
+    )
+    # Material payload provenance verified inside HistoryViewProvider
+    assert "角色状态与有来源的背景数据：" in user_texts
 
 
 async def _async_return(value):

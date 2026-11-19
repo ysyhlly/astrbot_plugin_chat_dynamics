@@ -693,3 +693,292 @@ async def test_reply_attribution_provider_invokes_observer_and_noop_when_absent(
     runner2 = SimpleNamespace(provider=primary, fallback_providers=[fallback])
     bind_reply_attribution(runner2, "qq:GroupMessage:123", "not-a-hex-id")
     assert runner2.provider is primary and runner2.fallback_providers == [fallback]
+
+
+# ===========================================================================
+# Phase 2: +rhythm.2 preservation, BOUNDARY_AUTHORIZATION static,
+# isolate_volatile_system_tail, and curB dedup + shrinkage
+# ===========================================================================
+
+
+def test_phase2_rhythm2_config_pacer_recall_and_reply_prompt_preserved():
+    from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
+    from astrbot_plugin_chat_dynamics.core.natural_rhythm import NaturalRhythmController
+    from astrbot_plugin_chat_dynamics.core.pacer import PacingShaper
+    from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRuntime
+    from astrbot_plugin_chat_dynamics.core.turn_decision import REPLY_INSTRUCTIONS
+    from astrbot_plugin_chat_dynamics.core.vibe_analyzer import GroupChatMode
+
+    cfg, warnings = parse_runtime_config({})
+    assert not warnings
+    assert cfg.natural_reply_rhythm_enabled is False
+    assert cfg.rhythm_catchup_enabled is True
+    assert cfg.rhythm_afterthought_enabled is True
+    assert cfg.rhythm_micro_pacing_enabled is True
+    assert cfg.rhythm_lookback_minutes == 30
+    assert cfg.rhythm_direct_lookback_minutes == 120
+    assert cfg.rhythm_catchup_max_items == 2
+    assert cfg.rhythm_afterthought_cooldown_seconds == 1500.0
+    assert cfg.isolate_volatile_system_tail is True
+
+    # PacingShaper online target delay & jittered inter-burst delay
+    pacer = PacingShaper()
+    online_delay = pacer.calculate_online_target_delay(
+        first_fragment="好的我看到了，马上来看看这个细节。",
+        input_text="刚才那个配置参数要不要一起改掉？",
+        mode=GroupChatMode.CHILL_FADE,
+        idle_seconds=20.0,
+        jitter_seed="turn-42",
+    )
+    assert 0.4 <= online_delay <= 6.5
+    burst_delay = pacer.calculate_inter_burst_delay(
+        GroupChatMode.CHILL_FADE,
+        "第二段稍微长一点的补充说明内容。",
+        jitter=True,
+        jitter_seed="turn-42",
+    )
+    assert burst_delay > 0.0
+
+    # SessionRuntime recall tracking
+    runtime = SessionRuntime(session_key="qq:GroupMessage:1", group_id="1", umo="qq:GroupMessage:1")
+    assert not runtime.is_recalled("msg-9")
+    runtime.mark_recalled("msg-9")
+    assert runtime.is_recalled("msg-9")
+    runtime.reset_conversation_state()
+    assert not runtime.is_recalled("msg-9")
+
+    # NaturalRhythmController status & recall hook work cleanly with plugin stub
+    stub_plugin = SimpleNamespace(
+        _runtime_config=cfg,
+        natural_reply_rhythm_enabled=False,
+        _sessions={},
+        _record_metric=lambda *_a, **_kw: None,
+    )
+    ctrl = NaturalRhythmController(stub_plugin)
+    status = ctrl.status()
+    assert status["enabled"] is False
+
+    # reply_prompt sets rhythm_mode in attention_plan while static rules live in REPLY_INSTRUCTIONS
+    turn = TurnContext("s", "u1", "回来看一下", (MessageSnapshot("m1", "u1", "回来看一下"),), (), 0, 0, 0, True)
+    decision = TurnDecision("reply", "casual", ("m1",), "回应", "brief", "rhythm_catchup")
+    for mode in ("catchup", "afterthought"):
+        raw = reply_prompt(turn, decision, delivery_constraints={"rhythm_mode": mode})
+        data = json.loads(raw)
+        assert data["attention_plan"]["rhythm_mode"] == mode
+        assert data["delivery_constraints"]["rhythm_mode"] == mode
+        assert "guidance" not in data["attention_plan"]
+    assert "catchup" in REPLY_INSTRUCTIONS and "afterthought" in REPLY_INSTRUCTIONS
+
+
+def test_phase2_boundary_authorization_unconditionally_static():
+    from astrbot_plugin_chat_dynamics.core.reply_request_prompt import (
+        BOUNDARY_AUTHORIZATION,
+        assemble_reply_prompts,
+    )
+
+    event = SimpleNamespace(get_extra=lambda _k, d=None: d)
+    req_with_tool = SimpleNamespace(system_prompt="base")
+    req_without_tool = SimpleNamespace(system_prompt="base")
+    tools_with = SimpleNamespace(tools=[SimpleNamespace(name="set_interaction_boundary", active=True)])
+    tools_without = SimpleNamespace(tools=[SimpleNamespace(name="other_tool", active=True)])
+    managed = {"character": {"core_prompt": "角色设定", "group_rules": "群规则"}}
+
+    sys_a, _ = assemble_reply_prompts(
+        req_with_tool,
+        event,
+        native_persona="",
+        managed=managed,
+        internal=False,
+        poke_supported=True,
+        boundary_state=SimpleNamespace(available=True, disabled=False),
+        tools=tools_with,
+    )
+    sys_b, _ = assemble_reply_prompts(
+        req_without_tool,
+        event,
+        native_persona="",
+        managed=managed,
+        internal=False,
+        poke_supported=True,
+        boundary_state=SimpleNamespace(available=False, disabled=True),
+        tools=tools_without,
+    )
+    assert sys_a == sys_b
+    assert BOUNDARY_AUTHORIZATION in sys_a
+
+
+def test_phase2_volatile_system_tail_isolation_helpers():
+    from astrbot_plugin_chat_dynamics.core.reply_request_prompt import (
+        isolate_hook_system_tail,
+        split_volatile_datetime_lines,
+    )
+
+    # 1. Minute-level host datetime stripping
+    raw_t1 = "# Persona Instructions\n\n你是安安。\nCurrent datetime: 2026-11-20 01:01 (CST), Weekday: Friday\n当前时间：2026-11-20 01:01"
+    raw_t2 = "# Persona Instructions\n\n你是安安。\nCurrent datetime: 2026-11-20 01:02 (CST), Weekday: Friday\n当前时间：2026-11-20 01:02"
+    clean_1, dt_1 = split_volatile_datetime_lines(raw_t1)
+    clean_2, dt_2 = split_volatile_datetime_lines(raw_t2)
+    assert clean_1 == clean_2 == "# Persona Instructions\n\n你是安安。"
+    assert "01:01" in dt_1 and "01:02" in dt_2
+
+    # 2. Post-hook tail isolation keeps known static series blocks and moves volatile third-party tails
+    auto_life = "忙闲与时效只用于把握回应长短和时机。直接回应当前话题。当前生活细节按需读取。"
+    vm_static = "[本轮统一视觉表达]\n结合当前发言主动选择表达载体。\n- text：事实回答"
+    static_card = "【当前角色设定：星见】\n住在海边小镇。\n\n喜欢看书。"
+    after_alice = (
+        clean_1
+        + f"\n{auto_life}\n[Portrayal]\n当前发言者：Alice（喜欢猫）"
+        + f"\n\n{vm_static}\n\n[自主屏蔽状态]\nAlice 警告次数=0"
+        + f"\n\n{static_card}\n\n[Worldbook 动态场景]\n触发关键词：咖啡馆"
+    )
+    after_bob = (
+        clean_2
+        + f"\n{auto_life}\n[Portrayal]\n当前发言者：Bob（喜欢狗）"
+        + f"\n\n{vm_static}\n\n[自主屏蔽状态]\nBob 警告次数=1"
+        + f"\n\n{static_card}\n\n[Worldbook 动态场景]\n触发关键词：图书馆"
+    )
+    kept_a, dyn_a = isolate_hook_system_tail(clean_1, after_alice)
+    kept_b, dyn_b = isolate_hook_system_tail(clean_2, after_bob)
+    assert kept_a == kept_b
+    assert auto_life in kept_a and vm_static in kept_a and "住在海边小镇" in kept_a
+    for leak in ("Alice", "Bob", "Portrayal", "自主屏蔽状态", "咖啡馆", "图书馆"):
+        assert leak not in kept_a
+    assert "Alice（喜欢猫）" in dyn_a and "咖啡馆" in dyn_a and "自主屏蔽状态" in dyn_a
+    assert "Bob（喜欢狗）" in dyn_b and "图书馆" in dyn_b and "警告次数=1" in dyn_b
+
+
+def test_phase2_curb_dedup_and_material_compaction_with_provenance():
+    from astrbot_plugin_chat_dynamics.core.reply_adaptation import measure as measure_adaptation
+    from astrbot_plugin_chat_dynamics.core.reply_request_prompt import (
+        deduplicate_reply_prompt_against_history,
+    )
+
+    bg_in_hist = "刚才我们聊过那个部署脚本的参数配置和回滚方案，测试已经跑通了。"
+    bg_quoted = "那条需要被当前发言直接引用并核对的原始背景句子，必须保留正文。"
+    bg_fresh = "这是一条还没进入历史记录的新背景消息，长度超过十六个字。"
+    last_bot = "好的，刚才我已经把完整的排查步骤和每一步的预期结果都整理发在群里了，等会儿你可以直接对照执行。"
+
+    history = json.dumps(
+        [
+            {"role": "user", "content": bg_in_hist},
+            {"role": "assistant", "content": last_bot},
+        ],
+        ensure_ascii=False,
+    )
+    turn = TurnContext(
+        "s",
+        "u1",
+        "继续刚才那个话题",
+        (MessageSnapshot("cur-1", "u1", "继续刚才那个话题", reply_to="bg-quoted"),),
+        (
+            MessageSnapshot("bg-hist", "u2", bg_in_hist),
+            MessageSnapshot("bg-quoted", "u3", bg_quoted),
+            MessageSnapshot("bg-fresh", "u2", bg_fresh),
+        ),
+        0,
+        0,
+        0,
+        True,
+    )
+    decision = TurnDecision("reply", "focused", ("cur-1",), "继续解答", "normal", "continue")
+    raw_prompt = reply_prompt(turn, decision, reply_guidance="保持简洁自然，不要机械追问。" * 5)
+    # Attach dialogue.last_bot_text to test dialogue dedup as well
+    raw_obj = json.loads(raw_prompt)
+    raw_obj["conversation"]["dialogue"] = {"last_bot_text": last_bot, "user_id": "u1"}
+    raw_prompt_with_dialogue = json.dumps(raw_obj, ensure_ascii=False, separators=(",", ":"))
+
+    compacted_prompt, hoisted_guidance = deduplicate_reply_prompt_against_history(
+        raw_prompt_with_dialogue, history
+    )
+    assert hoisted_guidance == ("保持简洁自然，不要机械追问。" * 5)
+    assert len(compacted_prompt) < len(raw_prompt_with_dialogue)
+    compacted_obj = json.loads(compacted_prompt)
+    assert "reply_guidance" not in compacted_obj
+    bg_by_id = {row["message_id"]: row for row in compacted_obj["conversation"]["background"]}
+    # Overlapped background entry is deduplicated to in_history=True
+    assert bg_by_id["bg-hist"]["in_history"] is True
+    assert "text" not in bg_by_id["bg-hist"]
+    # Directly quoted background entry preserves verbatim text
+    assert bg_by_id["bg-quoted"]["text"] == bg_quoted
+    # Unseen background entry preserves verbatim text
+    assert bg_by_id["bg-fresh"]["text"] == bg_fresh
+    # Dialogue last_bot_text compacted
+    assert compacted_obj["conversation"]["dialogue"]["last_bot_in_history"] is True
+    assert len(compacted_obj["conversation"]["dialogue"]["last_bot_text"]) < len(last_bot)
+
+    # Material compaction strips static prose & internal telemetry while keeping provenance 100% valid
+    managed = {
+        "evidence_view": {"atoms": [{"atom_id": "a1", "claim": "喜欢热茶"}]},
+    }
+    scope = {"platform": "qq", "umo": "s", "persona_id": "p", "instance_id": "i"}
+    rich_material = {
+        "source_scope": scope,
+        "speaker_id": "u1",
+        "evidence_detail": "available_in_local_turn_journal",
+        "evidence_diagnostics": {"materials_total": 12, "materials_cached": 12, "projection_version": 1},
+        "evidence_slot_diagnostics": {"kept": 1, "dropped": 0},
+        "current_relationship_cue": {
+            "status": "subjective_current_tendency",
+            "unknown": True,
+            "scope": dict(scope),
+            "source_umo": "s",
+            "text": "熟悉且安心",
+            "interpretation": "很长的静态解释文本" * 20,
+        },
+        "current_interaction_basis": {
+            "status": "matched",
+            "speaker_id": "u1",
+            "scope_umo": "s",
+            "guidance": "很长的静态互动说明" * 20,
+        },
+        "memory_retrieval": {
+            "long_term_status": "partial",
+            "guidance": "很长的静态检索说明" * 20,
+        },
+        "snapshot": {
+            "recent_interaction": {
+                "summary": "聊过部署",
+                "interpretation": "此前对此对象的感受，不自动成为当前态度",
+            }
+        },
+        "context_items": [
+            {
+                "provider": "livingmemory",
+                "source_id": "lm:1",
+                "text": "历史材料，仅说明当时记录，不示范本轮口吻：\n喜欢热茶",
+            }
+        ],
+        "evidence_slots": {"current_evidence": [{"atom_id": "a1", "claim": "喜欢热茶"}]},
+        "conversation_adaptation": {
+            "schema_version": 1,
+            "usage": "静态说明",
+            "shared_context": {
+                "usage": "静态说明",
+                "dialogue_ref": {"path": "conversation.dialogue", "source_message_ids": ["m1"], "attribution": "静态归属"},
+                "memory_refs": [{"atom_id": "a1", "attribution": "静态归属"}],
+                "boundary_refs": [{"atom_id": "b1", "attribution": "静态归属"}],
+            },
+            "rhythm": {"action": "reply", "length": "brief", "mode": "focused", "authority": "静态权限", "next_step": "answer"},
+        },
+    }
+    raw_len = len(json.dumps(rich_material, ensure_ascii=False, separators=(",", ":")))
+    material_text, provenance = build_lm_final_material_payload(rich_material, managed)
+    compact_json = material_text.removeprefix("角色状态与有来源的背景数据：\n")
+    assert len(compact_json) < raw_len * 0.55
+    parsed = json.loads(compact_json)
+    assert "evidence_diagnostics" not in parsed
+    assert "evidence_slot_diagnostics" not in parsed
+    assert "interpretation" not in parsed["current_relationship_cue"]
+    assert "guidance" not in parsed["memory_retrieval"]
+    assert "interpretation" not in parsed["snapshot"]["recent_interaction"]
+    assert parsed["context_items"][0]["text"] == "喜欢热茶"
+    assert "attribution" not in parsed["conversation_adaptation"]["shared_context"]["memory_refs"][0]
+
+    # Provenance & adaptation measurements still match 100%
+    from astrbot_plugin_chat_dynamics.core.character_view import _lm_projection_measurement
+
+    lm_diag = _lm_projection_measurement([{"role": "user", "content": material_text}], provenance)
+    assert lm_diag["lm_measurement_hash_match_count"] == 1
+    assert lm_diag["lm_kept_atoms"] == 1
+    adapt_diag = measure_adaptation([{"role": "user", "content": material_text}], provenance)
+    assert adapt_diag["reply_adaptation_stage"] == "provider_kwargs_after_boundaries"
