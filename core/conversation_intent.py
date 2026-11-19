@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+TONE_QUESTIONS = ("expression_mode", "speaker_stance")
+
 INTENT_CRITERIA = {
     "communication_intent": {
         "task": "Requests an answer, action, explanation or practical help",
@@ -23,6 +25,15 @@ INTENT_CRITERIA = {
         "hyperbole": "Casual exaggeration, not a literal factual claim",
         "mixed": "Humorous wording accompanies a real request, concern or feeling",
         "unclear": "Insufficient evidence to decide whether this is a joke, meme or literal statement",
+    },
+    "speaker_stance": {
+        "praise": "真心肯定别人的贡献",
+        "criticizes_action": "批评某个具体错误或结果",
+        "personal_attack": "当前发言者自己贬低一个人，或赞同引文里的贬低",
+        "defense": "当前发言者顶回别人的贬低，替受责骂的人说话",
+        "reports": "转述评价，未表明赞同或反对",
+        "venting": "骂一件事、物品或自己的遭遇",
+        "unclear": "没有明确评价或看不准",
     },
     "turn_update": {
         "adds_detail": "Adds a concrete detail to the existing exchange",
@@ -68,6 +79,9 @@ def build_intent_task(state: Mapping[str, Any], questions: Mapping[str, Any], *,
             "Use mixed when a real problem is expressed humorously. Choose unclear when uncertain; "
             "joking style does not establish consent, excuse a boundary violation, or erase concrete distress.",
         },
+        "speaker_stance": {
+            "question": "最后一位发言者本人对所谈的人或事是什么态度？",
+        },
         "turn_update": {
             "question": "What does this current message contribute beyond the preceding exchange?",
             "focus": "Compare with conversation.dialogue.last_bot_text, pending_question and user_updates. "
@@ -80,15 +94,19 @@ def build_intent_task(state: Mapping[str, Any], questions: Mapping[str, Any], *,
     # concise enough to coexist with current-recipient attribution.
     focus = {
         "communication_intent": "Use current speaker, recipient and dialogue. Sharing/venting need not seek advice; explicit help still matters with joking wording. Estimate only, not permission.",
-        "expression_mode": "Use whole exchange and target. Praise may be sarcasm; slang may express real distress. Require supplied evidence for memes/callbacks, never invent origins. Use mixed for humor plus real concern; humor grants no consent.",
+        "expression_mode": "看 tone_exchange。前文事情办成了，夸奖可能属实；刚指错路或办砸了还被夸，可能是反话。结合原话和结果。梗、表情和单个词不能定性。",
+        "speaker_stance": "读 tone_exchange.current.words。先分清原作者与当前发言者。顶回引文中的辱骂是维护被骂者，明确认同才是附和辱骂。引文里的 mentions_bot 帮助认清被点名的是谁。对象和说话人的态度分开判断。",
         "turn_update": "Compare last_bot_text, pending_question and user_updates. Find new detail, answer or correction; a repeated point may be unanswered. A laugh need not close the topic or demand a new question.",
     }
     added = {}
-    for key, criteria in INTENT_CRITERIA.items():
+    for key in (*TONE_QUESTIONS, "communication_intent", "turn_update"):
+        criteria = INTENT_CRITERIA[key]
         question = {"type": "choice", "instructions": {**instructions[key], "focus": focus[key]}, "criteria": dict(criteria)}
         if compact:
             from .decision_compaction import compact_question
             question = compact_question(key, question)
+            if key in TONE_QUESTIONS:
+                question["instructions"]["focus"] = focus[key]
         if request_size(state, {**questions, **added, key: question}) <= limit:
             added[key] = question
     return added
@@ -104,7 +122,7 @@ def semantic_coverage(offered, answers, *, floor=0.7):
         valid = (asked and isinstance(raw, Mapping) and raw.get("type") == "choice"
                  and isinstance(raw.get("choice"), str) and raw["choice"] in criteria
                  and type(raw.get("confidence")) in (int, float) and 0 <= raw["confidence"] <= 1)
-        accepted = bool(valid and raw["confidence"] >= max(floor, 0.8 if key == "expression_mode" else 0.7))
+        accepted = bool(valid and raw["confidence"] >= max(floor, 0.8 if key in TONE_QUESTIONS else 0.7))
         reason = ("budget" if not asked else "missing" if not returned else "invalid" if not valid
                   else "low_confidence" if not accepted else "accepted")
         result[key] = {"asked": asked, "returned": returned, "valid": bool(valid), "accepted": accepted,
@@ -147,13 +165,13 @@ def reply_interaction(turn, frame, *, floor=0.7) -> dict:
             raw = answer.get("confidence")
             if type(raw) in (int, float) and 0 <= raw <= 1:
                 confidence = float(raw)
-                threshold = max(float(floor), 0.8 if key == "expression_mode" else 0.7)
+                threshold = max(float(floor), 0.8 if key in TONE_QUESTIONS else 0.7)
                 if isinstance(answer.get("choice"), str) and answer["choice"] in criteria and confidence >= threshold:
                     value = answer["choice"]
         result[key] = {"choice": value, "confidence": confidence}
         # A low-confidence closed label remains a hypothesis for the reply
         # model, never an admission signal or a fact about another member.
-        if (value == "unclear" and isinstance(answer, Mapping) and answer.get("type") == "choice"
+        if (key != "speaker_stance" and value == "unclear" and isinstance(answer, Mapping) and answer.get("type") == "choice"
                 and isinstance(answer.get("choice"), str) and answer["choice"] in criteria
                 and answer["choice"] != "unclear" and confidence >= .2):
             tentative[key] = {"choice": answer["choice"], "confidence": confidence}
@@ -162,6 +180,15 @@ def reply_interaction(turn, frame, *, floor=0.7) -> dict:
         result["tentative_guidance"] = (
             "这些只是待核实的理解候选，须结合原句、对象和前后文判断；不据此推断心理、同意或参与权限。"
             "梗的细分类别不确定时可以自然回应，不编造或解释不存在的出处；真实求助和感受优先。")
+    reading = frame.get("evaluative_reading")
+    if isinstance(reading, Mapping):
+        verdict = reading.get("choice")
+        source = reading.get("source_message_id")
+        if verdict == "unclear":
+            result["evaluative_reading"] = {"choice": "unclear"}
+        elif (verdict in ("sincere_praise", "ironic_praise") and reading.get("reason") == "cited_outcome"
+              and isinstance(source, str) and source in (frame.get("tone_sources") or {})):
+            result["evaluative_reading"] = {"choice": verdict, "source_message_id": source}
     intent_focus = {
         "task": "先回应明确问题或请求，保留当前条件；幽默语气不应淹没实质答案。",
         "sharing": "对分享中的一个具体细节作个人化回应，可以补一个相关看法，不自动给整套建议。",

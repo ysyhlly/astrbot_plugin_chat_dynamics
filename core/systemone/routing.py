@@ -6,6 +6,7 @@ import math
 import time
 
 from .client import SystemOneError
+from . import window
 from .native import ask_native, is_decision_provider
 
 
@@ -24,6 +25,8 @@ class RoutedSystemOneClient:
         self._detail = "not_called"
         self.calls = 0
         self.failures = 0
+        self.tone_review_calls = 0
+        self.tone_review_failures = 0
         self.last_latency_ms = 0
 
     def __getattr__(self, name):
@@ -33,6 +36,11 @@ class RoutedSystemOneClient:
         self._generation += 1
         self._status, self._detail = "configured", "not_called"
         self.fallback.configure(**kwargs)
+
+    @property
+    def context_window_tokens(self):
+        _, provider, _ = self._resolve()
+        return getattr(provider, "context_window_tokens", None)
 
     def _resolve(self):
         config = self.host._runtime_config
@@ -79,14 +87,34 @@ class RoutedSystemOneClient:
             "protocol": getattr(provider, "decision_protocol", "systemone" if
                 getattr(provider,'is_systemone_provider',False) else 'native_decision') if supported else "",
             "model": provider.get_model() if supported else "",
+            "context_window_tokens": self.context_window_tokens,
             "calls": self.calls,
             "failures": self.failures,
+            "tone_review_calls": self.tone_review_calls,
+            "tone_review_failures": self.tone_review_failures,
             "last_latency_ms": self.last_latency_ms if current else 0,
             "context_budget": self.last_context_budget if current else None,
             "usage": self.last_usage if current else None,
         }
 
+    def tone_selection(self):
+        """Bind a semantic follow-up to the same provider, config and generation."""
+        if self._closed:
+            return None
+        try:
+            return self._resolve()[2]
+        except Exception:
+            return None
+
+    async def evaluate_tone(self, *, state, questions, timeout, selection):
+        if selection is None or self.tone_selection() != selection:
+            return None
+        return await self._evaluate(state, questions, timeout, tone=True)
+
     async def evaluate(self, *, state, questions, timeout=None):
+        return await self._evaluate(state, questions, timeout, tone=False)
+
+    async def _evaluate(self, state, questions, timeout, *, tone):
         if self._closed:
             return None
         provider_id, provider, identity = self._resolve()
@@ -102,9 +130,13 @@ class RoutedSystemOneClient:
             self._status, self._detail = "missing", "invalid_systemone_provider"
             return None
         self.calls += 1
-        self._last_identity = identity
-        self.last_usage = None
-        invoked = False
+        if tone:
+            self.tone_review_calls += 1
+        else:
+            self._last_identity = identity
+        completed = False
+        budget = None
+        error_code = None
         started = time.perf_counter()
         try:
             timeout = float(timeout if timeout is not None else getattr(provider, 'timeout', 30))
@@ -115,10 +147,10 @@ class RoutedSystemOneClient:
             # may use a longer ID, so check its actual name before any HTTP IO.
             model = str(provider.get_model() or "")
             size = request_size(state, questions, model=model)
-            if size > MAX_TOTAL_REQUEST_CHARS:
+            wide = window.enabled(provider)
+            if size > (window.WIRE_BYTES if wide else MAX_TOTAL_REQUEST_CHARS):
                 raise SystemOneError("System One 请求超出决策预算。", code="request_budget_exceeded")
             counter = getattr(provider, 'systemone_count_tokens', None)
-            self.last_context_budget = None
             if callable(counter):
                 from .context_budget import validate_counts, fits, shrink_prose
                 for attempt in range(4):
@@ -130,10 +162,10 @@ class RoutedSystemOneClient:
                     if counted is None:
                         break
                     counts, limits = validate_counts(counted)
-                    self.last_context_budget = {'counts':counts, 'limits':limits, 'shrink_passes':attempt,
+                    budget = {'counts':counts, 'limits':limits, 'shrink_passes':attempt,
                                                 'state_characters':len(json.dumps(state,ensure_ascii=False))}
                     character = state.get('character_state', {}) if isinstance(state,dict) else {}
-                    self.last_context_budget['character_state_summary'] = {
+                    budget['character_state_summary'] = {
                         'energy_level': character.get('energy',{}).get('level','unknown'),
                         'stale': bool(character.get('stale')),
                         'active_commitments': len(character.get('commitments',[])),
@@ -146,35 +178,57 @@ class RoutedSystemOneClient:
             remaining = timeout - (time.perf_counter() - started)
             if remaining <= 0:
                 raise SystemOneError('Decision deadline exceeded.', code='context_count_timeout')
-            invoked = True
             evaluator = getattr(provider, 'systemone_evaluate', None)
             if callable(evaluator):
-                answers = await evaluator(state=state, questions=questions, timeout=remaining)
+                for retry in range(3):
+                    try:
+                        answers = await evaluator(state=state, questions=questions, timeout=remaining)
+                        if wide:
+                            budget = {
+                                "context_window_tokens": window.CONTEXT_TOKENS,
+                                "shrink_passes": retry,
+                                "state_characters": len(json.dumps(state, ensure_ascii=False)),
+                            }
+                        break
+                    except SystemOneError as exc:
+                        if not wide or exc.code not in {"context_length_exceeded", "payload_too_large"} or retry == 2:
+                            raise
+                        reduced = window.reduce_after_overflow(state, questions, retry)
+                        if reduced == state:
+                            raise
+                        state = reduced
+                        remaining = timeout - (time.perf_counter() - started)
+                        if remaining <= 0 or self._closed or self._resolve()[2] != identity:
+                            raise
             else:
                 answers = await asyncio.wait_for(ask_native(provider,state=state,questions=questions),
                                                  timeout=remaining)
+            completed = True
         except asyncio.CancelledError:
             raise
         except SystemOneError as exc:
-            self.failures += 1
-            self._status, self._detail = "degraded", exc.code
-            return None
+            error_code = exc.code
         except TimeoutError:
-            self.failures += 1
-            self._status, self._detail = 'degraded', 'timeout'
-            return None
+            error_code = "timeout"
         except Exception:
-            self.failures += 1
-            self._status, self._detail = "degraded", "systemone_provider_failed"
-            return None
+            error_code = "systemone_provider_failed"
         finally:
-            if invoked:
-                self.last_usage = getattr(provider, "last_decision_usage", None)
-            self.last_latency_ms = round((time.perf_counter() - started) * 1000)
+            if not tone:
+                self.last_context_budget = budget
+                self.last_usage = getattr(provider, "last_decision_usage", None) if completed else None
+                self.last_latency_ms = round((time.perf_counter() - started) * 1000)
+        if error_code is not None:
+            self.failures += 1
+            if tone:
+                self.tone_review_failures += 1
+            else:
+                self._status, self._detail = "degraded", error_code
+            return None
         # A UI model/provider switch must not deliver an answer from the old selection.
         if self._closed or self._resolve()[2] != identity:
             return None
-        self._status, self._detail = "available", "ready"
+        if not tone:
+            self._status, self._detail = "available", "ready"
         return answers
 
     async def close(self):

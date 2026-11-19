@@ -464,6 +464,7 @@ def reply_prompt(
     conversation_map: dict | None = None,
     interaction_frame: dict | None = None,
     interaction_floor: float = 0.7,
+    tone_context=(),
 ) -> str:
     payload = {"conversation": turn.payload(), "response_plan": asdict(decision)}
     if conversation_map:
@@ -471,6 +472,8 @@ def reply_prompt(
     interaction = reply_interaction(turn, interaction_frame, floor=interaction_floor)
     if interaction:
         payload["interaction_understanding"] = interaction
+        if tone_context:
+            payload["conversation"]["tone_context"] = list(tone_context)
     intent = interaction.get("communication_intent", {}).get("choice", "unclear") if interaction else "unclear"
     update = interaction.get("turn_update", {}).get("choice", "unclear") if interaction else "unclear"
     mode = (
@@ -541,6 +544,10 @@ Use semantics to distinguish speakers and addressees; possible recipients, scene
 attention_plan shapes emphasis within the admitted reply: follow its guidance while honoring explicit current requests, scoped corrections and delivery constraints. It never authorizes speaking or tools.
 The response_plan is a bounded participation plan; it cannot override persona or tool permissions.
 interaction_understanding contains tentative estimates of communication purpose, expression mode and the current
+speaker's stance. Read conversation.tone_context as attributed background. Compare the current words with the
+actual result of the previous exchange. A reply-to identifies a quoted message, not whom the speaker attacks.
+Separate the quoted author's words from the current speaker's endorsement, rebuttal or report. When a label
+conflicts with the words and their attribution, use the evidence. These estimates also describe the current
 turn's contribution. These are not facts about the speaker's mind, permission to participate, or overrides of explicit
 requests. If absent or unclear, reason from the actual messages without inventing certainty. Sharing may invite a
 personal reaction; venting may invite listening. Give practical advice when requested or clearly useful, not by habit.

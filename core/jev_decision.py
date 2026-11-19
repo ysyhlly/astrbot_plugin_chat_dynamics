@@ -211,9 +211,10 @@ def request_size(state: dict, questions: dict, *, model: str | None = None) -> i
     return _size({"model": "m" * 256 if model is None else model, "state": state, "questions": normalized})
 
 
-def bound_request_state(state: dict, questions: dict, *, max_chars=MAX_TOTAL_REQUEST_CHARS) -> dict:
+def bound_request_state(state: dict, questions: dict, *, max_chars=MAX_TOTAL_REQUEST_CHARS,
+                        max_state_chars=MAX_TOTAL_STATE_CHARS) -> dict:
     overhead = request_size({}, questions) - 2
-    budget = min(MAX_TOTAL_STATE_CHARS, max_chars - overhead)
+    budget = min(max_state_chars, max_chars - overhead)
     if budget <= 0:
         raise StateBudgetExceeded("request_budget_exceeded")
     return _shrink(state, budget)
@@ -221,6 +222,7 @@ def bound_request_state(state: dict, questions: dict, *, max_chars=MAX_TOTAL_REQ
 
 def bound_request_with_optional(
     state: dict, questions: dict, optional: dict, *, max_chars=MAX_TOTAL_REQUEST_CHARS,
+    max_state_chars=MAX_TOTAL_STATE_CHARS, tone_context=(),
 ) -> tuple[dict, dict]:
     """Reserve core context first; optional estimates must never cancel its call.
 
@@ -238,8 +240,13 @@ def bound_request_with_optional(
             if count == 0:
                 raise StateBudgetExceeded("request_budget_exceeded")
             continue
+        attempt = deepcopy(state)
+        evidence = tone_context if "expression_mode" in retained else ()
+        if "expression_mode" in retained:
+            from .tone_context import exchange
+            attempt["tone_exchange"] = exchange(attempt["conversation"], evidence)
         try:
-            bounded = bound_request_state(deepcopy(state), merged_questions, max_chars=max_chars)
+            bounded = bound_request_state(attempt, merged_questions, max_chars=max_chars, max_state_chars=max_state_chars)
         except StateBudgetExceeded:
             if count == 0:
                 raise
@@ -248,7 +255,7 @@ def bound_request_with_optional(
         # Re-pack from the original view with fewer labels before clipping it.
         if count and bounded['conversation'].get('text') != state['conversation'].get('text'):
             continue
-        if (count and state['conversation'].get('nearby_context')
+        if (count and not evidence and state['conversation'].get('nearby_context')
                 and not bounded['conversation'].get('nearby_context')):
             # A secondary label is less useful than the actual preceding
             # exchange. Retry with fewer labels before losing the entire scene.
@@ -1093,6 +1100,7 @@ def describe_answers(answers: Mapping[str, Any]) -> dict:
         "context_need",
         "communication_intent",
         "expression_mode",
+        "speaker_stance",
         "turn_update",
         *sorted(key for key in answers if isinstance(key, str) and key.startswith(ADDRESSEE_PREFIX)),
     ):

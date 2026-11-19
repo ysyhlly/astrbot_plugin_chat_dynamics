@@ -24,6 +24,8 @@ from .client import (
     validate_answers,
 )
 
+from . import window
+
 PROVIDER_TYPE = "systemone_catalog"
 DEFAULT_CONFIG = {
     "type": PROVIDER_TYPE,
@@ -44,6 +46,10 @@ class SystemOneProvider(DecisionProvider):
     is_systemone_provider = True
     is_chat_dynamics_builtin = True
     is_native_decision_provider = True
+
+    @property
+    def context_window_tokens(self):
+        return window.CONTEXT_TOKENS if self.get_model() == window.MODEL else None
 
     def __init__(self, provider_config, provider_settings):
         super().__init__(provider_config, provider_settings)
@@ -190,8 +196,9 @@ class SystemOneProvider(DecisionProvider):
         normalized_questions = self._validated_questions(state=state, questions=questions)
         selected_model = model or self.get_model()
         payload = {"model": selected_model, "state": state, "questions": normalized_questions}
-        if len(json.dumps(payload, ensure_ascii=False).encode()) > 256 * 1024:
-            raise SystemOneError("System One 请求过大。")
+        wire_limit = window.WIRE_BYTES if window.enabled(self) else 256 * 1024
+        if len(json.dumps(payload, ensure_ascii=False).encode()) > wire_limit:
+            raise SystemOneError("System One 请求过大。", code="payload_too_large")
         limit = self.timeout if timeout is None else min(self.timeout, float(timeout))
         if not math.isfinite(limit) or limit <= 0:
             raise SystemOneError("决策超时无效。")
@@ -209,7 +216,11 @@ class SystemOneProvider(DecisionProvider):
             max_body=256 * 1024,
             client=self._http,
         )
-        return validate_answers(envelope, questions)
+        answers = validate_answers(envelope, questions)
+        usage = envelope.get("usage")
+        tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+        self.last_decision_usage = {"input_tokens": tokens} if type(tokens) is int and tokens >= 0 else None
+        return answers
 
     async def text_chat(self, prompt=None, contexts=None, model=None, **kwargs):
         # Typed annotations can use the normal llm_generate interface.

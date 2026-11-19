@@ -47,6 +47,8 @@ def clarification_input(host, capture, runtime, item, conversation):
 def labels(raw):
     result = {}
     for key, choices in INTENT_CRITERIA.items():
+        if key == "speaker_stance":
+            continue  # This turn's evaluation of a person is not reusable group style.
         item = raw.get(key, {}) if isinstance(raw, dict) else {}
         if isinstance(item, dict):
             confidence = item.get('confidence')

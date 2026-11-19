@@ -55,15 +55,16 @@ def snapshot_nearby(runtime, current_nodes, eligible_ids, excluded_ids=()):
     return tuple(reversed(chosen))
 
 
-def filter_nearby(messages, host, event):
+def filter_nearby(messages, host, event, *, include_mentions=False):
     """Recheck source boundaries just before constructing a model request."""
     if not messages:
         return ()
     frames = []
     for message in messages:
         quoted = str(getattr(message.semantics, 'quoted_author_id', '') or '')
+        sources = (message.author, quoted, *message.mentioned_users) if include_mentions else (message.author, quoted)
         frames.append({'frame_id':message.message_id, 'author_uid':message.author,
-            'source_uids':list(dict.fromkeys(uid for uid in (message.author, quoted) if uid)),
+            'source_uids':list(dict.fromkeys(uid for uid in sources if uid)),
             'provenance_complete':bool(message.author), 'kind':'event', 'text':message.text})
     filtered, state = member_boundary.filter_frames(host, event, frames, purpose='role_input')
     if not state.available and (member_boundary.fail_closed(state) or state.service is not None):

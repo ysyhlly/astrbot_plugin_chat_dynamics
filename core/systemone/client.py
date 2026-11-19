@@ -186,6 +186,8 @@ async def request_json(
     if key:
         request_headers["Authorization"] = "Bearer " + key
     request_headers.setdefault("Accept", "application/json")
+    if payload is not None:
+        request_headers.setdefault("Content-Type", "application/json")
     owned = client is None
     client = client or SystemOneHTTPClient()
     try:
@@ -193,11 +195,25 @@ async def request_json(
             method,
             url,
             headers=request_headers,
-            json=payload,
+            data=json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8") if payload is not None else None,
             timeout=aiohttp.ClientTimeout(total=timeout),
             allow_redirects=False,
         ) as response:
             if response.status != 200:
+                if response.status in (400, 413, 422):
+                    # No provider response text or prompt is exposed in errors.
+                    raw = await response.content.read(4096)
+                    try:
+                        value = json.loads(raw)
+                    except (UnicodeError, ValueError):
+                        value = None
+                    error = value.get("error", value) if isinstance(value, dict) else None
+                    if isinstance(error, dict) and (
+                        error.get("code") == "context_length_exceeded"
+                        or (error.get("code") == "InvalidParameter" and
+                            "Range of input length should be [1, 65536]" in str(error.get("message", "")))
+                    ):
+                        raise SystemOneError("决策模型输入超出上下文窗口。", code="context_length_exceeded")
                 raise SystemOneError(
                     f"System One 请求失败（HTTP {response.status}）。", code=f"http_{response.status}"
                 )

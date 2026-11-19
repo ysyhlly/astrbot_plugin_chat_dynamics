@@ -33,6 +33,7 @@ from .turn_decision import (
 )
 from .jev_decision import (
     MAX_TOTAL_REQUEST_CHARS,
+    MAX_TOTAL_STATE_CHARS,
     StateBudgetExceeded,
     bound_request_with_optional,
     build_questions,
@@ -44,6 +45,8 @@ from .jev_decision import (
 from .topic_jev import align_topic_task, build_topic_task, apply_topic_answer, capture_topic_candidates
 from .conversation_map import build_addressee_task, conversation_map, resolve_addressees, rule_addressees
 from .conversation_intent import INTENT_CRITERIA, build_intent_task, semantic_coverage, reply_interaction
+from . import evaluative_reading, tone_context
+from .systemone import window as decision_window
 from .pipeline_telemetry import PipelineTelemetry
 from .context_retrieval import clip_text, select_background, select_peer_continuation_candidate
 from .routing_contract import commit_topic_evidence
@@ -1110,7 +1113,7 @@ class PersonaEngine:
         *,
         runtime: Any = None,
     ) -> TurnDecision:
-        """One bounded call to the selected decision transport, with a conservative fallback."""
+        """Decide participation and resolve context-dependent praise within the same turn budget."""
         p, turn = self.plugin, item.context
         prefix = _decision_prefix(p)
         rule_routing = bool(
@@ -1121,8 +1124,14 @@ class PersonaEngine:
         client = selected_decision_client(p)
         if client is None:
             return TurnDecision.fallback(turn, prefix + "unavailable")
+        wide = decision_window.enabled(client)
+        request_limit = decision_window.WIRE_BYTES if wide else MAX_TOTAL_REQUEST_CHARS
+        state_limit = decision_window.WIRE_BYTES if wide else MAX_TOTAL_STATE_CHARS
+        if wide:
+            turn = decision_window.decision_turn(turn, item.events, p)
         timeout = (p._runtime_config.decision_llm_timeout if p._runtime_config.decision_backend == 'llm'
                    else p._runtime_config.jev_timeout)
+        review_deadline = time.monotonic() + min(timeout, p._runtime_config.decision_timeout) - 0.5
         floor = p._runtime_config.jev_min_confidence
         observations = dict(item.observations)
         context_options = {
@@ -1197,6 +1206,7 @@ class PersonaEngine:
             bundle_character = item.narrative_bundle.wire()["character"] if item.narrative_bundle else None
             bounded_state = build_state(
                 turn,
+                max_chars=state_limit,
                 previous_state=state,
                 observations=observations,
                 presence=p._runtime_config.presence_knob,
@@ -1230,7 +1240,8 @@ class PersonaEngine:
             if rule_routing:
                 current_questions = {}
             else:
-                current_questions, _ = build_addressee_task(turn, bounded_state, {}, limit=1, current_only=True)
+                current_questions, _ = build_addressee_task(turn, bounded_state, {}, limit=1, current_only=True,
+                                                            max_chars=request_limit)
             # The core recipient question already judges continuation/soft
             # wakes. Do not reserve a second estimate of the same recipient
             # at the expense of current evidence; add it later if it fits.
@@ -1238,7 +1249,9 @@ class PersonaEngine:
             intent_questions = build_intent_task({}, {}, compact=item.narrative_bundle is not None)
             topics_before = len(bounded_state.get("active_topics") or ())
             bounded_state, intent_questions = bound_request_with_optional(
-                bounded_state, {**questions, **recipient_reservation}, intent_questions
+                bounded_state, {**questions, **recipient_reservation}, intent_questions,
+                max_chars=request_limit, max_state_chars=state_limit,
+                tone_context=tone_context.tone_context(turn, p, item.events[-1] if item.events else None),
             )
             if topic_mapping is not None and len(bounded_state.get("active_topics") or ()) != topics_before:
                 topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
@@ -1249,17 +1262,19 @@ class PersonaEngine:
                 addressee_questions, addressee_mapping = {}, {}
             else:
                 addressee_questions, addressee_mapping = build_addressee_task(
-                    turn, bounded_state, {**questions, **intent_questions}
+                    turn, bounded_state, {**questions, **intent_questions}, max_chars=request_limit
                 )
             questions = {**questions, **addressee_questions, **intent_questions}
             request_budget = {
-                "limit_chars": MAX_TOTAL_REQUEST_CHARS,
+                "limit_chars": request_limit,
+                "context_window_tokens": decision_window.CONTEXT_TOKENS if wide else None,
                 "request_chars": request_size(bounded_state, questions),
                 "decision_persona_chars": len(bounded_state.get("persona", "")),
                 "decision_guidance_chars": len(bounded_state.get("decision_prompt", "")),
                 "decision_question_chars": len(json.dumps(questions, ensure_ascii=False)),
                 "nearby_context_messages": len(bounded_state["conversation"].get("nearby_context", ())),
                 "nearby_context_candidates": len(turn.nearby_context),
+                "tone_context_messages": len(bounded_state.get("tone_exchange", {}).get("preceding", ())),
                 "nearby_context_chars": len(
                     json.dumps(bounded_state["conversation"].get("nearby_context", ()), ensure_ascii=False)
                 ),
@@ -1288,6 +1303,11 @@ class PersonaEngine:
             if turn.mandatory_reply:
                 return TurnDecision.fallback(turn, prefix + "state_budget_exceeded")
             return TurnDecision.abstain(prefix + "state_budget_exceeded")
+        reading = None
+        review_tone = (runtime is not None and p._runtime_config.decision_backend == "jev"
+                       and callable(getattr(client, "evaluate_tone", None)) and callable(getattr(client, "tone_selection", None))
+                       and "expression_mode" in intent_questions and "speaker_stance" in intent_questions)
+        stamp = client.tone_selection() if review_tone else None
         async with self.slots:
             answers = await client.evaluate(
                 state=bounded_state,
@@ -1295,6 +1315,10 @@ class PersonaEngine:
                 timeout=timeout,
                 **({'umo': turn.session_key} if p._runtime_config.decision_backend == 'llm' else {}),
             )
+            if stamp is not None and answers:
+                reading = await evaluative_reading.review(p, item.events[-1] if item.events else None,
+                    turn, bounded_state, answers, client, stamp, review_deadline, floor)
+                answers = evaluative_reading.project(answers, reading)
         coverage = semantic_coverage(intent_questions, answers, floor=floor)
         for key, status in coverage.items():
             for counter in ("asked", "returned", "accepted", "recognized"):
@@ -1357,8 +1381,14 @@ class PersonaEngine:
                 "session_key": turn.session_key,
                 "speaker_id": turn.author,
                 "trigger_message_id": turn.messages[-1].message_id if turn.messages else "",
+                "tone_sources": tone_context.source_signatures(bounded_state.get("tone_exchange", {}).get("preceding", ())),
                 "answers": {key: runtime.jev_decision[key] for key in intent_questions if key in runtime.jev_decision},
             }
+            if reading is not None:
+                runtime.jev_decision["evaluative_reading"] = reading
+                runtime.jev_decision["interaction_frame"]["evaluative_reading"] = {
+                    key: reading[key] for key in ("choice", "reason", "source_message_id") if key in reading
+                }
         p._metric(prefix + "decision")
         decision = decision_from_answers(
             turn,
@@ -2374,6 +2404,7 @@ class PersonaEngine:
             try:
                 p._metric("native_agent_started")
                 generation_started = time.monotonic()
+                frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
                 output = await self.generate_ready(
                     runtime,
                     turn,
@@ -2383,7 +2414,8 @@ class PersonaEngine:
                         await scene_learning.prepare_all(reply_prompt(
                             turn,
                             decision,
-                            interaction_frame=runtime.jev_decision.get("interaction_frame"),
+                            interaction_frame=frame,
+                            tone_context=tone_rows,
                             interaction_floor=p._runtime_config.jev_min_confidence,
                             conversation_map=conversation_map(
                                 turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence

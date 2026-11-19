@@ -234,7 +234,8 @@ async def test_budget_removed_topic_choices_are_neither_offered_nor_committed(je
     p.jev.payload = answers(topic={"type": "choice", "choice": "topic_79", "confidence": .9})
 
     def small_budget(*args, **kwargs):
-        return build_state(*args, **kwargs, max_chars=3000)
+        kwargs["max_chars"] = 3000
+        return build_state(*args, **kwargs)
 
     monkeypatch.setattr("astrbot_plugin_chat_dynamics.core.persona_engine.build_state", small_budget)
     event = MockEvent("小助手解释一下安装步骤", message_id="current", is_at_or_wake_command=True)

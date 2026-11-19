@@ -2122,6 +2122,8 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             input_truncated = bounded_text != parsed.text
             if input_truncated:
                 self._metric("input_truncated")
+                from .core.systemone.window import remember_input
+                remember_input(self, event, parsed)
                 parsed.text = bounded_text
             if not self._is_filter_mode() and not self.shadow_mode:
                 self._block_native_for_mode(event)
@@ -2319,6 +2321,8 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
             if bounded_text != parsed.text:
                 self._metric("input_truncated")
+                from .core.systemone.window import remember_input
+                remember_input(self, event, parsed)
             parsed.text = bounded_text
             runtime.request_media_understand = False
             if parsed.has_media:
