@@ -192,6 +192,8 @@ class ConsoleWebAPI:
             ("replay", self.replay, ["GET"], "场景回放色块时间轨"),
             ("topic_annotations", self.annotations_get, ["GET"], "话题标注与混淆统计"),
             ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
+            ("setup/groups", self.setup_groups, ["GET"], "发现可用于引导接管的群聊列表"),
+            ("setup/probe", self.setup_probe, ["POST"], "手动检测所选模型的连通性"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -539,33 +541,48 @@ class ConsoleWebAPI:
 
 
     @staticmethod
-    def _ui_preference_key() -> str | None:
+    def _ui_preference_digest() -> str | None:
         try:
             username = getattr(request, "username", None)
         except Exception:
             return None
         if not isinstance(username, str) or not username.strip():
             return None
-        digest = hashlib.sha256(username.encode("utf-8")).hexdigest()
-        return f"ui_theme:{digest}"
+        return hashlib.sha256(username.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _ui_preference_key(cls) -> str | None:
+        digest = cls._ui_preference_digest()
+        return f"ui_theme:{digest}" if digest is not None else None
+
+    @classmethod
+    def _setup_dismissed_key(cls) -> str | None:
+        digest = cls._ui_preference_digest()
+        return f"setup_dismissed:{digest}" if digest is not None else None
 
     async def ui_preferences_get(self):
-        key = self._ui_preference_key()
-        if key is None:
+        digest = self._ui_preference_digest()
+        if digest is None:
             return _json_err("unauthorized", 401)
         limited = self._rate_limit("ui_preferences_get", 120)
         if limited is not None:
             return limited
         try:
-            value = await self.plugin.get_kv_data(key, None)
-            return _json_ok({"ui": value if value in ("day", "night") else None})
+            value = await self.plugin.get_kv_data(f"ui_theme:{digest}", None)
+            dismissed = await self.plugin.get_kv_data(f"setup_dismissed:{digest}", False)
+            return _json_ok(
+                {
+                    "ui": value if value in ("day", "night") else None,
+                    "setup_dismissed": bool(dismissed),
+                }
+            )
         except Exception as exc:
             logger.warning("[ChatDynamics] UI preference read failed type=%s", type(exc).__name__)
             return _json_err("UI preference unavailable", 503)
 
     async def ui_preferences_save(self):
-        key = self._ui_preference_key()
-        if key is None:
+        digest = self._ui_preference_digest()
+        if digest is None:
             return _json_err("unauthorized", 401)
         limited = self._rate_limit("ui_preferences_save", 60)
         if limited is not None:
@@ -573,16 +590,82 @@ class ConsoleWebAPI:
         body = await _json_body()
         if "__invalid_body__" in body:
             return _json_err(str(body["__invalid_body__"]), 400)
-        if set(body) != {"ui"} or body.get("ui") not in ("day", "night"):
+        allowed_keys = {"ui", "setup_dismissed"}
+        if not body or not set(body).issubset(allowed_keys):
+            return _json_err("invalid preference fields", 400)
+        if "ui" in body and body.get("ui") not in ("day", "night"):
             return _json_err("ui must be day or night", 400)
+        if "setup_dismissed" in body and not isinstance(body.get("setup_dismissed"), bool):
+            return _json_err("setup_dismissed must be a boolean", 400)
         if getattr(self.plugin, "_shutting_down", False):
             return _json_err("plugin is shutting down", 503)
         try:
-            await self.plugin.put_kv_data(key, body["ui"])
-            return _json_ok({"ui": body["ui"], "saved": True})
+            saved_payload: Dict[str, Any] = {"saved": True}
+            if "ui" in body:
+                await self.plugin.put_kv_data(f"ui_theme:{digest}", body["ui"])
+                saved_payload["ui"] = body["ui"]
+            if "setup_dismissed" in body:
+                await self.plugin.put_kv_data(f"setup_dismissed:{digest}", body["setup_dismissed"])
+                saved_payload["setup_dismissed"] = body["setup_dismissed"]
+            return _json_ok(saved_payload)
         except Exception as exc:
             logger.warning("[ChatDynamics] UI preference save failed type=%s", type(exc).__name__)
             return _json_err("UI preference save failed", 503)
+
+    async def setup_groups(self):
+        if (limited := self._rate_limit("setup_groups", 20)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        try:
+            discover = getattr(self.plugin, "discover_setup_groups", None)
+            if callable(discover):
+                data = await discover()
+            else:
+                from .setup_wizard import discover_setup_groups
+
+                data = await discover_setup_groups(self.plugin)
+            return _json_ok(data)
+        except Exception as exc:
+            logger.error("[ChatDynamics] Setup group discovery failed code=CD_SETUP_GROUPS type=%s", type(exc).__name__)
+            return _json_err("setup groups unavailable", 503)
+
+    async def setup_probe(self):
+        if (limited := self._rate_limit("setup_probe", 6)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        allowed = {
+            "participation_backend",
+            "decision_provider",
+            "decision_llm_provider",
+            "reply_provider",
+            "discussion_judgment_mode",
+            "discussion_reranker_provider",
+            "discussion_llm_provider",
+            "probe_discussion",
+        }
+        if (invalid := self._validate_fields(body, allowed)) is not None:
+            return invalid
+        from .setup_wizard import probe_setup_providers, validate_setup_probe_payload
+
+        try:
+            validated = validate_setup_probe_payload(body)
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        try:
+            probe = getattr(self.plugin, "probe_setup_providers", None)
+            if callable(probe):
+                data = await probe(validated)
+            else:
+                data = await probe_setup_providers(self.plugin, validated)
+            return _json_ok(data)
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] Setup provider probe failed code=CD_SETUP_PROBE type=%s", type(exc).__name__)
+            return _json_err("setup probe unavailable", 503)
 
     async def page_nav(self):
         """Return a fresh app-scoped content_path for an internal section.

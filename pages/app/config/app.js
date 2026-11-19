@@ -360,9 +360,11 @@ const els = {
 
 let bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage) || null;
 
+let navModule = null;
+
 async function wirePageNav(currentPage) {
-  const mod = await import("./plugin_nav.js");
-  mod.mountPluginSideNav(currentPage);
+  navModule = await import("./plugin_nav.js");
+  navModule.mountPluginSideNav(currentPage);
 }
 
 
@@ -1169,6 +1171,12 @@ async function boot() {
   }
   els.pageTitle.textContent = t("pages.config.title", "插件设置");
   await wirePageNav("config");
+  const btnOpenSetupWizard = document.getElementById("btnOpenSetupWizard");
+  if (btnOpenSetupWizard) {
+    btnOpenSetupWizard.addEventListener("click", () => {
+      void navModule?.navigateToPluginPage?.("setup", btnOpenSetupWizard);
+    });
+  }
   els.pageDesc.textContent = t(
     "pages.config.desc",
     "选择生效群聊、决策模型和回复模型，核对后保存。",

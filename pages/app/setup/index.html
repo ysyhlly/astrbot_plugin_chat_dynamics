@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+<script src="/api/plugin/page/bridge-sdk.js"></script>
+<script src="../shared/series-workspace.js" data-plugin="astrbot_plugin_chat_dynamics" data-view="app"></script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Paint the document canvas before any external resource can delay navigation. -->
+    <style>
+      html { background: #f5f6f4; color-scheme: light; }
+      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
+    </style>
+    <script>
+      (() => {
+        const valid = value => value === "day" || value === "night";
+        const query = new URLSearchParams(location.search).get("ui");
+        let saved;
+        try { saved = localStorage.getItem("chat_dynamics_ui"); } catch {}
+        document.documentElement.dataset.uiTheme = valid(query) ? query : valid(saved) ? saved : "day";
+      })();
+    </script>
+    <!-- chat_dynamics_ui: shared controls and account preference -->
+    <script src="./theme.js"></script>
+    <title data-series-text="快速引导 · 群聊动态">快速引导 · 群聊动态</title>
+    <link rel="stylesheet" href="./base.css" />
+    <link rel="stylesheet" href="./shell.css" />
+    <link rel="stylesheet" href="./plugin_nav.css" />
+    <link rel="stylesheet" href="./theme.css" />
+    <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="../shared/series-ui.css?v=round2.1"><script type="module" src="../shared/series-panels.js?v=round2.1"></script></head>
+  <body>
+    <a class="skip-link" href="#setupMain" data-series-text="跳到引导内容">跳到引导内容</a>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="app plugin-shell series-workspace">
+      <div class="plugin-layout">
+        <header class="plugin-side series-nav">
+          <a class="series-brand" href="#setupMain"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
+        </header>
+        <div class="plugin-main">
+          <header class="topbar series-heading">
+            <div class="brand-copy">
+              <p class="eyebrow" data-series-text="群聊动态 / 快速引导">群聊动态 / 快速引导</p>
+              <h1 id="pageTitle" data-series-text="快速引导">快速引导</h1>
+              <p class="lede" id="pageDesc" data-series-text="四步完成群聊范围、模型接入、互动风格与伙伴插件核对。">四步完成群聊范围、模型接入、互动风格与伙伴插件核对。</p>
+            </div>
+            <div class="topbar-tools">
+              <div class="connection-state" role="status" aria-live="polite">
+                <span class="status-dot" id="linkLamp" aria-hidden="true"></span>
+                <span id="linkLabel" data-series-text="连接中">连接中</span>
+              </div>
+              <button type="button" class="button button-quiet" id="btnDismissSetup" data-series-text="暂不引导">暂不引导</button>
+              <nav class="page-nav" id="pageNav" aria-label="插件子页切换" data-series-aria-label="插件子页切换"></nav>
+            </div>
+          </header>
+          <section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+
+          <main class="setup-main" id="setupMain" tabindex="-1">
+            <div class="setup-banner hidden" id="setupReentryBanner" role="status">
+              <strong data-series-text="已检测到现有配置">已检测到现有配置</strong>
+              <p data-series-text="保存时只提交你在本次引导中改动过的参数，其余高级调校会完整保留。">保存时只提交你在本次引导中改动过的参数，其余高级调校会完整保留。</p>
+            </div>
+
+            <p class="ops-note setup-status" id="setupStatus" role="status" aria-live="polite" data-series-text="正在读取当前配置与模型列表…">正在读取当前配置与模型列表…</p>
+
+            <nav class="setup-stepper" id="setupStepper" aria-label="引导步骤" data-series-aria-label="引导步骤">
+              <button type="button" class="stepper-item" id="stepBtn1" data-step="1" aria-current="step">
+                <span class="stepper-index">01</span>
+                <span class="stepper-copy">
+                  <strong data-series-text="生效范围与昵称">生效范围与昵称</strong>
+                  <span class="stepper-meta" id="stepMeta1" data-series-text="待配置">待配置</span>
+                </span>
+              </button>
+              <button type="button" class="stepper-item" id="stepBtn2" data-step="2">
+                <span class="stepper-index">02</span>
+                <span class="stepper-copy">
+                  <strong data-series-text="模型接入与测通">模型接入与测通</strong>
+                  <span class="stepper-meta" id="stepMeta2" data-series-text="读取中">读取中</span>
+                </span>
+              </button>
+              <button type="button" class="stepper-item" id="stepBtn3" data-step="3">
+                <span class="stepper-index">03</span>
+                <span class="stepper-copy">
+                  <strong data-series-text="互动风格与开关">互动风格与开关</strong>
+                  <span class="stepper-meta" id="stepMeta3" data-series-text="懂事自然">懂事自然</span>
+                </span>
+              </button>
+              <button type="button" class="stepper-item" id="stepBtn4" data-step="4">
+                <span class="stepper-index">04</span>
+                <span class="stepper-copy">
+                  <strong data-series-text="核对保存与伙伴">核对保存与伙伴</strong>
+                  <span class="stepper-meta" id="stepMeta4" data-series-text="0 项待保存">0 项待保存</span>
+                </span>
+              </button>
+            </nav>
+
+            <!-- Step 1: Scope & Nicknames -->
+            <section class="wire-card setup-step" id="stepPanel1" data-step-panel="1" aria-labelledby="step1Title">
+              <div class="step-head">
+                <div>
+                  <p class="eyebrow" data-series-text="STEP 01 · SCOPE">STEP 01 · SCOPE</p>
+                  <h2 id="step1Title" data-series-text="生效范围与昵称">生效范围与昵称</h2>
+                  <p class="step-lede" data-series-text="先决定机器人要在哪些群聊生效，并填写大家常叫的昵称。排除名单始终优先。">先决定机器人要在哪些群聊生效，并填写大家常叫的昵称。排除名单始终优先。</p>
+                </div>
+              </div>
+
+              <div class="setup-alert hidden" id="pluginDisabledAlert">
+                <div>
+                  <strong data-series-text="插件总开关当前已关闭">插件总开关当前已关闭</strong>
+                  <p data-series-text="关闭状态下不会处理群聊消息，可在这里一并开启。">关闭状态下不会处理群聊消息，可在这里一并开启。</p>
+                </div>
+                <label class="toggle-inline">
+                  <input type="checkbox" id="enablePluginToggle" />
+                  <span data-series-text="启用插件">启用插件</span>
+                </label>
+              </div>
+
+              <fieldset class="setup-fieldset">
+                <legend data-series-text="群聊接管模式">群聊接管模式</legend>
+                <div class="choice-grid choice-grid-2">
+                  <label class="choice-card" id="scopeCardSpecific">
+                    <input type="radio" name="takeoverMode" id="modeTakeoverSpecific" value="specific" checked />
+                    <span class="choice-body">
+                      <span class="choice-title-row">
+                        <strong data-series-text="指定群聊">指定群聊</strong>
+                        <span class="pill-tag" data-series-text="推荐试跑">推荐试跑</span>
+                      </span>
+                      <span class="choice-desc" data-series-text="只对勾选或填写的群号生效，适合先在 1–2 个常用群观察效果。">只对勾选或填写的群号生效，适合先在 1–2 个常用群观察效果。</span>
+                    </span>
+                  </label>
+                  <label class="choice-card" id="scopeCardAll">
+                    <input type="radio" name="takeoverMode" id="modeTakeoverAll" value="all" />
+                    <span class="choice-body">
+                      <span class="choice-title-row">
+                        <strong data-series-text="全部群聊">全部群聊</strong>
+                        <span class="pill-tag pill-muted" data-series-text="排除优先">排除优先</span>
+                      </span>
+                      <span class="choice-desc" data-series-text="对所有群聊生效；需要跳过公告群或工作群时，可加入下方排除名单。">对所有群聊生效；需要跳过公告群或工作群时，可加入下方排除名单。</span>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="setup-subsection">
+                <div class="subsection-top">
+                  <div>
+                    <h3 id="groupPickerTitle" data-series-text="选择生效群聊">选择生效群聊</h3>
+                    <p class="field-hint" id="groupPickerHint" data-series-text="自动汇集已连接平台群列表、近期活跃会话与已配置群号，支持多选。">自动汇集已连接平台群列表、近期活跃会话与已配置群号，支持多选。</p>
+                  </div>
+                  <button type="button" class="button button-quiet" id="btnRefreshGroups" data-series-text="刷新群列表">刷新群列表</button>
+                </div>
+
+                <div class="group-toolbar">
+                  <label class="search-field" for="groupSearch">
+                    <span class="sr-only" data-series-text="搜索群名称、群号或平台">搜索群名称、群号或平台</span>
+                    <input type="search" id="groupSearch" placeholder="按群名称、群号或平台筛选…" autocomplete="off" data-series-placeholder="按群名称、群号或平台筛选…" />
+                  </label>
+                  <span class="selection-summary" id="groupSelectionSummary" data-series-text="已选 0 个群聊">已选 0 个群聊</span>
+                </div>
+
+                <p class="ops-note" id="groupDiscoveryNote" role="status" aria-live="polite" data-series-text="正在读取群列表…">正在读取群列表…</p>
+                <div class="group-list" id="groupList" role="region" aria-label="可勾选群聊列表" data-series-aria-label="可勾选群聊列表"></div>
+
+                <div class="manual-inputs">
+                  <div class="field-block" id="takeoverManualWrap">
+                    <label for="takeoverGroupsInput">
+                      <span data-series-text="手动粘贴或编辑生效群号（逗号或换行分隔）">手动粘贴或编辑生效群号（逗号或换行分隔）</span>
+                      <span class="config-key">takeover_groups</span>
+                    </label>
+                    <textarea id="takeoverGroupsInput" rows="2" placeholder="例如：123456789, 987654321" data-series-placeholder="例如：123456789, 987654321"></textarea>
+                  </div>
+
+                  <details class="sub-details" id="excludeGroupsDetails">
+                    <summary>
+                      <span data-series-text="排除群聊名单（始终不接管）">排除群聊名单（始终不接管）</span>
+                      <span class="summary-badge" id="excludeCountBadge">0</span>
+                    </summary>
+                    <div class="sub-details-body">
+                      <label for="excludeGroupsInput">
+                        <span data-series-text="填写不希望接管的群号（逗号或换行分隔），即使选择全部群也生效。">填写不希望接管的群号（逗号或换行分隔），即使选择全部群也生效。</span>
+                        <span class="config-key">exclude_groups</span>
+                      </label>
+                      <textarea id="excludeGroupsInput" rows="2" placeholder="例如：111222333" data-series-placeholder="例如：111222333"></textarea>
+                    </div>
+                  </details>
+                </div>
+              </div>
+
+              <div class="setup-subsection">
+                <div class="field-block">
+                  <label for="botNamesInput">
+                    <span data-series-text="机器人昵称 / 常见称呼">机器人昵称 / 常见称呼</span>
+                    <span class="config-key">bot_names</span>
+                  </label>
+                  <p class="field-hint" data-series-text="群友不 @ 直接喊名字时用来识别对象；多个昵称用逗号或换行分隔。">群友不 @ 直接喊名字时用来识别对象；多个昵称用逗号或换行分隔。</p>
+                  <textarea id="botNamesInput" rows="2" placeholder="例如：小安, 安安, Bot" data-series-placeholder="例如：小安, 安安, Bot"></textarea>
+                  <div class="tag-preview" id="botNamesPreview" aria-live="polite"></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Step 2: Models & Optional Probe -->
+            <section class="wire-card setup-step" id="stepPanel2" data-step-panel="2" aria-labelledby="step2Title" hidden>
+              <div class="step-head">
+                <div>
+                  <p class="eyebrow" data-series-text="STEP 02 · MODELS">STEP 02 · MODELS</p>
+                  <h2 id="step2Title" data-series-text="模型接入与可选测通">模型接入与可选测通</h2>
+                  <p class="step-lede" data-series-text="分别选择“决定要不要开口”的决策模型与“组织回复正文”的回复模型。支持手动测试连通性。">分别选择“决定要不要开口”的决策模型与“组织回复正文”的回复模型。支持手动测试连通性。</p>
+                </div>
+                <button type="button" class="button button-quiet" id="btnRefreshProviders" data-series-text="刷新模型列表">刷新模型列表</button>
+              </div>
+
+              <div class="recommend-banner hidden" id="modelRecommendBanner" role="status">
+                <div class="recommend-copy">
+                  <strong id="modelRecommendTitle" data-series-text="智能推荐">智能推荐</strong>
+                  <p id="modelRecommendDesc"></p>
+                </div>
+                <button type="button" class="button button-primary hidden" id="btnApplyModelRecommend" data-series-text="采用推荐">采用推荐</button>
+              </div>
+
+              <fieldset class="setup-fieldset">
+                <legend><span data-series-text="参与决策方式">参与决策方式</span> <span class="config-key">participation_backend</span></legend>
+                <div class="choice-grid choice-grid-2">
+                  <label class="choice-card" id="backendCardJev">
+                    <input type="radio" name="participationBackend" id="backendJev" value="jev" checked />
+                    <span class="choice-body">
+                      <span class="choice-title-row">
+                        <strong data-series-text="Jev / 原生抉择">Jev / 原生抉择</strong>
+                        <span class="pill-tag" id="jevAvailBadge" data-series-text="读取中">读取中</span>
+                      </span>
+                      <span class="choice-desc" data-series-text="专为群聊参与节奏设计的概率抉择模型，响应更快、分寸更稳。">专为群聊参与节奏设计的概率抉择模型，响应更快、分寸更稳。</span>
+                    </span>
+                  </label>
+                  <label class="choice-card" id="backendCardLlm">
+                    <input type="radio" name="participationBackend" id="backendLlm" value="llm" />
+                    <span class="choice-body">
+                      <span class="choice-title-row">
+                        <strong data-series-text="普通 LLM 参与决策">普通 LLM 参与决策</strong>
+                        <span class="pill-tag pill-muted" id="llmAvailBadge" data-series-text="无需 Jev">无需 Jev</span>
+                      </span>
+                      <span class="choice-desc" data-series-text="直接复用 AstrBot 的普通聊天模型做开口判断，零额外服务依赖。">直接复用 AstrBot 的普通聊天模型做开口判断，零额外服务依赖。</span>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <div class="model-fields-grid">
+                <div class="field-block" id="decisionJevWrap">
+                  <label for="decisionProviderSelect">
+                    <span data-series-text="Jev / 抉择模型">Jev / 抉择模型</span>
+                    <span class="config-key">decision_provider</span>
+                  </label>
+                  <select id="decisionProviderSelect"></select>
+                  <p class="field-hint" id="decisionJevHint" data-series-text="选择已在 AstrBot 启用的 System One / Jev 或 OpenAI Decisions 服务。">选择已在 AstrBot 启用的 System One / Jev 或 OpenAI Decisions 服务。</p>
+                </div>
+
+                <div class="field-block hidden" id="decisionLlmWrap">
+                  <label for="decisionLlmProviderSelect">
+                    <span data-series-text="LLM 决策模型">LLM 决策模型</span>
+                    <span class="config-key">decision_llm_provider</span>
+                  </label>
+                  <select id="decisionLlmProviderSelect"></select>
+                  <p class="field-hint" data-series-text="留空则跟随回复模型，或使用 AstrBot 当前默认聊天模型。">留空则跟随回复模型，或使用 AstrBot 当前默认聊天模型。</p>
+                </div>
+
+                <div class="field-block">
+                  <label for="replyProviderSelect">
+                    <span data-series-text="回复正文模型（可选）">回复正文模型（可选）</span>
+                    <span class="config-key">reply_provider</span>
+                  </label>
+                  <select id="replyProviderSelect"></select>
+                  <p class="field-hint" data-series-text="仅用于生成回复文字，不决定是否开口。留空即使用 AstrBot 默认回复模型。">仅用于生成回复文字，不决定是否开口。留空即使用 AstrBot 默认回复模型。</p>
+                </div>
+              </div>
+
+              <details class="sub-details" id="discussionSettingsDetails">
+                <summary>
+                  <span data-series-text="话题与对象归属判断（高级可展开）">话题与对象归属判断（高级可展开）</span>
+                  <span class="summary-badge" id="discussionModeBadge" data-series-text="规则＋重排序">规则＋重排序</span>
+                </summary>
+                <div class="sub-details-body model-fields-grid">
+                  <div class="field-block">
+                    <label for="discussionModeSelect">
+                      <span data-series-text="判断方式">判断方式</span>
+                      <span class="config-key">discussion_judgment_mode</span>
+                    </label>
+                    <select id="discussionModeSelect">
+                      <option value="rerank" data-series-text="规则＋原生重排序（默认）">规则＋原生重排序（默认）</option>
+                      <option value="llm" data-series-text="LLM 判断对象与讨论">LLM 判断对象与讨论</option>
+                    </select>
+                  </div>
+
+                  <div class="field-block" id="discussionRerankerWrap">
+                    <label for="discussionRerankerSelect">
+                      <span data-series-text="重排序模型（可选）">重排序模型（可选）</span>
+                      <span class="config-key">discussion_reranker_provider</span>
+                    </label>
+                    <select id="discussionRerankerSelect"></select>
+                  </div>
+
+                  <div class="field-block hidden" id="discussionLlmWrap">
+                    <label for="discussionLlmSelect">
+                      <span data-series-text="话题归属 LLM（可选）">话题归属 LLM（可选）</span>
+                      <span class="config-key">discussion_llm_provider</span>
+                    </label>
+                    <select id="discussionLlmSelect"></select>
+                  </div>
+                </div>
+              </details>
+
+              <div class="probe-box">
+                <div class="probe-head">
+                  <div>
+                    <h3 data-series-text="可选：测试模型连通性">可选：测试模型连通性</h3>
+                    <p class="field-hint" data-series-text="不会自动发起请求；仅在点击下方按钮时发送一次轻量探针，核对模型响应与耗时。">不会自动发起请求；仅在点击下方按钮时发送一次轻量探针，核对模型响应与耗时。</p>
+                  </div>
+                  <div class="probe-actions">
+                    <label class="toggle-inline">
+                      <input type="checkbox" id="probeIncludeDiscussion" />
+                      <span data-series-text="同时测话题归属模型">同时测话题归属模型</span>
+                    </label>
+                    <button type="button" class="button" id="btnProbeModels" data-series-text="测试连通">测试连通</button>
+                  </div>
+                </div>
+                <p class="ops-note" id="probeNote" role="status" aria-live="polite"></p>
+                <div class="probe-results" id="probeResults" aria-live="polite"></div>
+              </div>
+            </section>
+
+            <!-- Step 3: Interaction Style & High-Frequency Toggles -->
+            <section class="wire-card setup-step" id="stepPanel3" data-step-panel="3" aria-labelledby="step3Title" hidden>
+              <div class="step-head">
+                <div>
+                  <p class="eyebrow" data-series-text="STEP 03 · STYLE & TOGGLES">STEP 03 · STYLE &amp; TOGGLES</p>
+                  <h2 id="step3Title" data-series-text="互动风格与高频开关">互动风格与高频开关</h2>
+                  <p class="step-lede" data-series-text="挑选最贴近你群聊氛围的参与风格，并顺手确认私聊、作息与媒体理解开关。">挑选最贴近你群聊氛围的参与风格，并顺手确认私聊、作息与媒体理解开关。</p>
+                </div>
+              </div>
+
+              <div class="style-cards" id="styleCards" role="radiogroup" aria-label="互动风格场景卡片" data-series-aria-label="互动风格场景卡片"></div>
+
+              <div class="setup-subsection toggles-subsection">
+                <h3 data-series-text="高频开关">高频开关</h3>
+                <div class="toggle-grid">
+                  <label class="toggle-card" for="togglePrivateChat">
+                    <div class="toggle-copy">
+                      <strong data-series-text="接管私聊">接管私聊</strong>
+                      <span class="config-key">private_chat_enabled</span>
+                      <p data-series-text="开启后，私聊消息也会进入 Chat Dynamics 节奏与人设对话链路。">开启后，私聊消息也会进入 Chat Dynamics 节奏与人设对话链路。</p>
+                    </div>
+                    <input type="checkbox" id="togglePrivateChat" class="toggle-switch" />
+                  </label>
+
+                  <label class="toggle-card" for="toggleDailyRhythm">
+                    <div class="toggle-copy">
+                      <strong data-series-text="今日作息早晚安">今日作息早晚安</strong>
+                      <span class="config-key">daily_rhythm_enabled</span>
+                      <p data-series-text="按设定时区呈现早晚问候、入睡与自然唤醒作息节奏。">按设定时区呈现早晚问候、入睡与自然唤醒作息节奏。</p>
+                    </div>
+                    <input type="checkbox" id="toggleDailyRhythm" class="toggle-switch" />
+                  </label>
+
+                  <label class="toggle-card" for="toggleMediaUnderstand">
+                    <div class="toggle-copy">
+                      <strong data-series-text="媒体理解">媒体理解</strong>
+                      <span class="config-key">media_understand_reply_enabled</span>
+                      <p data-series-text="开启后在回复前理解群内图片等媒体内容，再决定自然回应方式。">开启后在回复前理解群内图片等媒体内容，再决定自然回应方式。</p>
+                    </div>
+                    <input type="checkbox" id="toggleMediaUnderstand" class="toggle-switch" />
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Step 4: Review, Save & Companion Plugins -->
+            <section class="wire-card setup-step" id="stepPanel4" data-step-panel="4" aria-labelledby="step4Title" hidden>
+              <div class="step-head">
+                <div>
+                  <p class="eyebrow" data-series-text="STEP 04 · REVIEW & COMPANIONS">STEP 04 · REVIEW &amp; COMPANIONS</p>
+                  <h2 id="step4Title" data-series-text="核对保存与伙伴联动">核对保存与伙伴联动</h2>
+                  <p class="step-lede" data-series-text="确认本次运行路径与具体改动项后即可保存；其余未涉及的高级参数保持原样。">确认本次运行路径与具体改动项后即可保存；其余未涉及的高级参数保持原样。</p>
+                </div>
+              </div>
+
+              <div class="review-path-grid" id="reviewPathGrid"></div>
+
+              <div class="review-warnings hidden" id="reviewWarnings" role="status" aria-live="polite">
+                <div class="warning-head">
+                  <strong id="reviewWarningTitle" data-series-text="运行路径需要核对">运行路径需要核对</strong>
+                  <span id="reviewWarningCount"></span>
+                </div>
+                <ul id="reviewWarningList"></ul>
+              </div>
+
+              <div class="diff-section">
+                <div class="diff-head">
+                  <h3 data-series-text="本次将保存的参数变更">本次将保存的参数变更</h3>
+                  <span class="pill-tag" id="reviewDiffCount" data-series-text="0 项变更">0 项变更</span>
+                </div>
+                <p class="field-hint" data-series-text="只提交下方列出的已改动键，不会覆盖完整配置页里的其余参数。">只提交下方列出的已改动键，不会覆盖完整配置页里的其余参数。</p>
+                <div class="diff-list" id="reviewDiffList"></div>
+              </div>
+
+              <div class="save-bar">
+                <div class="save-actions">
+                  <button type="button" class="button button-primary" id="btnSaveSetup" data-series-text="保存并立即应用">保存并立即应用</button>
+                  <button type="button" class="button" id="btnGoConsole" data-series-text="前往控制台">前往控制台</button>
+                  <button type="button" class="button button-quiet" id="btnGoConfig" data-series-text="打开完整配置页">打开完整配置页</button>
+                </div>
+                <p class="ops-note" id="saveNote" role="status" aria-live="polite"></p>
+              </div>
+
+              <div class="save-success hidden" id="saveSuccessBanner" role="status" aria-live="polite">
+                <strong data-series-text="配置已保存并立即生效">配置已保存并立即生效</strong>
+                <p data-series-text="你可以前往控制台观察群聊实时状态，或继续配置下方群间系列伙伴插件。">你可以前往控制台观察群聊实时状态，或继续配置下方群间系列伙伴插件。</p>
+              </div>
+
+              <div class="companion-section" id="companionSection">
+                <div class="subsection-top">
+                  <div>
+                    <h3 data-series-text="群间系列伙伴联动与共享默认项">群间系列伙伴联动与共享默认项</h3>
+                    <p class="field-hint" data-series-text="安装同系列伙伴插件后，它们会自动继承你在主控保存的共享默认项，无需重复填写相同群号和模型。">安装同系列伙伴插件后，它们会自动继承你在主控保存的共享默认项，无需重复填写相同群号和模型。</p>
+                  </div>
+                  <button type="button" class="button button-quiet" id="btnRefreshCompanions" data-series-text="刷新伙伴状态">刷新伙伴状态</button>
+                </div>
+
+                <div class="shared-defaults-box" id="sharedDefaultsBox"></div>
+                <p class="ops-note" id="companionNote" role="status" aria-live="polite" data-series-text="正在读取伙伴插件状态…">正在读取伙伴插件状态…</p>
+                <div class="companion-grid" id="companionCards"></div>
+              </div>
+            </section>
+
+            <!-- Bottom Stepper Navigation -->
+            <footer class="setup-footer" aria-label="步骤切换控制" data-series-aria-label="步骤切换控制">
+              <button type="button" class="button button-quiet" id="btnPrevStep" disabled data-series-text="上一步">上一步</button>
+              <span class="footer-progress" id="footerProgress">第 1 / 4 步</span>
+              <button type="button" class="button button-primary" id="btnNextStep" data-series-text="下一步">下一步</button>
+            </footer>
+          </main>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

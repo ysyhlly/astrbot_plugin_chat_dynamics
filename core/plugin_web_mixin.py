@@ -193,6 +193,16 @@ class PluginWebAndAdminMixin:
     def list_available_providers(self) -> dict[str, Any]:
         return ConfigPanel(self).list_available_providers()
 
+    async def discover_setup_groups(self) -> dict[str, Any]:
+        from .setup_wizard import discover_setup_groups
+
+        return await discover_setup_groups(self)
+
+    async def probe_setup_providers(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from .setup_wizard import probe_setup_providers
+
+        return await probe_setup_providers(self, payload)
+
     async def apply_stored_config(self) -> dict[str, Any]:
         return await ConfigPanel(self).apply_stored_config()
 

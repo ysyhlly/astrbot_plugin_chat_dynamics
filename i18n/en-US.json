@@ -4,6 +4,8 @@
   "pages.console.desc": "Monitor vibe, cooling, and conversation graphs by UMO session. Cool or reset session state.",
   "pages.config.title": "Plugin Config",
   "pages.config.desc": "Choose your groups and keep the defaults. Open advanced settings when you need more control.",
+  "pages.setup.title": "Quick Setup",
+  "pages.setup.desc": "Configure target groups, decision and reply models, interaction style, and companion plugins in four steps.",
   "pages.memory.title": "Notebook",
   "pages.memory.desc": "Anniversaries, reminders, and slang trials; forget or mute tonight.",
   "pages.replay.title": "Scene Replay",

@@ -9,6 +9,10 @@
       "title": "Chat Dynamics Console",
       "desc": "Monitor vibe, cooling, and conversation graphs by UMO session. Cool or reset session state."
     },
+    "setup": {
+      "title": "Quick Setup",
+      "desc": "Configure target groups, decision and reply models, interaction style, and companion plugins in four steps."
+    },
     "config": {
       "title": "Plugin Config",
       "desc": "Choose your groups and keep the defaults. Open advanced settings when you need more control."

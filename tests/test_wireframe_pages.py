@@ -13,7 +13,7 @@ PAGES = ROOT / "pages" / "app"
 I18N = ROOT / "i18n"
 PLUGIN_I18N = ROOT / ".astrbot-plugin" / "i18n"
 
-WIRE_PAGES = ("console", "config", "learning", "memory", "replay")
+WIRE_PAGES = ("console", "config", "learning", "memory", "replay", "setup")
 REQUIRED_FILES = ("_page.json", "index.html", "app.js", "style.css", "plugin_nav.js")
 
 
@@ -62,7 +62,7 @@ def test_console_not_replaced_and_has_side_nav():
 def test_i18n_keys_for_wireframe_pages(locale: str):
     flat = json.loads((I18N / f"{locale}.json").read_text(encoding="utf-8"))
     nested = json.loads((PLUGIN_I18N / f"{locale}.json").read_text(encoding="utf-8"))
-    for name in ("console", "config", "memory", "replay", "app"):
+    for name in ("console", "config", "memory", "replay", "setup", "app"):
         assert flat.get(f"pages.{name}.title")
         assert flat.get(f"pages.{name}.desc")
     for name in WIRE_PAGES:

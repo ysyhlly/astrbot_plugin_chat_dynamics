@@ -65,7 +65,7 @@ def test_native_status_and_explicit_history_export(browser, page_server, width, 
         assert page.locator('#mode').inner_text() == 'Jev 直接决策'
         assert page.locator('#calls').inner_text() == '4'
         assert page.locator('#latency').inner_text() == '970 ms'
-        assert page.locator('[data-nav-page]').count() == 4
+        assert page.locator('[data-nav-page]').count() == 5
         assert page.locator('#pluginSideNav [aria-current="page"]').count() == 1
         assert page.evaluate('window.__historyReads') == 0
         assert 'Kev' not in page.locator('body').inner_text()

@@ -9,6 +9,8 @@
   "content_redacted": "控制台正文：已脱敏",
   "pages.config.title": "插件参数配置",
   "pages.config.desc": "选择生效群聊、决策模型和回复模型，核对后保存。",
+  "pages.setup.title": "快速引导",
+  "pages.setup.desc": "四步完成群聊范围、模型接入、互动风格与伙伴插件核对。",
   "pages.memory.title": "记忆小本",
   "pages.memory.desc": "纪念日、约定与试用梗；忘掉或今晚别提。",
   "pages.replay.title": "场景回放",

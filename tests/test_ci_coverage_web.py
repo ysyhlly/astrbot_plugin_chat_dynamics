@@ -18,7 +18,8 @@ def api(monkeypatch, offline_web_responses):
 
 ENDPOINTS = ["overview", "sessions", "session", "cool", "reset", "config_get",
              "config_save", "providers", "config_apply", "presets", "apply_preset",
-             "read_air", "replay", "notebook_get", "notebook_post", "page_nav"]
+             "read_air", "replay", "notebook_get", "notebook_post", "page_nav",
+             "setup_groups", "setup_probe"]
 
 
 @pytest.mark.asyncio
@@ -47,6 +48,8 @@ async def test_rate_limited_operation_does_not_touch_backend(api, endpoint, monk
     ("notebook_post", "notebook_mutate_async", {"action": "forget"}),
     ("ui_preferences_get", "get_kv_data", {}),
     ("ui_preferences_save", "put_kv_data", {"ui": "night"}),
+    ("setup_groups", "discover_setup_groups", {}),
+    ("setup_probe", "probe_setup_providers", {}),
 ])
 async def test_backend_errors_are_sanitized(api, monkeypatch, endpoint, method, body):
     backend = Mock(side_effect=RuntimeError("secret backend detail"))

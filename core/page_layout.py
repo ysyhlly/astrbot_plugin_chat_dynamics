@@ -1,10 +1,10 @@
-"""One host-visible page containing all five internal sections."""
+"""One host-visible page containing all internal sections."""
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 PAGE_ENTRY = 'app'
-SECTIONS = ('console', 'config', 'memory', 'replay', 'learning')
+SECTIONS = ('console', 'config', 'memory', 'replay', 'learning', 'setup')
 
 
 def section_content_path(content_path: str, section: str) -> str:

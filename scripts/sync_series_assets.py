@@ -49,6 +49,7 @@ FORBIDDEN_DUPLICATE_DIRS = (
     "astrbot_plugin_chat_dynamics/pages/app/learning",
     "astrbot_plugin_chat_dynamics/pages/app/memory",
     "astrbot_plugin_chat_dynamics/pages/app/replay",
+    "astrbot_plugin_chat_dynamics/pages/app/setup",
     "astrbot_plugin_visual_media/views/workshop/behavior",
     "astrbot_plugin_visual_media/views/workshop/memes",
     "astrbot_plugin_visual_media/views/workshop/studio",
