@@ -1,4 +1,8 @@
-# astrbot_plugin_chat_dynamics v1.19.0-rc.6
+# astrbot_plugin_chat_dynamics v1.19.0-rc.7
+
+## v1.19.0-rc.7 — 2026-11-20
+
+- 移除 `main.py` 中已弃用的 `@register(...)` 装饰器，全面迁移至 AstrBot 4.x/5.x 推荐的纯 `Star` 子类自动注册，消除 `register_star` 弃用告警。
 
 ## v1.19.0-rc.6 — 2026-11-20
 
