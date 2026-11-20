@@ -1,4 +1,10 @@
-# astrbot_plugin_chat_dynamics v1.19.0-rc.5
+# astrbot_plugin_chat_dynamics v1.19.0-rc.6
+
+## v1.19.0-rc.6 — 2026-11-20
+
+- 优化决策与回复链路的前缀缓存稳定性与 Token 成本（CD-1..CD-6）：隔离易变系统尾部、精简上下文区块，并保留生产环境验证的回复请求提示与工具护栏。
+- 合并自然回复节奏（`+rhythm.2`）与回复归属（`reply_attribution`）挂钩。
+- 全面优化戳一戳交互：支持 `poke_text` 与 `poke_meme` 复合回应模式、连续戳合并、按好感分层的轻戳响应、同行互戳（`poke_peer`）被动/起哄/活跃对话触发及上下文展开。
 
 ## v1.19.0-rc.5
 
