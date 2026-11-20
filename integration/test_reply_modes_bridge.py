@@ -147,7 +147,7 @@ async def test_native_poke_is_capability_gated_without_sending(host_fixture, pri
     out = await bridge.generate(event, (event,), "prompt", await bridge.snapshot(event), "provider")
     assert out.reply_mode == out.requested_reply_mode == "poke"
     assert out.text == out.narration == "" and not out.chains
-    assert "text|poke|silent" in str(calls[0])
+    assert "text|poke|poke_text|silent" in str(calls[0])
     event.bot.call_action.assert_not_called()
     assert not event.sent and not ctx.saved
 

@@ -76,7 +76,7 @@ from .core.persona_engine import (
     PersonaEngine,
     delivery_fragments,
 )
-from .core.poke import PokeReplyPolicy, next_poke_streak
+from .core.poke import PokeReplyPolicy, PokeTracker, next_poke_streak
 from .core.context_retrieval import select_background, clip_text
 from .core.platform_bridge import (
     SendResult,
@@ -457,6 +457,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self._systemone_service = SystemOneService(self)
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
+        self.poke_tracker = PokeTracker()
         self._poke_streaks: dict[tuple[str, str], tuple[int, float]] = {}
         self._poke_replied_ids: set[tuple[str, str]] = set()
         self.style_shaper = StyleShaper(
@@ -1521,11 +1522,52 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     def _looks_like_strong_address(self, parsed: Any, runtime: SessionRuntime) -> bool:
         return self._wake_kind(parsed, runtime) != "none"
 
+    def record_bot_poke(
+        self,
+        session_id: str,
+        *,
+        bot_id: str,
+        target_id: str,
+        now: float | None = None,
+    ) -> None:
+        """Record an outgoing bot poke in the sliding-window signal tracker."""
+        tracker = getattr(self, "poke_tracker", None)
+        if tracker is None:
+            return
+        ts = float(self.time_service.time() if now is None else now)
+        tracker.record_bot_poke(
+            session_id,
+            bot_id=str(bot_id or ""),
+            target_id=str(target_id or ""),
+            now=ts,
+        )
+
+    def _reset_session_state(
+        self,
+        session_id: str,
+        *,
+        invalidate: bool = True,
+        cancel_background: bool = True,
+    ) -> None:
+        key = self._resolve_session_key(session_id) or session_id
+        super()._reset_session_state(
+            session_id,
+            invalidate=invalidate,
+            cancel_background=cancel_background,
+        )
+        tracker = getattr(self, "poke_tracker", None)
+        if tracker is not None:
+            tracker.clear_session(key)
+            if key != session_id:
+                tracker.clear_session(session_id)
+
     def _is_fast_path_turn(self, parsed: Any, runtime: SessionRuntime) -> bool:
         """Complete, explicitly addressed turns skip debounce and keep the native pipeline."""
+        if self._persona_mode():
+            return False
         if getattr(parsed, "poke_at_bot", False) and not getattr(parsed, "has_media", False):
             return True
-        if self._persona_mode() or not self._is_filter_mode():
+        if not self._is_filter_mode():
             return False
         explicit = self._looks_like_strong_address(parsed, runtime)
         if parsed.has_media:
@@ -1826,6 +1868,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self._last_bot_nodes.clear()
         self._umo_by_session.clear()
         self._vibe_msg_counts.clear()
+        tracker = getattr(self, "poke_tracker", None)
+        if tracker is not None:
+            tracker.clear()
 
     async def _shutdown_work(self) -> None:
         """Stop background work and release hosts before the final snapshot."""
@@ -2117,16 +2162,17 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 if not parsed.poke_at_bot and not parsed.has_media:
                     if not self.shadow_mode:
                         self._block_native_for_mode(event)
-                    self.vibe_analyzer.record_message(
-                        session_key,
-                        self._bounded_text(parsed.text),
-                        timestamp=now,
-                        has_media=False,
-                        user_id=parsed.sender_id or "",
-                    )
-                    self._metric("message_received")
-                    return
-                if not self.shadow_mode:
+                    if not self._persona_mode():
+                        self.vibe_analyzer.record_message(
+                            session_key,
+                            self._bounded_text(parsed.text),
+                            timestamp=now,
+                            has_media=False,
+                            user_id=parsed.sender_id or "",
+                        )
+                        self._metric("message_received")
+                        return
+                elif not self.shadow_mode:
                     self._claim_poke_event(event)
 
             addressed_media = strong_address and has_understandable_media(parsed)
@@ -2172,9 +2218,16 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             addressed_elsewhere = not strong_address and bool(
                 other_recipients or (reply_author and reply_author not in {bot_id, parsed.sender_id})
             )
+            is_peer_poke_only = bool(
+                getattr(parsed, "has_poke", False)
+                and not getattr(parsed, "poke_at_bot", False)
+                and not getattr(parsed, "has_media", False)
+                and is_poke_placeholder(parsed.text)
+            )
             if (
                 self._persona_mode()
                 and not addressed_elsewhere
+                and not is_peer_poke_only
                 and not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id, mandatory_only=True)
                 and (strong_address or not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id))
             ):
@@ -2221,7 +2274,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                     self._suppress_native_llm(event)
                 pending_ingest = True
                 wake_immediate = self._wake_kind(parsed, runtime) == "at"
-                suppress_supersede = not addressed_elsewhere
+                suppress_supersede = not addressed_elsewhere and not is_peer_poke_only
         if is_fast_path:
             await self._flush_single_event(
                 parsed,
@@ -2606,15 +2659,21 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                         return
                     result = await self._send_owned(runtime, raw_event, build_poke_chain(user_id))
                 await _remember(result, "[戳一戳]")
+                if sent_any:
+                    self.record_bot_poke(session_id, bot_id=runtime.bot_id or "", target_id=user_id)
                 if not sent_any:
                     _release_claim()
             elif decision.speak:
                 selections = (
-                    select_background(
-                        dag,
-                        [trigger_node],
-                        bot_id=str(runtime.bot_id or ""),
-                        delivered_ids=frozenset(runtime.sent_id_set),
+                    tuple(
+                        row
+                        for row in select_background(
+                            dag,
+                            [trigger_node],
+                            bot_id=str(runtime.bot_id or ""),
+                            delivered_ids=frozenset(runtime.sent_id_set),
+                        )
+                        if any(ev.relation in {"poke_sender", "poke_reply"} for ev in row.context_evidence)
                     )
                     if dag is not None
                     else ()

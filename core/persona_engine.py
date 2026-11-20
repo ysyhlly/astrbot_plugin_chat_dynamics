@@ -367,8 +367,121 @@ def _quoted_author_name(node, dag) -> str:
     return str((quoted_identity(node, dag) or {}).get("display_name") or "")
 
 
+def _uid_names_from_dag(dag: Any) -> dict[str, str]:
+    names: dict[str, str] = {}
+    getter = getattr(dag, "get_recent_nodes", None) if dag is not None else None
+    if not callable(getter):
+        return names
+    try:
+        recent = getter(limit=0)
+    except Exception:
+        return names
+    for node in recent:
+        uid = str(getattr(node, "user_id", "") or "")
+        name = str(_node_metadata(node).get("sender_name") or "")
+        if uid and name:
+            names[uid] = name
+    return names
+
+
+def _node_poke_fields(node: Any, uid_names: dict[str, str], parsed: Any = None) -> tuple[str, str, str]:
+    meta = _node_metadata(node)
+    poke_target_id = str(meta.get("poke_target_id") or getattr(parsed, "poke_target_id", "") or "")
+    poke_target_name = str(
+        meta.get("poke_target_name") or (uid_names.get(poke_target_id, "") if poke_target_id else "") or ""
+    )
+    poke_action_text = str(meta.get("poke_action_text") or getattr(parsed, "poke_action_text", "") or "")
+    return poke_target_id, poke_target_name, poke_action_text
+
+
+def _is_valid_poke_uid(value: Any, *, bot_id: str = "") -> bool:
+    uid = str(value or "").strip()
+    if not uid or uid in {"0", "all"} or (bot_id and uid == bot_id):
+        return False
+    return uid.isascii() and uid.isdigit()
+
+
+def _collect_trusted_poke_targets(turn: TurnContext, bot_id: str) -> set[str]:
+    trusted: set[str] = set()
+
+    def _add(candidate: Any) -> None:
+        uid = str(candidate or "").strip()
+        if _is_valid_poke_uid(uid, bot_id=bot_id):
+            trusted.add(uid)
+
+    _add(getattr(turn, "author", ""))
+    poke_ctx = getattr(turn, "poke_context", None)
+    if poke_ctx is not None:
+        target_ident = (
+            poke_ctx.get("poke_target_identity")
+            if isinstance(poke_ctx, dict)
+            else getattr(poke_ctx, "poke_target_identity", None)
+        )
+        if isinstance(target_ident, dict):
+            _add(target_ident.get("user_id"))
+            _add(target_ident.get("qq"))
+    for msg in (
+        *(getattr(turn, "messages", ()) or ()),
+        *(getattr(turn, "background", ()) or ()),
+        *(getattr(turn, "nearby_context", ()) or ()),
+    ):
+        _add(getattr(msg, "author", ""))
+        _add(getattr(msg, "poke_target_id", ""))
+        for mentioned in getattr(msg, "mentioned_users", ()) or ():
+            _add(mentioned)
+        semantics = getattr(msg, "semantics", None)
+        if semantics is not None:
+            _add(getattr(semantics, "quoted_author_id", ""))
+            for mentioned in getattr(semantics, "mentioned_user_ids", ()) or ():
+                _add(mentioned)
+    return trusted
+
+
+def _resolve_poke_target(turn: TurnContext, event: Any, bot_id: str, requested_uid: str) -> str:
+    """Return a strictly validated QQ UID to poke, or '' when invalid/unsupported."""
+    event_sender = str(_safe_call(event, "get_sender_id", "") or "").strip()
+    group_id = str(_safe_call(event, "get_group_id", "") or "").strip()
+    platform_name = str(_safe_call(event, "get_platform_name", "") or "").lower()
+    call_action = getattr(getattr(event, "bot", None), "call_action", None)
+    if (
+        platform_name != "aiocqhttp"
+        or not callable(call_action)
+        or (group_id and (not group_id.isascii() or not group_id.isdigit()))
+    ):
+        return ""
+    trusted = _collect_trusted_poke_targets(turn, bot_id)
+    explicit_target = str(requested_uid or "").strip()
+    if not explicit_target:
+        default_target = str(getattr(turn, "author", "") or "").strip()
+        if (
+            not _is_valid_poke_uid(default_target, bot_id=bot_id)
+            or not _is_valid_poke_uid(event_sender, bot_id=bot_id)
+            or event_sender != default_target
+            or default_target not in trusted
+        ):
+            return ""
+        return default_target
+    if not _is_valid_poke_uid(explicit_target, bot_id=bot_id):
+        return ""
+    if explicit_target not in trusted:
+        return ""
+    if not group_id and event_sender != explicit_target:
+        return ""
+    return explicit_target
+
+
+def _is_poke_chain(fragment: Any) -> bool:
+    if isinstance(fragment, str):
+        return False
+    components = getattr(fragment, "chain", None)
+    if not isinstance(components, (list, tuple)) or len(components) != 1:
+        return False
+    return _comp_type_name(components[0]).lower() == "poke"
+
+
 def _snapshot_background(runtime, nodes, *, eligible_ids=None, retained=()) -> tuple[MessageSnapshot, ...]:
     dag = runtime.dag
+    uid_names = _uid_names_from_dag(dag)
     original = {message.message_id: message for message in retained}
     selections = {
         selection.node.msg_id: selection
@@ -400,13 +513,21 @@ def _snapshot_background(runtime, nodes, *, eligible_ids=None, retained=()) -> t
     for mid in sorted(proofs, key=priority):
         if budget <= 0 or len(background) >= (24 if supplemented else 15):
             break
-        limit = 400 if any(p.relation in {"poke_sender", "poke_reply"} for p in proofs[mid]) else 1200
+        limit = (
+            400
+            if any(
+                p.relation in {"poke_sender", "poke_reply", "poke_event", "poke_bot_recent", "poke_group_recent"}
+                for p in proofs[mid]
+            )
+            else 1200
+        )
         if mid in original:
             text = clip_text(original[mid].text, min(limit, budget))
             background.append(replace(original[mid], text=text, context_evidence=proofs[mid]))
         else:
             n = selections[mid].node
             text = clip_text(n.text, min(limit, budget))
+            poke_target_id, poke_target_name, poke_action_text = _node_poke_fields(n, uid_names)
             background.append(
                 MessageSnapshot(
                     n.msg_id,
@@ -421,6 +542,9 @@ def _snapshot_background(runtime, nodes, *, eligible_ids=None, retained=()) -> t
                     platform=str(n.metadata.get("sender_platform") or ""),
                     quoted_author_name=_quoted_author_name(n, dag),
                     context_evidence=proofs[mid],
+                    poke_target_id=poke_target_id,
+                    poke_target_name=poke_target_name,
+                    poke_action_text=poke_action_text,
                 )
             )
         budget -= len(text)
@@ -538,6 +662,7 @@ def snapshot_turn(
     *,
     wake_kind: str = "legacy",
     boundary_host: Any = None,
+    poke_context: Any = None,
 ) -> ModelTurn | None:
     """Build a model turn from the caller's ordered, canonical DAG IDs.
 
@@ -581,6 +706,7 @@ def snapshot_turn(
             return None
         resolved_nodes.append(resolved)
 
+    uid_names = _uid_names_from_dag(dag)
     messages = tuple(
         MessageSnapshot(
             resolved.msg_id,
@@ -595,6 +721,9 @@ def snapshot_turn(
             author_name=str(resolved.metadata.get("sender_name") or ""),
             platform=str(resolved.metadata.get("sender_platform") or ""),
             quoted_author_name=_quoted_author_name(resolved, dag),
+            poke_target_id=_node_poke_fields(resolved, uid_names, parsed)[0],
+            poke_target_name=_node_poke_fields(resolved, uid_names, parsed)[1],
+            poke_action_text=_node_poke_fields(resolved, uid_names, parsed)[2],
         )
         for parsed, resolved in zip(events, resolved_nodes)
     )
@@ -742,6 +871,7 @@ def snapshot_turn(
         bot_id=str(runtime.bot_id or ""),
         visible_node_ids=context_node_ids,
         peer_continuation=peer_continuation,
+        poke_context=poke_context,
     )
     from .nearby_context import snapshot_nearby, filter_nearby
 
@@ -1597,7 +1727,7 @@ class PersonaEngine:
                     if task.cancelling():
                         raise
                 except asyncio.TimeoutError:
-                    reason = "poke_reply_timeout" if item.context.wake_kind == "poke" else "reply_timeout"
+                    reason = "poke_reply_timeout" if item.context.wake_kind in {"poke", "poke_peer"} else "reply_timeout"
                     self._finish_generation_failure(runtime, item, reason)
                     self.diagnostic(runtime, reason)
                     p._metric("llm_reply_unavailable")
@@ -2526,11 +2656,24 @@ class PersonaEngine:
             reply_mode = getattr(output, "reply_mode", "")
             narration = str(getattr(output, "narration", "") or "")
             reply_reason = getattr(output, "reply_reason", "")
+            requested_poke_target = str(getattr(output, "poke_target_uid", "") or "").strip()
+            poke_target = ""
             if reply_mode == "narration" and not turn.mandatory_reply:
                 # An admitted ambient turn is not permission to publish a no-reply notice.
                 reply_mode = "silent"
                 narration = ""
                 reply_reason = "narration_requires_at"
+            poke_target_invalid = False
+            if reply_mode in {"poke", "poke_text", "poke_meme"}:
+                poke_target = _resolve_poke_target(turn, event, str(runtime.bot_id or ""), requested_poke_target)
+                if not poke_target:
+                    poke_target_invalid = True
+                    if reply_mode == "poke_text":
+                        reply_mode = "text"
+                        reply_reason = "invalid_poke_target"
+                    elif reply_mode == "poke_meme":
+                        reply_mode = "meme_only"
+                        reply_reason = "invalid_poke_target"
             nonverbal_mode = reply_mode in {"narration", "poke"}
             if reply_mode:
                 if deferred_media is not None:
@@ -2546,6 +2689,8 @@ class PersonaEngine:
                 if reply_mode == "narration":
                     choice["no_reply"] = False
                     choice["narration"] = True
+                if poke_target and reply_mode in {"poke", "poke_text", "poke_meme"}:
+                    choice["poke_target_uid"] = poke_target
                 for node in item.outcome_nodes:
                     if node is not None:
                         node.metadata["reply_choice"] = dict(choice)
@@ -2561,26 +2706,9 @@ class PersonaEngine:
                 if reply_mode == "narration" and not narration:
                     record_outcome(runtime, item, outcomes.mark_delivery_failed, "empty_narration")
                     return
-                if reply_mode == "poke":
-                    poke_target = str(getattr(turn, "author", "") or "")
-                    bot_id = str(runtime.bot_id or "")
-                    event_sender = str(_safe_call(event, "get_sender_id", "") or "")
-                    group_id = str(_safe_call(event, "get_group_id", "") or "")
-                    platform_name = str(_safe_call(event, "get_platform_name", "") or "").lower()
-                    call_action = getattr(getattr(event, "bot", None), "call_action", None)
-                    if (
-                        platform_name != "aiocqhttp"
-                        or not callable(call_action)
-                        or not poke_target.isascii()
-                        or not poke_target.isdigit()
-                        or not event_sender.isascii()
-                        or not event_sender.isdigit()
-                        or event_sender != poke_target
-                        or poke_target == bot_id
-                        or (group_id and (not group_id.isascii() or not group_id.isdigit()))
-                    ):
-                        record_outcome(runtime, item, outcomes.mark_delivery_failed, "invalid_poke_target")
-                        return
+                if reply_mode == "poke" and (poke_target_invalid or not poke_target):
+                    record_outcome(runtime, item, outcomes.mark_delivery_failed, "invalid_poke_target")
+                    return
             if not getattr(output, "stream_prefix", ""):
                 if output.text or output.chains or nonverbal_mode:
                     p._metric("native_agent_succeeded")
@@ -2606,7 +2734,10 @@ class PersonaEngine:
             from .stream_reply import output_fragments
 
             delivered = []
+            verbal_delivered = []
             delivered_message_ids = []
+            poke_delivered_in_turn = False
+            first_verbal_committed = False
             send_cancellation = None
             send_failed_in_turn = False
             delivery_uncertain_in_turn = False
@@ -2648,6 +2779,23 @@ class PersonaEngine:
                         chains=[build_poke_chain(poke_target)],
                         stream_prefix="",
                     )
+                elif reply_mode == "poke_text":
+                    from .platform_bridge import build_poke_chain
+
+                    delivery_output = replace(
+                        output,
+                        chains=[build_poke_chain(poke_target), *list(output.chains or ())],
+                        stream_prefix="",
+                    )
+                elif reply_mode == "poke_meme":
+                    from .platform_bridge import build_poke_chain
+
+                    delivery_output = replace(
+                        output,
+                        text="",
+                        chains=[build_poke_chain(poke_target), *list(output.chains or ())],
+                        stream_prefix="",
+                    )
                 async for index, fragment in output_fragments(
                     delivery_output,
                     p.pacer,
@@ -2662,6 +2810,8 @@ class PersonaEngine:
                     ),
                     fragments,
                 ):
+                    is_poke_fragment = _is_poke_chain(fragment)
+                    fragment_nonverbal = nonverbal_mode or is_poke_fragment
                     frag_text = fragment if isinstance(fragment, str) else chain_plain_text(fragment)
                     if rhythm_ctrl is not None and rhythm_ctrl.micro_pacing_enabled():
                         from .vibe_analyzer import GroupChatMode as _GCM
@@ -2729,26 +2879,31 @@ class PersonaEngine:
                             )
                             break
                         send_source_validator = getattr(output, "native_memory_validator", None)
-                        quote_id = first_quote_id if index == 0 and not nonverbal_mode else None
+                        quote_id = first_quote_id if not first_verbal_committed and not fragment_nonverbal else None
                         fragment_quote_id = quote_id
                         if fragment_quote_id and any(
                             _comp_type_name(component).lower() in {"reply", "file", "node", "nodes", "poke"}
                             for component in getattr(fragment, "chain", ())
                         ):
                             fragment_quote_id = None
+                        fragment_send_options = dict(send_options)
+                        if is_poke_fragment and poke_target and poke_target != turn.author:
+                            fragment_send_options["boundary_target_uid"] = poke_target
                         try:
                             event_extras = getattr(event, "_extras", None)
                             previous_nonverbal_marker = None
-                            if nonverbal_mode:
+                            if fragment_nonverbal:
                                 if not isinstance(event_extras, dict):
                                     event_extras = {}
                                     event._extras = event_extras
                                 previous_nonverbal_marker = event_extras.get("_chat_dynamics_nonverbal_send_v1")
-                                event_extras["_chat_dynamics_nonverbal_send_v1"] = reply_mode
+                                event_extras["_chat_dynamics_nonverbal_send_v1"] = (
+                                    "poke" if is_poke_fragment else reply_mode
+                                )
                             try:
                                 if send_source_validator is None:
                                     sent = await p._send_owned(
-                                        runtime, event, fragment, reply_to_id=fragment_quote_id, **send_options
+                                        runtime, event, fragment, reply_to_id=fragment_quote_id, **fragment_send_options
                                     )
                                 else:
                                     sent = await p._send_owned(
@@ -2757,10 +2912,10 @@ class PersonaEngine:
                                         fragment,
                                         reply_to_id=fragment_quote_id,
                                         native_source_validator=output.native_sources_current,
-                                        **send_options,
+                                        **fragment_send_options,
                                     )
                             finally:
-                                if nonverbal_mode:
+                                if fragment_nonverbal:
                                     if previous_nonverbal_marker is None:
                                         event_extras.pop("_chat_dynamics_nonverbal_send_v1", None)
                                     else:
@@ -2783,16 +2938,30 @@ class PersonaEngine:
                                     **send_options,
                                 )
                                 actual = "text"
+                            elif poke_delivered_in_turn:
+                                actual = "poke"
                             else:
                                 actual = "silent"
                             for node in item.outcome_nodes:
                                 if node is not None:
                                     node.metadata["reply_choice"].update(
-                                        actual=actual, no_reply=actual == "silent", reason="meme_unavailable"
+                                        actual=actual,
+                                        no_reply=actual == "silent",
+                                        reason="meme_unavailable",
+                                        delivered=True
+                                        if actual == "poke"
+                                        else node.metadata["reply_choice"].get("delivered", False),
+                                        intentional_nonverbal=actual == "poke",
                                     )
                             choice.update(
-                                actual=actual, no_reply=actual == "silent", reason="meme_unavailable"
+                                actual=actual,
+                                no_reply=actual == "silent",
+                                reason="meme_unavailable",
+                                delivered=True if actual == "poke" else choice.get("delivered", False),
+                                intentional_nonverbal=actual == "poke",
                             )
+                            if actual == "poke":
+                                break
                             if actual == "silent":
                                 p._metric("speech_withheld")
                                 record_outcome(
@@ -2842,12 +3011,16 @@ class PersonaEngine:
                         completion = getattr(output, "completion_task", None)
                         if completion is not None and not completion.done():
                             p._metric("first_sentence_before_agent_finalize")
-                    delivered_text = "[戳一戳]" if reply_mode == "poke" else sent.delivered_text(fragment)
+                    delivered_text = "[戳一戳]" if is_poke_fragment else sent.delivered_text(fragment)
                     delivered.append(delivered_text)
+                    if is_poke_fragment:
+                        poke_delivered_in_turn = True
+                    if not fragment_nonverbal:
+                        verbal_delivered.append(delivered_text)
                     for actual_id in _actual_send_message_ids(sent, fragment, delivered_text):
                         if actual_id not in delivered_message_ids:
                             delivered_message_ids.append(actual_id)
-                    if not nonverbal_mode:
+                    if not fragment_nonverbal:
                         for message_id, text in sent.identified_messages(fragment, delivered_text):
                             dynamics_learning.delivered(runtime, item, message_id, text)
                     p._metric("send_succeeded")
@@ -2855,27 +3028,44 @@ class PersonaEngine:
                         break
                     real_message_id = str(sent.message_id) if sent.message_id else None
                     msg_id = real_message_id or p._next_outgoing_id()
+                    bot_metadata = {
+                        "platform_message_id": real_message_id is not None,
+                        "dialogue_delivered": not fragment_nonverbal,
+                        "reply_mode": "poke" if is_poke_fragment else (reply_mode or "text"),
+                        "narration": reply_mode == "narration",
+                        "trigger_user_id": turn.author,
+                        "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
+                        "dialogue_state": decision.state,
+                        "dialogue_action": decision.action,
+                        "wall_timestamp": p.time_service.wall_time(),
+                    }
+                    if is_poke_fragment:
+                        bot_metadata["has_poke"] = True
+                        bot_metadata["is_bot_poke"] = True
+                        bot_metadata["poke_target_id"] = poke_target
                     bot = runtime.dag.add_message(
                         msg_id=msg_id,
                         user_id=runtime.bot_id,
                         text=delivered_text,
                         timestamp=p.time_service.time(),
                         reply_to_id=dag_parent_id,
-                        metadata={
-                            "platform_message_id": real_message_id is not None,
-                            "dialogue_delivered": not nonverbal_mode,
-                            "reply_mode": reply_mode or "text",
-                            "narration": reply_mode == "narration",
-                            "trigger_user_id": turn.author,
-                            "dialogue_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
-                            "dialogue_state": decision.state,
-                            "dialogue_action": decision.action,
-                            "wall_timestamp": p.time_service.wall_time(),
-                        },
+                        metadata=bot_metadata,
                     )
                     last_bot_msg_id = msg_id
                     bot.metadata["platform_message_id"] = real_message_id is not None
-                    if nonverbal_mode:
+                    if is_poke_fragment:
+                        record_poke_fn = getattr(p, "record_bot_poke", None)
+                        if callable(record_poke_fn):
+                            try:
+                                record_poke_fn(
+                                    runtime.session_key,
+                                    bot_id=str(runtime.bot_id or ""),
+                                    target_id=poke_target,
+                                    now=p.time_service.time(),
+                                )
+                            except Exception:
+                                pass
+                    if fragment_nonverbal:
                         runtime.remember_sent(msg_id)
                         runtime.last_model_send = p.time_service.time()
                         continue
@@ -2902,7 +3092,8 @@ class PersonaEngine:
                     p._last_bot_nodes[runtime.session_key] = bot
                     runtime.remember_sent(msg_id)
                     dag_parent_id = msg_id
-                    if len(delivered) == 1:
+                    if not first_verbal_committed:
+                        first_verbal_committed = True
                         if private_outreach_scope is not None:
                             p._create_background_task(private_outreach_observer.observe_private_delivery(
                                 private_outreach_scope, sent.delivered_text(fragment, media_placeholder=False),
@@ -2951,11 +3142,13 @@ class PersonaEngine:
                             p._metric("llm_reply_failed")
                 # Reset/cool may cancel a tail; persist only already delivered text, never a draft.
                 if delivered:
-                    full_delivered_text = "\n\n".join(delivered)
+                    full_delivered_text = (
+                        "\n\n".join(verbal_delivered) if verbal_delivered else "\n\n".join(delivered)
+                    )
                     committed = await self.bridge.commit(event, output, full_delivered_text)
                     if not committed:
                         self.diagnostic(runtime, "history_conflict")
-                    if not nonverbal_mode:
+                    if verbal_delivered and not nonverbal_mode:
                         dynamics_horizons.delivered(
                             p,
                             runtime,
@@ -2980,8 +3173,11 @@ class PersonaEngine:
                     for component in getattr(fragment, "chain", ())
                 )
             ):
-                deferred_media.confirm(getattr(output, "native_sources_current", None), text="\n\n".join(delivered))
-            if rhythm_ctrl is not None and delivered and not nonverbal_mode:
+                deferred_media.confirm(
+                    getattr(output, "native_sources_current", None),
+                    text="\n\n".join(verbal_delivered) if verbal_delivered else "\n\n".join(delivered),
+                )
+            if rhythm_ctrl is not None and verbal_delivered and not nonverbal_mode:
                 all_sent = bool(
                     fragments
                     and len(delivered) == len(fragments)
@@ -3003,7 +3199,7 @@ class PersonaEngine:
                     trigger_msg_id=str(target_id or ""),
                     target_user_id=str(turn.author or ""),
                     anchor_topic_id=target_topic,
-                    delivered_text="\n\n".join(delivered),
+                    delivered_text="\n\n".join(verbal_delivered),
                     persona_fingerprint=effective.fingerprint,
                     private_direct=bool(item.private_direct),
                     all_fragments_delivered=all_sent,

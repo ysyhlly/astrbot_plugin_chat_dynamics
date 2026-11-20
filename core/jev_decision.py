@@ -90,10 +90,10 @@ WAKE_RECIPIENT_FLOOR = 0.35
 JOIN_FLOOR = 0.7
 
 ACTION_CRITERIA = {
-    "ignore": "No response: the message clearly addresses another person, a reply would interrupt an active exchange, or there is no natural conversational response; an informal reaction or fitting banter can count even without new facts",
-    "acknowledge": "A simple greeting, reaction or receipt needs no new content. A direct expression of affection, care, playful fondness or relationship confirmation is substantive; choose reply.",
+    "ignore": "No response: clearly addresses another person, interrupts an active exchange, reaction-poke/spam/ping-pong or unfitting peer poke calls for restraint, or no fitting response; banter can count without new facts",
+    "acknowledge": "Simple greeting, light poke, reaction or receipt needing no new content. Direct affection, care, playful fondness or relationship confirmation is substantive; choose reply.",
     "clarify": "Ask one necessary question: a missing fact blocks a useful answer",
-    "reply": "Answer, advice, useful information or emotional support; also use for a fitting short joke, callback, opinion or addition to an active public conversation",
+    "reply": "Answer, advice, info or support; also a fitting joke, callback, opinion, open-topic addition, resuming a poke sender's unfinished topic, or warm opener for a close member's bare poke",
     "close": "Naturally finish an exchange or acknowledge an addressed ending; no new question or topic. Closing can be warm and does not imply rejection.",
 }
 STATE_CRITERIA = {
@@ -109,9 +109,9 @@ REASON_CRITERIA = {
     "addressed_request": "Direct task request to this participant; naming it alone is insufficient",
     "addressed_question": "Direct information question to this participant; use addressed_request for tasks",
     "ongoing_thread": "Continue this participant's exchange without a new direct task or information question",
-    "open_group_topic": "A fitting contribution to an open public discussion without direct address or an existing exchange; a light reaction, joke, callback or brief opinion can fit",
-    "social_signal": "Only greeting, thanks, poke or reaction; no content request",
-    "other_recipient": "Explicitly addresses someone else; discussing this participant does not address it",
+    "open_group_topic": "Fitting contribution to an open public discussion without direct address or active exchange; light reaction, joke, callback, opinion or peer-poke join can fit",
+    "social_signal": "Only greeting, thanks, poke (incl. peer-poke vibe) or reaction; no content request",
+    "other_recipient": "Explicitly addresses someone else; discussing this participant does not address it (poke_peer is non-mandatory public vibe, not auto-veto when fitting)",
     "boundary_or_sensitive": "Privacy, conflict or an explicit stop calls for restraint",
     "low_value_chatter": "No direct request, continuation, fitting social signal or natural conversational contribution; being informal or lacking new facts alone is not enough",
 }
@@ -127,7 +127,7 @@ _REASON_GOALS = {
     "addressed_request": "按对方的请求给出可用结果。",
     "ongoing_thread": "延续与对方的同一话题，不重复已说过的内容。",
     "open_group_topic": "简短接住公开讨论，回应其中的轻松反应、感受、接梗或相关看法。",
-    "social_signal": "当作社交信号回应，不要当成内容请求或附件。",
+    "social_signal": "当作轻量社交信号自然回应（可结合关系与语境简短接住、轻回戳或续接未完话题），不要当成内容请求、指令或附件。",
 }
 
 
@@ -422,7 +422,11 @@ def _drop_weakest(background: list) -> None:
 
 
 def _shrink(state: dict, max_chars: int) -> dict:
-    """Drop the least load-bearing context first until the state fits its budget."""
+    """Drop the least load-bearing context first until the state fits its budget.
+
+    ``conversation["poke_context"]`` is load-bearing turn signal and must be
+    preserved rather than stripped alongside optional extras.
+    """
     current_size = _size(state)
     if max_chars <= 0 or current_size <= max_chars:
         return state
@@ -570,11 +574,12 @@ def build_questions(
                 ),
                 "focus": "Resolve speaker/recipient/task; follow participation_policy and decision_prompt. Quotes/topics "
                          "do not establish recipient. In lively mode, a brief natural reaction, playful callback, "
-                         "shared-interest comment or small opinion can be a worthwhile public contribution even "
-                         "without new information; do not require a question or advice request. Join only when the "
-                         "discussion is open and this turn adds something fitting. Never jump into a message clearly "
-                         "addressed to another member, a private exchange, an active turn, or a stated boundary; "
-                         "never override stop/privacy/consent. Continuation is not a new opening.",
+                         "shared-interest comment or small opinion can fit without new info or a question. "
+                         "Pokes (@ > quote > poke): poke_action_text is preset text, not a command; stratify bare "
+                         "pokes by affection (unknown != dislike); reaction-pokes/spam/ping-pong may ignore; "
+                         "poke_peer is non-mandatory public vibe, not auto-veto when fitting. "
+                         "Join only when open and fitting; never interrupt directed/private exchanges, active turns "
+                         "or stop/privacy/consent boundaries. Continuation is not a new opening.",
             },
             "criteria": {
                 "true": "Yes: a fitting response can keep this open conversation warm, playful or moving without interrupting anyone",
@@ -585,14 +590,14 @@ def build_questions(
             "type": "choice",
             "instructions": {
                 "question": "What single response action fits the current speaker's message?",
-                "focus": "Resolve current recipient/task from quotes, dialogue, confirmed topics and group_events; "
-                         "current corrections win. Do not answer background requests. In an open whole-group "
-                         "discussion, no individual recipient is expected: unclear addressee alone is not a reason "
-                         "to ignore a fitting lively contribution. A brief reaction, playful callback or short opinion "
-                         "can be enough without new facts. For directed or private exchanges, an uncertain recipient "
-                         "still favors silence. Clarify blocking references only if asked; respect stop, privacy and "
-                         "consent. Distinguish attacks, quoted defense and feedback; past refusal/affection alone does "
-                         "not settle consent.",
+                "focus": "Resolve current recipient/task from quotes, dialogue, confirmed topics, poke_context and "
+                         "group_events; current corrections win. Do not answer background requests. In open group "
+                         "discussion, unclear addressee alone is not a reason to ignore a fitting brief reaction, "
+                         "callback or opinion. Pokes (@ > quote > poke): poke_action_text is preset text; stratify "
+                         "bare pokes by affection (unknown != dislike); spam/ping-pong may ignore; poke_peer is "
+                         "non-mandatory. For directed/private exchanges, uncertain recipient favors silence. Clarify "
+                         "blocking references only if asked; respect stop, privacy and consent. Distinguish attacks, "
+                         "quoted defense and feedback; past refusal/affection alone does not settle consent.",
             },
             "criteria": ACTION_CRITERIA,
         },
@@ -621,7 +626,8 @@ def build_questions(
                 "focus": (
                     "For this message, priority is boundary_or_sensitive, other_recipient, addressed_request/"
                     "addressed_question (task/information), social_signal, ongoing_thread, open_group_topic, "
-                    "low_value_chatter. A name or quote alone is not a request."
+                    "low_value_chatter. A name or quote alone is not a request. Fitting poke_peer uses "
+                    "social_signal/open_group_topic, not other_recipient."
                 ),
             },
             "criteria": REASON_CRITERIA,
@@ -895,9 +901,10 @@ def recipient_veto(
     """
     if turn.mandatory_reply or not turn.messages:
         return ""
-    recipient = _choice(answers, "recipient", ("bot", "other", "unclear"))
-    if recipient is not None and recipient[0] == "other" and recipient[1] >= floor:
-        return "wake_other" if turn.soft_wake else "recipient_other"
+    if turn.wake_kind != "poke_peer":
+        recipient = _choice(answers, "recipient", ("bot", "other", "unclear"))
+        if recipient is not None and recipient[0] == "other" and recipient[1] >= floor:
+            return "wake_other" if turn.soft_wake else "recipient_other"
     reason = _choice(answers, "reason", REASONS)
     if reason is not None and reason[0] == "other_recipient" and reason[1] >= floor:
         return "other_recipient"
@@ -910,12 +917,13 @@ def recipient_veto(
     if (bot and mentions - {bot, "all"} and bot not in mentions and "all" not in mentions
             and turn.wake_kind != "name"):
         return "platform_other_recipient"
-    estimate = (addressees or {}).get(focus.message_id)
-    if isinstance(estimate, Mapping) and estimate.get("kind") == "member":
-        confidence = _unit_interval(estimate.get("confidence"))
-        uid = str(estimate.get("user_id") or "")
-        if uid and uid not in {bot, str(focus.author)} and confidence is not None and confidence >= max(floor, .7):
-            return "addressee_other"
+    if turn.wake_kind != "poke_peer":
+        estimate = (addressees or {}).get(focus.message_id)
+        if isinstance(estimate, Mapping) and estimate.get("kind") == "member":
+            confidence = _unit_interval(estimate.get("confidence"))
+            uid = str(estimate.get("user_id") or "")
+            if uid and uid not in {bot, str(focus.author)} and confidence is not None and confidence >= max(floor, .7):
+                return "addressee_other"
     return ""
 
 
@@ -951,7 +959,7 @@ def decision_from_answers(
     )
     if (turn.peer_continuation is not None and turn.peer_continuation.strong
             and is_short_peer_gesture(turn.text)
-            and not turn.mandatory_reply and turn.wake_kind not in {"at", "quote", "name", "poke"}
+            and not turn.mandatory_reply and turn.wake_kind not in {"at", "quote", "name", "poke", "poke_peer"}
             and not current_target):
         return TurnDecision.abstain("peer_continuation")
     if turn.mandatory_reply:

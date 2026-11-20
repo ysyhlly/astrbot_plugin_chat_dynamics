@@ -51,11 +51,19 @@ def test_poke_without_topic_includes_its_sender_and_delivered_reply_only():
     current.metadata["edge_metadata"] = {"other": {"confidence": 0.99}}
     runtime = _runtime(dag)
     item = _snapshot(runtime, current)
-    assert [m.message_id for m in item.context.background] == [source.msg_id, reply.msg_id]
-    assert {p.relation for m in item.context.background for p in m.context_evidence} == {"poke_sender", "poke_reply"}
+    assert [m.message_id for m in item.context.background] == [source.msg_id, reply.msg_id, "other", "other-reply"]
+    assert {p.relation for m in item.context.background for p in m.context_evidence} == {
+        "poke_sender",
+        "poke_reply",
+        "poke_group_recent",
+        "poke_bot_recent",
+    }
+    assert "draft" not in {m.message_id for m in item.context.background}
     assert [m.message_id for m in refresh_topic_context(runtime, item).context.background] == [
         source.msg_id,
         reply.msg_id,
+        "other",
+        "other-reply",
     ]
     other_dag = ConversationDAG("mock:GroupMessage:other")
     other_dag.add_message("private", "alice", "其他会话资料", timestamp=1999)
@@ -114,9 +122,15 @@ async def test_poke_sender_context_reaches_both_jev_and_reply(jev_plugin):
         await drain(p)
         assert event.replies_sent
         for conversation in (p.jev.calls[-1]["state"]["conversation"], bridge.requests[-1][0]["conversation"]):
-            assert {m["message_id"] for m in conversation["background"]} == {"source", "answer"}
+            assert {m["message_id"] for m in conversation["background"]} == {
+                "source",
+                "answer",
+                "other",
+                "other-reply",
+            }
             assert "今天想读完那本书" in json.dumps(conversation, ensure_ascii=False)
-            assert "另一个人的无关话题" not in json.dumps(conversation, ensure_ascii=False)
+            assert "未发送的草稿" not in json.dumps(conversation, ensure_ascii=False)
+            assert conversation["poke_context"]["poke_at_bot"] is True
     finally:
         await p.terminate()
 
@@ -171,7 +185,8 @@ def test_snapshot_poke_history_uses_existing_member_boundary(monkeypatch):
         return [f for f in kept if f.get("frame_id") not in {"source", "answer"}], state
 
     monkeypatch.setattr(member_boundary, "filter_frames", filter_frames)
-    assert not _snapshot(_runtime(dag), current).context.background
+    kept_ids = {m.message_id for m in _snapshot(_runtime(dag), current).context.background}
+    assert not (kept_ids & {"source", "answer"})
 
 
 @pytest.mark.asyncio

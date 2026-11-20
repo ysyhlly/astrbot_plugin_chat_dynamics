@@ -12,13 +12,17 @@ from .turn_decision import REPLY_INSTRUCTIONS
 
 REPLY_PROTOCOL = """[回应方式协议 / 本轮回应方式]
 根据人设和上下文自主选择本轮允许的回应方式。群聊、被 @、被引用和私聊均可以不回，参与计划不强制发言。
-最终输出 JSON 对象 {"reply_mode":"text|meme_only|text_meme|poke|silent","text":"要说的话","meme_id":null,"narration":""}。只使用本轮权限列出的模式。
+最终输出 JSON 对象 {"reply_mode":"text|meme_only|text_meme|poke|poke_text|poke_meme|silent","text":"要说的话","meme_id":null,"narration":"","poke_target_uid":null}。只使用本轮权限列出的模式；poke_target_uid 可省略。
 - text 是文字回应，text 必须有实际内容。用户要求的代码、Markdown 或 JSON 放在 text 中，内部计划不对外发送。
-- meme_only 只发当前候选表情，text 留空。text_meme 同时发文字和当前候选表情，text 非空。两者都要填写本轮候选的整数编号，不硬配图，也不补客套话。其他模式的 meme_id 为 null。
-- poke 只戳本轮发言者，由程序决定对象。text 和 narration 均留空，不指定其他人。
-- silent 不说台词，text 留空。narration 填写一条用全角括号包住的第三人称状态旁白，单行、含括号不超过 120 字，使用当前角色名字。依据已提供的人设、作息和状态，未知时只写角色暂时没有回应，不编造活动、动机、对话或解释。其他模式的 narration 留空。
+- meme_only 只发当前候选表情，text 留空。text_meme 同时发文字和当前候选表情，text 非空。两者都要填写本轮候选的整数编号，不硬配图，也不补客套话。非表情模式的 meme_id 为 null。
+- poke 只发戳一戳，text 和 narration 均留空，meme_id 为 null。
+- poke_text 先发戳一戳再发一句简短文字，text 必须非空，meme_id 为 null，narration 留空。
+- poke_meme 先发戳一戳再发一张当前候选表情，text 留空，meme_id 填本轮候选的整数编号，narration 留空。
+- poke_target_uid 仅在 poke、poke_text、poke_meme 模式下可用（其他模式必须为 null 或省略）。省略或填 null 默认戳本轮发言者；如需戳其他人（例如顺手凑趣加入群内互戳），可填写当前或近期上下文中真实存在的非机器人 user_id，不得编造或填机器人自己。
+- 在普通文字消息中也可偶尔主动使用 poke、poke_text 或 poke_meme 作为轻触（如温柔拍肩安慰、熟人间轻度调侃、轻松打招呼或道别收尾），但须保持低频、克制且贴合人设；遇到严肃求助或提问、对方情绪低落/沉重倾诉、或关系疏离及设过边界的成员时不要使用。选择纯 text 时不要在文字里声称回戳或戳了对方，想边戳边说请直接用 poke_text。
+- silent 不说台词，text 留空，meme_id 与 poke_target_uid 均为 null。narration 填写一条用全角括号包住的第三人称状态旁白，单行、含括号不超过 120 字，使用当前角色名字。依据已提供的人设、作息和状态，未知时只写角色暂时没有回应，不编造活动、动机、对话或解释。其他模式的 narration 留空。
 只有当前回合因明确 @ 机器人而触发强制回应时，才会对外发送 silent 的旁白。普通聊天、主动接话、引用、昵称唤醒和私聊只在内部保留旁白，保持完全静默。不要改用文字、表情或工具发送不回提示。
-先决定回应方式。选择 silent 或 poke 时不调用任何发送或生图工具。已有工具发送或启动生图后不可选择这两种方式。生图须调用实际获准的工具，最终以 text 提供必要文字，不附带候选表情。"""
+先决定回应方式。选择 silent 或 poke 时不调用任何发送或生图工具。已有工具发送或启动生图后不可选择 silent、poke、poke_text 或 poke_meme。生图须调用实际获准的工具，最终以 text 提供必要文字，不附带候选表情或戳一戳。"""
 
 SILENT_DISPLAY_SCOPE = (
     "[不回时的展示范围] 只有当前回合因明确 @ 机器人而触发强制回应时，"
@@ -379,6 +383,7 @@ def assemble_reply_prompts(
 
     turn: list[str] = []
     modes = ["text", "silent"]
+    has_candidates = False
 
     if has_visual_policy_tuple:
         # Live visual_media 3-tuple protocol: keep static media_policy in system_prompt
@@ -411,7 +416,7 @@ def assemble_reply_prompts(
         stable.append(REPLY_PROTOCOL)
         if not internal:
             if plan is None:
-                available_modes = "text|poke|silent" if poke_supported else "text|silent"
+                available_modes = "text|poke|poke_text|silent" if poke_supported else "text|silent"
                 stable.append(f"本轮可选回应方式：{available_modes}。")
             else:
                 has_candidates = bool(getattr(plan, "candidates", ()))
@@ -422,7 +427,9 @@ def assemble_reply_prompts(
 
     if not internal:
         if poke_supported:
-            modes.append("poke")
+            modes.extend(("poke", "poke_text"))
+            if has_candidates and supports_actions:
+                modes.append("poke_meme")
         media = media_reply_instructions(event, internal=False)
         if media:
             stable.append(media)

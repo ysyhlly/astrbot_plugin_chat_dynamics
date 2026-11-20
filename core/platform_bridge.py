@@ -10,6 +10,7 @@ from astrbot.api import logger
 import os
 import hashlib
 import inspect
+import json
 import random
 import re
 import copy
@@ -94,6 +95,7 @@ class ParsedEvent:
     sender_name: str = ""
     platform: str = ""
     reply_sender_name: str = ""
+    poke_action_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,99 @@ def _poke_target_id(comp: Any) -> str:
     value = getattr(comp, "id", None)
     if value not in (None, "", "None", 0, "0"):
         return str(value)
+    return ""
+
+
+_POKE_ACTION_MAX_CHARS = 80
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _sanitize_poke_action_text(value: Any) -> str:
+    """Normalize custom poke action text into a single line <= 80 chars."""
+    if value is None or isinstance(value, bool):
+        return ""
+    cleaned = _CONTROL_CHARS_RE.sub(" ", str(value))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > _POKE_ACTION_MAX_CHARS:
+        cleaned = cleaned[:_POKE_ACTION_MAX_CHARS].rstrip()
+    return cleaned
+
+
+def _extract_poke_action_from_raw_info(raw_info: Any) -> str:
+    """Extract a readable action phrase from OneBot/NapCat raw_info items."""
+    if isinstance(raw_info, str):
+        stripped = raw_info.strip()
+        if not stripped:
+            return ""
+        try:
+            raw_info = json.loads(stripped)
+        except Exception:
+            return ""
+    if not isinstance(raw_info, (list, tuple)):
+        return ""
+    parts: List[str] = []
+    saw_user_placeholder = False
+    for item in raw_info:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        if item_type == "qq":
+            if parts:
+                saw_user_placeholder = True
+            continue
+        if item_type and item_type != "nor":
+            continue
+        txt = _sanitize_poke_action_text(item.get("txt"))
+        if not txt:
+            continue
+        if parts and saw_user_placeholder:
+            parts.append("...")
+            saw_user_placeholder = False
+        parts.append(txt)
+    return _sanitize_poke_action_text("".join(parts))
+
+
+def _combine_action_suffix(action: Any, suffix: Any) -> str:
+    act = _sanitize_poke_action_text(action)
+    suf = _sanitize_poke_action_text(suffix)
+    if act and suf:
+        return _sanitize_poke_action_text(f"{act}...{suf}")
+    return act or suf
+
+
+def _extract_poke_action_from_source(source: Any) -> str:
+    if source is None:
+        return ""
+    if isinstance(source, dict):
+        from_raw_info = _extract_poke_action_from_raw_info(source.get("raw_info"))
+        if from_raw_info:
+            return from_raw_info
+        combined = _combine_action_suffix(source.get("action"), source.get("suffix"))
+        if combined:
+            return combined
+        return _sanitize_poke_action_text(source.get("action_text"))
+    from_raw_info = _extract_poke_action_from_raw_info(getattr(source, "raw_info", None))
+    if from_raw_info:
+        return from_raw_info
+    combined = _combine_action_suffix(getattr(source, "action", None), getattr(source, "suffix", None))
+    if combined:
+        return combined
+    return _sanitize_poke_action_text(getattr(source, "action_text", None))
+
+
+def _extract_poke_action_text(event: Any, poke_comps: List[Any]) -> str:
+    """Extract sanitized custom poke text from raw OneBot/NapCat notice or Poke component."""
+    msg_obj = getattr(event, "message_obj", None)
+    raw_message = getattr(msg_obj, "raw_message", None) if msg_obj is not None else None
+    if raw_message is None:
+        raw_message = getattr(event, "raw_message", None)
+    text = _extract_poke_action_from_source(raw_message)
+    if text:
+        return text
+    for comp in poke_comps:
+        text = _extract_poke_action_from_source(comp)
+        if text:
+            return text
     return ""
 
 
@@ -389,6 +484,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         reply_sender_id = sender if sender not in {"0", "None"} else ""
         reply_sender_name = display_name(getattr(comp, "sender_nickname", "")) if reply_sender_id else ""
     media_component_types: List[str] = []
+    poke_comps: List[Any] = []
     poke_target_id = ""
     has_poke = False
     for comp in comps:
@@ -396,6 +492,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         lowered = component_name.lower()
         if lowered in _POKE_TYPES:
             has_poke = True
+            poke_comps.append(comp)
             if not poke_target_id:
                 poke_target_id = _poke_target_id(comp)
             continue
@@ -411,7 +508,17 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
             media_component_types.append("outline")
     if not has_poke and _POKE_OUTLINE_RE.search(f"{outline or ''} {text or ''}"):
         has_poke = True
+    if has_poke and not poke_target_id:
+        msg_obj = getattr(event, "message_obj", None)
+        raw_message = getattr(msg_obj, "raw_message", None) if msg_obj is not None else None
+        if raw_message is None:
+            raw_message = getattr(event, "raw_message", None)
+        if isinstance(raw_message, dict):
+            raw_target = raw_message.get("target_id")
+            if raw_target not in (None, "", "None", 0, "0"):
+                poke_target_id = str(raw_target)
     poke_at_bot = bool(poke_target_id and self_id and str(poke_target_id) == str(self_id))
+    poke_action_text = _extract_poke_action_text(event, poke_comps) if has_poke else ""
     if has_poke and not text.strip():
         text = poke_event_text(poke_at_bot=poke_at_bot, poke_target_id=poke_target_id)
     media_only = bool(has_media and (not text.strip() or _MEDIA_PLACEHOLDER_RE.fullmatch(text.strip())))
@@ -443,6 +550,7 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
         has_poke=has_poke,
         poke_target_id=poke_target_id,
         poke_at_bot=poke_at_bot,
+        poke_action_text=poke_action_text,
     )
 
 

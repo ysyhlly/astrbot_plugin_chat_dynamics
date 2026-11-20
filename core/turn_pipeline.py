@@ -7,6 +7,7 @@ runs outside that lock. AstrBot hook registration remains in main.py.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from dataclasses import dataclass, replace
 from typing import Any, List, Optional
@@ -17,6 +18,7 @@ from .arbiter import ArbitrationResult
 from .debounce import DebounceResult
 from .decision_gate import GateResult
 from .graph import ConversationDAG, ConversationNode
+from .member_identity import display_name, member_identity
 from .native_delivery import _NativeEventContext
 from .outcome_recorder import STAGE_GATE, mark_not_attempted, mark_suppressed
 from .persona_engine import is_request_supplement, snapshot_turn
@@ -61,6 +63,126 @@ class _PreparedTurn:
     # same thing to a decision point as a model with no opinion.
     decisions: Any = None
     semantic_routing: Any = None
+    poke_context: Any = None
+
+
+def _resolve_known_display_name(
+    dag: ConversationDAG | None,
+    parsed_events: Any,
+    target_id: str,
+    *,
+    bot_id: str = "",
+    bot_names: Any = (),
+) -> str:
+    uid = str(target_id or "")
+    if not uid:
+        return ""
+    fallback = ""
+    if bot_id and uid == str(bot_id):
+        for candidate in bot_names or ():
+            cleaned = display_name(candidate)
+            if cleaned:
+                return cleaned
+    for parsed in reversed(tuple(parsed_events or ())):
+        if str(getattr(parsed, "sender_id", "") or "") == uid:
+            cleaned = display_name(getattr(parsed, "sender_name", ""))
+            if cleaned and cleaned != uid:
+                return cleaned
+            if cleaned and not fallback:
+                fallback = cleaned
+        if str(getattr(parsed, "reply_sender_id", "") or "") == uid:
+            cleaned = display_name(getattr(parsed, "reply_sender_name", ""))
+            if cleaned and cleaned != uid:
+                return cleaned
+            if cleaned and not fallback:
+                fallback = cleaned
+    if dag is not None:
+        for dag_node in reversed(dag.get_recent_nodes(limit=0)):
+            meta = dag_node.metadata if isinstance(dag_node.metadata, dict) else {}
+            if str(getattr(dag_node, "user_id", "") or "") == uid:
+                cleaned = display_name(meta.get("sender_name", ""))
+                if cleaned and cleaned != uid:
+                    return cleaned
+                if cleaned and not fallback:
+                    fallback = cleaned
+            if str(meta.get("quoted_author_id", "") or "") == uid:
+                cleaned = display_name(meta.get("quoted_author_name", ""))
+                if cleaned and cleaned != uid:
+                    return cleaned
+                if cleaned and not fallback:
+                    fallback = cleaned
+    return fallback
+
+
+def _resolve_poke_target_identity(
+    dag: ConversationDAG | None,
+    parsed_events: Any,
+    target_id: str,
+    *,
+    bot_id: str = "",
+    bot_names: Any = (),
+) -> dict[str, Any] | None:
+    uid = str(target_id or "")
+    if not uid:
+        return None
+    name = _resolve_known_display_name(
+        dag,
+        parsed_events,
+        uid,
+        bot_id=bot_id,
+        bot_names=bot_names,
+    )
+    platform = ""
+    for parsed in reversed(tuple(parsed_events or ())):
+        plat = str(getattr(parsed, "platform", "") or "").strip()
+        if plat:
+            platform = plat
+            break
+    if not platform and dag is not None:
+        for dag_node in reversed(dag.get_recent_nodes(limit=0)):
+            meta = dag_node.metadata if isinstance(dag_node.metadata, dict) else {}
+            plat = str(meta.get("sender_platform", "") or "").strip()
+            if plat:
+                platform = plat
+                break
+    return member_identity(uid, name, platform)
+
+
+def _active_dialogue_uids(
+    runtime: SessionRuntime,
+    dag: ConversationDAG | None,
+    *,
+    bot_id: str,
+    now: float,
+) -> frozenset[str]:
+    uids: set[str] = set()
+    bot = str(bot_id or "")
+    dialogue = getattr(runtime, "active_dialogue", None)
+    if dialogue is not None and not getattr(dialogue, "closed", False):
+        updated = float(getattr(dialogue, "updated_at", 0.0) or 0.0)
+        duid = str(getattr(dialogue, "user_id", "") or "")
+        if duid and duid != bot and 0.0 <= now - updated <= 600.0:
+            uids.add(duid)
+    sent_ids = frozenset(getattr(runtime, "sent_id_set", ()) or ())
+    if dag is not None and bot:
+        for dag_node in reversed(dag.get_recent_nodes(limit=0)):
+            age = now - float(getattr(dag_node, "timestamp", 0.0) or 0.0)
+            if age < 0.0 or age > 180.0:
+                continue
+            if str(getattr(dag_node, "user_id", "") or "") != bot:
+                continue
+            meta = dag_node.metadata if isinstance(dag_node.metadata, dict) else {}
+            delivered = bool(meta.get("dialogue_delivered") is True or dag_node.msg_id in sent_ids)
+            if not delivered:
+                continue
+            target_uid = str(meta.get("trigger_user_id") or meta.get("poke_target_id") or "")
+            if not target_uid and getattr(dag_node, "reply_to_id", None):
+                parent = dag.get_node(dag_node.reply_to_id)
+                if parent is not None and str(parent.user_id) != bot:
+                    target_uid = str(parent.user_id)
+            if target_uid and target_uid != bot:
+                uids.add(target_uid)
+    return frozenset(uids)
 
 
 def _commit_gate_result(runtime: SessionRuntime, gate: GateResult) -> None:
@@ -259,6 +381,18 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         if item is not None:
             item.node_id = fragment_id
         actual_mentions = list(dict.fromkeys(parsed.platform_mentions))
+        poke_target_id = str(getattr(parsed, "poke_target_id", "") or "") if parsed.has_poke else ""
+        poke_target_name = (
+            _resolve_known_display_name(
+                dag,
+                parsed_events,
+                poke_target_id,
+                bot_id=str(getattr(runtime, "bot_id", "") or parsed.self_id or ""),
+                bot_names=getattr(host, "bot_names", ()),
+            )
+            if poke_target_id
+            else ""
+        )
         current_node = dag.add_message(
             msg_id=fragment_id,
             user_id=parsed.sender_id or user_id,
@@ -274,7 +408,11 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
                 "duration": result.duration,
                 "is_wake": host._looks_like_strong_address(parsed, runtime),
                 "host_is_at_or_wake": parsed.is_at_or_wake,
+                "has_poke": bool(parsed.has_poke),
                 "poke_at_bot": bool(parsed.has_poke and parsed.poke_at_bot),
+                "poke_target_id": poke_target_id,
+                "poke_target_name": poke_target_name,
+                "poke_action_text": str(getattr(parsed, "poke_action_text", "") or "") if parsed.has_poke else "",
                 "actual_mentions": actual_mentions,
                 "quoted_author_id": getattr(parsed, "reply_sender_id", ""),
                 "quoted_author_name": parsed.reply_sender_name,
@@ -334,6 +472,25 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         for item in parsed_events
     )
     poke_at_bot = any(getattr(item, "poke_at_bot", False) for item in poke_events)
+    tracker = getattr(host, "poke_tracker", None)
+    bot_id = str(getattr(runtime, "bot_id", "") or (parsed_last.self_id if parsed_last else "") or "")
+    if tracker is not None and poke_events:
+        for idx, pe in enumerate(parsed_events):
+            if not getattr(pe, "has_poke", False):
+                continue
+            frag_node = turn_nodes[idx] if idx < len(turn_nodes) else node
+            frag_ts = float(getattr(frag_node, "timestamp", now) or now)
+            pe_sender = str(getattr(pe, "sender_id", "") or user_id or "")
+            tracker.record_poke(
+                session_id,
+                sender_id=pe_sender,
+                target_id=str(getattr(pe, "poke_target_id", "") or ""),
+                is_bot_sender=bool(bot_id and pe_sender == bot_id),
+                is_bot_target=bool(getattr(pe, "poke_at_bot", False)),
+                now=frag_ts,
+                action_text=str(getattr(pe, "poke_action_text", "") or ""),
+            )
+    peer_poke_trigger_reason = ""
     # Kev-only mode sends a poke through the same persona turn as any other
     # message.  The old poke policy could otherwise authorize a reply or a
     # poke-back without consulting the decision model.
@@ -344,12 +501,61 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
             else:
                 host._block_native_for_mode(last_event)
         if not poke_at_bot:
-            return None
-        if not host._persona_mode():
+            if not host._persona_mode():
+                return None
+            last_poke = poke_events[-1]
+            active_uids = _active_dialogue_uids(runtime, dag, bot_id=bot_id, now=now)
+            if tracker is not None:
+                peer_poke_trigger_reason = tracker.peer_trigger_reason(
+                    session_id,
+                    sender_id=str(getattr(last_poke, "sender_id", "") or user_id or ""),
+                    target_id=str(getattr(last_poke, "poke_target_id", "") or ""),
+                    now=now,
+                    active_dialogue_uids=active_uids,
+                )
+            if not peer_poke_trigger_reason:
+                return None
+        elif not host._persona_mode():
             # Legacy mode keeps the local poke policy.
             return _PokeJob(node=node, event=last_event, parsed=poke_events[-1], now=now)
         # persona_model: fall through so the Kev decision and persona engine
-        # handle a poke-at-bot exactly like any other turn.
+        # handle a poke-at-bot (or triggered peer poke) like any other turn.
+
+    poke_context = None
+    if poke_events and tracker is not None:
+        primary_poke = next(
+            (item for item in reversed(poke_events) if getattr(item, "poke_at_bot", False)),
+            poke_events[-1],
+        )
+        primary_target_id = str(getattr(primary_poke, "poke_target_id", "") or "")
+        primary_action_text = next(
+            (
+                str(getattr(item, "poke_action_text", "") or "")
+                for item in reversed(poke_events)
+                if getattr(item, "poke_action_text", "")
+            ),
+            "",
+        )
+        poke_target_identity = _resolve_poke_target_identity(
+            dag,
+            parsed_events,
+            primary_target_id,
+            bot_id=bot_id,
+            bot_names=getattr(host, "bot_names", ()),
+        )
+        poke_context = tracker.snapshot(
+            session_id,
+            sender_id=str(getattr(primary_poke, "sender_id", "") or user_id or ""),
+            target_id=primary_target_id,
+            bot_id=bot_id,
+            now=now,
+            burst_count=len(poke_events),
+            poke_only=poke_only,
+            poke_at_bot=poke_at_bot,
+            poke_action_text=primary_action_text,
+            poke_target_identity=poke_target_identity,
+            peer_poke_trigger_reason=peer_poke_trigger_reason,
+        )
 
     atmosphere = host.vibe_analyzer.get_atmosphere(session_id, current_time=now)
     vibe_mode = host.vibe_analyzer.get_mode(session_id, current_time=now)
@@ -395,6 +601,7 @@ def _prepare_turn_locked(host, result: DebounceResult) -> _PreparedTurn | _PokeJ
         epoch=runtime.epoch, revision=runtime.revision,
         owner_revision=runtime.user_revisions.get(str(user_id or ""), 0),
         config_id=host._turn_config_identity(), policy_id=host._turn_policy_identity(),
+        poke_context=poke_context,
     )
 
 
@@ -731,17 +938,34 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
 
     if host._persona_mode():
         kinds = {host._wake_kind(parsed, runtime) for parsed in parsed_events}
+        poke_ctx = getattr(turn, "poke_context", None)
+        is_peer_poke = bool(
+            poke_ctx is not None
+            and poke_ctx.poke_only
+            and not poke_ctx.poke_at_bot
+            and poke_ctx.peer_poke_trigger_reason
+        )
         # The combined host flag may be a rejected nickname overlap. Only a
         # classified wake or a real pending request can authorize continuation.
-        explicit = bool(kinds & {"at", "quote", "name", "poke"})
-        if not explicit and not result.metadata.get("peer_directed") and is_request_supplement(runtime, user_id, now):
-            # Same-user addendum to a recent @/wake request is not ambient chatter.
-            explicit = True
+        if is_peer_poke:
+            explicit = False
+            wake_kind = "poke_peer"
+        else:
+            explicit = bool(kinds & {"at", "quote", "name", "poke"})
+            if not explicit and not result.metadata.get("peer_directed") and is_request_supplement(runtime, user_id, now):
+                # Same-user addendum to a recent @/wake request is not ambient chatter.
+                explicit = True
+            wake_kind = next((kind for kind in ("at", "quote", "name", "poke") if kind in kinds),
+                             "supplement" if explicit else "none")
         observations = {"mpm": telemetrics.mpm, "mode": vibe_mode.value,
                         "addressivity": addressivity.score, "scene_tags": list(telemetrics.scene_tags)}
         canonical_ids = tuple(turn_node.msg_id for turn_node in turn_nodes) or (node.msg_id,)
-        wake_kind = next((kind for kind in ("at", "quote", "name", "poke") if kind in kinds),
-                         "supplement" if explicit else "none")
+        snapshot_kwargs: dict[str, Any] = {
+            "wake_kind": wake_kind,
+            "boundary_host": host,
+        }
+        if poke_ctx is not None and "poke_context" in inspect.signature(snapshot_turn).parameters:
+            snapshot_kwargs["poke_context"] = poke_ctx
         return snapshot_turn(
             runtime,
             result,
@@ -750,8 +974,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
             explicit,
             observations,
             host.shadow_mode,
-            wake_kind=wake_kind,
-            boundary_host=host,
+            **snapshot_kwargs,
         )
 
     logger.debug(

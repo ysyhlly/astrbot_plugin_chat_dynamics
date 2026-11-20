@@ -45,6 +45,7 @@ _HTTP_STATUS_PACKAGES = (
     "openai.",
 )
 _HTTP_STATUS_EXACT_PACKAGES = frozenset({"httpx", "openai"})
+_POKE_REPLY_MODES = frozenset({"poke", "poke_text", "poke_meme"})
 NARRATIVE_UNSET = object()
 
 
@@ -559,6 +560,7 @@ class AgentOutput:
     requested_reply_mode: str = ""
     reply_reason: str = ""
     narration: str = ""
+    poke_target_uid: str = ""
 
     async def native_sources_current(self, candidate_event=None) -> bool:
         if (
@@ -1635,17 +1637,123 @@ class AstrBotAgentBridge:
             meme_plan = getattr(agent_event, "_stealer_joint_meme_plan_v1", None)
             reply_mode, requested_reply_mode, reply_reason = "text", "text", "plain_reply"
             narration = ""
-            if meme_plan is not None and (
+            poke_target_uid = ""
+            had_external_chains = bool(captured_chains)
+            raw_completion = completion.strip().lstrip("\ufeff")
+            if raw_completion.startswith("```") and raw_completion.endswith("```"):
+                raw_completion = raw_completion.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            parsed_plan = None
+            try:
+                candidate_json = json.loads(raw_completion)
+                if isinstance(candidate_json, dict) and "reply_mode" in candidate_json:
+                    parsed_plan = candidate_json
+            except (ValueError, TypeError):
+                if raw_completion.startswith("{") and '"reply_mode"' in raw_completion:
+                    raise ModelReplyFailure("invalid_reply_mode_plan")
+
+            if parsed_plan is not None:
+                raw_poke_target = parsed_plan.get("poke_target_uid")
+                if raw_poke_target is not None and not isinstance(raw_poke_target, str):
+                    raise ModelReplyFailure("invalid_reply_mode_plan")
+                poke_target_uid = raw_poke_target.strip() if isinstance(raw_poke_target, str) else ""
+                if parsed_plan.get("reply_mode") not in _POKE_REPLY_MODES and poke_target_uid:
+                    raise ModelReplyFailure("invalid_reply_mode_plan")
+                if parsed_plan.get("reply_mode") in _POKE_REPLY_MODES and not poke_supported:
+                    raise ModelReplyFailure("invalid_reply_mode_plan")
+
+            poke_combos_native = bool(meme_plan is not None and getattr(meme_plan, "_poke_combos_v1", False))
+            if (
+                parsed_plan is not None
+                and not poke_combos_native
+                and parsed_plan.get("reply_mode") in ("poke_text", "poke_meme")
+            ):
+                selected_mode = parsed_plan["reply_mode"]
+                plan_text = parsed_plan.get("text")
+                plan_meme_id = parsed_plan.get("meme_id")
+                plan_narration = parsed_plan.get("narration", "")
+                if (
+                    not poke_supported
+                    or not isinstance(plan_text, str)
+                    or not isinstance(plan_narration, str)
+                    or plan_narration.strip()
+                ):
+                    raise ModelReplyFailure("invalid_reply_mode_plan")
+                if selected_mode == "poke_text":
+                    if plan_meme_id is not None or not plan_text.strip():
+                        raise ModelReplyFailure("invalid_reply_mode_plan")
+                    completion = plan_text
+                    reply_mode = "poke_text"
+                    requested_reply_mode = "poke_text"
+                    reply_reason = "model_selected_poke_text"
+                    narration = ""
+                else:
+                    if (
+                        plan_text.strip()
+                        or type(plan_meme_id) is not int
+                        or meme_plan is None
+                        or not getattr(meme_plan, "candidates", ())
+                    ):
+                        raise ModelReplyFailure("invalid_reply_mode_plan")
+                    requested_reply_mode = "poke_meme"
+                    narration = ""
+                    if agent_event.get_extra("visual_media_generation_requested", False):
+                        completion = ""
+                        reply_mode = "text"
+                        reply_reason = "tool_effect_blocks_silence"
+                        poke_target_uid = ""
+                    else:
+                        bridged_plan = json.dumps(
+                            {
+                                "reply_mode": "meme_only",
+                                "text": "",
+                                "meme_id": plan_meme_id,
+                                "narration": "",
+                            },
+                            ensure_ascii=False,
+                        )
+                        try:
+                            _, meme_chains = meme_plan.resolve(bridged_plan)
+                        except ValueError as exc:
+                            if str(exc) == "joint_meme_candidate_unavailable":
+                                meme_chains = []
+                                resolved_mode = "silent"
+                                resolved_reason = "meme_unavailable"
+                            else:
+                                raise ModelReplyFailure(str(exc)) from exc
+                        else:
+                            resolved_mode = getattr(
+                                meme_plan, "reply_mode", "meme_only" if meme_chains else "silent"
+                            )
+                            resolved_reason = getattr(meme_plan, "reply_reason", "meme_unavailable")
+                        if meme_chains and resolved_mode == "meme_only":
+                            completion = ""
+                            reply_mode = "poke_meme"
+                            reply_reason = "model_selected_poke_meme"
+                            captured_chains.extend(meme_chains)
+                        else:
+                            completion = ""
+                            reply_mode = "poke"
+                            reply_reason = resolved_reason or "meme_unavailable"
+            elif meme_plan is not None and (
                 getattr(meme_plan, "_reply_actions_v1", False) or '"reply_mode"' not in completion
             ):
+                plan_input = completion
+                if parsed_plan is not None and not poke_combos_native and "poke_target_uid" in parsed_plan:
+                    stripped_plan = {k: v for k, v in parsed_plan.items() if k != "poke_target_uid"}
+                    plan_input = json.dumps(stripped_plan, ensure_ascii=False)
                 try:
-                    completion, meme_chains = meme_plan.resolve(completion)
+                    completion, meme_chains = meme_plan.resolve(plan_input)
                 except ValueError as exc:
-                    if str(exc) not in {"silent_after_generation", "poke_after_generation"} or not agent_event.get_extra(
+                    if str(exc) not in {
+                        "silent_after_generation",
+                        "poke_after_generation",
+                        "poke_text_after_generation",
+                        "poke_meme_after_generation",
+                    } or not agent_event.get_extra(
                         "visual_media_generation_requested", False
                     ):
                         raise ModelReplyFailure(str(exc)) from exc
-                    # The media parser verified the silent plan before refusing it
+                    # The media parser verified the silent/poke plan before refusing it
                     # after generation. Keep buffered tool results on the owned path.
                     completion, meme_chains = "", []
                     requested_reply_mode = getattr(meme_plan, "requested_reply_mode", "silent")
@@ -1655,26 +1763,23 @@ class AstrBotAgentBridge:
                     requested_reply_mode = getattr(meme_plan, "requested_reply_mode", reply_mode)
                     reply_reason = getattr(meme_plan, "reply_reason", "legacy_reply")
                     narration = getattr(meme_plan, "narration", "")
+                    if poke_combos_native:
+                        resolved_target = getattr(meme_plan, "poke_target_uid", None)
+                        if isinstance(resolved_target, str) and resolved_target.strip():
+                            poke_target_uid = resolved_target.strip()
+                    if reply_mode not in _POKE_REPLY_MODES:
+                        poke_target_uid = ""
                 captured_chains.extend(meme_chains)
             else:
-                raw = completion.strip().lstrip("\ufeff")
-                if raw.startswith("```") and raw.endswith("```"):
-                    raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                try:
-                    choice = json.loads(raw)
-                except (ValueError, TypeError):
-                    if raw.startswith("{") and '"reply_mode"' in raw:
-                        raise ModelReplyFailure("invalid_reply_mode_plan")
-                    choice = None
-                if isinstance(choice, dict) and "reply_mode" in choice:
-                    reply_mode = choice["reply_mode"]
-                    completion = choice.get("text")
-                    narration = choice.get("narration", "")
+                if parsed_plan is not None:
+                    reply_mode = parsed_plan["reply_mode"]
+                    completion = parsed_plan.get("text")
+                    narration = parsed_plan.get("narration", "")
                     if (
                         reply_mode not in ("text", "silent", "poke")
                         or not isinstance(completion, str)
                         or not isinstance(narration, str)
-                        or choice.get("meme_id") is not None
+                        or parsed_plan.get("meme_id") is not None
                         or (reply_mode in ("silent", "poke") and completion.strip())
                         or (reply_mode == "text" and not completion.strip())
                         or (reply_mode != "silent" and narration.strip())
@@ -1696,15 +1801,26 @@ class AstrBotAgentBridge:
                         narration = f"（{narration}）"
                         reply_mode = "narration"
                         reply_reason = "model_silent_narration"
-            if reply_mode in ("silent", "narration", "poke") and (
-                captured_chains
+            external_tool_effect = (
+                had_external_chains
                 or owned_executor.reply_effect_started
-                or agent_event.get_extra("visual_media_generation_requested", False)
+                or bool(agent_event.get_extra("visual_media_generation_requested", False))
+            )
+            if reply_mode in ("silent", "narration", "poke") and (
+                captured_chains or external_tool_effect
             ):
                 # Captured tool messages must still pass the owned delivery path.
                 # A started background generation is an effect, never a silent turn.
                 reply_mode = "text"
                 narration = ""
+                poke_target_uid = ""
+                reply_reason = "tool_effect_blocks_silence"
+            elif reply_mode in ("poke_text", "poke_meme") and external_tool_effect:
+                # Do not let poke_meme's own resolved meme_chains trigger downgrade;
+                # only downgrade poke_text/poke_meme when an external tool or generation ran.
+                reply_mode = "text"
+                narration = ""
+                poke_target_uid = ""
                 reply_reason = "tool_effect_blocks_silence"
 
             async def reply_sources_current():
@@ -1727,6 +1843,7 @@ class AstrBotAgentBridge:
                 requested_reply_mode=requested_reply_mode,
                 reply_reason=reply_reason,
                 narration=narration,
+                poke_target_uid=poke_target_uid,
             )
             if partial_output is not None:
                 if output.chains or not output.text.startswith(partial_output.stream_prefix):

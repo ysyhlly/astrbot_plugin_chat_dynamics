@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
+from .platform_bridge import is_poke_placeholder
 from .routing_contract import UNRESOLVED_TOPIC_STATUS, addressee_is_ambiguous
 from .topic_identity import node_topic_id
 
@@ -34,9 +35,12 @@ _PRIORITY = {
     "poke_sender": 1,
     "supplemental_context": 1,
     "poke_reply": 2,
+    "poke_event": 2,
     "bot_reply": 3,
+    "poke_bot_recent": 3,
     "topic_origin": 3,
     "same_topic": 4,
+    "poke_group_recent": 4,
     "recipient": 5,
     "same_author": 6,
 }
@@ -320,6 +324,19 @@ def _parents(node: Any, dag: Any) -> tuple[tuple[Any, ContextEvidence], ...]:
     return tuple(links)
 
 
+def _is_platform_poke_node(node: Any) -> bool:
+    meta = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    return bool(meta.get("has_poke") is True or meta.get("poke_at_bot") is True)
+
+
+def _is_poke_history_node(node: Any) -> bool:
+    meta = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    if meta.get("has_poke") is True or meta.get("poke_at_bot") is True or meta.get("is_bot_poke") is True:
+        return True
+    text = str(getattr(node, "text", "") or "").strip()
+    return bool(text and is_poke_placeholder(text))
+
+
 def select_background(
     dag: Any,
     current_nodes: Sequence[Any],
@@ -341,47 +358,110 @@ def select_background(
     positions = {node.msg_id: index for index, node in enumerate(ordered)}
     boundary = max(positions.get(mid, -1) for mid in current_ids)
     # A platform poke has no lexical topic. Preserve its actual sender's
-    # same-session history instead of following an unrelated inferred parent.
+    # same-session history plus recent group/bot/poke activity instead of
+    # following an unrelated inferred parent.
     if (
         current_nodes
         and len({str(n.user_id) for n in current_nodes}) == 1
         and all(
-            n.metadata.get("poke_at_bot") is True and str(n.text).strip() in {"[戳一戳] 有人戳了你", "[戳一戳]"}
+            _is_platform_poke_node(n) and is_poke_placeholder(str(n.text or ""))
             for n in current_nodes
         )
     ):
         owner = str(current_nodes[-1].user_id)
         if not owner or owner == bot_id:
             return ()
-        recent = [
+        anchor_id = current_nodes[-1].msg_id
+        peer_target = str(current_nodes[-1].metadata.get("poke_target_id") or "")
+        if peer_target in {bot_id, owner}:
+            peer_target = ""
+
+        recent_long = [
             n
             for n in ordered[: boundary + 1]
             if n.msg_id not in current_ids
             and 0 <= cutoff - n.timestamp <= TOPIC_HISTORY_WINDOW_SECONDS
-            and not str(n.text).strip().startswith("[戳一戳]")
         ]
-        source = [n for n in recent if str(n.user_id) == owner][-6:]
+        recent_short = [n for n in recent_long if cutoff - n.timestamp <= HISTORY_WINDOW_SECONDS]
+
+        source = [
+            n
+            for n in recent_long
+            if str(n.user_id) == owner and not _is_poke_history_node(n)
+        ][-6:]
         replies = [
             n
-            for n in recent
+            for n in recent_long
             if str(n.user_id) == bot_id
             and str(n.metadata.get("trigger_user_id", "")) == owner
             and (n.metadata.get("dialogue_delivered") is True or n.msg_id in delivered_ids)
+            and not _is_poke_history_node(n)
         ][-6:]
-        return tuple(
-            BackgroundSelection(
-                n,
-                (
-                    ContextEvidence(
-                        "poke_sender" if str(n.user_id) == owner else "poke_reply",
-                        current_nodes[-1].msg_id,
-                        1.0,
-                        ("same_session_poke_sender" if str(n.user_id) == owner else "delivered_reply_to_poke_sender",),
-                    ),
-                ),
-                1 if str(n.user_id) == owner else 2,
+        poke_events = [
+            n
+            for n in recent_short
+            if _is_poke_history_node(n)
+            and (
+                str(n.user_id) != bot_id
+                or n.metadata.get("is_bot_poke") is True
+                or n.metadata.get("dialogue_delivered") is True
+                or n.msg_id in delivered_ids
             )
-            for n in (*reversed(source), *reversed(replies))
+        ][-6:]
+        bot_recent = [
+            n
+            for n in recent_short
+            if str(n.user_id) == bot_id
+            and str(n.metadata.get("trigger_user_id", "")) != owner
+            and (n.metadata.get("dialogue_delivered") is True or n.msg_id in delivered_ids)
+            and not _is_poke_history_node(n)
+        ][-4:]
+        group_recent_candidates = [
+            n
+            for n in recent_short
+            if str(n.user_id) != bot_id
+            and str(n.user_id) != owner
+            and not _is_poke_history_node(n)
+        ]
+        group_recent = group_recent_candidates[-6:]
+        if peer_target and not any(str(n.user_id) == peer_target for n in group_recent):
+            target_recent = [n for n in group_recent_candidates if str(n.user_id) == peer_target][-1:]
+            if target_recent:
+                group_recent = (
+                    group_recent[-(6 - len(target_recent)) :] + target_recent
+                    if len(group_recent) >= 6
+                    else group_recent + target_recent
+                )
+
+        poke_selected: dict[str, BackgroundSelection] = {}
+
+        def _remember_poke(node: Any, relation: str, code: str) -> None:
+            evidence = ContextEvidence(relation, anchor_id, 1.0, (code,))
+            rank = evidence.priority
+            prior = poke_selected.get(node.msg_id)
+            proofs = prior.context_evidence if prior else ()
+            if evidence not in proofs:
+                proofs = tuple(sorted((*proofs, evidence), key=lambda proof: (proof.priority, -proof.confidence)))[:3]
+            poke_selected[node.msg_id] = BackgroundSelection(
+                node, proofs, min(rank, prior.priority) if prior else rank
+            )
+
+        for n in source:
+            _remember_poke(n, "poke_sender", "same_session_poke_sender")
+        for n in replies:
+            _remember_poke(n, "poke_reply", "delivered_reply_to_poke_sender")
+        for n in poke_events:
+            _remember_poke(n, "poke_event", "recent_poke_event")
+        for n in bot_recent:
+            _remember_poke(n, "poke_bot_recent", "recent_bot_message")
+        for n in group_recent:
+            _remember_poke(n, "poke_group_recent", "recent_group_message")
+
+        return tuple(
+            sorted(
+                poke_selected.values(),
+                key=lambda row: (row.priority, -row.node.timestamp, -positions[row.node.msg_id]),
+            )
         )
     selected: dict[str, BackgroundSelection] = {}
     current_topics = {topic for node in current_nodes if (topic := confirmed_topic(node)[0])}
