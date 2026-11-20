@@ -30,7 +30,7 @@ from typing import Any, List, Optional, Set
 try:
     from astrbot.api import logger
     from astrbot.api.event import AstrMessageEvent, filter
-    from astrbot.api.star import Context, Star, register
+    from astrbot.api.star import Context, Star
 except ImportError as exc:
     raise ImportError(
         "Chat Dynamics 需要在 AstrBot (>=4.29.4,<5) 运行时中加载，当前环境无法导入 astrbot.api。"
@@ -343,13 +343,6 @@ _OWNED_SEND_CONTEXT: ContextVar[Optional[tuple[str, int]]] = ContextVar(
 
 
 
-@register(
-    "astrbot_plugin_chat_dynamics",
-    "ysyhlly",
-    "群间 · Chat Dynamics",
-    "v1.19.0-rc.6",
-    "",
-)
 class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     def get_world_integration_capabilities(self):
         """Stable native World contract; no model calls or settings disclosure."""

@@ -21,17 +21,12 @@ def copy_release_tree(destination: Path) -> None:
         shutil.copy2(source, target)
 
 
-def test_register_decorator_version_matches_metadata():
+def test_plugin_uses_star_autoregistration_without_deprecated_register():
     version = plugin_version(ROOT)
+    assert version.startswith("v")
     text = (ROOT / "main.py").read_text(encoding="utf-8")
-    match = re.search(
-        r'@register\(\s*"astrbot_plugin_chat_dynamics"\s*,\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"(v[^"]+)"\s*,\s*"([^"]*)"',
-        text,
-    )
-    assert match is not None
-    assert match.group(1) == version
-    repo = match.group(2)
-    assert repo == "" or repo.startswith("http")
+    assert "@register(" not in text
+    assert re.search(r"^class\s+ChatDynamicsPlugin\([^)]*\bStar\b[^)]*\):", text, re.M) is not None
 
 
 def test_plugin_version_follows_metadata_yaml(tmp_path):
