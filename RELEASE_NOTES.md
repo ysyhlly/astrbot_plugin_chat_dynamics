@@ -1,4 +1,11 @@
-# astrbot_plugin_chat_dynamics v1.19.0-rc.7
+# astrbot_plugin_chat_dynamics v1.19.0-rc.8
+
+## v1.19.0-rc.8 — 2026-11-21
+
+- 升级群间系列面板 v2：新增全系列 8 插件群聊总控矩阵（`series_matrix` / `series_matrix_toggle`）、跨插件联邦快捷搜索（`series_search` / `Ctrl+K`）与共享 UI Kit 联动。
+- 合入自然节奏延迟补聊独立媒体副本保留及全路径释放修复（`+rhythm.3`），完整保留戳一戳优化与纯 `Star` 自动注册。
+- 修复群控矩阵分群角色优先级、`takeover_all` 单群排除回显以及联邦搜索慢同步插件事件循环超时隔离。
+- 完善真实 SDK 路由契约测试并将 v2 后端/浏览器与自然节奏测试纳入维护套件。
 
 ## v1.19.0-rc.7 — 2026-11-20
 

@@ -13,6 +13,7 @@ Coordinates three humanlike conversational rhythm behaviors inside Chat Dynamics
 from __future__ import annotations
 
 import asyncio
+import copy
 import heapq
 import random
 import re
@@ -22,6 +23,8 @@ from typing import Any, Awaitable, Callable, Deque, Dict, List, Literal, Optiona
 
 from astrbot.api import logger
 
+from .deferred_media import preserve_event_media, release_event_media
+from .platform_bridge import iter_message_components
 from .time_service import TimeService
 
 
@@ -280,8 +283,9 @@ class SessionRhythmBook:
     afterthought: Optional[AfterthoughtSlot] = None
     catching_up: bool = False
     replay_events: Deque[Dict[str, Any]] = field(default_factory=lambda: deque(maxlen=64))
-    # Retained live events (in-memory only, never persisted) for direct reply execution
-    live_events: Dict[str, Any] = field(default_factory=dict)
+    # Retained live events (in-memory only, never persisted) for direct reply execution.
+    # Each msg_id maps to a tuple of independently media-preserved event clones.
+    live_events: Dict[str, Tuple[Any, ...]] = field(default_factory=dict)
 
 
 class NaturalRhythmController:
@@ -467,6 +471,8 @@ class NaturalRhythmController:
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        for book in self._books.values():
+            self._release_live_events(book)
 
     def _schedule_wake(self, session_key: str, kind: str, wake_mono: float) -> None:
         self._seq += 1
@@ -531,13 +537,63 @@ class NaturalRhythmController:
             ran += 1
         return ran
 
+    def _clone_event_for_catchup(self, event: Any, session: str) -> Any:
+        """Clone an event and independently preserve local media before the original turn releases it."""
+        if event is None:
+            return None
+        try:
+            cloned = copy.copy(event)
+            msg_obj = getattr(event, "message_obj", None)
+            if msg_obj is not None:
+                cloned.message_obj = copy.copy(msg_obj)
+                parts = list(iter_message_components(event))
+                if parts:
+                    cloned.message_obj.message = [copy.deepcopy(part) for part in parts]
+            if hasattr(event, "_extras"):
+                cloned._extras = dict(getattr(event, "_extras") or {})
+            if hasattr(event, "_temporary_local_files"):
+                cloned._temporary_local_files = []
+            # Detach inherited finalizers so releasing the original turn never deletes our copy.
+            for attr in (
+                "_chat_dynamics_media_cleanup",
+                "_chat_dynamics_media_directory",
+                "_chat_dynamics_media_archive",
+            ):
+                if hasattr(cloned, attr):
+                    try:
+                        delattr(cloned, attr)
+                    except Exception:
+                        pass
+            if hasattr(event, "send"):
+                cloned.send = event.send
+            archive = getattr(self.plugin, "media_archive", None)
+            return preserve_event_media(cloned, archive=archive, session=session)
+        except Exception:
+            return event
+
+    @staticmethod
+    def _release_live_events(book: SessionRhythmBook, msg_id: Optional[str] = None) -> None:
+        if msg_id is None:
+            keys = list(book.live_events.keys())
+        else:
+            keys = [msg_id] if msg_id in book.live_events else []
+        for key in keys:
+            events = book.live_events.pop(key, ())
+            for ev in events if isinstance(events, (tuple, list)) else (events,):
+                try:
+                    release_event_media(ev)
+                except Exception:
+                    pass
+
     # --- session resets, stops, recalls, and persona changes -----------------
 
     def reset_session(self, session_key: str) -> None:
         book = self._books.pop(str(session_key), None)
-        if book is not None and book.afterthought is not None:
-            book.afterthought.cancelled = True
-            book.afterthought.cancel_reason = "rhythm_afterthought_cancelled_stop"
+        if book is not None:
+            self._release_live_events(book)
+            if book.afterthought is not None:
+                book.afterthought.cancelled = True
+                book.afterthought.cancel_reason = "rhythm_afterthought_cancelled_stop"
 
     def on_member_stopped(self, session_key: str, user_id: str) -> None:
         book = self._books.get(str(session_key))
@@ -548,6 +604,7 @@ class NaturalRhythmController:
             if cand.author_id == uid and cand.status == "pending":
                 cand.status = "skipped"
                 self._record_ledger(book, cand.msg_id, "skipped")
+                self._release_live_events(book, cand.msg_id)
         if book.afterthought is not None and book.afterthought.target_user_id == uid:
             book.afterthought.cancelled = True
             book.afterthought.cancel_reason = "rhythm_afterthought_cancelled_stop"
@@ -576,6 +633,7 @@ class NaturalRhythmController:
             if cand.msg_id == mid and cand.status == "pending":
                 cand.status = "skipped"
                 self._record_ledger(book, mid, "skipped")
+                self._release_live_events(book, mid)
                 node = runtime.dag.get_node(mid) if runtime is not None and getattr(runtime, "dag", None) else None
                 self._record_replay(book, action="silent", reason_code="rhythm_catchup_skipped_recalled", node=node)
                 self._metric("rhythm_recall_cancelled")
@@ -697,6 +755,7 @@ class NaturalRhythmController:
         persona_fingerprint: str = "",
         node: Any = None,
         live_event: Any = None,
+        live_events: Sequence[Any] = (),
     ) -> IngressPacingDecision:
         """Decide whether an incoming turn runs immediately or defers to catch-up."""
         if not self.catchup_enabled() or runtime is None:
@@ -711,6 +770,7 @@ class NaturalRhythmController:
         if persona_fingerprint and book.persona_fingerprint and book.persona_fingerprint != persona_fingerprint:
             # Character switched: never carry over previous persona's catch-up debt.
             book.pending_items.clear()
+            self._release_live_events(book)
             book.away_kind = "none"
             if book.afterthought is not None:
                 book.afterthought.cancelled = True
@@ -834,13 +894,27 @@ class NaturalRhythmController:
             )
             book.pending_items.append(cand)
             if len(book.pending_items) > self.MAX_PENDING_ITEMS:
+                evicted = book.pending_items[:-self.MAX_PENDING_ITEMS]
                 del book.pending_items[:-self.MAX_PENDING_ITEMS]
+                for evicted_cand in evicted:
+                    self._release_live_events(book, evicted_cand.msg_id)
             self._record_ledger(book, msg_id, "pending")
-            if live_event is not None:
-                book.live_events[msg_id] = live_event
-                while len(book.live_events) > self.MAX_PENDING_ITEMS:
-                    oldest_key = next(iter(book.live_events))
-                    book.live_events.pop(oldest_key, None)
+            raw_events = tuple(ev for ev in live_events if ev is not None)
+            if not raw_events and live_event is not None:
+                raw_events = (live_event,)
+            if raw_events:
+                session_label = str(getattr(runtime, "umo", "") or runtime.session_key)
+                preserved = tuple(
+                    cloned
+                    for ev in raw_events
+                    if (cloned := self._clone_event_for_catchup(ev, session_label)) is not None
+                )
+                if preserved:
+                    self._release_live_events(book, msg_id)
+                    book.live_events[msg_id] = preserved
+                    while len(book.live_events) > self.MAX_PENDING_ITEMS:
+                        oldest_key = next(iter(book.live_events))
+                        self._release_live_events(book, oldest_key)
 
         self._record_replay(
             book,
@@ -1255,7 +1329,11 @@ class NaturalRhythmController:
 
             # Advance read watermark past the reviewed window and prune completed items.
             book.read_watermark_wall = max(book.read_watermark_wall, self.time_service.wall_time())
-            book.pending_items = [c for c in book.pending_items if c.status == "pending"]
+            remaining_pending = [c for c in book.pending_items if c.status == "pending"]
+            remaining_ids = {c.msg_id for c in remaining_pending}
+            for stale_mid in [mid for mid in list(book.live_events) if mid not in remaining_ids]:
+                self._release_live_events(book, stale_mid)
+            book.pending_items = remaining_pending
             self._sync_runtime_state(runtime, book)
         finally:
             book.catching_up = False
@@ -1286,8 +1364,26 @@ class NaturalRhythmController:
         engine = getattr(self.plugin, "persona_engine", None)
         runner = getattr(engine, "execute_catchup_item", None)
         if callable(runner):
-            live_event = book.live_events.get(item.primary_msg_id)
-            return await runner(runtime, item, live_event=live_event)
+            collected: List[Any] = []
+            events_by_id: Dict[str, Tuple[Any, ...]] = {}
+            for mid in item.message_ids:
+                evs = book.live_events.get(mid)
+                if not evs:
+                    continue
+                ev_tuple = tuple(evs) if isinstance(evs, (tuple, list)) else (evs,)
+                events_by_id[mid] = ev_tuple
+                collected.extend(ev_tuple)
+            try:
+                return await runner(
+                    runtime,
+                    item,
+                    live_event=collected[-1] if collected else None,
+                    live_events=tuple(collected),
+                    events_by_id=events_by_id,
+                )
+            finally:
+                for mid in item.message_ids:
+                    self._release_live_events(book, mid)
         return {"status": "skipped", "reason": "rhythm_catchup_skipped_unworthy"}
 
     # --- post-delivery delayed afterthought ----------------------------------

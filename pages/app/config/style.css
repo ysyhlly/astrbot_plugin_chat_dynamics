@@ -109,9 +109,32 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .search-empty h2 { font-size: 18px; color: var(--text); }
 :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 /* Refined settings surfaces; retain the shared day/night palette. */
-.config-overview { box-shadow: inset 3px 0 var(--cyan); }
-.action-bar { box-shadow: 0 4px 16px rgb(0 0 0 / .04); }
-.action-bar[data-dirty="true"] { box-shadow: inset 3px 0 var(--cyan), 0 4px 16px rgb(0 0 0 / .04); }
+.cd-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cd-info-tip { position: relative; display: inline-block; }
+.cd-info-tip > summary {
+  list-style: none; cursor: pointer; width: 22px; height: 22px; border-radius: 999px;
+  border: 1px solid var(--ds-strong, var(--line-strong));
+  color: var(--ds-muted, var(--muted)); font: 600 11px/20px "Consolas", monospace;
+  text-align: center; user-select: none;
+}
+.cd-info-tip > summary::-webkit-details-marker { display: none; }
+.cd-info-tip[open] > summary { background: var(--ds-accent-soft, var(--cyan-soft)); color: var(--ds-accent, var(--cyan)); border-color: var(--ds-accent, var(--cyan)); }
+.cd-info-tip > p {
+  position: absolute; left: 0; top: 28px; z-index: 30; width: min(340px, 76vw);
+  margin: 0; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--ds-border, var(--line));
+  background: var(--ds-surface, var(--surface));
+  color: var(--ds-muted, var(--muted)); font-size: 12px; line-height: 1.65;
+  box-shadow: var(--ds-shadow-card, 0 10px 26px -8px rgb(24 46 33 / .14));
+}
+.config-overview, .model-connection, .integration-panel, .config-group, .action-bar {
+  border-color: var(--ds-border, var(--line));
+  background: var(--ds-surface, var(--surface));
+  border-radius: 14px;
+  box-shadow: var(--ds-shadow-card, 0 1px 2px rgb(24 46 33 / .04), 0 8px 24px -8px rgb(24 46 33 / .07));
+}
+.config-overview { box-shadow: inset 3px 0 var(--ds-accent, var(--cyan)), var(--ds-shadow-card, 0 8px 24px -8px rgb(24 46 33 / .07)); }
+.action-bar[data-dirty="true"] { box-shadow: inset 3px 0 var(--ds-accent, var(--cyan)), var(--ds-shadow-card, 0 4px 16px rgb(0 0 0 / .06)); }
 .button { min-height: 40px; transition: background .15s, border-color .15s; }
 .button:not(:disabled):active { transform: translateY(1px); }
 

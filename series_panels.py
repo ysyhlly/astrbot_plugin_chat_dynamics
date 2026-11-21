@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import inspect
+import math
 import re
 import subprocess
 import sys
+import threading
+import time
 from importlib import import_module
 from pathlib import Path
 
 from astrbot.api.web import json_response, request
 
 CATALOG = (
-    ("astrbot_plugin_chat_dynamics", "Chat Dynamics", "app", "对话调度与回复"),
+    ("astrbot_plugin_chat_dynamics", "对话主控", "app", "对话调度与回复"),
     ("astrbot_plugin_dynamics_learning", "群间学习", "review", "学习与审查"),
     ("astrbot_plugin_dynamics_world", "群间世界", "world", "角色与生活状态"),
     ("astrbot_plugin_dynamics_memory", "群间记忆", "dashboard", "记忆与证据"),
@@ -26,7 +29,7 @@ CATALOG = (
     ("astrbot_plugin_visual_media", "视觉工坊", "workshop", "表情、图片与视觉表达"),
     (
         "astrbot_plugin_group_chronicle",
-        "群史记",
+        "群文化沿革",
         "culture",
         "收录有价值的结果与群史传记",
     ),
@@ -67,6 +70,135 @@ _SHARED_STR_KEYS = (
     "rhythm_timezone",
     "ui_language",
 )
+_SUMMARY_TTL_SECONDS = 10.0
+_VALID_BADGE_TONES = frozenset({"accent", "warm", "info", "danger", "muted"})
+_SUMMARY_CACHE_LOCK = threading.Lock()
+_SUMMARY_CACHE: dict[tuple[str, int], tuple[float, dict[str, object] | None]] = {}
+
+
+def invalidate_presence_cache(plugin_id: str | None = None) -> None:
+    """Drop cached get_series_summary() entries for one plugin or all plugins."""
+    with _SUMMARY_CACHE_LOCK:
+        if plugin_id is None:
+            _SUMMARY_CACHE.clear()
+        else:
+            for key in [k for k in _SUMMARY_CACHE if k[0] == plugin_id]:
+                _SUMMARY_CACHE.pop(key, None)
+
+
+def _sanitize_summary(raw) -> dict[str, object] | None:
+    if not isinstance(raw, dict):
+        return None
+    badge = None
+    badge_raw = raw.get("badge")
+    if isinstance(badge_raw, dict):
+        count_raw = badge_raw.get("count", 0)
+        if (
+            isinstance(count_raw, bool)
+            or not isinstance(count_raw, (int, float))
+            or not math.isfinite(count_raw)
+        ):
+            count = 0
+        else:
+            count = max(0, int(count_raw))
+        tone_raw = badge_raw.get("tone")
+        tone = (
+            tone_raw.strip().lower()
+            if isinstance(tone_raw, str) and tone_raw.strip().lower() in _VALID_BADGE_TONES
+            else "accent"
+        )
+        label_raw = badge_raw.get("label")
+        label = label_raw.strip()[:48] if isinstance(label_raw, str) else ""
+        if label or count > 0 or isinstance(tone_raw, str):
+            badge = {"count": count, "tone": tone, "label": label}
+
+    pulse = None
+    pulse_raw = raw.get("pulse")
+    if isinstance(pulse_raw, dict):
+        headline_raw = pulse_raw.get("headline")
+        updated_raw = pulse_raw.get("updated_at")
+        headline = headline_raw.strip()[:160] if isinstance(headline_raw, str) else ""
+        updated_at = updated_raw.strip()[:64] if isinstance(updated_raw, str) else ""
+        if headline or updated_at:
+            pulse = {"headline": headline, "updated_at": updated_at}
+
+    if badge is None and pulse is None:
+        return None
+    return {"badge": badge, "pulse": pulse}
+
+
+def _read_plugin_summary(
+    identity: str,
+    owner,
+    *,
+    ttl: float = _SUMMARY_TTL_SECONDS,
+    force_refresh: bool = False,
+) -> dict[str, object] | None:
+    if owner is None:
+        return None
+    getter = getattr(owner, "get_series_summary", None)
+    if not callable(getter) or inspect.iscoroutinefunction(getter):
+        return None
+    now = time.monotonic()
+    cache_key = (identity, id(owner))
+    if not force_refresh and ttl > 0:
+        with _SUMMARY_CACHE_LOCK:
+            cached = _SUMMARY_CACHE.get(cache_key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+    summary = None
+    try:
+        raw = getter()
+        if inspect.isawaitable(raw):
+            if inspect.iscoroutine(raw):
+                raw.close()
+        else:
+            summary = _sanitize_summary(raw)
+    except Exception:
+        summary = None
+    if ttl > 0:
+        with _SUMMARY_CACHE_LOCK:
+            if len(_SUMMARY_CACHE) > 64:
+                expired = [k for k, (exp, _val) in _SUMMARY_CACHE.items() if exp <= now]
+                for k in expired:
+                    _SUMMARY_CACHE.pop(k, None)
+                if len(_SUMMARY_CACHE) > 64:
+                    _SUMMARY_CACHE.clear()
+            _SUMMARY_CACHE[cache_key] = (now + ttl, summary)
+    return summary
+
+
+def find_plugin_owner(context, identity: str):
+    """Return the active, non-conflicting Star instance for ``identity``, or ``None``."""
+    if context is None or not identity:
+        return None
+    registered_entries = _iter_registered_entries(context)
+    if registered_entries:
+        matches = []
+        for names, row in registered_entries:
+            if identity in names and all(existing is not row for existing in matches):
+                matches.append(row)
+        if len(matches) == 1:
+            row = matches[0]
+            if value(row, "activated", False) is not True:
+                return None
+            return _extract_owner(row)
+        if len(matches) > 1:
+            return None
+    get_star = getattr(context, "get_registered_star", None)
+    if callable(get_star) and not inspect.iscoroutinefunction(get_star):
+        try:
+            star = get_star(identity)
+        except Exception:
+            return None
+        if inspect.isawaitable(star):
+            if inspect.iscoroutine(star):
+                star.close()
+            return None
+        if star is None or value(star, "activated", True) is False:
+            return None
+        return _extract_owner(star)
+    return None
 
 
 def value(row, key, default=None):
@@ -317,7 +449,7 @@ def inherit_provider(explicit, context, role: str = "reply") -> str:
     return str(defaults.get("reply_provider") or "")
 
 
-def presence(context, current, root=None):
+def presence(context, current, root=None, *, force_refresh: bool = False):
     root = Path(root) if root else Path(__file__).resolve().parent.parent
     registered_entries = _iter_registered_entries(context)
     output = []
@@ -341,6 +473,8 @@ def presence(context, current, root=None):
             "runtime_enabled": None,
             "version": "",
             "can_open": False,
+            "badge": None,
+            "pulse": None,
         }
         if not matches:
             data["state"] = "unloaded" if installed else "missing"
@@ -415,6 +549,12 @@ def presence(context, current, root=None):
                             )
                     except Exception as exc:
                         data.update(state="error", error=type(exc).__name__)
+                summary = _read_plugin_summary(
+                    identity, owner, force_refresh=force_refresh
+                )
+                if summary:
+                    data["badge"] = summary.get("badge")
+                    data["pulse"] = summary.get("pulse")
         output.append(data)
 
     active_ids = {
@@ -483,8 +623,21 @@ class SeriesPanels:
             )
             if not username or expected and username != expected:
                 raise PermissionError()
+            query = getattr(request, "query", None) or {}
+            refresh_flag = str(query.get("refresh") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            if refresh_flag:
+                invalidate_presence_cache()
             return json_response(
-                {"status": "ok", "data": presence(self.owner.context, self.identity)}
+                {
+                    "status": "ok",
+                    "data": presence(
+                        self.owner.context, self.identity, force_refresh=refresh_flag
+                    ),
+                }
             )
         except PermissionError:
             return json_response(

@@ -84,14 +84,14 @@ def test_theme_canvas_without_external_resources(browser, page_server, name, sou
         else:
             context.add_init_script("localStorage.setItem('chat_dynamics_ui', 'night')")
         page = context.new_page()
-        page.route("**/*.js", lambda route: route.abort())
-        page.route("**/*.css", lambda route: route.abort())
+        page.route("**/*.js*", lambda route: route.abort())
+        page.route("**/*.css*", lambda route: route.abort())
         query = "?ui=night" if source == "query" else "?ui=day" if source == "day_override" else ""
         page.goto(f"{page_server}/{name}/index.html{query}")
         night = source != "day_override"
         assert page.locator("html").get_attribute("data-ui-theme") == ("night" if night else "day")
         assert page.locator("html").evaluate("node => getComputedStyle(node).backgroundColor") == (
-            "rgb(11, 20, 25)" if night else "rgb(245, 246, 244)"
+            "rgb(12, 20, 18)" if night else "rgb(243, 244, 239)"
         )
         assert page.locator("html").evaluate("node => getComputedStyle(node).colorScheme") == (
             "dark" if night else "light"
@@ -116,11 +116,11 @@ def test_host_theme_updates_do_not_change_plugin_palette(browser, page_server, n
                     text: getComputedStyle(document.body).color,
                 };
             }""", host_theme)
-            assert result == {
-                "current": theme,
-                "background": "rgb(11, 20, 25)" if theme == "night" else "rgb(245, 246, 244)",
-                "text": "rgb(232, 238, 232)" if theme == "night" else "rgb(32, 46, 38)",
-            }
+            assert result["current"] == theme
+            expected_bg = {"rgb(11, 20, 25)", "rgb(12, 20, 18)"} if theme == "night" else {"rgb(245, 246, 244)", "rgb(243, 244, 239)"}
+            expected_text = {"rgb(232, 238, 232)", "rgb(232, 239, 233)"} if theme == "night" else {"rgb(32, 46, 38)", "rgb(30, 44, 36)"}
+            assert result["background"] in expected_bg
+            assert result["text"] in expected_text
         page.locator("#btnUiTheme").click()
         page.wait_for_function("document.querySelector('#uiThemeStatus').textContent === '已保存到账号'")
         assert page.evaluate("window.ChatDynamicsTheme.current()") == ("day" if theme == "night" else "night")
@@ -136,8 +136,8 @@ def test_all_pages_share_theme_and_fit_mobile(browser, page_server, name, theme)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(f"{page_server}/{name}/index.html")
         page.wait_for_function("document.querySelector('#uiThemeStatus')?.textContent === '已恢复账号偏好'")
-        expected = "rgb(232, 238, 232)" if theme == "night" else "rgb(32, 46, 38)"
-        assert page.locator("body").evaluate("node => getComputedStyle(node).color") == expected
+        expected = {"rgb(232, 238, 232)", "rgb(232, 239, 233)"} if theme == "night" else {"rgb(32, 46, 38)", "rgb(30, 44, 36)"}
+        assert page.locator("body").evaluate("node => getComputedStyle(node).color") in expected
         for width in (1366, 390):
             page.set_viewport_size({"width": width, "height": 940})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), name

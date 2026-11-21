@@ -8,8 +8,8 @@
     <meta name="color-scheme" content="light dark" />
     <!-- Paint the document canvas before any external resource can delay navigation. -->
     <style>
-      html { background: #f5f6f4; color-scheme: light; }
-      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
+      html { background: #f3f4ef; color-scheme: light; }
+      html[data-ui-theme="night"] { background: #0c1412; color-scheme: dark; }
     </style>
     <script>
       (() => {
@@ -34,14 +34,27 @@
 <div class="app wire-app plugin-shell series-workspace">
 <div class="plugin-layout">
 <header class="plugin-side series-nav">
-          <a class="series-brand" href="#workspace"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <a class="series-brand" href="#workspace"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="对话主控">对话主控</span></a>
           <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航">
 </nav>
         </header>
 <main class="plugin-main memory-workspace" id="workspace" tabindex="-1">
+<section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+<section class="wire-card legacy-sunset-banner" id="legacyMemoryNotice" aria-labelledby="legacyMemoryTitle">
+<div class="legacy-sunset-copy">
+<span class="legacy-sunset-tag" data-series-text="旧子页已收敛">旧子页已收敛</span>
+<h2 id="legacyMemoryTitle" data-series-text="「群间记忆」已迁移至独立面板">「群间记忆」已迁移至独立面板</h2>
+<p class="section-copy" data-series-text="长期事实记忆、知识图谱与召回测试请前往独立的「群间记忆 (DM)」面板。本页仅保留对话主控本地群小本与角色生活状态管理。">长期事实记忆、知识图谱与召回测试请前往独立的「群间记忆 (DM)」面板。本页仅保留对话主控本地群小本与角色生活状态管理。</p>
+<p id="legacyMemoryStatus" class="ops-note" role="status" aria-live="polite"></p>
+</div>
+<div class="legacy-sunset-actions">
+<button type="button" class="button button-primary" id="btnOpenDynamicsMemory" data-series-text="前往「群间记忆」面板 →">前往「群间记忆」面板 →</button>
+<button type="button" class="button button-quiet" id="btnBackConsoleFromMemory" data-series-text="返回对话主控">返回对话主控</button>
+</div>
+</section>
 <header class="topbar series-heading">
 <div class="brand-copy">
-<p class="eyebrow">CHAT DYNAMICS / MEMORY</p>
+<p class="eyebrow">CHAT DYNAMICS / NOTEBOOK</p>
 <h1 id="pageTitle" data-series-text="记忆小本">记忆小本</h1>
 <p class="lede" id="pageDesc" data-series-text="按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。">按会话管理纪念日、约定与试用梗。列表沿用默认脱敏展示。</p>
 </div>
@@ -53,7 +66,7 @@
 </div>
 <button type="button" class="button button-quiet" id="btnRefresh" data-series-text="刷新">刷新</button>
 </div>
-</header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+</header>
 <section class="wire-card session-toolbar">
 <label for="sessionSelect"><span data-series-text="当前会话">当前会话</span><select id="sessionSelect">
 </select>

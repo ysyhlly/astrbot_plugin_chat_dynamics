@@ -6,9 +6,11 @@ export function mountWorkspace() {
       const selected = item === tab;
       item.setAttribute("aria-selected", String(selected));
       item.tabIndex = selected ? 0 : -1;
-      document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
+      const panel = document.getElementById(item.getAttribute("aria-controls"));
+      if (panel) panel.hidden = !selected;
     });
     if (focus) tab.focus();
+    window.dispatchEvent(new CustomEvent("console:viewchange", { detail: { view: tab.dataset.view || "" } }));
   }
   try {
     const next = localStorage.getItem("cd_console_next_view");

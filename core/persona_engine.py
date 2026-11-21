@@ -1956,6 +1956,7 @@ class PersonaEngine:
                 persona_fingerprint=persona.fingerprint,
                 node=primary_node,
                 live_event=event,
+                live_events=item.events,
             )
             rhythm_urgent_breakthrough = bool(pacing.urgent_breakthrough)
             if pacing.defer:
@@ -3239,8 +3240,18 @@ class PersonaEngine:
             _extras={},
         )
 
-    async def execute_catchup_item(self, runtime, plan_item, *, live_event=None) -> dict:
+    async def execute_catchup_item(
+        self,
+        runtime,
+        plan_item,
+        *,
+        live_event=None,
+        live_events: Sequence[Any] = (),
+        events_by_id: dict | None = None,
+    ) -> dict:
         """Run one chronological catch-up item through the standard PersonaEngine pipeline."""
+        from .platform_bridge import iter_message_components
+
         p = self.plugin
         dag = getattr(runtime, "dag", None)
         if dag is None:
@@ -3249,15 +3260,36 @@ class PersonaEngine:
         nodes = [n for n in nodes if n is not None]
         if not nodes:
             return {"status": "skipped", "reason": "rhythm_catchup_skipped_recalled"}
-        event = live_event if live_event is not None else self._synthetic_rhythm_event(runtime)
-        if getattr(event, "_extras", None) is None:
-            event._extras = {}
+        catchup_events = tuple(ev for ev in live_events if ev is not None)
+        if not catchup_events:
+            catchup_events = (live_event,) if live_event is not None else (self._synthetic_rhythm_event(runtime),)
+        for ev in catchup_events:
+            if getattr(ev, "_extras", None) is None:
+                ev._extras = {}
+
+        _media_kinds = frozenset({"image", "record", "audio", "voice", "video", "file", "face", "sticker"})
+        by_id = events_by_id or {}
+
+        def _attachments_for(node_obj) -> tuple[str, ...]:
+            mid = str(node_obj.msg_id)
+            evs = by_id.get(mid)
+            if not evs and mid == plan_item.primary_msg_id:
+                evs = catchup_events
+            found: list[str] = []
+            for ev in evs or ():
+                for comp in iter_message_components(ev):
+                    cname = type(comp).__name__.lower()
+                    if cname in _media_kinds and cname not in found:
+                        found.append(cname)
+            return tuple(found)
+
         msgs = tuple(
             MessageSnapshot(
                 message_id=str(n.msg_id),
                 author=str(n.user_id),
                 text=str(n.text or ""),
                 reply_to=str(n.reply_to_id or ""),
+                attachments=_attachments_for(n),
                 timestamp=float(n.timestamp),
                 mentioned_users=tuple(str(u) for u in (getattr(n, "mentioned_users", ()) or ())),
                 author_name=str((getattr(n, "metadata", None) or {}).get("sender_name") or ""),
@@ -3265,8 +3297,41 @@ class PersonaEngine:
             )
             for n in nodes
         )
-        background = _snapshot_background(runtime, nodes)
+        all_media_types = [kind for m in msgs for kind in m.attachments]
         consolidated = "\n".join(str(n.text or "").strip() for n in nodes if str(n.text or "").strip())
+        has_media = bool(all_media_types) or any(
+            marker in consolidated for marker in ("[媒体", "[图片", "[语音", "[视频", "[文件")
+        )
+        if plan_item.private_direct:
+            runtime.request_media_understand = False
+            if has_media:
+                gate = getattr(p, "decision_gate", None)
+                media_gate = getattr(gate, "media", None) if gate is not None else None
+                cfg = getattr(p, "_runtime_config", None)
+                if media_gate is not None and cfg is not None:
+                    try:
+                        verdict = media_gate.evaluate(
+                            text=consolidated[:8000],
+                            has_media=True,
+                            media_component_types=all_media_types,
+                            outline="",
+                            explicit=True,
+                            quoted_bot=any(bool(m.reply_to) for m in msgs),
+                            media_privacy_strict=cfg.media_privacy_strict,
+                            media_image_gate_enabled=cfg.media_image_gate_enabled,
+                            media_voice_gate_enabled=cfg.media_voice_gate_enabled,
+                            media_understand_reply_enabled=cfg.media_understand_reply_enabled,
+                        )
+                        runtime.last_media_gate = verdict.as_dict()
+                        runtime.request_media_understand = bool(verdict.request_understand)
+                        if verdict.privacy_hit:
+                            return {"status": "skipped", "reason": "rhythm_catchup_skipped_stopped"}
+                    except Exception:
+                        runtime.request_media_understand = False
+                elif cfg is not None:
+                    runtime.request_media_understand = bool(getattr(cfg, "media_understand_reply_enabled", False))
+        background = _snapshot_background(runtime, nodes)
+        visible_ids = frozenset(str(n.msg_id) for n in dag.get_recent_nodes(limit=0))
         turn = TurnContext(
             runtime.session_key,
             plan_item.author_id,
@@ -3279,6 +3344,7 @@ class PersonaEngine:
             bool(plan_item.directed),
             wake_kind="private" if plan_item.private_direct else ("at" if plan_item.directed else "none"),
             bot_id=str(runtime.bot_id or ""),
+            visible_node_ids=visible_ids,
             snapshot_at=p.time_service.time(),
         )
         platform_ids = frozenset(
@@ -3286,7 +3352,7 @@ class PersonaEngine:
         )
         model_turn = ModelTurn(
             turn,
-            (event,),
+            catchup_events,
             {
                 "rhythm_catchup": True,
                 "rhythm_force_quote": bool(plan_item.should_quote),

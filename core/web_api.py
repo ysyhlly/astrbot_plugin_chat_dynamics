@@ -194,6 +194,9 @@ class ConsoleWebAPI:
             ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
             ("setup/groups", self.setup_groups, ["GET"], "发现可用于引导接管的群聊列表"),
             ("setup/probe", self.setup_probe, ["POST"], "手动检测所选模型的连通性"),
+            ("series_matrix", self.series_matrix_get, ["GET"], "跨 8 插件群聊总控矩阵"),
+            ("series_matrix_toggle", self.series_matrix_toggle_post, ["POST"], "跨插件群聊接管开关"),
+            ("series_search", self.series_search_get, ["GET"], "跨插件联邦快捷搜索"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -982,3 +985,79 @@ class ConsoleWebAPI:
         except Exception as exc:
             logger.error("[ChatDynamics] notebook post failed code=CD_NOTEBOOK type=%s", type(exc).__name__)
             return _json_err("notebook write failed", 503)
+
+    async def series_matrix_get(self):
+        if (limited := self._rate_limit("series_matrix", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        scope = (_query_param("scope") or _query_param("umo") or "").strip()
+        persona = (_query_param("persona") or "").strip()
+        if len(scope) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("scope too long", 400)
+        if len(persona) > 128:
+            return _json_err("persona too long", 400)
+        try:
+            from .series_hub import build_series_matrix
+
+            data = await build_series_matrix(self.plugin, scope=scope, persona=persona)
+            return _json_ok(data)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_matrix failed code=CD_SERIES_MATRIX type=%s", type(exc).__name__)
+            return _json_err("series matrix unavailable", 503)
+
+    async def series_matrix_toggle_post(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_matrix_toggle", 30)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (invalid := self._validate_fields(body, {"umo", "plugin_id", "enabled", "expected_version"})) is not None:
+            return invalid
+        try:
+            from .series_hub import toggle_series_matrix
+
+            status_code, payload = await toggle_series_matrix(
+                self.plugin,
+                umo=str(body.get("umo") or ""),
+                plugin_id=str(body.get("plugin_id") or ""),
+                enabled=body.get("enabled"),
+                expected_version=body.get("expected_version"),
+            )
+            if status_code == 200:
+                return _json_ok(payload)
+            return _json_err(str(payload.get("message") or "toggle failed"), status_code)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_matrix_toggle failed code=CD_SERIES_TOGGLE type=%s", type(exc).__name__)
+            return _json_err("series matrix toggle failed", 503)
+
+    async def series_search_get(self):
+        if (limited := self._rate_limit("series_search", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        query = (_query_param("q") or _query_param("query") or "").strip()
+        scope = (_query_param("scope") or _query_param("umo") or "").strip()
+        raw_limit = (_query_param("limit") or "20").strip()
+        if len(query) > 128:
+            return _json_err("query too long", 400)
+        if len(scope) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("scope too long", 400)
+        try:
+            limit = int(raw_limit) if raw_limit else 20
+        except ValueError:
+            return _json_err("limit must be an integer", 400)
+        if not 1 <= limit <= 50:
+            return _json_err("limit must be between 1 and 50", 400)
+        try:
+            from .series_hub import federated_series_search
+
+            data = await federated_series_search(
+                self.plugin, query=query, scope=scope, limit=limit, timeout_seconds=0.30
+            )
+            return _json_ok(data)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_search failed code=CD_SERIES_SEARCH type=%s", type(exc).__name__)
+            return _json_err("series search unavailable", 503)

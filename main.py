@@ -4195,3 +4195,33 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             "ui_language": ui_language,
         }
 
+    def get_series_summary(self) -> dict[str, Any]:
+        """Synchronous, read-only badge/pulse summary for series_presence v2."""
+        from .core.series_hub import chat_dynamics_series_summary
+
+        return chat_dynamics_series_summary(self)
+
+    def get_series_scope_status(self, umo: str) -> dict[str, Any]:
+        """Read-only per-UMO status hook for the cross-plugin group matrix."""
+        from .core.series_hub import chat_dynamics_scope_status
+
+        return chat_dynamics_scope_status(self, umo)
+
+    async def set_series_scope_enabled(
+        self, umo: str, enabled: bool, expected_version: str | int | None = None
+    ) -> dict[str, Any]:
+        """Optimistic-locked toggle of Chat Dynamics takeover for one UMO."""
+        from .core.series_hub import chat_dynamics_set_scope_enabled
+
+        return await chat_dynamics_set_scope_enabled(
+            self, umo, enabled, expected_version=expected_version
+        )
+
+    def series_search_items(
+        self, query: str, scope: str = "", limit: int = 8
+    ) -> list[dict[str, Any]]:
+        """Fast read-only search hook for federated Ctrl+K search."""
+        from .core.series_hub import chat_dynamics_search_items
+
+        return chat_dynamics_search_items(self, query, scope=scope, limit=limit)
+

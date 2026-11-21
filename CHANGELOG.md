@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.19.0-rc.8 — 2026-11-21
+
+- 升级群间系列面板 v2：新增全系列 8 插件群聊总控矩阵（`series_matrix` / `series_matrix_toggle`）、跨插件联邦快捷搜索（`series_search` / `Ctrl+K`）与共享导航/徽章脉冲体系（`series_ui_kit` 同步产物）。
+- 合入生产验证的自然节奏延迟补聊修复（`+rhythm.3`）：延迟补聊保存带独立媒体引用的事件副本，并在撤回、停用、淘汰、切角、重置、执行完毕及关闭时全路径释放临时媒体目录；支持多事件补聊、媒体门闩与 `visible_node_ids`。
+- 修复群控矩阵分群角色被宿主默认角色覆盖及 `takeover_all` 模式下单群关闭状态回显问题；优先按分群有效角色生成行标签与筛选条件，仅在无分群角色时回退宿主默认角色。
+- 修复联邦搜索同步插件阻塞事件循环问题：同步搜索钩子改由有界线程池并行执行并纳入统一超时预算，保留已完成快插件结果并准确上报 `timed_out_plugins`。
+- 完善真实 SDK 路由契约测试与 `scripts/run_checks.py` 维护测试清单（纳入 `test_natural_rhythm`、`test_series_hub_v2`、`test_series_hub_browser`）。
+
 ## v1.19.0-rc.7 — 2026-11-20
 
 - 移除 `main.py` 中已弃用的 `@register(...)` 装饰器，全面迁移至 AstrBot 4.x/5.x 推荐的纯 `Star` 子类自动注册，消除 `register_star` 弃用告警。

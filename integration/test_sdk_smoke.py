@@ -131,30 +131,90 @@ class MediaSmokeEvent(SmokeEvent):
         return list(self.message_obj.message)
 
 
-async def _overview_payload(plugin: ChatDynamicsPlugin) -> dict[str, Any]:
+async def _decode_web_response(response: Any) -> tuple[int, dict[str, Any]]:
+    status_code = 200
+    if isinstance(response, tuple):
+        if len(response) >= 2 and isinstance(response[1], int):
+            status_code = response[1]
+        response = response[0]
+    else:
+        raw_status = getattr(response, "status_code", None)
+        if isinstance(raw_status, int):
+            status_code = raw_status
+    if isinstance(response, dict):
+        return status_code, response
+    get_json = getattr(response, "get_json", None)
+    if callable(get_json):
+        payload = await get_json()
+        return status_code, dict(payload)
+    body = getattr(response, "body", b"")
+    return status_code, dict(json.loads(bytes(body).decode("utf-8")))
+
+
+async def _call_web_handler(
+    handler: Any,
+    *,
+    method: str = "GET",
+    path: str = "/",
+    query: str = "",
+    json_body: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    raw_body = b"" if json_body is None else json.dumps(json_body).encode("utf-8")
     if importlib.util.find_spec("astrbot.api.web") is None:
         from quart import Quart
 
         app = Quart(__name__)
-        async with app.app_context():
-            response = await plugin.web_api_overview()
-    else:
-        response = await plugin.web_api_overview()
+        url = f"{path}?{query}" if query else path
+        headers = {"content-type": "application/json"} if json_body is not None else {}
+        async with app.test_request_context(url, method=method, data=raw_body, headers=headers):
+            response = await handler()
+        return await _decode_web_response(response)
 
-    if isinstance(response, tuple):
-        response = response[0]
-    if isinstance(response, dict):
-        return response
-    get_json = getattr(response, "get_json", None)
-    if callable(get_json):
-        payload = await get_json()
-        return dict(payload)
-    body = getattr(response, "body", b"")
-    return dict(json.loads(bytes(body).decode("utf-8")))
+    from astrbot.api.web import PluginRequest, bind_request_context
+    from starlette.requests import Request
+
+    headers_list: list[tuple[bytes, bytes]] = []
+    if json_body is not None:
+        headers_list.append((b"content-type", b"application/json"))
+        headers_list.append((b"content-length", str(len(raw_body)).encode("ascii")))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "query_string": query.encode("utf-8"),
+        "headers": headers_list,
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 6185),
+    }
+
+    sent = False
+
+    async def _receive() -> dict[str, Any]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+
+    starlette_req = Request(scope, _receive)
+    plugin_req = PluginRequest(starlette_req, plugin_name="astrbot_plugin_chat_dynamics")
+    with bind_request_context(plugin_req):
+        response = await handler()
+    return await _decode_web_response(response)
+
+
+async def _overview_payload(plugin: ChatDynamicsPlugin) -> dict[str, Any]:
+    _status, payload = await _call_web_handler(plugin.web_api_overview, method="GET", path="/overview")
+    return payload
 
 
 @pytest.mark.asyncio
-async def test_real_sdk_plugin_contract_smoke():
+async def test_real_sdk_plugin_contract_smoke(monkeypatch):
     context = SmokeContext()
     plugin = ChatDynamicsPlugin(
         context=context,
@@ -171,10 +231,14 @@ async def test_real_sdk_plugin_contract_smoke():
         ("groups", ("GET",)),
         ("probe", ("POST",)),
     }
-    assert {route.rsplit("/", 1)[-1] for route, *_ in context.routes
-            if "/decision/" not in route
-            and "/series_workspace/" not in route
-            and "/setup/" not in route} == {
+    routes_by_tail = {
+        route.rsplit("/", 1)[-1]: (handler, tuple(methods))
+        for route, handler, methods, _ in context.routes
+        if "/decision/" not in route
+        and "/series_workspace/" not in route
+        and "/setup/" not in route
+    }
+    assert set(routes_by_tail) == {
         "overview",
         "sessions",
         "session",
@@ -191,9 +255,15 @@ async def test_real_sdk_plugin_contract_smoke():
         "replay",
         "topic_annotations",
         "series_presence",
+        "series_matrix",
+        "series_matrix_toggle",
+        "series_search",
         "narrative",
         "integrations",
     }
+    assert routes_by_tail["series_matrix"][1] == ("GET",)
+    assert routes_by_tail["series_matrix_toggle"][1] == ("POST",)
+    assert routes_by_tail["series_search"][1] == ("GET",)
     assert not any("/learning/" in route for route, *_ in context.routes)
     assert {route.split("/decision/", 1)[1] for route, *_ in context.routes if "/decision/" in route} == {"status", "history"}
     overview = await _overview_payload(plugin)
@@ -207,6 +277,114 @@ async def test_real_sdk_plugin_contract_smoke():
     assert event.call_llm is True
     assert event.unified_msg_origin in plugin._sessions
     assert overview["data"]["pipeline_mode"] == "filter"
+
+    # Verify the three v2 series routes under the real SDK request/response contract.
+    matrix_handler = routes_by_tail["series_matrix"][0]
+    toggle_handler = routes_by_tail["series_matrix_toggle"][0]
+    search_handler = routes_by_tail["series_search"][0]
+
+    # 1) series_matrix: parameter guard + normal aggregation payload
+    bad_matrix_status, bad_matrix = await _call_web_handler(
+        matrix_handler, method="GET", path="/series_matrix", query=f"persona={'x' * 129}"
+    )
+    assert bad_matrix_status == 400
+    assert bad_matrix["status"] == "error"
+
+    matrix_status, matrix_res = await _call_web_handler(
+        matrix_handler, method="GET", path="/series_matrix"
+    )
+    assert matrix_status == 200
+    assert matrix_res["ok"] is True
+    assert matrix_res["status"] == "ok"
+    assert len(matrix_res["data"]["plugins"]) == 8
+    assert matrix_res["data"]["version"]
+    room_row = next(g for g in matrix_res["data"]["groups"] if g["umo"] == event.unified_msg_origin)
+    cd_cell = room_row["cells"]["astrbot_plugin_chat_dynamics"]
+    assert cd_cell["enabled"] is True
+    assert cd_cell["supported"] is True
+    assert cd_cell["version"]
+
+    # 2) series_search: parameter guard + federated search result shape
+    bad_search_status, bad_search = await _call_web_handler(
+        search_handler, method="GET", path="/series_search", query="q=room&limit=999"
+    )
+    assert bad_search_status == 400
+    assert bad_search["status"] == "error"
+
+    search_status, search_res = await _call_web_handler(
+        search_handler, method="GET", path="/series_search", query="q=room&limit=10"
+    )
+    assert search_status == 200
+    assert search_res["ok"] is True
+    assert search_res["data"]["query"] == "room"
+    assert search_res["data"]["timed_out_plugins"] == []
+    assert isinstance(search_res["data"]["elapsed_ms"], int)
+    assert any(
+        item["plugin_id"] == "astrbot_plugin_chat_dynamics" and "room" in item["subtitle"]
+        for item in search_res["data"]["items"]
+    )
+
+    # 3) series_matrix_toggle: admin gate (403) + field validation (400) + conflict (409) + valid toggle (200)
+    unauth_status, unauth_res = await _call_web_handler(
+        toggle_handler,
+        method="POST",
+        path="/series_matrix_toggle",
+        json_body={
+            "umo": event.unified_msg_origin,
+            "plugin_id": "astrbot_plugin_chat_dynamics",
+            "enabled": False,
+            "expected_version": cd_cell["version"],
+        },
+    )
+    assert unauth_status == 403
+    assert unauth_res["status"] == "error"
+
+    async def _allow_admin():
+        return True
+
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", _allow_admin)
+
+    bad_toggle_status, bad_toggle = await _call_web_handler(
+        toggle_handler,
+        method="POST",
+        path="/series_matrix_toggle",
+        json_body={"umo": event.unified_msg_origin},
+    )
+    assert bad_toggle_status == 400
+    assert bad_toggle["status"] == "error"
+
+    conflict_status, conflict_res = await _call_web_handler(
+        toggle_handler,
+        method="POST",
+        path="/series_matrix_toggle",
+        json_body={
+            "umo": event.unified_msg_origin,
+            "plugin_id": "astrbot_plugin_chat_dynamics",
+            "enabled": False,
+            "expected_version": "stale-version",
+        },
+    )
+    assert conflict_status == 409
+    assert conflict_res["status"] == "error"
+
+    ok_toggle_status, ok_toggle = await _call_web_handler(
+        toggle_handler,
+        method="POST",
+        path="/series_matrix_toggle",
+        json_body={
+            "umo": event.unified_msg_origin,
+            "plugin_id": "astrbot_plugin_chat_dynamics",
+            "enabled": False,
+            "expected_version": cd_cell["version"],
+        },
+    )
+    assert ok_toggle_status == 200
+    assert ok_toggle["ok"] is True
+    assert ok_toggle["data"]["ok"] is True
+    assert ok_toggle["data"]["enabled"] is False
+    assert ok_toggle["data"]["version"]
+    assert ok_toggle["data"]["matrix_version"]
+    assert plugin.is_group_takeover_enabled("room") is False
 
     generated = await plugin.llm.generate(
         prompt="hello",

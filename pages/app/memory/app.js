@@ -704,6 +704,21 @@ async function boot() {
     }
     void mutateNarrative("correct", { patch });
   });
+  document.getElementById("btnOpenDynamicsMemory")?.addEventListener("click", async () => {
+    const note = document.getElementById("legacyMemoryStatus");
+    if (note) setText(note, msg("正在打开独立「群间记忆」面板…"));
+    try {
+      if (!window.DynamicsSeriesNavigation?.open) throw new Error("独立「群间记忆」面板未就绪或未安装。");
+      await window.DynamicsSeriesNavigation.open("astrbot_plugin_dynamics_memory");
+    } catch (err) {
+      if (note) setText(note, friendlyError(err, msg("尚未安装或未启用「群间记忆」独立插件。")));
+    }
+  });
+  document.getElementById("btnBackConsoleFromMemory")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btnBackConsoleFromMemory");
+    const nav = await import("./plugin_nav.js");
+    await nav.navigateToPluginPage("console", btn);
+  });
   paintAddForm();
   showListLoading();
   await loadSessions();

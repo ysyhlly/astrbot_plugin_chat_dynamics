@@ -8,8 +8,8 @@
     <meta name="color-scheme" content="light dark" />
     <!-- Paint the document canvas before any external resource can delay navigation. -->
     <style>
-      html { background: #f5f6f4; color-scheme: light; }
-      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
+      html { background: #f3f4ef; color-scheme: light; }
+      html[data-ui-theme="night"] { background: #0c1412; color-scheme: dark; }
     </style>
     <script>
       (() => {
@@ -22,7 +22,7 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title data-series-text="群聊动态 · 设置">群聊动态 · 设置</title>
+    <title data-series-text="对话主控 · 参数配置">对话主控 · 参数配置</title>
     <link rel="stylesheet" href="./plugin_nav.css" />
     <link rel="stylesheet" href="./theme.css" />
     <link rel="stylesheet" href="./style.css" />
@@ -33,15 +33,21 @@
     <div class="app plugin-shell series-workspace">
       <div class="plugin-layout">
         <header class="plugin-side series-nav">
-          <a class="series-brand" href="#configMain"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <a class="series-brand" href="#configMain"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="对话主控">对话主控</span></a>
           <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
         </header>
         <div class="plugin-main">
+      <section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
       <header class="topbar series-heading">
         <div class="brand-copy">
-          <p class="eyebrow" data-series-text="群聊动态 / 设置">群聊动态 / 设置</p>
-          <h1 id="pageTitle" data-series-text="插件设置">插件设置</h1>
-          <p class="lede" id="pageDesc" data-series-text="选择生效群聊、决策模型和回复模型，核对后保存。">选择生效群聊、决策模型和回复模型，核对后保存。</p>
+          <p class="eyebrow" data-series-text="对话主控 / 参数配置">对话主控 / 参数配置</p>
+          <div class="cd-title-row">
+            <h1 id="pageTitle" data-series-text="参数配置">参数配置</h1>
+            <details class="cd-info-tip ds-info-pop">
+              <summary aria-label="参数配置说明" title="参数配置说明">i</summary>
+              <p class="lede" id="pageDesc" data-series-text="选择生效群聊、决策模型和回复模型，核对后保存并立即生效。">选择生效群聊、决策模型和回复模型，核对后保存并立即生效。</p>
+            </details>
+          </div>
         </div>
         <div class="topbar-tools">
           <nav class="page-nav" id="pageNav" aria-label="插件子页切换" data-series-aria-label="插件子页切换"></nav>
@@ -49,7 +55,7 @@
             <span class="status-dot" id="linkLamp" aria-hidden="true"></span><span id="linkLabel" data-series-text="连接中">连接中</span>
           </div>
         </div>
-      </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+      </header>
 
       <div class="action-bar" role="region" aria-label="配置操作" data-series-aria-label="配置操作">
         <div class="action-copy">
@@ -99,8 +105,13 @@
         <section class="model-connection" aria-labelledby="modelConnectionTitle">
           <div>
             <p class="eyebrow" data-series-text="Jev / 普通 LLM">Jev / 普通 LLM</p>
-            <h2 id="modelConnectionTitle" data-series-text="接入已添加的决策模型">接入已添加的决策模型</h2>
-            <p data-series-text="在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。">在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。</p>
+            <div class="cd-title-row">
+              <h2 id="modelConnectionTitle" data-series-text="接入已添加的决策模型">接入已添加的决策模型</h2>
+              <details class="cd-info-tip ds-info-pop">
+                <summary aria-label="决策模型说明" title="决策模型说明">i</summary>
+                <p data-series-text="在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。">在“参与决策方式”中选择 Jev／原生抉择或普通 LLM。Jev 使用 AstrBot 的抉择模型；LLM 使用聊天模型，不要求配置 Jev。两套模型选择分别保留；回复正文与对象、话题归属仍独立配置。</p>
+              </details>
+            </div>
             <p id="jevConnectionStatus" role="status" aria-live="polite" data-series-text="正在读取决策模型列表…">正在读取决策模型列表…</p>
           </div>
           <div class="action-buttons">

@@ -1,12 +1,12 @@
 /** Unified plugin side nav — byte-copied into each pages/<name>/ (page-local copy only; never import parent shared). */
 
 export const PLUGIN_PAGES = [
-  { id: "console", label: "群聊动态控制台" },
+  { id: "console", label: "对话主控" },
   { id: "setup", label: "快速引导" },
-  { id: "config", label: "插件参数配置" },
-  { id: "memory", label: "记忆小本" },
+  { id: "config", label: "参数配置" },
   { id: "replay", label: "场景回放" },
-  { id: "learning", label: "决策模型" },
+  { id: "memory", label: "本地小本（旧）", legacy: true },
+  { id: "learning", label: "决策遥测（旧）", legacy: true },
 ];
 
 const NAV_ICONS = {

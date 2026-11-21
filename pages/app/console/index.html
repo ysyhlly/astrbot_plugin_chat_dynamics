@@ -8,8 +8,8 @@
     <meta name="color-scheme" content="light dark" />
     <!-- Paint the document canvas before any external resource can delay navigation. -->
     <style>
-      html { background: #f5f6f4; color-scheme: light; }
-      html[data-ui-theme="night"] { background: #0b1419; color-scheme: dark; }
+      html { background: #f3f4ef; color-scheme: light; }
+      html[data-ui-theme="night"] { background: #0c1412; color-scheme: dark; }
     </style>
     <script>
       (() => {
@@ -22,7 +22,7 @@
     </script>
     <!-- chat_dynamics_ui: shared controls and account preference -->
     <script src="./theme.js"></script>
-    <title data-series-text="群聊动态控制台">群聊动态控制台</title>
+    <title data-series-text="对话主控 · 群聊动态控制台">对话主控 · 群聊动态控制台</title>
     <link rel="stylesheet" href="./base.css" />
     <link rel="stylesheet" href="./plugin_nav.css" />
 
@@ -34,23 +34,28 @@
     <div class="app plugin-shell series-workspace">
       <div class="plugin-layout">
         <header class="plugin-side series-nav">
-          <a class="series-brand" href="#consoleContent"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="群聊动态">群聊动态</span></a>
+          <a class="series-brand" href="#consoleContent"><span class="series-mark" aria-hidden="true">CD</span><span data-series-text="对话主控">对话主控</span></a>
           <nav id="pluginSideNav" class="plugin-side-nav series-tabs" aria-label="插件页面导航" data-series-aria-label="插件页面导航"></nav>
         </header>
         <div class="plugin-main">
+          <section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
           <header class="topbar series-heading">
             <div class="brand-copy">
               <p class="eyebrow">CHAT DYNAMICS / WORKSPACE</p>
-              <h1 id="pageTitle" data-series-text="群聊动态控制台">群聊动态控制台</h1>
-              <p class="lede" id="pageDesc" data-series-text="看见每一场对话，掌握机器人的参与节奏。">看见每一场对话，掌握机器人的参与节奏。</p>
+              <div class="cd-title-row">
+                <h1 id="pageTitle" data-series-text="对话主控">对话主控</h1>
+                <details class="cd-info-tip ds-info-pop">
+                  <summary aria-label="关于对话主控" title="关于对话主控">i</summary>
+                  <p class="lede" id="pageDesc" data-series-text="实时观测群聊对话节奏、冷却状态，并在「群聊总控矩阵」一屏管理全系列 8 插件的群聊接管。">实时观测群聊对话节奏、冷却状态，并在「群聊总控矩阵」一屏管理全系列 8 插件的群聊接管。</p>
+                </details>
+              </div>
             </div>
             <div class="topbar-tools">
               <div class="connection-state" role="status" aria-live="polite"><span id="linkLamp" class="status-dot" aria-hidden="true"></span><span id="linkLabel" data-series-text="正在连接">正在连接</span></div>
-              <div class="clock-state"><span class="tool-label" data-series-text="本地时间">本地时间</span><time id="clock">--:--:--</time></div>
               <button class="button button-quiet" id="btnRefresh" type="button" data-series-text="刷新数据">刷新数据</button>
               <nav class="page-nav" id="pageNav" aria-label="插件子页切换" data-series-aria-label="插件子页切换"></nav>
             </div>
-          </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
+          </header>
           <main id="consoleContent" tabindex="-1">
 <section class="overview-section" aria-labelledby="overviewTitle">
           <div class="section-heading">
@@ -89,7 +94,8 @@
           </div>
         </section>
             <div class="workspace-navigation" role="tablist" aria-label="控制台工作区" data-series-aria-label="控制台工作区">
-              <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions" data-series-text="会话工作台">会话工作台</button>
+              <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions" data-series-text="会话观测">会话观测</button>
+              <button type="button" id="tab-matrix" role="tab" aria-selected="false" aria-controls="view-matrix" tabindex="-1" data-view="matrix"><span data-series-text="群聊总控矩阵">群聊总控矩阵</span><span class="tab-pill-new" aria-hidden="true">新</span></button>
               <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy" data-series-text="参与与分寸">参与与分寸</button>
               <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations" data-series-text="互联诊断">互联诊断</button>
             </div>
@@ -238,6 +244,37 @@
             </div>
           </div>
         </section>
+            </section>
+            <section id="view-matrix" role="tabpanel" aria-labelledby="tab-matrix" hidden>
+              <section class="matrix-card" aria-labelledby="matrixTitle">
+                <div class="matrix-head">
+                  <div>
+                    <div class="cd-title-row">
+                      <h2 id="matrixTitle" data-series-text="全系列群聊接管总览">全系列群聊接管总览</h2>
+                      <span class="matrix-count-pill" id="matrixGroupCount">0 / 0 群</span>
+                      <details class="cd-info-tip ds-info-pop">
+                        <summary aria-label="总控矩阵说明" title="总控矩阵说明">i</summary>
+                        <p data-series-text="一屏查看并切换各群在 8 个群间系列插件中的启用状态。切换受管理员鉴权与乐观锁保护，变更后自动刷新顶栏状态矩阵。">一屏查看并切换各群在 8 个群间系列插件中的启用状态。切换受管理员鉴权与乐观锁保护，变更后自动刷新顶栏状态矩阵。</p>
+                      </details>
+                    </div>
+                    <p class="ops-note" id="matrixStatus" role="status" aria-live="polite" data-series-text="打开本页时自动聚合全系列 8 插件群聊状态。">打开本页时自动聚合全系列 8 插件群聊状态。</p>
+                  </div>
+                  <div class="matrix-toolbar">
+                    <input id="matrixFilter" type="search" placeholder="筛选群名 / UMO / 角色…" autocomplete="off" aria-label="筛选群聊" data-series-placeholder="筛选群名 / UMO / 角色…" />
+                    <select id="matrixPersonaFilter" aria-label="按角色筛选"><option value="">全部角色</option></select>
+                    <button type="button" class="button button-quiet" id="btnMatrixRefresh" data-series-text="刷新矩阵">刷新矩阵</button>
+                  </div>
+                </div>
+                <div class="matrix-table-wrap" id="matrixTableWrap">
+                  <table class="matrix-table">
+                    <thead id="matrixTableHead"></thead>
+                    <tbody id="matrixTableBody"></tbody>
+                  </table>
+                </div>
+                <div class="matrix-empty hidden" id="matrixEmpty" role="status">
+                  <p data-series-text="暂未发现已接管或活跃的群聊，请先在「快速引导」或「参数配置」中启用群聊。">暂未发现已接管或活跃的群聊，请先在「快速引导」或「参数配置」中启用群聊。</p>
+                </div>
+              </section>
             </section>
             <section id="view-policy" role="tabpanel" aria-labelledby="tab-policy" hidden>
 <section class="control-strip" aria-label="运行策略与预设" data-series-aria-label="运行策略与预设">

@@ -1,3 +1,4 @@
+.app.wire-app.series-workspace{width:min(100%,var(--ds-max-width,1680px))}
 .wire-card{min-width:0;padding:24px;margin:0;border:1px solid var(--line,#dce3df);border-radius:8px;background:var(--surface,#fff);box-shadow:none}
 .plugin-main{display:flex;flex-direction:column;gap:20px}
 .card-heading{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
@@ -91,3 +92,9 @@
 .narrative-details pre { max-height:320px; overflow:auto; padding:16px; background:var(--surface-soft); border-radius:6px; white-space:pre-wrap; overflow-wrap:anywhere; }
 @media(max-width:760px) { .narrative-grid { grid-template-columns:1fr; } }
 @media(max-width:500px) { .narrative-actions .button { flex:1 1 45%; } .narrative-snapshot { grid-template-columns:1fr; gap:4px; } .narrative-snapshot dd { margin-bottom:8px; } }
+.legacy-sunset-banner { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; padding:16px 20px; border-left:4px solid var(--ds-warm, var(--amber, #9a5d1f)); border-radius:12px; }
+.legacy-sunset-copy { display:grid; gap:6px; flex:1 1 280px; min-width:0; }
+.legacy-sunset-copy h2 { margin:0; font-size:15px; }
+.legacy-sunset-copy p { margin:0; }
+.legacy-sunset-tag { justify-self:start; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:var(--ds-warm-soft, var(--amber-soft, #f9efe1)); color:var(--ds-warm, var(--amber, #9a5d1f)); }
+.legacy-sunset-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }

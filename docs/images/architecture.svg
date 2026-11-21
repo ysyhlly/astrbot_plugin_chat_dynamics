@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 690" width="1120" height="690" role="img" aria-label="群间 · Chat Dynamics 系统架构与回合流水线">
+  <defs>
+    <linearGradient id="hdrGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#312E81"/>
+      <stop offset="55%" stop-color="#4338CA"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="coreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EEF2FF"/>
+      <stop offset="100%" stop-color="#E0E7FF"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-4%" y="-6%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#6366F1"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#64748B"/>
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#059669"/>
+    </marker>
+    <style>
+      .t-title { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 21px; font-weight: 700; fill: #FFFFFF; }
+      .t-sub { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12.5px; font-weight: 400; fill: #E0E7FF; }
+      .t-badge { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 10.5px; font-weight: 700; fill: #E0E7FF; letter-spacing: 0.8px; }
+      .c-title { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 14.5px; font-weight: 700; fill: #0F172A; }
+      .c-sub { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 11px; font-weight: 600; fill: #64748B; }
+      .c-body { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12px; fill: #475569; }
+      .c-chip { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 11px; font-weight: 600; }
+      .c-num { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 11.5px; font-weight: 700; fill: #FFFFFF; }
+      .c-sec { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
+    </style>
+  </defs>
+  <rect x="0.5" y="0.5" width="1119" height="689" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+  <path d="M 16 1 L 1104 1 Q 1119 1 1119 16 L 1119 76 L 1 76 L 1 16 Q 1 1 16 1 Z" fill="url(#hdrGrad)"/>
+  <text x="28" y="34" class="t-title">群间 · Chat Dynamics 系统架构与回合流水线</text>
+  <text x="28" y="57" class="t-sub">Filter-First 群聊状态机 · 完整 UMO 隔离 · 短锁快照 + 锁外模型 I/O · 实际送达才记账</text>
+  <rect x="912" y="22" width="180" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.14" stroke="#FFFFFF" stroke-opacity="0.28"/>
+  <text x="1002" y="39" text-anchor="middle" class="t-badge">CORE ARCHITECTURE</text>
+
+  <rect x="28" y="92" width="690" height="28" rx="8" fill="#EEF2FF" stroke="#A5B4FC" stroke-dasharray="4 3"/>  <text x="42" y="110" class="c-sec" fill="#4338CA">锁内准备阶段 · SessionRuntime.state_lock（短锁写入与快照，不等待网络）</text>
+  <rect x="738" y="92" width="354" height="28" rx="8" fill="#F5F3FF" stroke="#C4B5FD" stroke-dasharray="4 3"/>  <text x="752" y="110" class="c-sec" fill="#6D28D9">锁外异步富化与决策（模型 I/O 零阻塞）</text>
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="132" width="326" height="176" rx="12" fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.4"/>
+    <path d="M 40 132 L 342 132 Q 354 132 354 144 L 354 172 L 28 172 L 28 144 Q 28 132 40 132 Z" fill="#F0F9FF"/>
+    <line x1="28" y1="172" x2="354" y2="172" stroke="#7DD3FC" stroke-width="1"/>
+    <rect x="40" y="141" width="26" height="22" rx="6" fill="#0369A1"/>
+    <text x="53" y="156" text-anchor="middle" class="c-num">01</text>
+    <text x="74" y="157" class="c-title" fill="#0369A1">接入与碎发聚合</text>
+    <text x="42" y="190" class="c-sub">PlatformBridge · DebounceBuffer · MediaGate</text>
+    <text x="42" y="211" class="c-body">· 按完整 UMO 隔离会话状态与对话图</text>
+    <text x="42" y="232" class="c-body">· 0.25s 碎发防抖合并，支持等待补充输入</text>
+    <text x="42" y="253" class="c-body">· 提取平台显式 @、引用、戳一戳与媒体门闩</text>
+    <text x="42" y="274" class="c-body">· 真实 @ 保留快速路径，跳过冗余重排等待</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="392" y="132" width="326" height="176" rx="12" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="1.4"/>
+    <path d="M 404 132 L 706 132 Q 718 132 718 144 L 718 172 L 392 172 L 392 144 Q 392 132 404 132 Z" fill="#EEF2FF"/>
+    <line x1="392" y1="172" x2="718" y2="172" stroke="#A5B4FC" stroke-width="1"/>
+    <rect x="404" y="141" width="26" height="22" rx="6" fill="#4338CA"/>
+    <text x="417" y="156" text-anchor="middle" class="c-num">02</text>
+    <text x="438" y="157" class="c-title" fill="#4338CA">对话图与话题路由</text>
+    <text x="406" y="190" class="c-sub">ConversationDAG · ThreadRouter · TopicBatch</text>
+    <text x="406" y="211" class="c-body">· thread_id 严守确定性回复树，与话题解耦</text>
+    <text x="406" y="232" class="c-body">· 规则识别对象，避免将提及 Bot 误判为呼叫</text>
+    <text x="406" y="253" class="c-body">· 原生 Rerank 或 LLM 判定多人讨论归属</text>
+    <text x="406" y="274" class="c-body">· 后台批量归纳话题标题，缓存 1h 过期归档</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="756" y="132" width="336" height="176" rx="12" fill="#FFFFFF" stroke="#C4B5FD" stroke-width="1.4"/>
+    <path d="M 768 132 L 1080 132 Q 1092 132 1092 144 L 1092 172 L 756 172 L 756 144 Q 756 132 768 132 Z" fill="#F5F3FF"/>
+    <line x1="756" y1="172" x2="1092" y2="172" stroke="#C4B5FD" stroke-width="1"/>
+    <rect x="768" y="141" width="26" height="22" rx="6" fill="#6D28D9"/>
+    <text x="781" y="156" text-anchor="middle" class="c-num">03</text>
+    <text x="802" y="157" class="c-title" fill="#6D28D9">锁外参与决策</text>
+    <text x="770" y="190" class="c-sub">Jev / System One / OpenAI · LLMDecision</text>
+    <text x="770" y="211" class="c-body">· 锁内冻结不可变回合快照后释放会话锁</text>
+    <text x="770" y="232" class="c-body">· 单次调用输出完整性(complete/wait)与动作</text>
+    <text x="770" y="253" class="c-body">· 支持 Jev 原生抉择与普通 LLM 独立切换</text>
+    <text x="770" y="274" class="c-body">· 超时保守降级，不串行补调阻塞响应</text>
+  </g>
+  <line x1="354" y1="220" x2="386" y2="220" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="718" y1="220" x2="750" y2="220" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M 924 308 L 924 334 L 191 334 L 191 364" fill="none" stroke="#6366F1" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+  <rect x="406" y="321" width="308" height="24" rx="12" fill="#FFFFFF" stroke="#A5B4FC"/>  <text x="560" y="337" text-anchor="middle" class="c-chip" fill="#4338CA">回锁校验 epoch / revision / owner_revision / config_id</text>
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="370" width="326" height="182" rx="12" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1.4"/>
+    <path d="M 40 370 L 342 370 Q 354 370 354 382 L 354 410 L 28 410 L 28 382 Q 28 370 40 370 Z" fill="#FFFBEB"/>
+    <line x1="28" y1="410" x2="354" y2="410" stroke="#FCD34D" stroke-width="1"/>
+    <rect x="40" y="379" width="26" height="22" rx="6" fill="#B45309"/>
+    <text x="53" y="394" text-anchor="middle" class="c-num">04</text>
+    <text x="74" y="395" class="c-title" fill="#B45309">准入仲裁与策略护栏</text>
+    <text x="42" y="428" class="c-sub">TurnEvidence · ParticipationPolicy · Pacer</text>
+    <text x="42" y="449" class="c-body">· 从不可变快照构建 TurnEvidence 统一裁决</text>
+    <text x="42" y="470" class="c-body">· 综合群氛围、发言冷却、作息节律与观察模式</text>
+    <text x="42" y="491" class="c-body">· 强制执行 /dynamics_stop 与成员自主屏蔽</text>
+    <text x="42" y="512" class="c-body">· 定稿后冻结 DecisionTrace 供场景回放审计</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="392" y="370" width="326" height="182" rx="12" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="1.4"/>
+    <path d="M 404 370 L 706 370 Q 718 370 718 382 L 718 410 L 392 410 L 392 382 Q 392 370 404 370 Z" fill="#EEF2FF"/>
+    <line x1="392" y1="410" x2="718" y2="410" stroke="#A5B4FC" stroke-width="1"/>
+    <rect x="404" y="379" width="26" height="22" rx="6" fill="#4338CA"/>
+    <text x="417" y="394" text-anchor="middle" class="c-num">05</text>
+    <text x="438" y="395" class="c-title" fill="#4338CA">伙伴投影与主 Agent 生成</text>
+    <text x="406" y="428" class="c-sub">SeriesHub · ReplyAdaptation · ProviderBudget</text>
+    <text x="406" y="449" class="c-body">· 公开注册表只读聚合世界/记忆/学习/见闻</text>
+    <text x="406" y="470" class="c-body">· 不替代 AstrBot 宿主人格、历史与原生工具</text>
+    <text x="406" y="491" class="c-body">· 按 Provider ID 共享并发预算与优先级队列</text>
+    <text x="406" y="512" class="c-body">· 成员停止或重置立即取消在途 Agent 与工具</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="756" y="370" width="336" height="182" rx="12" fill="#FFFFFF" stroke="#6EE7B7" stroke-width="1.4"/>
+    <path d="M 768 370 L 1080 370 Q 1092 370 1092 382 L 1092 410 L 756 410 L 756 382 Q 756 370 768 370 Z" fill="#ECFDF5"/>
+    <line x1="756" y1="410" x2="1092" y2="410" stroke="#6EE7B7" stroke-width="1"/>
+    <rect x="768" y="379" width="26" height="22" rx="6" fill="#047857"/>
+    <text x="781" y="394" text-anchor="middle" class="c-num">06</text>
+    <text x="802" y="395" class="c-title" fill="#047857">自然分段交付与闭环回执</text>
+    <text x="770" y="428" class="c-sub">NativeDelivery · StreamReply · OutcomeRecorder</text>
+    <text x="770" y="449" class="c-body">· 按空行与自然段节奏拆分为 1~10 条消息</text>
+    <text x="770" y="470" class="c-body">· 送达前复核成员边界，保留代码与媒体完整</text>
+    <text x="770" y="491" class="c-body">· 仅在平台确认送达后写入 DAG 与扣减额度</text>
+    <text x="770" y="512" class="c-body">· 向学习、世界、见闻等伙伴分发真实送达回执</text>
+  </g>
+  <line x1="354" y1="461" x2="386" y2="461" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <line x1="718" y1="461" x2="750" y2="461" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="28" y="576" width="1064" height="90" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2"/>  <text x="44" y="601" class="c-sec" fill="#1E293B">核心工程不变式与可观测面板（统一单入口 Web 控制台 · 6 大功能区）</text>
+  <rect x="44" y="616" width="198" height="26" rx="13" fill="#EEF2FF" stroke="#A5B4FC" stroke-width="1"/>
+  <text x="143.0" y="633" text-anchor="middle" class="c-chip" fill="#4338CA">默认零接管 · UMO 精确白名单</text>
+  <rect x="254" y="616" width="198" height="26" rx="13" fill="#F5F3FF" stroke="#C4B5FD" stroke-width="1"/>
+  <text x="353.0" y="633" text-anchor="middle" class="c-chip" fill="#6D28D9">热路径零阻塞 · 锁外模型 I/O</text>
+  <rect x="464" y="616" width="200" height="26" rx="13" fill="#FFFBEB" stroke="#FCD34D" stroke-width="1"/>
+  <text x="564.0" y="633" text-anchor="middle" class="c-chip" fill="#B45309">过期代次丢弃 · 绝不覆盖新态</text>
+  <rect x="676" y="616" width="200" height="26" rx="13" fill="#F0F9FF" stroke="#7DD3FC" stroke-width="1"/>
+  <text x="776.0" y="633" text-anchor="middle" class="c-chip" fill="#0369A1">面板默认脱敏 · 不暴露明文</text>
+  <rect x="888" y="616" width="188" height="26" rx="13" fill="#ECFDF5" stroke="#6EE7B7" stroke-width="1"/>
+  <text x="982.0" y="633" text-anchor="middle" class="c-chip" fill="#047857">真实送达记账 · 完整回放轨</text>
+</svg>

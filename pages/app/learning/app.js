@@ -49,6 +49,20 @@ async function exportHistory() {
 }
 el('refresh').addEventListener('click', () => void refresh());
 el('export').addEventListener('click', () => void exportHistory());
+el('btnOpenDynamicsLearning')?.addEventListener('click', async () => {
+  const note = el('legacyLearningStatus');
+  if (note) setText(note, msg('正在打开独立「群间学习」面板…'));
+  try {
+    if (!window.DynamicsSeriesNavigation?.open) throw new Error('独立「群间学习」面板未就绪或未安装。');
+    await window.DynamicsSeriesNavigation.open('astrbot_plugin_dynamics_learning');
+  } catch (err) {
+    if (note) setText(note, friendlyError(err, msg('尚未安装或未启用「群间学习」独立插件。')));
+  }
+});
+el('btnBackConsoleFromLearning')?.addEventListener('click', async () => {
+  const nav = await import('./plugin_nav.js');
+  await nav.navigateToPluginPage('console', el('btnBackConsoleFromLearning'));
+});
 window.addEventListener('pagehide', () => { stopped = true; });
 await readyBridge().catch(() => {}); renderNav('learning'); await refresh();
 const timer = window.setInterval(() => void refresh(), 10000);

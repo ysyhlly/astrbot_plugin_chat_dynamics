@@ -685,3 +685,248 @@ async def test_deferred_private_and_at_do_not_trigger_mandatory_fallback():
 
     assert sent_payloads == []
 
+
+def _write_bytes(path: str, data: bytes) -> None:
+    from pathlib import Path
+
+    Path(path).write_bytes(data)
+
+
+def _read_bytes(path: str) -> bytes:
+    from pathlib import Path
+
+    return Path(path).read_bytes()
+
+
+def _path_exists(path: str) -> bool:
+    from pathlib import Path
+
+    return Path(path).exists()
+
+
+def _path_is_dir(path: str) -> bool:
+    from pathlib import Path
+
+    return Path(path).is_dir()
+
+
+def _path_is_file(path: str) -> bool:
+    from pathlib import Path
+
+    return Path(path).is_file()
+
+
+def _unlink_file(path: str) -> None:
+    from pathlib import Path
+
+    Path(path).unlink()
+
+
+@pytest.mark.asyncio
+async def test_catchup_preserves_independent_media_copy_across_original_release(tmp_path):
+    """Deferred catch-up clones and preserves local media so original turn cleanup cannot break catch-up."""
+    from dataclasses import dataclass
+    from astrbot_plugin_chat_dynamics.core.deferred_media import preserve_event_media, release_event_media
+    from astrbot_plugin_chat_dynamics.core.persona_engine import PersonaEngine
+
+    @dataclass
+    class Image:
+        file: str
+
+    @dataclass
+    class FakeMsgObj:
+        message: list
+
+    async def _noop_send(_chain):
+        return None
+
+    class _FakeMediaEvent:
+        def __init__(self, umo: str, components: list, *, extras: dict | None = None, temp_files: list | None = None):
+            self.unified_msg_origin = umo
+            self.message_obj = FakeMsgObj(message=components)
+            self._extras = dict(extras or {})
+            if temp_files is not None:
+                self._temporary_local_files = list(temp_files)
+            self.send = _noop_send
+
+    # Create a temporary platform image file and simulate original turn preservation
+    src_img = str(tmp_path / "temp_photo.png")
+    _write_bytes(src_img, b"\x89PNG\r\n\x1a\nfake-image-bytes")
+
+    raw_event = _FakeMediaEvent(
+        "aiocqhttp:FriendMessage:u99",
+        [Image(file=src_img)],
+        extras={"origin": "live"},
+        temp_files=[src_img],
+    )
+    turn_preserved = preserve_event_media(raw_event)
+    turn_media_dir = str(turn_preserved._chat_dynamics_media_directory)
+    assert _path_is_dir(turn_media_dir)
+
+    clock = VirtualClock(initial_time=70_000.0)
+    plugin = _FakePlugin(clock, {"rhythm_distract_min_seconds": 60.0, "rhythm_distract_max_seconds": 60.0})
+    rt = plugin.make_session("aiocqhttp:FriendMessage:u99", scope_kind="private", group_id="")
+    node = _add_msg(rt, clock, "m_img_1", "u99", "看看这张图", is_wake=True)
+
+    captured_turns: List[Any] = []
+
+    class _CapturingEngine(PersonaEngine):
+        async def process(self, runtime, item):
+            captured_turns.append(item)
+            runtime.last_bot_node = runtime.dag.add_message("bot_reply_img", runtime.bot_id, "看到了！", clock.time())
+
+    plugin.context = SimpleNamespace()
+    plugin.decision_gate = SimpleNamespace(
+        media=SimpleNamespace(
+            evaluate=lambda **_kw: SimpleNamespace(
+                request_understand=True,
+                privacy_hit=False,
+                as_dict=lambda: {"request_understand": True, "privacy_hit": False},
+            )
+        )
+    )
+    plugin.persona_engine = _CapturingEngine(plugin)
+
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(7))
+    plugin.natural_rhythm = ctrl
+
+    dec = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="m_img_1",
+        user_id="u99",
+        text="看看这张图",
+        wake_kind="private",
+        directed=True,
+        private_direct=True,
+        availability="busy",
+        persona_fingerprint="p_anan",
+        node=node,
+        live_event=turn_preserved,
+        live_events=(turn_preserved,),
+    )
+    assert dec.defer is True
+
+    book = ctrl._book(rt.session_key)
+    retained = book.live_events["m_img_1"]
+    assert isinstance(retained, tuple) and len(retained) == 1
+    catchup_dir = str(retained[0]._chat_dynamics_media_directory)
+    assert _path_is_dir(catchup_dir)
+    assert catchup_dir != turn_media_dir
+
+    # Now both the platform temp file AND the original turn's preserved copy are deleted/released.
+    _unlink_file(src_img)
+    release_event_media(turn_preserved)
+    assert not _path_exists(src_img)
+    assert not _path_exists(turn_media_dir)
+    # The catch-up clone's independent copy must STILL exist and be readable!
+    assert _path_is_dir(catchup_dir)
+    retained_path = str(retained[0].message_obj.message[0].file)
+    assert _path_is_file(retained_path)
+    assert _read_bytes(retained_path) == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+
+    # When catch-up fires later, PersonaEngine receives the preserved media and then releases it.
+    await clock.advance(185.0)
+    ctrl.on_availability_changed(rt, "available")
+    sent = await ctrl.run_catchup(rt)
+    assert sent == 1
+    assert len(captured_turns) == 1
+    model_turn = captured_turns[0]
+    assert model_turn.context.messages[0].attachments == ("image",)
+    assert "m_img_1" in model_turn.context.visible_node_ids
+    assert str(model_turn.events[0].message_obj.message[0].file) == retained_path
+    assert rt.request_media_understand is True
+    # After catch-up finishes, the independent media directory is released and removed from disk.
+    assert "m_img_1" not in book.live_events
+    assert not _path_exists(catchup_dir)
+
+
+@pytest.mark.asyncio
+async def test_catchup_media_released_on_recall_stop_reset_persona_switch_eviction_and_shutdown(tmp_path):
+    """Preserved catch-up media copies must be cleaned up on every cancellation, eviction, and stop path."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class Image:
+        file: str
+
+    @dataclass
+    class MsgObj:
+        message: list
+
+    async def _noop_send(_chain):
+        return None
+
+    class _FakeMediaEvent:
+        def __init__(self, umo: str, components: list):
+            self.unified_msg_origin = umo
+            self.message_obj = MsgObj(message=components)
+            self._extras = {}
+            self.send = _noop_send
+
+    def _make_media_event(name: str):
+        p = str(tmp_path / f"{name}.png")
+        _write_bytes(p, b"img:" + name.encode("utf-8"))
+        return _FakeMediaEvent("aiocqhttp:GroupMessage:g_rel", [Image(file=p)])
+
+    clock = VirtualClock(initial_time=80_000.0)
+    plugin = _FakePlugin(clock, {"rhythm_distract_min_seconds": 60.0, "rhythm_distract_max_seconds": 60.0})
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(11))
+    ctrl.MAX_PENDING_ITEMS = 2
+    rt = plugin.make_session("aiocqhttp:GroupMessage:g_rel", group_id="g_rel")
+
+    def _defer(mid: str, uid: str = "u1", fp: str = "p1") -> str:
+        n = _add_msg(rt, clock, mid, uid, f"msg {mid}", is_wake=True)
+        ev = _make_media_event(mid)
+        dec = ctrl.evaluate_ingress_pacing(
+            rt,
+            msg_id=mid,
+            user_id=uid,
+            text=f"msg {mid}",
+            wake_kind="at",
+            directed=True,
+            availability="busy",
+            persona_fingerprint=fp,
+            node=n,
+            live_event=ev,
+        )
+        assert dec.defer is True
+        book = ctrl._book(rt.session_key)
+        return str(book.live_events[mid][0]._chat_dynamics_media_directory)
+
+    # 1) Recall cancels and releases media
+    dir_recall = _defer("m_recall", uid="u1")
+    assert _path_is_dir(dir_recall)
+    assert ctrl.on_message_recalled(rt.session_key, "m_recall", runtime=rt) is True
+    assert not _path_exists(dir_recall)
+
+    # 2) Member stop cancels and releases media
+    dir_stop = _defer("m_stop", uid="u2")
+    assert _path_is_dir(dir_stop)
+    ctrl.on_member_stopped(rt.session_key, "u2")
+    assert not _path_exists(dir_stop)
+
+    # 3) Capacity eviction (MAX_PENDING_ITEMS = 2) releases evicted oldest item's media
+    dir_evict_1 = _defer("m_ev1", uid="u3")
+    dir_evict_2 = _defer("m_ev2", uid="u3")
+    assert _path_is_dir(dir_evict_1) and _path_is_dir(dir_evict_2)
+    dir_evict_3 = _defer("m_ev3", uid="u3")
+    assert not _path_exists(dir_evict_1)
+    assert _path_is_dir(dir_evict_2) and _path_is_dir(dir_evict_3)
+
+    # 4) Persona switch clears pending debt and releases all retained media
+    dir_switch = _defer("m_p2", uid="u3", fp="p2")
+    assert not _path_exists(dir_evict_2)
+    assert not _path_exists(dir_evict_3)
+    assert _path_is_dir(dir_switch)
+
+    # 5) Session reset releases retained media
+    ctrl.reset_session(rt.session_key)
+    assert not _path_exists(dir_switch)
+
+    # 6) Controller stop() releases all retained media across remaining books
+    dir_shutdown = _defer("m_shut", uid="u4", fp="p2")
+    assert _path_is_dir(dir_shutdown)
+    await ctrl.stop()
+    assert not _path_exists(dir_shutdown)
+
+

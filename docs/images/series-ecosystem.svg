@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 575" width="1120" height="575" role="img" aria-label="群间系列 · Chat Dynamics Series 生态协同全景">
+  <defs>
+    <linearGradient id="hdrGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#312E81"/>
+      <stop offset="55%" stop-color="#4338CA"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="coreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EEF2FF"/>
+      <stop offset="100%" stop-color="#E0E7FF"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-4%" y="-6%" width="108%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#6366F1"/>
+    </marker>
+    <marker id="arrowMuted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#64748B"/>
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#059669"/>
+    </marker>
+    <style>
+      .t-title { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 21px; font-weight: 700; fill: #FFFFFF; }
+      .t-sub { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12.5px; font-weight: 400; fill: #E0E7FF; }
+      .t-badge { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 10.5px; font-weight: 700; fill: #E0E7FF; letter-spacing: 0.8px; }
+      .c-title { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 14.5px; font-weight: 700; fill: #0F172A; }
+      .c-sub { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 11px; font-weight: 600; fill: #64748B; }
+      .c-body { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12px; fill: #475569; }
+      .c-chip { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 11px; font-weight: 600; }
+      .c-num { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 11.5px; font-weight: 700; fill: #FFFFFF; }
+      .c-sec { font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
+    </style>
+  </defs>
+  <rect x="0.5" y="0.5" width="1119" height="574" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+  <path d="M 16 1 L 1104 1 Q 1119 1 1119 16 L 1119 76 L 1 76 L 1 16 Q 1 1 16 1 Z" fill="url(#hdrGrad)"/>
+  <text x="28" y="34" class="t-title">群间系列 · Chat Dynamics Series 生态协同全景</text>
+  <text x="28" y="57" class="t-sub">1 个核心调度引擎 + 7 个按需选装伴生插件 · 公开注册表发现 · 零数据库互抄 · 统一发言权与 Series Panel v2</text>
+  <rect x="912" y="22" width="180" height="26" rx="13" fill="#FFFFFF" fill-opacity="0.14" stroke="#FFFFFF" stroke-opacity="0.28"/>
+  <text x="1002" y="39" text-anchor="middle" class="t-badge">8-PLUGIN ECOSYSTEM</text>
+
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="98" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.4"/>
+    <rect x="28" y="98" width="7" height="100" rx="3.5" fill="#0369A1"/>
+    <rect x="46" y="108" width="300" height="24" rx="6" fill="#F0F9FF"/>
+    <text x="54" y="124" class="c-title" fill="#0369A1">群间世界 · Dynamics World</text>
+    <text x="48" y="148" class="c-sub">astrbot_plugin_dynamics_world</text>
+    <text x="48" y="167" class="c-body">角色卡、世界书、虚拟/现实双地图与天气</text>
+    <text x="48" y="185" class="c-body">自主持续生活、创作项目与 3D 实况小屋</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="212" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#7DD3FC" stroke-width="1.4"/>
+    <rect x="28" y="212" width="7" height="100" rx="3.5" fill="#0369A1"/>
+    <rect x="46" y="222" width="300" height="24" rx="6" fill="#F0F9FF"/>
+    <text x="54" y="238" class="c-title" fill="#0369A1">群间见闻 · Dynamics Horizons</text>
+    <text x="48" y="262" class="c-sub">astrbot_plugin_dynamics_horizons</text>
+    <text x="48" y="281" class="c-body">角色隔离信息源（B站/书架/RSS/剪报）</text>
+    <text x="48" y="299" class="c-body">空闲自主精读、独立审查与分群待讨论话题</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="326" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#C4B5FD" stroke-width="1.4"/>
+    <rect x="28" y="326" width="7" height="100" rx="3.5" fill="#6D28D9"/>
+    <rect x="46" y="336" width="300" height="24" rx="6" fill="#F5F3FF"/>
+    <text x="54" y="352" class="c-title" fill="#6D28D9">群间学习 · Dynamics Learning</text>
+    <text x="48" y="376" class="c-sub">astrbot_plugin_dynamics_learning</text>
+    <text x="48" y="395" class="c-body">群友原话样例、习惯统计、黑话好感与图谱</text>
+    <text x="48" y="413" class="c-body">严守固定性格红线，独立审查并支持回滚</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="28" y="440" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#C4B5FD" stroke-width="1.4"/>
+    <rect x="28" y="440" width="7" height="100" rx="3.5" fill="#6D28D9"/>
+    <rect x="46" y="450" width="300" height="24" rx="6" fill="#F5F3FF"/>
+    <text x="54" y="466" class="c-title" fill="#6D28D9">群间视觉 · Visual Media</text>
+    <text x="48" y="490" class="c-sub">astrbot_plugin_visual_media</text>
+    <text x="48" y="509" class="c-body">表情包收集检索、多模态生图改图与角色档案</text>
+    <text x="48" y="527" class="c-body">支持独立运行，也可联合群间与世界出图</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="762" y="98" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#6EE7B7" stroke-width="1.4"/>
+    <rect x="762" y="98" width="7" height="100" rx="3.5" fill="#047857"/>
+    <rect x="780" y="108" width="300" height="24" rx="6" fill="#ECFDF5"/>
+    <text x="788" y="124" class="c-title" fill="#047857">群间记忆 · Dynamics Memory</text>
+    <text x="782" y="148" class="c-sub">astrbot_plugin_dynamics_memory</text>
+    <text x="782" y="167" class="c-body">长期记忆生命周期、BM25+向量+2D/3D 图谱</text>
+    <text x="782" y="185" class="c-body">原文证据溯源、幂等去重与来源冲突审查</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="762" y="212" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#6EE7B7" stroke-width="1.4"/>
+    <rect x="762" y="212" width="7" height="100" rx="3.5" fill="#047857"/>
+    <rect x="780" y="222" width="300" height="24" rx="6" fill="#ECFDF5"/>
+    <text x="788" y="238" class="c-title" fill="#047857">群间史记 · Dynamics Chronicle</text>
+    <text x="782" y="262" class="c-sub">astrbot_plugin_group_chronicle</text>
+    <text x="782" y="281" class="c-body">长期群史卷册、小记→小传→列传贡献体系</text>
+    <text x="782" y="299" class="c-body">原文依据的群文化沿革、梗溯源与隐私隐藏</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="762" y="326" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1.4"/>
+    <rect x="762" y="326" width="7" height="100" rx="3.5" fill="#B45309"/>
+    <rect x="780" y="336" width="300" height="24" rx="6" fill="#FFFBEB"/>
+    <text x="788" y="352" class="c-title" fill="#B45309">群间游戏 · Dynamics Games</text>
+    <text x="782" y="376" class="c-sub">astrbot_plugin_dynamics_games</text>
+    <text x="782" y="395" class="c-body">共读/约局/接龙/挑战/共创全生命周期协作</text>
+    <text x="782" y="413" class="c-body">整合真心话、21点、今日小猪、吃什么引擎</text>
+  </g>
+  <g filter="url(#cardShadow)">
+    <rect x="762" y="440" width="330" height="100" rx="11" fill="#FFFFFF" stroke="#FDA4AF" stroke-width="1.4"/>
+    <rect x="762" y="440" width="7" height="100" rx="3.5" fill="#BE123C"/>
+    <rect x="780" y="450" width="300" height="24" rx="6" fill="#FFF1F2"/>
+    <text x="788" y="466" class="c-title" fill="#BE123C">AstrBot 宿主与安全边界</text>
+    <text x="782" y="490" class="c-sub">Host Agent · Models · Autonomous Blocking</text>
+    <text x="782" y="509" class="c-body">统一托管模型密钥、主 Agent 人格与原生工具</text>
+    <text x="782" y="527" class="c-body">自主屏蔽提供成员静默过滤与发送租约校验</text>
+  </g>
+  <g filter="url(#cardShadow)">    <rect x="402" y="114" width="316" height="290" rx="16" fill="url(#coreGrad)" stroke="#4338CA" stroke-width="2"/>    <rect x="420" y="132" width="280" height="34" rx="9" fill="#4338CA"/>    <text x="560" y="154" text-anchor="middle" style="font-family:'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;font-size:15px;font-weight:700;fill:#FFFFFF;">群间 · Chat Dynamics（核心主控）</text>    <text x="560" y="186" text-anchor="middle" class="c-sub">astrbot_plugin_chat_dynamics</text>    <line x1="422" y1="200" x2="698" y2="200" stroke="#A5B4FC" stroke-width="1"/>    <text x="426" y="224" class="c-body">· 统一接管防抖聚合、话题路由与参与决策</text>    <text x="426" y="247" class="c-body">· 唯一发言权与自然段节奏交付总控</text>    <text x="426" y="270" class="c-body">· 通过宿主公开注册表发现伙伴，零库互读</text>    <text x="426" y="293" class="c-body">· 只读组合多插件投影，送达后分发回执</text>    <text x="426" y="316" class="c-body">· 任一伙伴缺失均优雅降级，支持按需选装</text>    <rect x="420" y="338" width="280" height="48" rx="10" fill="#FFFFFF" stroke="#A5B4FC"/>    <text x="560" y="358" text-anchor="middle" class="c-chip" fill="#4338CA">能力协议总线 · SeriesHub</text>    <text x="560" y="376" text-anchor="middle" class="c-sub">world v1 · memory v1 · social · horizons · visual</text>  </g>
+  <g filter="url(#cardShadow)">    <rect x="402" y="424" width="316" height="116" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.4"/>    <text x="560" y="450" text-anchor="middle" class="c-title" fill="#1E293B">Series Panel v2 统一控制台</text>    <text x="422" y="474" class="c-body">· 单行双层导航栏 + 2×4 实时状态矩阵</text>    <text x="422" y="495" class="c-body">· 跨页会话（UMO）同步与健康冲突提示</text>    <text x="422" y="516" class="c-body">· 全局 Ctrl+K / ⌘K 联邦搜索与日夜主题</text>  </g>
+  <path d="M 358 148 C 380 148, 380 174, 398 174" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 358 262 C 380 262, 380 232, 398 232" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 358 376 C 380 376, 380 290, 398 290" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 358 490 C 380 490, 380 348, 398 348" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 722 174 C 742 174, 740 148, 758 148" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 722 232 C 742 232, 740 262, 758 262" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 722 290 C 742 290, 740 376, 758 376" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+  <path d="M 722 348 C 742 348, 740 490, 758 490" fill="none" stroke="#6366F1" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrowMuted)"/>
+</svg>

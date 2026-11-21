@@ -1,6 +1,7 @@
 import {msg, tr, setText} from "../shared/series-ui.js";
 import { friendlyError } from "./errors.js";
 import { renderDecisionLayer, renderIntegrations } from "./integrations.js";
+import { mountGroupMatrix } from "./matrix.js";
 import { mountWorkspace } from "./workspace.js";
 
 const PLUGIN = "astrbot_plugin_chat_dynamics";
@@ -1177,9 +1178,20 @@ async function resetSelected() {
 
 async function boot() {
   mountWorkspace();
-  els.pageTitle.textContent = t("pages.console.title", "群聊动态控制台");
-  els.pageDesc.textContent = t("pages.console.desc", "按群聊会话查看氛围、冷却和对话记录，并管理当前会话。");
+  els.pageTitle.textContent = t("pages.console.title", "对话主控");
+  if (els.pageDesc) {
+    els.pageDesc.textContent = t("pages.console.desc", "实时观测群聊对话节奏、冷却状态，并在「群聊总控矩阵」一屏管理全系列 8 插件的群聊接管。");
+  }
   await wirePageNav("console");
+  const groupMatrix = mountGroupMatrix({
+    apiGet,
+    apiPost,
+    onOpenScope: (umo) => {
+      const sessionsTab = document.getElementById("tab-sessions");
+      if (sessionsTab) sessionsTab.click();
+      if (umo) void selectSession(umo);
+    },
+  });
   if (bridge && typeof bridge.ready === "function") {
     try {
       await withTimeout(bridge.ready());
@@ -1190,13 +1202,34 @@ async function boot() {
   } else {
     setLink(false, msg("直连 / 本地预览"));
   }
-  els.clock.textContent = fmtTime(new Date());
-  setInterval(() => {
+  if (els.clock) {
     els.clock.textContent = fmtTime(new Date());
-  }, 1000);
+  }
+
+  window.addEventListener("dynamics-cmdk-deeplink", (event) => {
+    const item = event?.detail;
+    const dl = item && typeof item.deep_link === "object" ? item.deep_link : null;
+    if (!dl) return;
+    if (dl.tab === "matrix") {
+      document.getElementById("tab-matrix")?.click();
+    } else if (dl.section === "memory" || dl.tab === "policy") {
+      document.getElementById("tab-policy")?.click();
+      if (dl.scope && els.notebookUmo) {
+        els.notebookUmo.value = String(dl.scope);
+        void loadNotebookLite();
+      }
+    } else if (dl.tab && document.getElementById(`tab-${dl.tab}`)) {
+      document.getElementById(`tab-${dl.tab}`)?.click();
+      if (dl.scope && dl.tab === "sessions") void selectSession(String(dl.scope));
+    } else if (dl.scope) {
+      document.getElementById("tab-sessions")?.click();
+      void selectSession(String(dl.scope));
+    }
+  });
 
   els.btnRefresh.addEventListener("click", async () => {
     await refresh();
+    if (groupMatrix.isLoaded()) void groupMatrix.load({ quiet: true });
     startPolling();
   });
   els.btnCool.addEventListener("click", coolSelected);

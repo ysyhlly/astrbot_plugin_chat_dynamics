@@ -22,8 +22,16 @@ BACKEND = [
     "test_panel_persistence_lifecycle", "test_native_delivery_guard", "test_runtime_persistence",
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",
     "test_decision_gate_clock", "test_release_contract", "test_cache_optimization",
+    "test_natural_rhythm", "test_series_hub_v2",
 ]
-BROWSER = ["test_systemone_settings_browser", "test_simplified_pages_browser", "test_ui_theme_browser", "test_replay_gantt_browser", "test_annotation_concurrency_browser"]
+BROWSER = [
+    "test_systemone_settings_browser",
+    "test_simplified_pages_browser",
+    "test_ui_theme_browser",
+    "test_replay_gantt_browser",
+    "test_annotation_concurrency_browser",
+    "test_series_hub_browser",
+]
 
 
 def main():
