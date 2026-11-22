@@ -15,6 +15,9 @@ SERIES_WEB_FILES = (
     "series-ui.css",
     "series-ui.js",
     "series-messages.js",
+    "series-messages-en.js",
+    "series-messages-ja.js",
+    "series-messages-ru.js",
     "series-panels.js",
     "series-workspace.js",
 )
@@ -308,10 +311,14 @@ def check_workspace(
                 )
 
     ui_css = web_source_dir / "series-ui.css"
-    if ui_css.is_file() and "@import" in ui_css.read_text(
-        encoding="utf-8", errors="ignore"
-    ):
-        errors.append("series-ui.css must not contain render-blocking @import")
+    if ui_css.is_file():
+        stripped_css = re.sub(
+            r"/\*[\s\S]*?\*/",
+            "",
+            ui_css.read_text(encoding="utf-8", errors="ignore"),
+        )
+        if "@import" in stripped_css:
+            errors.append("series-ui.css must not contain render-blocking @import")
 
     return errors
 

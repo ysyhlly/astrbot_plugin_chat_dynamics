@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import copy
 import hashlib
 import inspect
 import json
@@ -38,9 +39,65 @@ _MAX_SCOPE_LEN = 256
 _MAX_SEARCH_LIMIT = 50
 _PER_PLUGIN_STATUS_TIMEOUT = 0.25
 _SEARCH_EXECUTOR_WORKERS = 8
+_MATRIX_CACHE_TTL_SECONDS = 3.0
+_MATRIX_CACHE_MAX_ENTRIES = 64
 
 _SEARCH_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _SEARCH_EXECUTOR_LOCK = threading.Lock()
+_MATRIX_CACHE_LOCK = threading.Lock()
+_MATRIX_CACHE: dict[tuple[int, str, str, str], tuple[float, dict[str, Any]]] = {}
+_PRESENCE_SENTINEL_KEY = ("__series_matrix_cache_sentinel__", 0)
+
+
+def invalidate_series_matrix_cache(plugin: Any = None) -> None:
+    """Drop cached build_series_matrix() snapshots for one plugin or all plugins."""
+    with _MATRIX_CACHE_LOCK:
+        if plugin is None:
+            _MATRIX_CACHE.clear()
+        else:
+            pid = id(plugin)
+            for key in [k for k in _MATRIX_CACHE if k[0] == pid]:
+                _MATRIX_CACHE.pop(key, None)
+
+
+def _install_presence_invalidation_hook() -> None:
+    """Keep the 3s matrix cache coherent whenever series_panels.invalidate_presence_cache() runs."""
+    orig = getattr(series_panels, "invalidate_presence_cache", None)
+    if not callable(orig) or getattr(orig, "_series_matrix_hooked", False):
+        return
+
+    def _wrapped(plugin_id: str | None = None) -> None:
+        orig(plugin_id)
+        invalidate_series_matrix_cache()
+
+    _wrapped._series_matrix_hooked = True  # type: ignore[attr-defined]
+    series_panels.invalidate_presence_cache = _wrapped  # type: ignore[assignment]
+
+
+_install_presence_invalidation_hook()
+
+
+def _presence_sentinel_alive() -> bool:
+    cache = getattr(series_panels, "_SUMMARY_CACHE", None)
+    lock = getattr(series_panels, "_SUMMARY_CACHE_LOCK", None)
+    if not isinstance(cache, dict):
+        return True
+    if lock is not None:
+        with lock:
+            return _PRESENCE_SENTINEL_KEY in cache
+    return _PRESENCE_SENTINEL_KEY in cache
+
+
+def _mark_presence_sentinel() -> None:
+    cache = getattr(series_panels, "_SUMMARY_CACHE", None)
+    lock = getattr(series_panels, "_SUMMARY_CACHE_LOCK", None)
+    if not isinstance(cache, dict):
+        return
+    if lock is not None:
+        with lock:
+            cache[_PRESENCE_SENTINEL_KEY] = (float("inf"), None)
+    else:
+        cache[_PRESENCE_SENTINEL_KEY] = (float("inf"), None)
 
 
 def _get_search_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -217,10 +274,31 @@ def chat_dynamics_series_summary(plugin: Any) -> dict[str, Any]:
     }
 
 
+def _is_umo_excluded_by_core(plugin: Any, umo: str) -> bool:
+    clean = str(umo or "").strip()
+    group_id = _extract_group_id(plugin, clean)
+    exclude_set = {
+        str(x).strip()
+        for x in (getattr(plugin, "exclude_groups", ()) or ())
+        if str(x).strip()
+    }
+    if not exclude_set:
+        cfg = getattr(plugin, "_runtime_config", None)
+        exclude_set = {
+            str(x).strip()
+            for x in (getattr(cfg, "exclude_groups", ()) or ())
+            if str(x).strip()
+        }
+    if not exclude_set:
+        return False
+    return bool((clean and clean in exclude_set) or (group_id and group_id in exclude_set))
+
+
 def chat_dynamics_scope_status(plugin: Any, umo: str) -> dict[str, Any]:
     """Read-only per-UMO status hook for Chat Dynamics."""
     clean = str(umo or "").strip()
     takeover_enabled, group_id = _takeover_state_for_umo(plugin, clean)
+    excluded_by_core = _is_umo_excluded_by_core(plugin, clean)
     cooling = False
     arbiter = getattr(plugin, "arbiter", None)
     time_service = getattr(plugin, "time_service", None)
@@ -239,6 +317,8 @@ def chat_dynamics_scope_status(plugin: Any, umo: str) -> dict[str, Any]:
     activity = int(counts.get(clean) or counts.get(group_id) or 0)
     if not bool(getattr(plugin, "enabled", True)):
         summary = "主控停用"
+    elif excluded_by_core:
+        summary = "主控排除"
     elif cooling:
         summary = "冷却中"
     elif takeover_enabled:
@@ -248,6 +328,7 @@ def chat_dynamics_scope_status(plugin: Any, umo: str) -> dict[str, Any]:
     return {
         "enabled": takeover_enabled,
         "supported": True,
+        "excluded_by_core": excluded_by_core,
         "persona_id": _default_persona_id(plugin),
         "activity_today": activity,
         "summary": summary,
@@ -317,13 +398,15 @@ async def chat_dynamics_set_scope_enabled(
             plugin.config["exclude_groups"] = updates["exclude_groups"]
 
     series_panels.invalidate_presence_cache(CHAT_DYNAMICS_ID)
+    invalidate_series_matrix_cache(plugin)
     new_version = chat_dynamics_scope_version(plugin)
     actual_enabled, _ = _takeover_state_for_umo(plugin, clean)
+    excluded_now = _is_umo_excluded_by_core(plugin, clean)
     return {
         "ok": True,
         "enabled": actual_enabled,
         "version": new_version,
-        "summary": "开启" if actual_enabled else "暂停",
+        "summary": "开启" if actual_enabled else ("主控排除" if excluded_now else "暂停"),
     }
 
 
@@ -517,29 +600,125 @@ def _matrix_digest(groups: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
+async def _fetch_matrix_cell(
+    plugin: Any,
+    umo: str,
+    pmeta: dict[str, Any],
+    owner: Any,
+    *,
+    excluded_by_core: bool,
+) -> tuple[str, dict[str, Any], str]:
+    pid = pmeta["id"]
+    state = pmeta["state"]
+    base_cell: dict[str, Any] = {
+        "enabled": None,
+        "supported": False,
+        "excluded_by_core": excluded_by_core,
+        "state": state,
+        "summary": (
+            "未安装"
+            if state == "missing"
+            else "已停用"
+            if state in {"disabled", "unloaded"}
+            else "只读"
+        ),
+        "activity_today": None,
+        "persona_id": "",
+        "version": "",
+        "can_open": pmeta["can_open"],
+        "page": pmeta["page"],
+    }
+    cell_persona = ""
+    if owner is not None and state not in {"missing", "disabled", "unloaded", "conflict"}:
+        hook = getattr(owner, "get_series_scope_status", None)
+        if callable(hook):
+            try:
+                raw = await _invoke_hook(hook, umo, timeout=_PER_PLUGIN_STATUS_TIMEOUT)
+                sanitized = _sanitize_scope_status(
+                    raw,
+                    default_supported=callable(
+                        getattr(owner, "set_series_scope_enabled", None)
+                    ),
+                )
+                if not callable(getattr(owner, "set_series_scope_enabled", None)):
+                    sanitized["supported"] = False
+                base_cell.update(sanitized)
+                cell_persona = sanitized["persona_id"]
+            except Exception:
+                base_cell["summary"] = "状态异常"
+                base_cell["state"] = "error"
+        elif pid == CHAT_DYNAMICS_ID:
+            sanitized = _sanitize_scope_status(
+                chat_dynamics_scope_status(plugin, umo),
+                default_supported=True,
+            )
+            base_cell.update(sanitized)
+            cell_persona = sanitized["persona_id"]
+
+    if excluded_by_core and base_cell["state"] not in {
+        "missing",
+        "disabled",
+        "unloaded",
+        "conflict",
+        "error",
+    }:
+        cur_summary = str(base_cell.get("summary") or "").strip()
+        if "排除" not in cur_summary:
+            if cur_summary in {"", "开启", "暂停", "只读", "运行中"}:
+                base_cell["summary"] = "主控排除"
+            else:
+                base_cell["summary"] = f"{cur_summary} · 主控排除"[:80]
+
+    return pid, base_cell, cell_persona
+
+
 async def build_series_matrix(
     plugin: Any,
     *,
     scope: str = "",
     persona: str = "",
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """Aggregate all authorized/known groups across all 8 core series plugins."""
+    """Aggregate all authorized/known groups across all 8 core series plugins concurrently."""
+    clean_scope = str(scope or "").strip()
+    clean_persona_filter = str(persona or "").strip().lower()
+    scope_ver = chat_dynamics_scope_version(plugin)
+    cache_key = (id(plugin), clean_scope, clean_persona_filter, scope_ver)
+    now_mono = time.monotonic()
+
+    if not force_refresh and _MATRIX_CACHE_TTL_SECONDS > 0 and _presence_sentinel_alive():
+        with _MATRIX_CACHE_LOCK:
+            cached = _MATRIX_CACHE.get(cache_key)
+            if cached is not None and cached[0] > now_mono:
+                return copy.deepcopy(cached[1])
+
     context = getattr(plugin, "context", None)
-    pres = series_panels.presence(context, CHAT_DYNAMICS_ID)
-    presence_by_id = {p["id"]: p for p in pres.get("plugins") or [] if isinstance(p, dict) and p.get("id")}
+    pres = series_panels.presence(
+        context, CHAT_DYNAMICS_ID, force_refresh=force_refresh
+    )
+    presence_by_id = {
+        p["id"]: p for p in pres.get("plugins") or [] if isinstance(p, dict) and p.get("id")
+    }
 
     owners: dict[str, Any] = {CHAT_DYNAMICS_ID: plugin}
     plugins_meta: list[dict[str, Any]] = []
     for pid, label, mark, page in CORE_SERIES_PLUGINS:
         pinfo = presence_by_id.get(pid) or {}
-        owner = plugin if pid == CHAT_DYNAMICS_ID else series_panels.find_plugin_owner(context, pid)
+        owner = (
+            plugin
+            if pid == CHAT_DYNAMICS_ID
+            else series_panels.find_plugin_owner(context, pid)
+        )
         if owner is not None:
             owners[pid] = owner
-        state = str(pinfo.get("state") or ("ready" if pid == CHAT_DYNAMICS_ID else "missing"))
+        state = str(
+            pinfo.get("state") or ("ready" if pid == CHAT_DYNAMICS_ID else "missing")
+        )
         if pid == CHAT_DYNAMICS_ID and state in {"missing", "unloaded"}:
             state = "ready" if bool(getattr(plugin, "enabled", True)) else "inactive"
         supports_toggle = bool(
-            owner is not None and callable(getattr(owner, "set_series_scope_enabled", None))
+            owner is not None
+            and callable(getattr(owner, "set_series_scope_enabled", None))
         )
         plugins_meta.append(
             {
@@ -554,68 +733,57 @@ async def build_series_matrix(
             }
         )
 
-    umos = _collect_matrix_umos(plugin, scope_filter=scope)
+    umos = _collect_matrix_umos(plugin, scope_filter=clean_scope)
     default_persona = _default_persona_id(plugin)
-    clean_persona_filter = str(persona or "").strip().lower()
-    groups_out: list[dict[str, Any]] = []
 
-    for umo in umos:
-        cells: dict[str, dict[str, Any]] = {}
+    # Launch all (umo, plugin) cell fetches concurrently while preserving per-cell fault isolation.
+    cell_tasks = []
+    cell_coords: list[tuple[int, str]] = []
+    excluded_flags = [_is_umo_excluded_by_core(plugin, umo) for umo in umos]
+    for row_idx, umo in enumerate(umos):
+        excluded = excluded_flags[row_idx]
+        for pmeta in plugins_meta:
+            cell_coords.append((row_idx, pmeta["id"]))
+            cell_tasks.append(
+                _fetch_matrix_cell(
+                    plugin,
+                    umo,
+                    pmeta,
+                    owners.get(pmeta["id"]),
+                    excluded_by_core=excluded,
+                )
+            )
+
+    cell_results = await asyncio.gather(*cell_tasks) if cell_tasks else []
+    row_cells: list[dict[str, dict[str, Any]]] = [{} for _ in umos]
+    row_personas: list[list[tuple[str, str]]] = [[] for _ in umos]
+    for (row_idx, _pid), (pid, cell, cell_persona) in zip(cell_coords, cell_results):
+        row_cells[row_idx][pid] = cell
+        if cell_persona:
+            row_personas[row_idx].append((pid, cell_persona))
+
+    groups_out: list[dict[str, Any]] = []
+    for row_idx, umo in enumerate(umos):
+        cells = row_cells[row_idx]
         specific_sibling_persona = ""
         sibling_persona = ""
         chat_cell_persona = ""
-        for pmeta in plugins_meta:
-            pid = pmeta["id"]
-            owner = owners.get(pid)
-            state = pmeta["state"]
-            base_cell = {
-                "enabled": None,
-                "supported": False,
-                "state": state,
-                "summary": "未安装" if state == "missing" else "已停用" if state in {"disabled", "unloaded"} else "只读",
-                "activity_today": None,
-                "persona_id": "",
-                "version": "",
-                "can_open": pmeta["can_open"],
-                "page": pmeta["page"],
-            }
-            if owner is not None and state not in {"missing", "disabled", "unloaded", "conflict"}:
-                hook = getattr(owner, "get_series_scope_status", None)
-                if callable(hook):
-                    try:
-                        raw = await _invoke_hook(hook, umo, timeout=_PER_PLUGIN_STATUS_TIMEOUT)
-                        sanitized = _sanitize_scope_status(
-                            raw,
-                            default_supported=callable(getattr(owner, "set_series_scope_enabled", None)),
-                        )
-                        if not callable(getattr(owner, "set_series_scope_enabled", None)):
-                            sanitized["supported"] = False
-                        base_cell.update(sanitized)
-                        cell_persona = sanitized["persona_id"]
-                        if cell_persona:
-                            if pid == CHAT_DYNAMICS_ID:
-                                chat_cell_persona = cell_persona
-                            else:
-                                if not sibling_persona:
-                                    sibling_persona = cell_persona
-                                if cell_persona != default_persona and not specific_sibling_persona:
-                                    specific_sibling_persona = cell_persona
-                    except Exception:
-                        base_cell["summary"] = "状态异常"
-                        base_cell["state"] = "error"
-                elif pid == CHAT_DYNAMICS_ID:
-                    sanitized = _sanitize_scope_status(
-                        chat_dynamics_scope_status(plugin, umo),
-                        default_supported=True,
-                    )
-                    base_cell.update(sanitized)
-                    if sanitized["persona_id"]:
-                        chat_cell_persona = sanitized["persona_id"]
-            cells[pid] = base_cell
+        for pid, cell_persona in row_personas[row_idx]:
+            if pid == CHAT_DYNAMICS_ID:
+                chat_cell_persona = cell_persona
+            else:
+                if not sibling_persona:
+                    sibling_persona = cell_persona
+                if cell_persona != default_persona and not specific_sibling_persona:
+                    specific_sibling_persona = cell_persona
 
         row_persona = (
             specific_sibling_persona
-            or (chat_cell_persona if chat_cell_persona and chat_cell_persona != default_persona else "")
+            or (
+                chat_cell_persona
+                if chat_cell_persona and chat_cell_persona != default_persona
+                else ""
+            )
             or sibling_persona
             or chat_cell_persona
             or default_persona
@@ -637,6 +805,7 @@ async def build_series_matrix(
                 "umo": umo,
                 "group_id": _extract_group_id(plugin, umo),
                 "label": _format_group_label(plugin, umo),
+                "excluded_by_core": excluded_flags[row_idx],
                 "persona_id": row_persona,
                 "version": row_version,
                 "cells": cells,
@@ -644,12 +813,27 @@ async def build_series_matrix(
         )
 
     matrix_version = _matrix_digest(groups_out)
-    return {
+    result = {
         "version": matrix_version,
         "updated_at": _now_iso(),
         "plugins": plugins_meta,
         "groups": groups_out,
     }
+    if _MATRIX_CACHE_TTL_SECONDS > 0:
+        with _MATRIX_CACHE_LOCK:
+            now_store = time.monotonic()
+            if len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX_ENTRIES:
+                expired = [k for k, (exp, _v) in _MATRIX_CACHE.items() if exp <= now_store]
+                for k in expired:
+                    _MATRIX_CACHE.pop(k, None)
+                if len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX_ENTRIES:
+                    _MATRIX_CACHE.clear()
+            _MATRIX_CACHE[cache_key] = (
+                now_store + _MATRIX_CACHE_TTL_SECONDS,
+                copy.deepcopy(result),
+            )
+        _mark_presence_sentinel()
+    return result
 
 
 async def toggle_series_matrix(
@@ -673,7 +857,7 @@ async def toggle_series_matrix(
         return 400, {"message": "expected_version required"}
     expected_str = str(expected_version).strip()
 
-    snapshot = await build_series_matrix(plugin, scope=clean_umo)
+    snapshot = await build_series_matrix(plugin, scope=clean_umo, force_refresh=True)
     current_matrix_version = snapshot["version"]
     group_row = next((g for g in snapshot["groups"] if g["umo"] == clean_umo), None)
     cell = (group_row or {}).get("cells", {}).get(clean_pid) or {}
@@ -734,7 +918,8 @@ async def toggle_series_matrix(
         }
 
     series_panels.invalidate_presence_cache()
-    refreshed = await build_series_matrix(plugin, scope=clean_umo)
+    invalidate_series_matrix_cache(plugin)
+    refreshed = await build_series_matrix(plugin, scope=clean_umo, force_refresh=True)
     new_group = next((g for g in refreshed["groups"] if g["umo"] == clean_umo), None)
     new_cell = (new_group or {}).get("cells", {}).get(clean_pid) or {}
     new_enabled = raw.get("enabled") if isinstance(raw.get("enabled"), bool) else new_cell.get("enabled", enabled)
@@ -748,6 +933,203 @@ async def toggle_series_matrix(
         "version": new_version,
         "summary": new_summary,
         "matrix_version": refreshed["version"],
+    }
+
+
+async def batch_toggle_series_matrix(
+    plugin: Any,
+    *,
+    umo: str,
+    expected_version: Any = None,
+    states: dict[str, Any] | None = None,
+    template_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Concurrently apply a states map or template to one UMO across all installed plugins."""
+    clean_umo = str(umo or "").strip()
+    if not clean_umo or len(clean_umo) > _MAX_SCOPE_LEN:
+        return 400, {"message": "umo required"}
+
+    has_states = states is not None
+    has_template = template_id is not None and str(template_id).strip() != ""
+    if has_states == has_template:
+        return 400, {"message": "provide exactly one of states or template_id"}
+
+    resolved_template_id = ""
+    target_states: dict[str, bool] = {}
+    if has_template:
+        from .series_templates import SeriesTemplateStore
+
+        resolved_template_id = str(template_id or "").strip().lower()
+        store = getattr(plugin, "series_templates", None)
+        if store is None or not callable(getattr(store, "get", None)):
+            store = SeriesTemplateStore()
+        tpl = store.get(resolved_template_id)
+        if tpl is None:
+            return 404, {"message": f"未找到模板: {resolved_template_id}"}
+        target_states = {
+            pid: bool(val) for pid, val in (tpl.get("states") or {}).items()
+        }
+    else:
+        if not isinstance(states, dict) or not states:
+            return 400, {"message": "states must be a non-empty object"}
+        for pid, val in states.items():
+            clean_pid = str(pid or "").strip()
+            if clean_pid not in _CORE_PLUGIN_META:
+                return 400, {"message": f"unsupported plugin_id: {clean_pid}"}
+            if not isinstance(val, bool):
+                return 400, {"message": f"states[{clean_pid}] must be a boolean"}
+            target_states[clean_pid] = val
+
+    if expected_version is not None:
+        if isinstance(expected_version, bool) or not str(expected_version).strip():
+            return 400, {"message": "expected_version invalid"}
+
+    snapshot = await build_series_matrix(plugin, scope=clean_umo, force_refresh=True)
+    current_matrix_version = snapshot["version"]
+    group_row = next((g for g in snapshot["groups"] if g["umo"] == clean_umo), None)
+    row_version = str((group_row or {}).get("version") or "").strip()
+    if expected_version is not None:
+        expected_str = str(expected_version).strip()
+        valid_tokens = {tok for tok in (row_version, current_matrix_version) if tok}
+        if valid_tokens and expected_str not in valid_tokens:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "message": "状态已变更（版本冲突），请刷新后重试",
+                "version": row_version or current_matrix_version,
+                "matrix_version": current_matrix_version,
+            }
+
+    context = getattr(plugin, "context", None)
+    plugins_by_id = {p["id"]: p for p in snapshot.get("plugins") or []}
+    cells_by_id = (group_row or {}).get("cells") or {}
+
+    applied: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    async def _apply_one(pid: str, desired: bool) -> None:
+        pmeta = plugins_by_id.get(pid) or {}
+        state = str(pmeta.get("state") or "missing")
+        if state == "conflict":
+            skipped.append(
+                {"plugin_id": pid, "reason": "conflict", "message": "插件存在重复/冲突注册"}
+            )
+            return
+        if state in {"missing", "disabled", "unloaded"}:
+            reason = "disabled" if state == "disabled" else "uninstalled"
+            skipped.append(
+                {
+                    "plugin_id": pid,
+                    "reason": reason,
+                    "message": "插件已停用" if state == "disabled" else "未安装或未加载",
+                }
+            )
+            return
+
+        owner = (
+            plugin
+            if pid == CHAT_DYNAMICS_ID
+            else series_panels.find_plugin_owner(context, pid)
+        )
+        if owner is None:
+            skipped.append(
+                {"plugin_id": pid, "reason": "uninstalled", "message": "未安装或未加载"}
+            )
+            return
+        setter = getattr(owner, "set_series_scope_enabled", None)
+        if not callable(setter):
+            skipped.append(
+                {"plugin_id": pid, "reason": "readonly", "message": "该插件为只读状态"}
+            )
+            return
+
+        cell = cells_by_id.get(pid) or {}
+        cell_ver = str(cell.get("version") or "").strip() or None
+        try:
+            raw = await _invoke_hook(setter, clean_umo, desired, cell_ver, timeout=5.0)
+        except ValueError as exc:
+            if "conflict" in str(exc).lower() or "version" in str(exc).lower():
+                skipped.append(
+                    {"plugin_id": pid, "reason": "conflict", "message": "目标插件版本冲突"}
+                )
+            else:
+                failed.append(
+                    {"plugin_id": pid, "reason": "invalid", "message": str(exc)}
+                )
+            return
+        except asyncio.TimeoutError:
+            failed.append(
+                {"plugin_id": pid, "reason": "timeout", "message": "切换目标插件超时"}
+            )
+            return
+        except Exception as exc:
+            failed.append(
+                {
+                    "plugin_id": pid,
+                    "reason": type(exc).__name__,
+                    "message": f"切换失败 ({type(exc).__name__})",
+                }
+            )
+            return
+
+        if not isinstance(raw, dict):
+            failed.append(
+                {"plugin_id": pid, "reason": "invalid_response", "message": "返回结果无效"}
+            )
+            return
+        if raw.get("conflict") is True:
+            skipped.append(
+                {
+                    "plugin_id": pid,
+                    "reason": "conflict",
+                    "message": str(raw.get("summary") or "目标插件版本冲突"),
+                }
+            )
+            return
+        if raw.get("ok") is False:
+            failed.append(
+                {
+                    "plugin_id": pid,
+                    "reason": "rejected",
+                    "message": str(raw.get("summary") or raw.get("message") or "切换未生效"),
+                }
+            )
+            return
+
+        actual_enabled = (
+            raw.get("enabled") if isinstance(raw.get("enabled"), bool) else desired
+        )
+        applied.append(
+            {
+                "plugin_id": pid,
+                "enabled": actual_enabled,
+                "version": str(raw.get("version") or ""),
+                "summary": str(
+                    raw.get("summary") or ("开启" if actual_enabled else "暂停")
+                ),
+            }
+        )
+
+    ordered_pids = [
+        pid for pid, *_ in CORE_SERIES_PLUGINS if pid in target_states
+    ]
+    await asyncio.gather(*(_apply_one(pid, target_states[pid]) for pid in ordered_pids))
+
+    series_panels.invalidate_presence_cache()
+    invalidate_series_matrix_cache(plugin)
+    refreshed = await build_series_matrix(plugin, scope=clean_umo, force_refresh=True)
+    new_row = next((g for g in refreshed["groups"] if g["umo"] == clean_umo), None)
+
+    return 200, {
+        "ok": True,
+        "umo": clean_umo,
+        "template_id": resolved_template_id,
+        "applied": applied,
+        "skipped": skipped,
+        "failed": failed,
+        "matrix_version": refreshed["version"],
+        "row": new_row,
     }
 
 

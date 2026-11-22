@@ -2,6 +2,7 @@ import {msg, tr, setText} from "../shared/series-ui.js";
 import { friendlyError } from "./errors.js";
 import { renderDecisionLayer, renderIntegrations } from "./integrations.js";
 import { mountGroupMatrix } from "./matrix.js";
+import { mountSeriesTelemetry } from "./telemetry.js";
 import { mountWorkspace } from "./workspace.js";
 
 const PLUGIN = "astrbot_plugin_chat_dynamics";
@@ -1192,6 +1193,7 @@ async function boot() {
       if (umo) void selectSession(umo);
     },
   });
+  const seriesTelemetry = mountSeriesTelemetry({ apiGet });
   if (bridge && typeof bridge.ready === "function") {
     try {
       await withTimeout(bridge.ready());
@@ -1230,6 +1232,7 @@ async function boot() {
   els.btnRefresh.addEventListener("click", async () => {
     await refresh();
     if (groupMatrix.isLoaded()) void groupMatrix.load({ quiet: true });
+    if (seriesTelemetry.isLoaded()) void seriesTelemetry.load({ quiet: true });
     startPolling();
   });
   els.btnCool.addEventListener("click", coolSelected);

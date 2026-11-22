@@ -23,6 +23,8 @@ BACKEND = [
     "test_graph", "test_debounce", "test_bot_identity", "test_media_gate",
     "test_decision_gate_clock", "test_release_contract", "test_cache_optimization",
     "test_natural_rhythm", "test_series_hub_v2",
+    "test_series_telemetry_and_budget",
+    "test_series_matrix_batch_templates_and_shared_config",
 ]
 BROWSER = [
     "test_systemone_settings_browser",

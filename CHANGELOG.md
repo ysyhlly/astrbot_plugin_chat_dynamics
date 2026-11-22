@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.19.0-rc.9 — 2026-11-22
+
+- 升级全系列共享 `ProviderBudget` 并发池并新增系列 Token/缓存/延迟遥测存储与看板（`core/series_telemetry.py`、`series-telemetry.sqlite3` WAL 小时/日桶聚合与 30 天自动清理、`/series_telemetry` API 及控制台遥测区块）。
+- 总控矩阵（`series_matrix`）重构为全并发聚合 + 3 秒短 TTL 缓存与即时失效，新增整行批量切换与模板下发接口（`/series_matrix_batch`）及矩阵快捷操作菜单。
+- 新增内置 4 套新群配置模板（`full_companion` / `light_chat` / `observer_archive` / `core_only`）与持久化自定义模板 CRUD（`core/series_templates.py`、`/series_templates`），同时接入控制台矩阵与快速引导（Setup）页。
+- 扩展 `get_series_shared_config()` 暴露规范化时区、`reply_provider`、`exclude_groups` 与实时 `in_quiet_hours`；`series-messages.js` 拆分为轻量加载器 + `en`/`ja`/`ru` 按需语言分包并统一八仓 `series_panels.py`。
+
 ## v1.19.0-rc.8 — 2026-11-21
 
 - 升级群间系列面板 v2：新增全系列 8 插件群聊总控矩阵（`series_matrix` / `series_matrix_toggle`）、跨插件联邦快捷搜索（`series_search` / `Ctrl+K`）与共享导航/徽章脉冲体系（`series_ui_kit` 同步产物）。

@@ -239,6 +239,8 @@ const els = {
   excludeGroupsDetails: document.getElementById("excludeGroupsDetails"),
   excludeCountBadge: document.getElementById("excludeCountBadge"),
   excludeGroupsInput: document.getElementById("excludeGroupsInput"),
+  setupTemplateSelect: document.getElementById("setupTemplateSelect"),
+  setupTemplatePreview: document.getElementById("setupTemplatePreview"),
   botNamesInput: document.getElementById("botNamesInput"),
   botNamesPreview: document.getElementById("botNamesPreview"),
   // Step 2
@@ -288,6 +290,7 @@ const els = {
   btnGoConfig: document.getElementById("btnGoConfig"),
   saveNote: document.getElementById("saveNote"),
   saveSuccessBanner: document.getElementById("saveSuccessBanner"),
+  setupTemplateReceipt: document.getElementById("setupTemplateReceipt"),
   btnRefreshCompanions: document.getElementById("btnRefreshCompanions"),
   sharedDefaultsBox: document.getElementById("sharedDefaultsBox"),
   companionNote: document.getElementById("companionNote"),
@@ -319,6 +322,10 @@ const state = {
   recommendation: null,
   seriesPresence: null,
   integrations: null,
+  templates: [],
+  templatePlugins: [],
+  templatesLoaded: false,
+  selectedTemplateId: "",
 };
 
 function parseList(raw) {
@@ -702,6 +709,198 @@ async function loadSetupGroups({ manual = false } = {}) {
     els.btnRefreshGroups.disabled = false;
     renderGroupList();
   }
+}
+
+/* ---------- Step 1b: Series Templates for New Group Onboarding ---------- */
+
+function templatePluginLabel(pluginId) {
+  const found = (state.templatePlugins || []).find((p) => p && p.id === pluginId);
+  return found?.label || pluginId;
+}
+
+function renderTemplateSelector() {
+  if (!els.setupTemplateSelect) return;
+  const current = String(state.selectedTemplateId || "");
+  const builtins = state.templates.filter((t) => t && (t.builtin || t.readonly));
+  const customs = state.templates.filter((t) => t && !t.builtin && !t.readonly);
+
+  const parts = [
+    `<option value="">${escapeHtml(tr("暂不下发模板（仅保存主控配置）"))}</option>`,
+  ];
+  if (builtins.length) {
+    parts.push(
+      `<optgroup label="${escapeHtml(tr("内置模板"))}">${builtins
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}"${t.id === current ? " selected" : ""}>${escapeHtml(t.name || t.id)}</option>`
+        )
+        .join("")}</optgroup>`
+    );
+  }
+  if (customs.length) {
+    parts.push(
+      `<optgroup label="${escapeHtml(tr("自定义模板"))}">${customs
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}"${t.id === current ? " selected" : ""}>${escapeHtml(t.name || t.id)}</option>`
+        )
+        .join("")}</optgroup>`
+    );
+  }
+  els.setupTemplateSelect.innerHTML = parts.join("");
+  if (current && state.templates.some((t) => t.id === current)) {
+    els.setupTemplateSelect.value = current;
+  } else {
+    state.selectedTemplateId = "";
+    els.setupTemplateSelect.value = "";
+  }
+  renderTemplatePreview();
+}
+
+function renderTemplatePreview() {
+  if (!els.setupTemplatePreview) return;
+  const tpl = state.templates.find((t) => t && t.id === state.selectedTemplateId);
+  if (!tpl) {
+    els.setupTemplatePreview.classList.add("hidden");
+    els.setupTemplatePreview.replaceChildren();
+    return;
+  }
+  const isBuiltin = Boolean(tpl.builtin || tpl.readonly);
+  const states = tpl.states && typeof tpl.states === "object" ? tpl.states : {};
+  const orderedPlugins =
+    state.templatePlugins.length > 0
+      ? state.templatePlugins
+      : Object.keys(states).map((id) => ({ id, label: id, mark: "" }));
+
+  const chips = orderedPlugins
+    .map((p) => {
+      const on = Boolean(states[p.id]);
+      return `<span class="tpl-preview-chip ${on ? "is-on" : "is-off"}">${on ? "●" : "○"} ${escapeHtml(p.label || p.id)}</span>`;
+    })
+    .join("");
+
+  els.setupTemplatePreview.classList.remove("hidden");
+  els.setupTemplatePreview.innerHTML = `<div class="tpl-preview-head">
+      <strong>${escapeHtml(tpl.name || tpl.id)}</strong>
+      <span class="pill-tag ${isBuiltin ? "pill-muted" : ""}">${escapeHtml(isBuiltin ? tr("内置 · 只读") : tr("自定义"))}</span>
+    </div>
+    ${tpl.description ? `<p class="tpl-preview-desc">${escapeHtml(tpl.description)}</p>` : ""}
+    ${tpl.strategy_hint ? `<p class="tpl-preview-hint">${escapeHtml(tpl.strategy_hint)}</p>` : ""}
+    <div class="tpl-preview-chips">${chips}</div>`;
+}
+
+async function loadSetupTemplates() {
+  try {
+    const data = await apiGet("series_templates", {}, { timeoutMs: 8000 });
+    if (data && typeof data === "object") {
+      state.templates = Array.isArray(data.templates) ? data.templates : [];
+      state.templatePlugins = Array.isArray(data.plugins) ? data.plugins : [];
+      state.templatesLoaded = true;
+    }
+  } catch {
+    state.templates = [];
+    state.templatesLoaded = false;
+  }
+  renderTemplateSelector();
+}
+
+function resolveTemplateTargetUmos({ prevTakeover, nextTakeover, isAll, excludeGroups }) {
+  const excludeSet = new Set(parseList(excludeGroups));
+  const byGroupId = new Map();
+  for (const row of state.groups || []) {
+    const gid = String(row?.group_id || "").trim();
+    const umo = String(row?.umo || "").trim();
+    if (gid && umo) byGroupId.set(gid, umo);
+  }
+  let rawTargets = [];
+  if (isAll) {
+    rawTargets = (state.groups || [])
+      .map((r) => String(r?.group_id || "").trim())
+      .filter((gid) => gid && !excludeSet.has(gid));
+  } else {
+    const prevSet = new Set(parseList(prevTakeover));
+    const added = parseList(nextTakeover).filter((gid) => !prevSet.has(gid) && !excludeSet.has(gid));
+    rawTargets = added.length
+      ? added
+      : parseList(nextTakeover).filter((gid) => !excludeSet.has(gid));
+  }
+  const seen = new Set();
+  const out = [];
+  for (const gid of rawTargets) {
+    const umo = byGroupId.get(gid) || gid;
+    if (!umo || seen.has(umo)) continue;
+    seen.add(umo);
+    const matched = (state.groups || []).find(
+      (r) => String(r?.group_id || "") === gid || String(r?.umo || "") === umo
+    );
+    out.push({
+      gid,
+      umo,
+      label: matched?.group_name ? `${matched.group_name} (${gid})` : gid,
+    });
+  }
+  return out;
+}
+
+function renderTemplateReceipt({ tplName, results, emptyReason = "" }) {
+  if (!els.setupTemplateReceipt) return;
+  if (emptyReason) {
+    els.setupTemplateReceipt.classList.remove("hidden");
+    els.setupTemplateReceipt.classList.remove("has-error");
+    els.setupTemplateReceipt.innerHTML = `<strong>${escapeHtml(tr("系列模板回执"))}</strong><p>${escapeHtml(emptyReason)}</p>`;
+    return;
+  }
+  let totalApplied = 0;
+  let totalSkipped = 0;
+  let totalFailed = 0;
+  for (const item of results) {
+    totalApplied += item.applied.length;
+    totalSkipped += item.skipped.length;
+    totalFailed += item.failed.length + (item.error ? 1 : 0);
+  }
+  const headline = tr(
+    "模板「{0}」已下发至 {1} 个群：已应用 {2} / 跳过 {3} / 失败 {4}",
+    tplName,
+    results.length,
+    totalApplied,
+    totalSkipped,
+    totalFailed
+  );
+  const rowsHtml = results
+    .map((item) => {
+      if (item.error) {
+        return `<div class="receipt-group-row is-error">
+          <div class="receipt-group-head"><strong>${escapeHtml(item.label)}</strong><code>${escapeHtml(item.umo)}</code></div>
+          <p class="receipt-error-text">${escapeHtml(item.error)}</p>
+        </div>`;
+      }
+      const pills = [
+        ...item.applied.map(
+          (p) =>
+            `<span class="receipt-pill is-applied">✓ ${escapeHtml(templatePluginLabel(p.plugin_id))} · ${escapeHtml(p.enabled ? tr("开启") : tr("暂停"))}</span>`
+        ),
+        ...item.skipped.map(
+          (p) =>
+            `<span class="receipt-pill is-skipped" title="${escapeHtml(p.message || p.reason || "")}">↷ ${escapeHtml(templatePluginLabel(p.plugin_id))}${p.message || p.reason ? ` (${escapeHtml(p.message || p.reason)})` : ""}</span>`
+        ),
+        ...item.failed.map(
+          (p) =>
+            `<span class="receipt-pill is-failed" title="${escapeHtml(p.message || p.reason || "")}">✕ ${escapeHtml(templatePluginLabel(p.plugin_id))}${p.message || p.reason ? ` (${escapeHtml(p.message || p.reason)})` : ""}</span>`
+        ),
+      ].join("");
+      return `<div class="receipt-group-row">
+        <div class="receipt-group-head">
+          <strong>${escapeHtml(item.label)}</strong>
+          <span class="receipt-group-counts">${escapeHtml(tr("已应用 {0} / 跳过 {1} / 失败 {2}", item.applied.length, item.skipped.length, item.failed.length))}</span>
+        </div>
+        <div class="receipt-pills">${pills}</div>
+      </div>`;
+    })
+    .join("");
+
+  els.setupTemplateReceipt.classList.remove("hidden");
+  els.setupTemplateReceipt.classList.toggle("has-error", totalFailed > 0);
+  els.setupTemplateReceipt.innerHTML = `<div class="receipt-head"><strong>${escapeHtml(headline)}</strong></div><div class="receipt-groups">${rowsHtml}</div>`;
 }
 
 /* ---------- Step 2: Models, Smart Recommendation & Probe ---------- */
@@ -1175,10 +1374,16 @@ function renderReview() {
         : d.private_chat_enabled
           ? "仅私聊生效"
           : "未配置生效范围";
-  const scopeDesc =
+  const selectedTpl = state.templates.find((t) => t && t.id === state.selectedTemplateId);
+  const scopeDescParts = [
     d.bot_names.length > 0
       ? `昵称：${d.bot_names.slice(0, 4).join("、")}${d.bot_names.length > 4 ? "…" : ""}`
-      : "未设置额外昵称（仍支持 @ 与引用触发）";
+      : "未设置额外昵称（仍支持 @ 与引用触发）",
+  ];
+  if (selectedTpl) {
+    scopeDescParts.push(`${tr("保存后下发模板")}：${selectedTpl.name || selectedTpl.id}`);
+  }
+  const scopeDesc = scopeDescParts.join(" · ");
 
   const isLlm = d.participation_backend === "llm";
   const decisionOk = isLlm || Boolean(String(d.decision_provider || "").trim());
@@ -1572,9 +1777,20 @@ async function saveSetupConfig() {
   }
 
   const diff = computeDiff();
+  const prevTakeover = parseList(state.initialDraft.takeover_groups);
+  const nextTakeover = parseList(state.draft.takeover_groups);
+  const isAllScope = Boolean(state.draft.takeover_all);
+  const excludeGroups = parseList(state.draft.exclude_groups);
+  const chosenTemplateId = String(state.selectedTemplateId || "").trim();
+  const chosenTemplate = state.templates.find((t) => t && t.id === chosenTemplateId) || null;
+
   state.busy = true;
   els.btnSaveSetup.disabled = true;
   els.saveSuccessBanner.classList.add("hidden");
+  if (els.setupTemplateReceipt) {
+    els.setupTemplateReceipt.classList.add("hidden");
+    els.setupTemplateReceipt.replaceChildren();
+  }
 
   try {
     if (diff.length > 0) {
@@ -1601,6 +1817,52 @@ async function saveSetupConfig() {
     }
     await persistSetupDismissed();
     els.saveSuccessBanner.classList.remove("hidden");
+
+    if (chosenTemplateId) {
+      const targets = resolveTemplateTargetUmos({
+        prevTakeover,
+        nextTakeover,
+        isAll: isAllScope,
+        excludeGroups,
+      });
+      const tplName = chosenTemplate?.name || chosenTemplateId;
+      if (!targets.length) {
+        renderTemplateReceipt({
+          tplName,
+          results: [],
+          emptyReason: tr("主控配置已保存；当前未选中具体群聊，未执行模板批量下发。"),
+        });
+      } else {
+        setStatus(els.saveNote, tr("配置已保存，正在向 {0} 个群下发模板「{1}」…", targets.length, tplName));
+        const batchResults = [];
+        for (const target of targets) {
+          try {
+            const res = await apiPost(
+              "series_matrix_batch",
+              { umo: target.umo, template_id: chosenTemplateId },
+              { timeoutMs: 12000 }
+            );
+            batchResults.push({
+              ...target,
+              applied: Array.isArray(res?.applied) ? res.applied : [],
+              skipped: Array.isArray(res?.skipped) ? res.skipped : [],
+              failed: Array.isArray(res?.failed) ? res.failed : [],
+              error: "",
+            });
+          } catch (err) {
+            batchResults.push({
+              ...target,
+              applied: [],
+              skipped: [],
+              failed: [],
+              error: friendlyError(err, "模板下发失败"),
+            });
+          }
+        }
+        renderTemplateReceipt({ tplName, results: batchResults });
+      }
+    }
+
     setStatus(
       els.saveNote,
       diff.length > 0
@@ -1717,6 +1979,14 @@ function bindEvents() {
     state.draft.bot_names = parseList(els.botNamesInput.value);
     renderBotNamesPreview();
     updateStepperSummary();
+  });
+  els.setupTemplateSelect?.addEventListener("change", () => {
+    state.selectedTemplateId = String(els.setupTemplateSelect.value || "").trim();
+    renderTemplatePreview();
+    if (state.step === 4) renderReview();
+  });
+  window.addEventListener("series-languagechange", () => {
+    if (state.templatesLoaded) renderTemplateSelector();
   });
 
   // Step 2 events
@@ -1848,10 +2118,11 @@ async function boot() {
     setStatus(els.setupStatus, friendlyError(err, "读取配置失败，请刷新页面重试。"), true);
   }
 
-  // Load groups, providers, and companion status in parallel (never auto-probe!)
+  // Load groups, providers, templates, and companion status in parallel (never auto-probe!)
   await Promise.allSettled([
     loadProviders({ applyRecommend: true }),
     loadSetupGroups({ manual: false }),
+    loadSetupTemplates(),
     loadCompanions(),
   ]);
   updateStepperSummary();

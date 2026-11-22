@@ -257,13 +257,24 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
         "series_presence",
         "series_matrix",
         "series_matrix_toggle",
+        "series_matrix_batch",
         "series_search",
+        "series_telemetry",
+        "series_templates",
         "narrative",
         "integrations",
     }
     assert routes_by_tail["series_matrix"][1] == ("GET",)
     assert routes_by_tail["series_matrix_toggle"][1] == ("POST",)
+    assert routes_by_tail["series_matrix_batch"][1] == ("POST",)
     assert routes_by_tail["series_search"][1] == ("GET",)
+    assert routes_by_tail["series_telemetry"][1] == ("GET",)
+    template_methods = {
+        tuple(methods)
+        for route, _, methods, _ in context.routes
+        if route.rsplit("/", 1)[-1] == "series_templates"
+    }
+    assert template_methods == {("GET",), ("POST",), ("DELETE",)}
     assert not any("/learning/" in route for route, *_ in context.routes)
     assert {route.split("/decision/", 1)[1] for route, *_ in context.routes if "/decision/" in route} == {"status", "history"}
     overview = await _overview_payload(plugin)
@@ -385,6 +396,76 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
     assert ok_toggle["data"]["version"]
     assert ok_toggle["data"]["matrix_version"]
     assert plugin.is_group_takeover_enabled("room") is False
+
+    # 4) series_telemetry: admin-gated window query & live queue shape
+    telemetry_handler = routes_by_tail["series_telemetry"][0]
+    bad_tel_status, _ = await _call_web_handler(
+        telemetry_handler, method="GET", path="/series_telemetry", query="window=999d"
+    )
+    assert bad_tel_status == 400
+    tel_status, tel_res = await _call_web_handler(
+        telemetry_handler, method="GET", path="/series_telemetry", query="window=24h"
+    )
+    assert tel_status == 200
+    assert tel_res["ok"] is True
+    assert tel_res["data"]["window"] == "24h"
+    assert "summary" in tel_res["data"]
+    assert "live_queue" in tel_res["data"]
+
+    # 5) series_templates: GET built-ins + POST custom + DELETE custom
+    tpl_handlers = {
+        tuple(methods)[0]: handler
+        for route, handler, methods, _ in context.routes
+        if route.rsplit("/", 1)[-1] == "series_templates"
+    }
+    tpl_get_status, tpl_get = await _call_web_handler(
+        tpl_handlers["GET"], method="GET", path="/series_templates"
+    )
+    assert tpl_get_status == 200
+    assert {t["id"] for t in tpl_get["data"]["templates"] if t["builtin"]} == {
+        "full_companion",
+        "light_chat",
+        "observer_archive",
+        "core_only",
+    }
+    tpl_post_status, tpl_post = await _call_web_handler(
+        tpl_handlers["POST"],
+        method="POST",
+        path="/series_templates",
+        json_body={
+            "id": "smoke_custom",
+            "name": "冒烟自定义",
+            "description": "smoke",
+            "states": {"astrbot_plugin_chat_dynamics": True},
+        },
+    )
+    assert tpl_post_status == 200
+    assert tpl_post["data"]["template"]["id"] == "smoke_custom"
+
+    # 6) series_matrix_batch: apply template to room
+    batch_handler = routes_by_tail["series_matrix_batch"][0]
+    batch_status, batch_res = await _call_web_handler(
+        batch_handler,
+        method="POST",
+        path="/series_matrix_batch",
+        json_body={
+            "umo": event.unified_msg_origin,
+            "template_id": "core_only",
+        },
+    )
+    assert batch_status == 200
+    assert batch_res["data"]["ok"] is True
+    assert batch_res["data"]["template_id"] == "core_only"
+    assert plugin.is_group_takeover_enabled("room") is True
+
+    tpl_del_status, tpl_del = await _call_web_handler(
+        tpl_handlers["DELETE"],
+        method="DELETE",
+        path="/series_templates",
+        query="id=smoke_custom",
+    )
+    assert tpl_del_status == 200
+    assert tpl_del["data"]["deleted"] is True
 
     generated = await plugin.llm.generate(
         prompt="hello",

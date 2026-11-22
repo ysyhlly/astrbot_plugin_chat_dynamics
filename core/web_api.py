@@ -114,11 +114,11 @@ def _json_ok(data: Any):
     )
 
 
-def _json_err(message: str, status_code: int = 400, headers: Any = None):
+def _json_err(message: str, status_code: int = 400, headers: Any = None, data: Any = None):
     try:
-        return error_response(message, status_code=status_code, data=None, headers=headers)
+        return error_response(message, status_code=status_code, data=data, headers=headers)
     except TypeError:
-        response = error_response(message, status_code=status_code, data=None)
+        response = error_response(message, status_code=status_code, data=data)
         if headers:
             if isinstance(response, dict):
                 response.setdefault("headers", {}).update(headers)
@@ -196,7 +196,12 @@ class ConsoleWebAPI:
             ("setup/probe", self.setup_probe, ["POST"], "手动检测所选模型的连通性"),
             ("series_matrix", self.series_matrix_get, ["GET"], "跨 8 插件群聊总控矩阵"),
             ("series_matrix_toggle", self.series_matrix_toggle_post, ["POST"], "跨插件群聊接管开关"),
+            ("series_matrix_batch", self.series_matrix_batch_post, ["POST"], "跨插件群聊整行批量切换与应用模板"),
             ("series_search", self.series_search_get, ["GET"], "跨插件联邦快捷搜索"),
+            ("series_telemetry", self.series_telemetry_get, ["GET"], "跨插件 LLM 与 Token 遥测"),
+            ("series_templates", self.series_templates_get, ["GET"], "查看群聊内置与自定义配置模板"),
+            ("series_templates", self.series_templates_post, ["POST"], "新建/更新/删除群聊自定义模板"),
+            ("series_templates", self.series_templates_delete, ["DELETE"], "删除群聊自定义模板"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -993,6 +998,7 @@ class ConsoleWebAPI:
             return _json_err("plugin is shutting down", 503)
         scope = (_query_param("scope") or _query_param("umo") or "").strip()
         persona = (_query_param("persona") or "").strip()
+        refresh = (_query_param("refresh") or "").strip().lower() in {"1", "true", "yes"}
         if len(scope) > _MAX_SESSION_ID_LENGTH:
             return _json_err("scope too long", 400)
         if len(persona) > 128:
@@ -1000,7 +1006,9 @@ class ConsoleWebAPI:
         try:
             from .series_hub import build_series_matrix
 
-            data = await build_series_matrix(self.plugin, scope=scope, persona=persona)
+            data = await build_series_matrix(
+                self.plugin, scope=scope, persona=persona, force_refresh=refresh
+            )
             return _json_ok(data)
         except Exception as exc:
             logger.error("[ChatDynamics] series_matrix failed code=CD_SERIES_MATRIX type=%s", type(exc).__name__)
@@ -1028,10 +1036,166 @@ class ConsoleWebAPI:
             )
             if status_code == 200:
                 return _json_ok(payload)
-            return _json_err(str(payload.get("message") or "toggle failed"), status_code)
+            return _json_err(
+                str(payload.get("message") or "toggle failed"),
+                status_code,
+                data=payload if payload.get("conflict") else None,
+            )
         except Exception as exc:
             logger.error("[ChatDynamics] series_matrix_toggle failed code=CD_SERIES_TOGGLE type=%s", type(exc).__name__)
             return _json_err("series matrix toggle failed", 503)
+
+    async def series_matrix_batch_post(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_matrix_batch", 20)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (invalid := self._validate_fields(body, {"umo", "expected_version", "states", "template_id"})) is not None:
+            return invalid
+        try:
+            from .series_hub import batch_toggle_series_matrix
+
+            status_code, payload = await batch_toggle_series_matrix(
+                self.plugin,
+                umo=str(body.get("umo") or ""),
+                expected_version=body.get("expected_version"),
+                states=body.get("states"),
+                template_id=body.get("template_id"),
+            )
+            if status_code == 200:
+                return _json_ok(payload)
+            return _json_err(
+                str(payload.get("message") or "batch toggle failed"),
+                status_code,
+                data=payload if payload.get("conflict") else None,
+            )
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_matrix_batch failed code=CD_SERIES_BATCH type=%s", type(exc).__name__)
+            return _json_err("series matrix batch failed", 503)
+
+    async def series_telemetry_get(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_telemetry", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        window = (_query_param("window") or "24h").strip().lower()
+        try:
+            from .series_telemetry import SeriesTelemetryStore, VALID_WINDOWS
+
+            if window not in VALID_WINDOWS:
+                return _json_err("window must be one of 1h, 24h, 7d, 30d", 400)
+            store = getattr(self.plugin, "series_telemetry", None)
+            if store is None:
+                store = SeriesTelemetryStore(db_path=None)
+            budget = getattr(getattr(self.plugin, "llm", None), "provider_budget", None)
+            live_queue = (
+                budget.live_snapshot()
+                if budget is not None and callable(getattr(budget, "live_snapshot", None))
+                else None
+            )
+            return _json_ok(store.snapshot(window=window, live_queue=live_queue))
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_telemetry failed code=CD_SERIES_TELEMETRY type=%s", type(exc).__name__)
+            return _json_err("series telemetry unavailable", 503)
+
+    def _template_store(self):
+        from .series_templates import SeriesTemplateStore
+
+        store = getattr(self.plugin, "series_templates", None)
+        if store is None:
+            data_root = getattr(self.plugin, "_data_root", None)
+            path = (data_root / "series-templates.json") if data_root is not None else None
+            store = SeriesTemplateStore(path)
+            self.plugin.series_templates = store
+        return store
+
+    async def series_templates_get(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_templates", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        try:
+            return _json_ok(self._template_store().catalog_payload())
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_templates get failed code=CD_SERIES_TEMPLATES type=%s", type(exc).__name__)
+            return _json_err("series templates unavailable", 503)
+
+    async def series_templates_post(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_templates_write", 30)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (
+            invalid := self._validate_fields(
+                body, {"action", "id", "name", "description", "strategy_hint", "states"}
+            )
+        ) is not None:
+            return invalid
+        action = str(body.get("action") or "upsert").strip().lower()
+        store = self._template_store()
+        try:
+            from .series_hub import invalidate_series_matrix_cache
+
+            if action == "delete":
+                tid = str(body.get("id") or "").strip().lower()
+                if not tid:
+                    return _json_err("id required", 400)
+                deleted = store.delete(tid)
+                if not deleted:
+                    return _json_err("未找到指定自定义模板", 404)
+                invalidate_series_matrix_cache(self.plugin)
+                return _json_ok({"deleted": True, "id": tid, "templates": store.list_all()})
+            if action != "upsert":
+                return _json_err(f"unsupported action: {action}", 400)
+            saved = store.upsert(body)
+            invalidate_series_matrix_cache(self.plugin)
+            return _json_ok({"template": saved, "templates": store.list_all()})
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_templates post failed code=CD_SERIES_TEMPLATES type=%s", type(exc).__name__)
+            return _json_err("series template write failed", 503)
+
+    async def series_templates_delete(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_templates_write", 30)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        tid = (_query_param("id") or "").strip()
+        if not tid:
+            body = await _json_body()
+            if "__invalid_body__" not in body:
+                tid = str(body.get("id") or "").strip()
+        if not tid:
+            return _json_err("id required", 400)
+        store = self._template_store()
+        try:
+            from .series_hub import invalidate_series_matrix_cache
+
+            deleted = store.delete(tid)
+            if not deleted:
+                return _json_err("未找到指定自定义模板", 404)
+            invalidate_series_matrix_cache(self.plugin)
+            return _json_ok({"deleted": True, "id": tid.lower(), "templates": store.list_all()})
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_templates delete failed code=CD_SERIES_TEMPLATES type=%s", type(exc).__name__)
+            return _json_err("series template delete failed", 503)
 
     async def series_search_get(self):
         if (limited := self._rate_limit("series_search", 60)) is not None:

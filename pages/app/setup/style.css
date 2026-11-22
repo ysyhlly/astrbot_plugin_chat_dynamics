@@ -959,6 +959,149 @@
   font-size: 12px;
 }
 
+/* Series template preview & batch apply receipt */
+.setup-template-preview {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+}
+
+.tpl-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tpl-preview-desc,
+.tpl-preview-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.tpl-preview-hint {
+  color: var(--amber);
+}
+
+.tpl-preview-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tpl-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.tpl-preview-chip.is-on {
+  border-color: var(--cyan);
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
+.setup-template-receipt {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+}
+
+.setup-template-receipt.has-error {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.receipt-head strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.receipt-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.receipt-group-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.receipt-group-row.is-error {
+  border-color: var(--danger);
+}
+
+.receipt-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.receipt-group-counts {
+  font: 600 11px var(--mono);
+  color: var(--muted);
+}
+
+.receipt-error-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.receipt-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.receipt-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.receipt-pill.is-applied {
+  border-color: var(--cyan);
+  background: var(--cyan-soft);
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.receipt-pill.is-failed {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+}
+
 /* Companion plugins & inherited shared defaults */
 .companion-section {
   display: grid;

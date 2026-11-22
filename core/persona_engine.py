@@ -1637,6 +1637,7 @@ class PersonaEngine:
             provider,
             "reply",
             lambda: self.bridge.generate(event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs),
+            plugin_id="astrbot_plugin_chat_dynamics",
         )
         if not isinstance(self.bridge, AstrBotAgentBridge):
             return await asyncio.wait_for(call, timeout)
@@ -1678,6 +1679,7 @@ class PersonaEngine:
                         lambda: self.bridge.generate(
                             event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs
                         ),
+                        plugin_id="astrbot_plugin_chat_dynamics",
                     )
                     return await retry
                 finally:

@@ -1,6 +1,6 @@
 /* Canonical series chrome v2.0 — Botanical Paper (day) & Deep Forest Night (night).
  * Single Source of Truth: series_ui_kit/src/series-ui.css
- * Offline-only (zero external URLs / zero @import).
+ * Offline-only (zero external URLs / zero CSS imports).
  */
 :root {
   color-scheme: light;

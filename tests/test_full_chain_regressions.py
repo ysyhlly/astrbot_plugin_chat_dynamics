@@ -569,11 +569,15 @@ async def test_series_shared_config_contract_is_secret_free_and_matches_runtime(
         assert shared["persona_id"] == "alice"
         assert shared["bot_names"] == ["安安"]
         assert shared["rhythm_timezone"] == "Asia/Shanghai"
-        assert shared["quiet_hours"] == {
-            "daily_rhythm_enabled": True,
-            "sleep_after_winddown": False,
-            "force_sleep": True,
-        }
+        quiet = shared["quiet_hours"]
+        assert quiet["daily_rhythm_enabled"] is True
+        assert quiet["sleep_after_winddown"] is False
+        assert quiet["force_sleep"] is True
+        assert quiet["in_quiet_hours"] is True
+        assert quiet["reason"] == "force_sleep"
+        assert quiet["state"] == "asleep_self"
+        assert quiet["timezone"] == "Asia/Shanghai"
+        assert isinstance(quiet["local_hour"], int) and 0 <= quiet["local_hour"] <= 23
         assert shared["ui_language"] == "zh-CN"
         serialized = json.dumps(shared, ensure_ascii=False)
         assert "secret-token" not in serialized and "host-secret" not in serialized

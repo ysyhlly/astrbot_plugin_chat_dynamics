@@ -39,7 +39,11 @@ except ImportError as exc:
 from .core.addressivity import AddressivityRouter
 from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
+from .core.daily_rhythm import ASLEEP_STATES, STATE_AWAKE, STATE_WINDING_DOWN
 from .core.data_paths import resolve_data_root
+from .core.provider_budget import attach_context_telemetry
+from .core.series_telemetry import SeriesTelemetryStore
+from .core.series_templates import SeriesTemplateStore
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
 from .core.deferred_media import preserve_event_media, release_event_media, without_event_media
 from .core.media_archive import MediaArchive
@@ -427,6 +431,10 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.arbiter.on_cooling_changed = self._schedule_persist_cooling
 
         data_root = resolve_data_root(_PluginPath(__file__).resolve().parent / "data" / "chat_dynamics")
+        self._data_root = data_root
+        self.series_telemetry = SeriesTelemetryStore(data_root / "series-telemetry.sqlite3")
+        self.series_templates = SeriesTemplateStore(data_root / "series-templates.json")
+        attach_context_telemetry(self.context, self.series_telemetry)
         self.media_archive = MediaArchive(data_root / "attachments")
         self.integrations = IntegrationRegistry(
             self.context, enabled=runtime_config.selflearning_integration,
@@ -1833,6 +1841,12 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 except Exception as exc:
                     logger.warning("[ChatDynamics] Final panel save failed type=%s", type(exc).__name__)
                 finally:
+                    telemetry = getattr(self, "series_telemetry", None)
+                    if telemetry is not None:
+                        try:
+                            telemetry.close()
+                        except Exception:
+                            pass
                     self._release_session_state()
 
     def _release_provider_hooks(self):
@@ -3720,7 +3734,33 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     async def on_llm_response(self, event: AstrMessageEvent, response: Any = None) -> None:
         if self._persona_mode():
             return
-        if self._shutting_down or self.shadow_mode or response is None:
+        if self._shutting_down or response is None:
+            return
+        telemetry = getattr(self, "series_telemetry", None)
+        if telemetry is not None and not getattr(event, "_chat_dynamics_telemetry_recorded", False):
+            try:
+                setattr(event, "_chat_dynamics_telemetry_recorded", True)
+            except Exception:
+                pass
+            try:
+                provider_id = ""
+                llm = getattr(self, "llm", None)
+                if callable(getattr(llm, "configured_provider", None)):
+                    provider_id = str(llm.configured_provider("reply") or "")
+                if not provider_id:
+                    provider_id = str(getattr(response, "model", "") or "host_default")
+                is_err = is_error_response(response)
+                telemetry.record(
+                    plugin_id="astrbot_plugin_chat_dynamics",
+                    provider_id=provider_id,
+                    purpose="native_reply",
+                    response=response,
+                    ok=not is_err,
+                    error_type="host_error_response" if is_err else "",
+                )
+            except Exception:
+                pass
+        if self.shadow_mode:
             return
         session_key = self._event_in_scope(event)
         if not session_key:
@@ -4178,6 +4218,70 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             except Exception:
                 pass
 
+        raw_tz = str(getattr(cfg, "rhythm_timezone", "") or "").strip()
+        rhythm_timezone = "Asia/Shanghai"
+        tz_obj = None
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from zoneinfo import ZoneInfo as _ZoneInfo, ZoneInfoNotFoundError as _ZoneInfoNotFoundError
+
+        for candidate_tz in (raw_tz, "Asia/Shanghai", "UTC"):
+            if not candidate_tz:
+                continue
+            try:
+                tz_obj = _ZoneInfo(candidate_tz)
+                rhythm_timezone = candidate_tz
+                break
+            except (_ZoneInfoNotFoundError, KeyError, ValueError):
+                continue
+        if tz_obj is None:
+            tz_obj = _tz(_td(hours=8))
+
+        wall_now = None
+        ts_svc = getattr(self, "time_service", None)
+        if ts_svc is not None and callable(getattr(ts_svc, "wall_time", None)):
+            try:
+                wall_now = float(ts_svc.wall_time())
+            except Exception:
+                wall_now = None
+        if wall_now is None:
+            wall_now = time.time()
+        local_hour = _dt.fromtimestamp(wall_now, tz=tz_obj).hour
+
+        daily_rhythm_enabled = bool(getattr(cfg, "daily_rhythm_enabled", True))
+        sleep_after_winddown = bool(getattr(cfg, "rhythm_sleep_after_winddown", True))
+        force_sleep = bool(getattr(cfg, "rhythm_force_sleep", False))
+
+        rhythm_state = STATE_AWAKE
+        gate = getattr(self, "decision_gate", None)
+        rhythm_gate = getattr(gate, "rhythm", None) if gate is not None else None
+        if rhythm_gate is not None and callable(getattr(rhythm_gate, "status", None)):
+            try:
+                st = rhythm_gate.status(now=wall_now)
+                if isinstance(st, dict) and st.get("state"):
+                    rhythm_state = str(st["state"])
+            except Exception:
+                rhythm_state = STATE_AWAKE
+
+        if not daily_rhythm_enabled:
+            in_quiet_hours = False
+            quiet_reason = "disabled"
+        elif force_sleep:
+            in_quiet_hours = True
+            quiet_reason = "force_sleep"
+            if rhythm_state == STATE_AWAKE:
+                rhythm_state = "asleep_self"
+        elif rhythm_state in ASLEEP_STATES or (
+            sleep_after_winddown and rhythm_state == STATE_WINDING_DOWN
+        ):
+            in_quiet_hours = True
+            quiet_reason = "daily_rhythm_state"
+        elif local_hour >= 23 or local_hour < 6:
+            in_quiet_hours = True
+            quiet_reason = "overnight_sleep_window"
+        else:
+            in_quiet_hours = False
+            quiet_reason = "awake"
+
         return {
             "takeover_all_groups": takeover_all,
             "takeover_groups": takeover_groups,
@@ -4186,11 +4290,16 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             "decision_provider": decision_provider,
             "persona_id": persona_id,
             "bot_names": list(getattr(cfg, "bot_names", getattr(self, "bot_names", ())) or ()),
-            "rhythm_timezone": str(getattr(cfg, "rhythm_timezone", "") or ""),
+            "rhythm_timezone": rhythm_timezone,
             "quiet_hours": {
-                "daily_rhythm_enabled": bool(getattr(cfg, "daily_rhythm_enabled", True)),
-                "sleep_after_winddown": bool(getattr(cfg, "rhythm_sleep_after_winddown", True)),
-                "force_sleep": bool(getattr(cfg, "rhythm_force_sleep", False)),
+                "daily_rhythm_enabled": daily_rhythm_enabled,
+                "sleep_after_winddown": sleep_after_winddown,
+                "force_sleep": force_sleep,
+                "in_quiet_hours": in_quiet_hours,
+                "reason": quiet_reason,
+                "state": rhythm_state,
+                "timezone": rhythm_timezone,
+                "local_hour": local_hour,
             },
             "ui_language": ui_language,
         }

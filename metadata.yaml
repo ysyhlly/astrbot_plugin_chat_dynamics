@@ -5,7 +5,7 @@ desc: |
   群间（Chat Dynamics）是 AstrBot 群间系列的核心对话调度插件（Filter-First，不替代宿主人格、历史与工具）。
   按完整 UMO 隔离会话，提供碎发防抖聚合、确定性对话图、可切换 Rerank/LLM 多人讨论归属、可切换 Jev/LLM 参与决策、锁外模型 I/O、主 Agent 并发预算调度与自然分段交付。
   通过公开注册表与群间世界、记忆、学习、见闻、游戏、史记、视觉七大伴生插件无缝协同；默认不接管任何群。
-version: v1.19.0-rc.8
+version: v1.19.0-rc.9
 author: ysyhlly
 repo: https://github.com/ysyhlly/astrbot_plugin_chat_dynamics
 astrbot_version: ">=4.29.4,<5"

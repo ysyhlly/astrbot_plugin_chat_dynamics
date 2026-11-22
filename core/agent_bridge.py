@@ -561,6 +561,7 @@ class AgentOutput:
     reply_reason: str = ""
     narration: str = ""
     poke_target_uid: str = ""
+    llm_response: Any = field(default=None, repr=False, compare=False)
 
     async def native_sources_current(self, candidate_event=None) -> bool:
         if (
@@ -1844,6 +1845,7 @@ class AstrBotAgentBridge:
                 reply_reason=reply_reason,
                 narration=narration,
                 poke_target_uid=poke_target_uid,
+                llm_response=response,
             )
             if partial_output is not None:
                 if output.chains or not output.text.startswith(partial_output.stream_prefix):
@@ -1853,6 +1855,7 @@ class AstrBotAgentBridge:
                 partial_output.turn_start = output.turn_start
                 partial_output.tool_count = output.tool_count
                 partial_output.media_events = output.media_events
+                partial_output.llm_response = response
                 output = partial_output
             if on_output_ready is not None and output.text and not output.chains:
                 if tool_source_registry is not None:

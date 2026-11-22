@@ -1,7 +1,8 @@
 /* Shared UI contract v2.0. Translates declared interface copy only, never record bodies. */
-import {messages} from './series-messages.js';
+import {messages,loadLocaleMessages,isLocaleLoaded} from './series-messages.js';
+export {loadLocaleMessages,isLocaleLoaded};
 
-const languages=['zh','en','ja','ru'],bindings=new Map();
+const languages=['zh','en','ja','ru'],bindings=new Map(),pendingLocaleSync=new Map();
 const LANG_KEY='dynamics_series_lang',LEGACY_LANG_KEY='lmem_lang';
 const SVG_NS='http://www.w3.org/2000/svg';
 const normalize=value=>String(value||'').toLowerCase().split(/[-_]/)[0];
@@ -12,10 +13,46 @@ const bridge=()=>(window.DynamicsPanelBridge||window.AstrBotPluginPage||window.A
 const nativeLanguage=typeof window.getLanguage==='function';
 let context={};try{context=bridge()?.getContext?.()||{};}catch{}
 let language=[queryLanguage,normalize(context.localeOverride),normalize(context.locale),stored(),normalize(document.documentElement.lang),normalize(navigator.language),'zh'].find(v=>languages.includes(v));
-let localOverride=languages.includes(queryLanguage);
+let localOverride=languages.includes(queryLanguage),started=false;
 const originalSet=window.setLanguage;
 
-if(window.registerTranslations)window.registerTranslations(Object.fromEntries(Object.entries(messages).map(([key,value])=>['series.'+key,value])));
+const LOCALE_TAGS={zh:'zh-CN',en:'en-US',ja:'ja-JP',ru:'ru-RU'};
+
+function syncLocaleMeta(){
+ if(typeof document==='undefined')return;
+ const cur=getLanguage();
+ document.documentElement.lang=LOCALE_TAGS[cur]||'zh-CN';
+ for(const select of document.querySelectorAll?.('[data-series-language]')||[])select.value=cur;
+}
+
+function syncExternalTranslations(){
+ if(typeof window==='undefined'||typeof window.registerTranslations!=='function')return;
+ const cur=getLanguage(),entries={};
+ for(const [key,value] of Object.entries(messages)){
+  entries['series.'+key]=typeof value==='string'?{zh:key,[cur]:value}:{zh:key,...value};
+ }
+ if(Object.keys(entries).length)window.registerTranslations(entries);
+}
+
+function ensureLocale(lang){
+ const code=normalize(lang);
+ if(!languages.includes(code)||isLocaleLoaded(code)){
+  syncExternalTranslations();
+  return Promise.resolve(messages);
+ }
+ if(pendingLocaleSync.has(code))return pendingLocaleSync.get(code);
+ const task=loadLocaleMessages(code).then(()=>{
+  if(typeof window==='undefined'||typeof document==='undefined')return messages;
+  syncExternalTranslations();
+  if(started&&getLanguage()===code)repaint();
+  return messages;
+ }).finally(()=>{pendingLocaleSync.delete(code);});
+ pendingLocaleSync.set(code,task);
+ return task;
+}
+
+if(Object.keys(messages).length)syncExternalTranslations();
+if(languages.includes(language)&&!isLocaleLoaded(language))ensureLocale(language);
 
 export const SERIES_ICONS={
  home:['M3 10.5L12 3l9 7.5','M5.5 9.5V20h13V9.5','M9.5 20v-5.5h5V20'],
@@ -71,11 +108,12 @@ export function icon(name,size=16,cls=''){
  return svg;
 }
 
-export const getLanguage=()=>nativeLanguage?window.getLanguage():language;
+export function getLanguage(){return nativeLanguage?window.getLanguage():language;}
 
 export function tr(key,...args){
- const values=messages[key],locale={zh:'zh-CN',en:'en-US',ja:'ja-JP',ru:'ru-RU'}[getLanguage()];
- const result=context.i18n?.[locale]?.series_ui?.[key]||values?.[getLanguage()]||values?.zh||key;
+ const lang=getLanguage(),values=messages[key],locale={zh:'zh-CN',en:'en-US',ja:'ja-JP',ru:'ru-RU'}[lang];
+ const picked=typeof values==='string'?(lang==='zh'?key:values):(values?.[lang]||values?.zh);
+ const result=context.i18n?.[locale]?.series_ui?.[key]||picked||key;
  return result.replace(/\{(\d+)\}/g,(_,i)=>String(args[Number(i)]??''));
 }
 
@@ -119,12 +157,22 @@ function repaint(){
 }
 
 export function setLanguage(value,{persist=true}={}){
- value=normalize(value);if(!languages.includes(value))return;
+ value=normalize(value);if(!languages.includes(value))return Promise.resolve(messages);
  if(persist){localOverride=true;updateHostContext({locale:value});}
- if(nativeLanguage&&getLanguage()!==value){originalSet(value,{persist});return;}
+ if(nativeLanguage&&getLanguage()!==value){
+  originalSet(value,{persist});
+  syncLocaleMeta();
+  return ensureLocale(value);
+ }
  if(!nativeLanguage)language=value;
  if(persist&&!bridge()?.setNavigationContext)try{localStorage.setItem(LANG_KEY,value);}catch{}
- repaint();
+ syncLocaleMeta();
+ if(isLocaleLoaded(value)){
+  syncExternalTranslations();
+  repaint();
+  return Promise.resolve(messages);
+ }
+ return ensureLocale(value);
 }
 
 if(!nativeLanguage){window.getLanguage=getLanguage;window.setLanguage=setLanguage;}
@@ -135,7 +183,10 @@ window.addEventListener('languagechange',event=>{
   localOverride=true;
   updateHostContext({locale:getLanguage()});
  }
- repaint();
+ const cur=getLanguage();
+ syncLocaleMeta();
+ if(isLocaleLoaded(cur)){syncExternalTranslations();repaint();}
+ else ensureLocale(cur);
 });
 
 window.addEventListener('storage',event=>{
@@ -216,8 +267,13 @@ export function createOverflowMenu({label=msg('更多与运维'),items=[]}={}){
 }
 
 function start(){
+ started=true;
  if(nativeLanguage&&getLanguage()!==language)originalSet(language,{persist:false});
- apply();repaint();initShellMenus();
+ apply();initShellMenus();
+ const cur=getLanguage();
+ syncLocaleMeta();
+ if(isLocaleLoaded(cur)){syncExternalTranslations();repaint();}
+ else ensureLocale(cur);
  let uiTheme=document.documentElement.dataset.uiTheme;
  new MutationObserver(records=>{
   for(const record of records){
@@ -345,7 +401,7 @@ export const confirmAction=(message,options)=>showDialog(message,options);
 export const promptAction=(message,options)=>showDialog(message,options,true);
 
 window.DynamicsUI={
- tr,msg,setText,apply,getLanguage,setLanguage,feedback,
+ tr,msg,setText,apply,getLanguage,setLanguage,loadLocaleMessages,feedback,
  getSharedScope,setSharedScope,formatScopeLabel,
  confirm:confirmAction,prompt:promptAction,
  icon,icons:SERIES_ICONS,createInfoPopover,createOverflowMenu,initShellMenus,

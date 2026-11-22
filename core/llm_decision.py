@@ -199,7 +199,9 @@ class LLMDecisionClient:
                     chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt
                 )
 
-            output = await adapter.provider_budget.run(provider_id, 'routing', invoke)
+            output = await adapter.provider_budget.run(
+                provider_id, 'routing', invoke, plugin_id="astrbot_plugin_chat_dynamics"
+            )
             if not self._current(identity):
                 return None
             result = parse_answers(require_completion_text(output, 'decision'), questions)

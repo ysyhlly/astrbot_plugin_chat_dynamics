@@ -305,7 +305,7 @@ class LLMAdapter:
                 prompt=prompt,
                 system_prompt=system_prompt,
                 **_supported_kwargs(generate, _media_kwargs(image_urls, audio_urls)),
-            ))
+            ), plugin_id="astrbot_plugin_chat_dynamics")
             if inspect.isawaitable(resp):
                 resp = await resp
             return require_completion_text(resp, purpose)
@@ -412,7 +412,7 @@ class LLMAdapter:
                 prompt=user_prompt,
                 **_supported_kwargs(tool_loop, request_kwargs),
                 **_supported_kwargs(tool_loop, media_kwargs),
-            ))
+            ), plugin_id="astrbot_plugin_chat_dynamics")
             if inspect.isawaitable(resp):
                 resp = await resp
             return require_completion_text(resp, "native reply")
@@ -470,7 +470,8 @@ class LLMAdapter:
         if not callable(text_chat):
             raise LLMUnavailable("Provider does not expose text_chat")
         resp = await self.provider_budget.run(explicit or str(id(provider)), purpose,
-                                              lambda: text_chat(prompt=prompt, system_prompt=system_prompt))
+                                              lambda: text_chat(prompt=prompt, system_prompt=system_prompt),
+                                              plugin_id="astrbot_plugin_chat_dynamics")
         if inspect.isawaitable(resp):
             resp = await resp
         return require_completion_text(resp, purpose)

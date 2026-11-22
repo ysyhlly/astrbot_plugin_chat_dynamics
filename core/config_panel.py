@@ -390,6 +390,9 @@ class ConfigPanel:
             finally:
                 self.host._config_save_in_progress = False
             self.host._sync_runtime_from_config(validated_config=candidate)
+            from .series_hub import invalidate_series_matrix_cache
+
+            invalidate_series_matrix_cache(self.host)
             self.host._metric("config_saved")
             return self.get_config_panel(refresh=False)
 
@@ -550,6 +553,9 @@ class ConfigPanel:
     async def apply_stored_config(self) -> dict[str, Any]:
         async with self.host._config_lock:
             self.host._sync_runtime_from_config()
+            from .series_hub import invalidate_series_matrix_cache
+
+            invalidate_series_matrix_cache(self.host)
             self.host._metric("config_applied")
             return self.get_config_panel()
 
@@ -605,5 +611,8 @@ class ConfigPanel:
         finally:
             self.host._config_save_in_progress = False
         self.host._sync_runtime_from_config(validated_config=candidate)
+        from .series_hub import invalidate_series_matrix_cache
+
+        invalidate_series_matrix_cache(self.host)
         self.host._metric("preset_applied")
         return {"name": name, "changed": changed, "saved": saved}

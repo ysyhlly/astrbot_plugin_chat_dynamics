@@ -9,8 +9,10 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import timedelta, timezone
 from importlib import import_module
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot.api.web import json_response, request
 
@@ -86,6 +88,11 @@ def invalidate_presence_cache(plugin_id: str | None = None) -> None:
                 _SUMMARY_CACHE.pop(key, None)
 
 
+invalidate_summary_cache = invalidate_presence_cache
+clear_summary_cache = invalidate_presence_cache
+invalidate_series_summary_cache = invalidate_presence_cache
+
+
 def _sanitize_summary(raw) -> dict[str, object] | None:
     if not isinstance(raw, dict):
         return None
@@ -104,7 +111,8 @@ def _sanitize_summary(raw) -> dict[str, object] | None:
         tone_raw = badge_raw.get("tone")
         tone = (
             tone_raw.strip().lower()
-            if isinstance(tone_raw, str) and tone_raw.strip().lower() in _VALID_BADGE_TONES
+            if isinstance(tone_raw, str)
+            and tone_raw.strip().lower() in _VALID_BADGE_TONES
             else "accent"
         )
         label_raw = badge_raw.get("label")
@@ -447,6 +455,305 @@ def inherit_provider(explicit, context, role: str = "reply") -> str:
             defaults.get("decision_provider") or defaults.get("reply_provider") or ""
         )
     return str(defaults.get("reply_provider") or "")
+
+
+class ProviderBudgetBusyError(RuntimeError):
+    """Raised when the shared ProviderBudget queue is full or acquire_timeout elapses."""
+
+    is_provider_budget_busy = True
+
+    def __init__(
+        self,
+        message: str = "Provider admission queue is busy",
+        *,
+        provider: str = "",
+        purpose: str = "",
+        reason: str = "busy",
+    ) -> None:
+        super().__init__(message)
+        self.provider = str(provider or "")
+        self.purpose = str(purpose or "")
+        self.reason = str(reason or "busy")
+
+
+def is_provider_budget_busy_error(exc: BaseException | None) -> bool:
+    """Identify a ProviderBudgetBusyError even across plugin module boundaries."""
+    if exc is None:
+        return False
+    return bool(
+        isinstance(exc, ProviderBudgetBusyError)
+        or getattr(exc, "is_provider_budget_busy", False)
+        or type(exc).__name__ == "ProviderBudgetBusyError"
+    )
+
+
+def get_series_shared_config(context) -> dict:
+    """Return sanitized shared defaults from chat_dynamics, or ``{}`` when absent."""
+    return get_series_defaults(context)
+
+
+def _valid_zoneinfo(name: str):
+    clean = str(name or "").strip()
+    if not clean:
+        return None
+    try:
+        return ZoneInfo(clean)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        return None
+
+
+def resolve_series_timezone_name(
+    context, explicit_tz: str = "", default_tz: str = "Asia/Shanghai"
+) -> str:
+    """Resolve normalized IANA timezone name: explicit > chat_dynamics > default > Asia/Shanghai."""
+    shared = get_series_shared_config(context)
+    candidates = (
+        explicit_tz,
+        shared.get("rhythm_timezone", "") if isinstance(shared, dict) else "",
+        default_tz,
+        "Asia/Shanghai",
+        "UTC",
+    )
+    for candidate in candidates:
+        clean = str(candidate or "").strip()
+        if not clean:
+            continue
+        if _valid_zoneinfo(clean) is not None:
+            return clean
+    return "UTC"
+
+
+def resolve_series_timezone(
+    context, explicit_tz: str = "", default_tz: str = "Asia/Shanghai"
+):
+    """Resolve a tzinfo (ZoneInfo when available): explicit > chat_dynamics > default."""
+    name = resolve_series_timezone_name(
+        context, explicit_tz=explicit_tz, default_tz=default_tz
+    )
+    tz = _valid_zoneinfo(name)
+    if tz is not None:
+        return tz
+    if name == "Asia/Shanghai":
+        return timezone(timedelta(hours=8))
+    return timezone.utc
+
+
+def resolve_series_provider(
+    context,
+    explicit_provider: str = "",
+    fallback_provider: str = "",
+    *,
+    role: str = "reply",
+) -> str:
+    """Resolve provider ID: explicit > chat_dynamics shared provider > fallback > ''."""
+    own = explicit_provider.strip() if isinstance(explicit_provider, str) else ""
+    if own:
+        return own
+    inherited = inherit_provider("", context, role=role)
+    if inherited:
+        return inherited
+    return fallback_provider.strip() if isinstance(fallback_provider, str) else ""
+
+
+def is_series_group_excluded(context, umo: str = "", group_id: str = "") -> bool:
+    """Return True if the group/UMO is listed in chat_dynamics exclude_groups."""
+    shared = get_series_shared_config(context)
+    raw_excluded = shared.get("exclude_groups") if isinstance(shared, dict) else None
+    if not raw_excluded:
+        return False
+    excluded = _normalize_str_list(raw_excluded)
+    if not excluded:
+        return False
+    clean_umo = str(umo or "").strip()
+    clean_gid = str(group_id or "").strip()
+    if not clean_gid and ":" in clean_umo:
+        clean_gid = clean_umo.rsplit(":", 1)[-1].strip()
+    if not clean_umo and not clean_gid:
+        return False
+    for entry in excluded:
+        if clean_umo and entry == clean_umo:
+            return True
+        if clean_gid and entry == clean_gid:
+            return True
+        if not clean_umo and clean_gid and ":" in entry:
+            if entry.rsplit(":", 1)[-1].strip() == clean_gid:
+                return True
+    return False
+
+
+def is_series_in_quiet_hours(context) -> bool:
+    """Return True when chat_dynamics reports active quiet/sleep hours."""
+    shared = get_series_shared_config(context)
+    quiet = shared.get("quiet_hours") if isinstance(shared, dict) else None
+    if isinstance(quiet, dict):
+        return bool(quiet.get("in_quiet_hours", False))
+    return False
+
+
+def _is_error_llm_response(response) -> bool:
+    if response is None:
+        return False
+    return str(getattr(response, "role", "") or "").strip().lower() == "err"
+
+
+def record_series_llm_usage(
+    context,
+    *,
+    plugin_id: str,
+    provider_id: str,
+    purpose: str,
+    response=None,
+    queue_seconds: float = 0.0,
+    generation_seconds: float = 0.0,
+    ok: bool = True,
+    error_type: str = "",
+) -> bool:
+    """Report one LLM call's usage & timing to chat_dynamics telemetry if present."""
+    if context is None:
+        return False
+    telemetry = getattr(context, "_chat_dynamics_series_telemetry", None)
+    if telemetry is None:
+        budget = getattr(context, "_chat_dynamics_provider_budget", None)
+        telemetry = getattr(budget, "telemetry", None) if budget is not None else None
+    recorder = getattr(telemetry, "record", None) if telemetry is not None else None
+    if not callable(recorder):
+        return False
+    try:
+        recorder(
+            plugin_id=str(plugin_id or "unknown").strip() or "unknown",
+            provider_id=str(provider_id or "default").strip() or "default",
+            purpose=str(purpose or "background").strip() or "background",
+            response=response,
+            queue_seconds=max(0.0, float(queue_seconds or 0.0)),
+            generation_seconds=max(0.0, float(generation_seconds or 0.0)),
+            ok=bool(ok),
+            error_type=str(error_type or "").strip()[:64],
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def series_llm_call(
+    context,
+    provider_id: str,
+    plugin_id: str,
+    purpose: str,
+    invoke,
+    *,
+    acquire_timeout: float | None = 15.0,
+):
+    """Run an LLM call via shared ProviderBudget when present, else directly.
+
+    Translates cross-plugin ``ProviderBudgetBusyError`` into this module's
+    ``ProviderBudgetBusyError`` so companion plugins can catch it without
+    importing ``astrbot_plugin_chat_dynamics``.
+    """
+    clean_provider = str(provider_id or "").strip() or "default"
+    clean_plugin = str(plugin_id or "").strip() or "unknown"
+    clean_purpose = str(purpose or "").strip() or "background"
+    budget = (
+        getattr(context, "_chat_dynamics_provider_budget", None)
+        if context is not None
+        else None
+    )
+    runner = getattr(budget, "run", None) if budget is not None else None
+    if callable(runner) and inspect.iscoroutinefunction(runner):
+        if getattr(budget, "supports_series_telemetry", False) is True:
+            try:
+                return await runner(
+                    clean_provider,
+                    clean_purpose,
+                    invoke,
+                    plugin_id=clean_plugin,
+                    acquire_timeout=acquire_timeout,
+                )
+            except BaseException as exc:
+                if is_provider_budget_busy_error(exc):
+                    if isinstance(exc, ProviderBudgetBusyError):
+                        raise
+                    raise ProviderBudgetBusyError(
+                        str(exc),
+                        provider=getattr(exc, "provider", clean_provider),
+                        purpose=getattr(exc, "purpose", clean_purpose),
+                        reason=getattr(exc, "reason", "busy"),
+                    ) from exc
+                raise
+        started = time.monotonic()
+        try:
+            result = await runner(clean_provider, clean_purpose, invoke)
+        except BaseException as exc:
+            elapsed = max(0.0, time.monotonic() - started)
+            if is_provider_budget_busy_error(exc):
+                record_series_llm_usage(
+                    context,
+                    plugin_id=clean_plugin,
+                    provider_id=clean_provider,
+                    purpose=clean_purpose,
+                    queue_seconds=elapsed,
+                    ok=False,
+                    error_type=f"budget_{getattr(exc, 'reason', 'busy')}",
+                )
+                if isinstance(exc, ProviderBudgetBusyError):
+                    raise
+                raise ProviderBudgetBusyError(
+                    str(exc),
+                    provider=getattr(exc, "provider", clean_provider),
+                    purpose=getattr(exc, "purpose", clean_purpose),
+                    reason=getattr(exc, "reason", "busy"),
+                ) from exc
+            record_series_llm_usage(
+                context,
+                plugin_id=clean_plugin,
+                provider_id=clean_provider,
+                purpose=clean_purpose,
+                generation_seconds=elapsed,
+                ok=False,
+                error_type=type(exc).__name__,
+            )
+            raise
+        elapsed = max(0.0, time.monotonic() - started)
+        is_err = _is_error_llm_response(result)
+        record_series_llm_usage(
+            context,
+            plugin_id=clean_plugin,
+            provider_id=clean_provider,
+            purpose=clean_purpose,
+            response=result,
+            generation_seconds=elapsed,
+            ok=not is_err,
+            error_type="host_error_response" if is_err else "",
+        )
+        return result
+
+    started = time.monotonic()
+    try:
+        value = invoke()
+        result = await value if inspect.isawaitable(value) else value
+    except BaseException as exc:
+        record_series_llm_usage(
+            context,
+            plugin_id=clean_plugin,
+            provider_id=clean_provider,
+            purpose=clean_purpose,
+            generation_seconds=max(0.0, time.monotonic() - started),
+            ok=False,
+            error_type=type(exc).__name__,
+        )
+        raise
+    elapsed = max(0.0, time.monotonic() - started)
+    is_err = _is_error_llm_response(result)
+    record_series_llm_usage(
+        context,
+        plugin_id=clean_plugin,
+        provider_id=clean_provider,
+        purpose=clean_purpose,
+        response=result,
+        generation_seconds=elapsed,
+        ok=not is_err,
+        error_type="host_error_response" if is_err else "",
+    )
+    return result
 
 
 def presence(context, current, root=None, *, force_refresh: bool = False):

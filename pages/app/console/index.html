@@ -96,6 +96,7 @@
             <div class="workspace-navigation" role="tablist" aria-label="控制台工作区" data-series-aria-label="控制台工作区">
               <button type="button" id="tab-sessions" role="tab" aria-selected="true" aria-controls="view-sessions" data-view="sessions" data-series-text="会话观测">会话观测</button>
               <button type="button" id="tab-matrix" role="tab" aria-selected="false" aria-controls="view-matrix" tabindex="-1" data-view="matrix"><span data-series-text="群聊总控矩阵">群聊总控矩阵</span><span class="tab-pill-new" aria-hidden="true">新</span></button>
+              <button type="button" id="tab-telemetry" role="tab" aria-selected="false" aria-controls="view-telemetry" tabindex="-1" data-view="telemetry" data-series-text="运行遥测">运行遥测</button>
               <button type="button" id="tab-policy" role="tab" aria-selected="false" aria-controls="view-policy" tabindex="-1" data-view="policy" data-series-text="参与与分寸">参与与分寸</button>
               <button type="button" id="tab-integrations" role="tab" aria-selected="false" aria-controls="view-integrations" tabindex="-1" data-view="integrations" data-series-text="互联诊断">互联诊断</button>
             </div>
@@ -262,9 +263,11 @@
                   <div class="matrix-toolbar">
                     <input id="matrixFilter" type="search" placeholder="筛选群名 / UMO / 角色…" autocomplete="off" aria-label="筛选群聊" data-series-placeholder="筛选群名 / UMO / 角色…" />
                     <select id="matrixPersonaFilter" aria-label="按角色筛选"><option value="">全部角色</option></select>
+                    <button type="button" class="button button-quiet" id="btnMatrixTemplates" data-series-text="模板管理">模板管理</button>
                     <button type="button" class="button button-quiet" id="btnMatrixRefresh" data-series-text="刷新矩阵">刷新矩阵</button>
                   </div>
                 </div>
+                <div class="matrix-batch-feedback hidden" id="matrixBatchFeedback" role="status" aria-live="polite"></div>
                 <div class="matrix-table-wrap" id="matrixTableWrap">
                   <table class="matrix-table">
                     <thead id="matrixTableHead"></thead>
@@ -273,6 +276,157 @@
                 </div>
                 <div class="matrix-empty hidden" id="matrixEmpty" role="status">
                   <p data-series-text="暂未发现已接管或活跃的群聊，请先在「快速引导」或「参数配置」中启用群聊。">暂未发现已接管或活跃的群聊，请先在「快速引导」或「参数配置」中启用群聊。</p>
+                </div>
+              </section>
+              <dialog class="matrix-tpl-dialog" id="matrixTemplatesDialog" aria-labelledby="tplDialogTitle">
+                <div class="tpl-dialog-shell">
+                  <header class="tpl-dialog-head">
+                    <div>
+                      <p class="eyebrow">SERIES TEMPLATES</p>
+                      <h2 id="tplDialogTitle" data-series-text="群聊配置模板管理">群聊配置模板管理</h2>
+                    </div>
+                    <button type="button" class="button button-quiet" id="btnCloseTplDialog" data-series-text="关闭">关闭</button>
+                  </header>
+                  <div class="tpl-dialog-body">
+                    <div class="tpl-list-pane">
+                      <div class="tpl-pane-head">
+                        <h3 data-series-text="可用模板">可用模板</h3>
+                        <button type="button" class="button button-quiet" id="btnNewTemplate" data-series-text="新建模板">新建模板</button>
+                      </div>
+                      <div class="tpl-list" id="tplList"></div>
+                    </div>
+                    <form class="tpl-editor-pane" id="tplForm">
+                      <h3 id="tplFormTitle" data-series-text="新建自定义模板">新建自定义模板</h3>
+                      <div class="tpl-field">
+                        <label for="tplName" data-series-text="模板名称">模板名称</label>
+                        <input id="tplName" type="text" maxlength="48" placeholder="例如：核心游戏互动群" data-series-placeholder="例如：核心游戏互动群" required />
+                      </div>
+                      <div class="tpl-field">
+                        <label for="tplDesc" data-series-text="模板说明（可选）">模板说明（可选）</label>
+                        <input id="tplDesc" type="text" maxlength="160" placeholder="说明该模板适合哪类群聊场景" data-series-placeholder="说明该模板适合哪类群聊场景" />
+                      </div>
+                      <div class="tpl-field">
+                        <label for="tplStrategyHint" data-series-text="共享策略提示（可选）">共享策略提示（可选）</label>
+                        <input id="tplStrategyHint" type="text" maxlength="120" placeholder="例如：建议同步开启观察模式试跑" data-series-placeholder="例如：建议同步开启观察模式试跑" />
+                      </div>
+                      <div class="tpl-field">
+                        <span class="tpl-field-label" data-series-text="8 插件启用开关">8 插件启用开关</span>
+                        <div class="tpl-switches-grid" id="tplPluginSwitches"></div>
+                      </div>
+                      <p class="ops-note" id="tplFormStatus" role="status" aria-live="polite"></p>
+                      <div class="tpl-form-actions">
+                        <button type="submit" class="button button-primary" id="btnSaveTemplate" data-series-text="保存模板">保存模板</button>
+                        <button type="button" class="button button-quiet" id="btnResetTemplate" data-series-text="重置">重置</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </dialog>
+            </section>
+            <section id="view-telemetry" role="tabpanel" aria-labelledby="tab-telemetry" hidden>
+              <section class="telemetry-card" id="telemetrySection" aria-labelledby="telemetryTitle">
+                <div class="telemetry-head">
+                  <div>
+                    <div class="cd-title-row">
+                      <h2 id="telemetryTitle" data-series-text="系列运行与 Token 遥测">系列运行与 Token 遥测</h2>
+                      <details class="cd-info-tip ds-info-pop">
+                        <summary aria-label="关于系列遥测" title="关于系列遥测">i</summary>
+                        <p data-series-text="统计全系列 8 插件经共享并发池发起的真实 LLM 调用次数、输入/输出与缓存命中 Token、P50/P95 延迟与实时队列健康度，不内置估算价格表。">统计全系列 8 插件经共享并发池发起的真实 LLM 调用次数、输入/输出与缓存命中 Token、P50/P95 延迟与实时队列健康度，不内置估算价格表。</p>
+                      </details>
+                    </div>
+                    <p class="ops-note" id="telemetryStatus" role="status" aria-live="polite" data-series-text="打开本页时自动汇总全系列 LLM 调用与 Token 遥测。">打开本页时自动汇总全系列 LLM 调用与 Token 遥测。</p>
+                  </div>
+                  <div class="telemetry-toolbar">
+                    <div class="telemetry-window-group" role="group" aria-label="时间窗口" data-series-aria-label="时间窗口">
+                      <button type="button" class="telemetry-win-btn" data-telemetry-window="1h" aria-pressed="false">1h</button>
+                      <button type="button" class="telemetry-win-btn is-active" data-telemetry-window="24h" aria-pressed="true">24h</button>
+                      <button type="button" class="telemetry-win-btn" data-telemetry-window="7d" aria-pressed="false">7d</button>
+                      <button type="button" class="telemetry-win-btn" data-telemetry-window="30d" aria-pressed="false">30d</button>
+                    </div>
+                    <button type="button" class="button button-quiet" id="btnTelemetryRefresh" data-series-text="刷新遥测">刷新遥测</button>
+                  </div>
+                </div>
+
+                <div class="telemetry-kpis" aria-label="遥测总览指标" data-series-aria-label="遥测总览指标">
+                  <article class="telemetry-kpi">
+                    <span class="stat-label" data-series-text="总调用次数">总调用次数</span>
+                    <strong class="tabular-nums" id="telemetryStatCalls">—</strong>
+                    <span class="stat-hint" id="telemetryStatCallsHint" data-series-text="等待遥测数据">等待遥测数据</span>
+                  </article>
+                  <article class="telemetry-kpi">
+                    <span class="stat-label" data-series-text="总输入 / 输出 Token">总输入 / 输出 Token</span>
+                    <strong class="tabular-nums" id="telemetryStatTokens">—</strong>
+                    <span class="stat-hint" id="telemetryStatTokensHint" data-series-text="输入 / 输出 Token">输入 / 输出 Token</span>
+                  </article>
+                  <article class="telemetry-kpi">
+                    <span class="stat-label" data-series-text="缓存命中率">缓存命中率</span>
+                    <strong class="tabular-nums" id="telemetryStatCache">—</strong>
+                    <span class="stat-hint" id="telemetryStatCacheHint" data-series-text="缓存命中 / 输入">缓存命中 / 输入</span>
+                  </article>
+                  <article class="telemetry-kpi">
+                    <span class="stat-label" data-series-text="实时队列与失败率">实时队列与失败率</span>
+                    <strong class="tabular-nums" id="telemetryStatQueue">—</strong>
+                    <span class="stat-hint" id="telemetryStatQueueHint" data-series-text="实时活跃 / 排队">实时活跃 / 排队</span>
+                  </article>
+                </div>
+
+                <div class="telemetry-empty hidden" id="telemetryEmpty" role="status">
+                  <p data-series-text="当前时间窗口内暂无 LLM 调用记录，产生群聊或伴生插件调用后会在此实时汇总。">当前时间窗口内暂无 LLM 调用记录，产生群聊或伴生插件调用后会在此实时汇总。</p>
+                </div>
+
+                <div class="telemetry-trend-card" id="telemetryTrendCard">
+                  <div class="telemetry-subhead">
+                    <div>
+                      <h3 data-series-text="调用与 Token 趋势">调用与 Token 趋势</h3>
+                      <span class="telemetry-trend-meta" id="telemetryTrendMeta">—</span>
+                    </div>
+                    <div class="telemetry-metric-switch" role="group" aria-label="趋势指标" data-series-aria-label="趋势指标">
+                      <button type="button" class="telemetry-win-btn is-active" data-telemetry-metric="tokens" aria-pressed="true" data-series-text="Token 用量">Token 用量</button>
+                      <button type="button" class="telemetry-win-btn" data-telemetry-metric="calls" aria-pressed="false" data-series-text="调用次数">调用次数</button>
+                    </div>
+                  </div>
+                  <div class="telemetry-chart-box" id="telemetryTrendChart"></div>
+                  <div class="telemetry-trend-axis" id="telemetryTrendAxis" aria-hidden="true"></div>
+                </div>
+
+                <div class="telemetry-tables-grid">
+                  <div class="telemetry-table-card">
+                    <h3 data-series-text="按插件拆分">按插件拆分</h3>
+                    <div class="telemetry-table-wrap">
+                      <table class="telemetry-table">
+                        <thead>
+                          <tr>
+                            <th scope="col" data-series-text="插件">插件</th>
+                            <th scope="col" data-series-text="调用">调用</th>
+                            <th scope="col" data-series-text="输入 / 输出">输入 / 输出</th>
+                            <th scope="col" data-series-text="缓存命中">缓存命中</th>
+                            <th scope="col" data-series-text="P50 / P95 耗时">P50 / P95 耗时</th>
+                            <th scope="col" data-series-text="错误">错误</th>
+                          </tr>
+                        </thead>
+                        <tbody id="telemetryPluginTableBody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="telemetry-table-card">
+                    <h3 data-series-text="按 Provider 拆分">按 Provider 拆分</h3>
+                    <div class="telemetry-table-wrap">
+                      <table class="telemetry-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Provider</th>
+                            <th scope="col" data-series-text="调用">调用</th>
+                            <th scope="col" data-series-text="输入 / 输出">输入 / 输出</th>
+                            <th scope="col" data-series-text="缓存命中">缓存命中</th>
+                            <th scope="col" data-series-text="P50 / P95 耗时">P50 / P95 耗时</th>
+                            <th scope="col" data-series-text="错误">错误</th>
+                          </tr>
+                        </thead>
+                        <tbody id="telemetryProviderTableBody"></tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               </section>
             </section>
