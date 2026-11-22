@@ -473,3 +473,68 @@ async def test_newer_diagnostic_during_send_does_not_lose_receipt(jev_plugin, mo
         assert not p._metrics.get("send_failed", 0)
     finally:
         await p.terminate()
+
+
+@pytest.mark.asyncio
+async def test_text_meme_splits_text_and_image_into_separate_messages(jev_plugin):
+    from astrbot_plugin_chat_dynamics.core.persona_engine import split_text_meme_chains
+
+    p, bridge = jev_plugin
+    caption = "别突然上手捏脸啊，脸都要被你揉扁了。"
+    meme_note = '[表情历史：{"desc":"捏脸表情"}]'
+    chain = MessageChain([Plain(caption), Image(file="/tmp/pinch.png")])
+    chain._cd_delivery_text_v1 = f"{caption}\n{meme_note}"
+    confirmed = AsyncMock()
+    chain._cd_media_success_v1 = confirmed
+    chain._cd_media_validate_v1 = lambda: True
+    chain._cd_meme_fallback_text_v1 = caption
+
+    # Respect max_fragments=1 without splitting.
+    assert split_text_meme_chains([chain], p.pacer, max_fragments=1) == [chain]
+
+    # Multi-paragraph caption splits prose paragraphs first, then pure image bubble.
+    multi = MessageChain([Plain("第一段。\n\n第二段。"), Image(file="/tmp/pinch.png")])
+    split_multi = split_text_meme_chains([multi], p.pacer, max_fragments=5)
+    assert split_multi[:2] == ["第一段。", "第二段。"]
+    assert [type(c).__name__ for c in split_multi[2].chain] == ["Image"]
+
+    bridge.generate = AsyncMock(
+        return_value=AgentOutput(
+            "",
+            "conv",
+            "[]",
+            [],
+            chains=[chain],
+            reply_mode="text_meme",
+            requested_reply_mode="text_meme",
+            reply_reason="model_selected_text_meme",
+        )
+    )
+    event = MockEvent("捏捏脸", message_id="pinch-msg", components=[At("bot_42"), Reply("earlier")])
+    event.send = AsyncMock(wraps=event.send)
+    try:
+        await p.on_group_message(event)
+        await flush(p, event)
+        await drain(p)
+
+        assert event.send.await_count == 2
+        first_components = event.send.call_args_list[0].args[0].chain
+        second_components = event.send.call_args_list[1].args[0].chain
+        assert [type(c).__name__ for c in first_components] == ["Reply", "Plain"]
+        assert first_components[1].text == caption
+        assert [type(c).__name__ for c in second_components] == ["Image"]
+        confirmed.assert_awaited_once()
+
+        # History commit records caption once + meme note without duplicating caption.
+        assert bridge.commits
+        committed_reply = str(bridge.commits[-1])
+        assert committed_reply.count(caption) == 1
+        assert meme_note in committed_reply
+
+        runtime = p._sessions[event.unified_msg_origin]
+        choice = runtime.dag.get_node("pinch-msg").metadata["reply_choice"]
+        assert choice["actual"] == "text_meme"
+        assert choice["delivered"] is True
+    finally:
+        await p.terminate()
+

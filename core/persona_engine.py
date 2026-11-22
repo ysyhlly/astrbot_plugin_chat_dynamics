@@ -187,6 +187,88 @@ def _automatic_group_reply_id(runtime: Any, item: ModelTurn, platform_id: str | 
     return None
 
 
+def _strip_leading_caption(semantic: str, caption: str) -> str:
+    """Remove the already-delivered caption prefix from a split text_meme delivery note."""
+    clean_semantic = str(semantic or "")
+    clean_caption = str(caption or "").strip()
+    if not clean_semantic or not clean_caption:
+        return clean_semantic
+    stripped = clean_semantic.lstrip()
+    if stripped.startswith(clean_caption):
+        remainder = stripped[len(clean_caption) :].lstrip("\r\n")
+        return remainder
+    return clean_semantic
+
+
+def split_text_meme_chains(
+    chains: Sequence[Any],
+    pacer: Any,
+    *,
+    max_fragments: int = 10,
+) -> list[Any]:
+    """Split mixed Plain+Image text_meme chains into separate text bubbles followed by a pure image bubble."""
+    items = list(chains or ())
+    if max_fragments < 2 or not items:
+        return items
+    result: list[Any] = []
+    for chain in items:
+        components = list(getattr(chain, "chain", ()) or ())
+        if not components:
+            result.append(chain)
+            continue
+        plain_parts: list[Any] = []
+        image_parts: list[Any] = []
+        other_parts = False
+        for component in components:
+            kind = _comp_type_name(component).lower()
+            if kind in {"plain", "text"}:
+                plain_parts.append(component)
+            elif kind == "image":
+                image_parts.append(component)
+            else:
+                other_parts = True
+                break
+        if other_parts or not plain_parts or not image_parts:
+            result.append(chain)
+            continue
+        caption = "".join(str(getattr(c, "text", "")) for c in plain_parts).strip()
+        if not caption:
+            result.append(chain)
+            continue
+        text_budget = max(1, int(max_fragments) - 1)
+        raw_parts = (
+            pacer.persona_fragments(caption)
+            if pacer is not None and callable(getattr(pacer, "persona_fragments", None))
+            else [caption]
+        )
+        text_parts = [part for part in raw_parts if str(part or "").strip()] or [caption]
+        text_parts = list(PacingShaper.limit_fragments(text_parts, text_budget))
+
+        try:
+            image_chain = type(chain)(list(image_parts))
+        except Exception:
+            import copy
+
+            image_chain = copy.copy(chain)
+            image_chain.chain = list(image_parts)
+
+        for attr in ("_cd_media_validate_v1", "_cd_media_success_v1"):
+            value = getattr(chain, attr, None)
+            if value is not None:
+                setattr(image_chain, attr, value)
+        semantic = getattr(chain, "_cd_delivery_text_v1", None)
+        if isinstance(semantic, str) and semantic.strip():
+            trimmed = _strip_leading_caption(semantic, caption)
+            if trimmed.strip():
+                image_chain._cd_delivery_text_v1 = trimmed
+        image_chain._cd_meme_fallback_text_v1 = ""
+        image_chain._cd_meme_text_already_sent_v1 = True
+
+        result.extend(text_parts)
+        result.append(image_chain)
+    return result
+
+
 def delivery_fragments(chains: Sequence[Any], text: str, pacer: Any, *, max_fragments: int = 10) -> list[Any]:
     """Queue tool/media chains, then text fragments that are not the same payload.
 
@@ -2799,6 +2881,14 @@ class PersonaEngine:
                         chains=[build_poke_chain(poke_target), *list(output.chains or ())],
                         stream_prefix="",
                     )
+                elif reply_mode == "text_meme" and output.chains:
+                    delivery_output = replace(
+                        output,
+                        chains=split_text_meme_chains(
+                            output.chains, p.pacer, max_fragments=max_fragments
+                        ),
+                        stream_prefix="",
+                    )
                 async for index, fragment in output_fragments(
                     delivery_output,
                     p.pacer,
@@ -2930,6 +3020,9 @@ class PersonaEngine:
                             send_cancellation = exc
                         if not sent.success and sent.error == "joint_meme_candidate_unavailable" and reply_mode:
                             fallback_text = getattr(fragment, "_cd_meme_fallback_text_v1", "")
+                            text_already_sent = bool(
+                                getattr(fragment, "_cd_meme_text_already_sent_v1", False)
+                            ) and bool(verbal_delivered)
                             if fallback_text:
                                 fragment = fallback_text
                                 sent = await p._send_owned(
@@ -2940,6 +3033,8 @@ class PersonaEngine:
                                     native_source_validator=output.native_sources_current,
                                     **send_options,
                                 )
+                                actual = "text"
+                            elif text_already_sent:
                                 actual = "text"
                             elif poke_delivered_in_turn:
                                 actual = "poke"
@@ -2952,7 +3047,7 @@ class PersonaEngine:
                                         no_reply=actual == "silent",
                                         reason="meme_unavailable",
                                         delivered=True
-                                        if actual == "poke"
+                                        if (actual == "poke" or text_already_sent)
                                         else node.metadata["reply_choice"].get("delivered", False),
                                         intentional_nonverbal=actual == "poke",
                                     )
@@ -2960,10 +3055,12 @@ class PersonaEngine:
                                 actual=actual,
                                 no_reply=actual == "silent",
                                 reason="meme_unavailable",
-                                delivered=True if actual == "poke" else choice.get("delivered", False),
+                                delivered=True
+                                if (actual == "poke" or text_already_sent)
+                                else choice.get("delivered", False),
                                 intentional_nonverbal=actual == "poke",
                             )
-                            if actual == "poke":
+                            if actual == "poke" or text_already_sent:
                                 break
                             if actual == "silent":
                                 p._metric("speech_withheld")

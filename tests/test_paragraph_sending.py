@@ -301,3 +301,30 @@ async def test_native_host_head_and_owned_tails_send_natural_paragraphs(limit, p
         assert not runtime.followup_queue
     finally:
         await p.terminate()
+
+
+def test_split_text_meme_chains_separates_text_paragraphs_and_pure_image():
+    from astrbot.api.event import MessageChain
+    from astrbot.api.message_components import Image, Plain
+    from astrbot_plugin_chat_dynamics.core.persona_engine import split_text_meme_chains
+
+    caption = "别突然上手捏脸啊，脸都要被你揉扁了。\n\n再捏就不理你了。"
+    note = '[表情历史：{"desc":"捏脸表情"}]'
+    chain = MessageChain([Plain(caption), Image(file="/tmp/pinch.png")])
+    chain._cd_delivery_text_v1 = f"{caption}\n{note}"
+    chain._cd_meme_fallback_text_v1 = caption
+    marker_validate = lambda: True  # noqa: E731
+    chain._cd_media_validate_v1 = marker_validate
+
+    parts = split_text_meme_chains([chain], PacingShaper(), max_fragments=5)
+    assert parts[:2] == ["别突然上手捏脸啊，脸都要被你揉扁了。", "再捏就不理你了。"]
+    img_chain = parts[2]
+    assert [type(c).__name__ for c in img_chain.chain] == ["Image"]
+    assert img_chain._cd_delivery_text_v1 == note
+    assert img_chain._cd_meme_fallback_text_v1 == ""
+    assert img_chain._cd_meme_text_already_sent_v1 is True
+    assert img_chain._cd_media_validate_v1 is marker_validate
+
+    # Single-fragment cap preserves original chain intact.
+    assert split_text_meme_chains([chain], PacingShaper(), max_fragments=1) == [chain]
+
