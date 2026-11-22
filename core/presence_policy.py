@@ -10,13 +10,11 @@ def participation_policy(presence: str = "sensible") -> dict:
         "ghost": "Observe public chatter. Respond when directly addressed or continuing an addressed exchange.",
         "sensible": "Prefer observing; join when directly addressed, naturally continuing, or clearly helpful.",
         "lively": (
-            "Actively look for a distinct contribution to open group discussion: answer public "
-            "questions, share your own take/stance, a fresh angle, playful riff, banter or fitting joke. "
-            "The topic need not concern this participant. Two humans taking turns does not alone make a topic private. "
-            "An @ or identified recipient is not required for public discussion. Do not wait for a long silence. "
-            "Do NOT join just to echo, agree or act as a yes-man ('true/agree/haha/me too'). "
-            "Avoid empty filler, repeated reactions, interrupting explicit human-to-human exchanges, "
-            "private boundaries, conflict, or requests to stop. Choose ignore when you have no distinct take or joke to add."
+            "Actively contribute a distinct own take, fresh angle, playful riff, banter or fitting joke "
+            "to open group discussion. The topic need not concern this participant; two humans taking turns "
+            "is not alone private, and no @ or silence is needed. Never join just to echo, agree or act as "
+            "a yes-man. Avoid empty filler, repeated reactions, interrupting private exchanges, boundaries, "
+            "conflict or stops; choose ignore with no distinct take or joke."
         ),
     }[mode]
     return {
