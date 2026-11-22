@@ -25,6 +25,7 @@ BACKEND = [
     "test_natural_rhythm", "test_series_hub_v2",
     "test_series_telemetry_and_budget",
     "test_series_matrix_batch_templates_and_shared_config",
+    "test_anti_echo_prompts",
 ]
 BROWSER = [
     "test_systemone_settings_browser",
