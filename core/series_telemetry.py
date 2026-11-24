@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import sqlite3
 import threading
@@ -28,6 +29,73 @@ _ROLLING_SAMPLE_LIMIT = 512
 _FLUSH_INTERVAL_SECONDS = 2.0
 _FLUSH_PENDING_THRESHOLD = 32
 _PRUNE_INTERVAL_SECONDS = 3600.0
+_MAX_DIM_GROUPS = 256
+
+# Approximate per-1M-token USD pricing tuples: (input, cached_read, cache_creation, output).
+# Used for cost visibility & budget guardrails; callers may override via set_pricing().
+DEFAULT_MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "deepseek-chat": (0.27, 0.07, 0.27, 1.10),
+    "deepseek-reasoner": (0.55, 0.14, 0.55, 2.19),
+    "deepseek": (0.27, 0.07, 0.27, 1.10),
+    "gemini-2.5-flash": (0.15, 0.0375, 0.15, 0.60),
+    "gemini-2.5-pro": (1.25, 0.3125, 1.25, 10.00),
+    "gemini-3": (0.30, 0.075, 0.30, 2.50),
+    "gemini": (0.30, 0.075, 0.30, 1.50),
+    "claude-3-5-haiku": (0.80, 0.08, 1.00, 4.00),
+    "claude-sonnet": (3.00, 0.30, 3.75, 15.00),
+    "claude-opus": (15.00, 1.50, 18.75, 75.00),
+    "gpt-4o-mini": (0.15, 0.075, 0.15, 0.60),
+    "gpt-4o": (2.50, 1.25, 2.50, 10.00),
+    "gpt-4.1-mini": (0.40, 0.10, 0.40, 1.60),
+    "gpt-4.1": (2.00, 0.50, 2.00, 8.00),
+    "qwen-plus": (0.40, 0.10, 0.40, 1.20),
+    "qwen-turbo": (0.05, 0.02, 0.05, 0.20),
+    "qwen": (0.30, 0.08, 0.30, 0.90),
+}
+DEFAULT_IMAGE_COST_USD = 0.04
+
+
+def estimate_cost_usd(
+    usage: UsageSnapshot,
+    *,
+    model: str = "",
+    provider_id: str = "",
+    image_count: int = 0,
+    pricing: dict[str, tuple[float, float, float, float]] | None = None,
+    image_unit_cost: float = DEFAULT_IMAGE_COST_USD,
+) -> float:
+    """Estimate USD cost from token usage + generated image count using substring pricing lookup."""
+    cost = max(0, int(image_count or 0)) * max(0.0, float(image_unit_cost))
+    if usage.usage_missing and usage.total_tokens <= 0:
+        return round(cost, 6)
+    table = pricing if pricing is not None else DEFAULT_MODEL_PRICING
+    haystack = f"{model} {provider_id}".strip().lower()
+    rates: tuple[float, float, float, float] | None = None
+    if haystack:
+        for key in sorted(table, key=len, reverse=True):
+            if key.lower() in haystack:
+                rates = table[key]
+                break
+    if rates is not None:
+        in_rate, cache_read_rate, cache_write_rate, out_rate = rates
+        cached = min(usage.input_tokens, usage.cached_tokens)
+        creation = min(max(0, usage.input_tokens - cached), usage.cache_creation_tokens)
+        fresh_in = max(0, usage.input_tokens - cached - creation)
+        cost += (
+            fresh_in * in_rate
+            + cached * cache_read_rate
+            + creation * cache_write_rate
+            + usage.output_tokens * out_rate
+        ) / 1_000_000.0
+    return round(max(0.0, cost), 6)
+
+
+def _in_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -234,6 +302,8 @@ class _BucketDelta:
     cache_creation_tokens: int = 0
     queue_ms_sum: float = 0.0
     generation_ms_sum: float = 0.0
+    image_count: int = 0
+    estimated_cost_usd: float = 0.0
 
     def add(
         self,
@@ -242,6 +312,8 @@ class _BucketDelta:
         queue_ms: float,
         generation_ms: float,
         ok: bool,
+        image_count: int = 0,
+        estimated_cost_usd: float = 0.0,
     ) -> None:
         self.calls += 1
         if ok:
@@ -257,6 +329,8 @@ class _BucketDelta:
         self.cache_creation_tokens += usage.cache_creation_tokens
         self.queue_ms_sum += queue_ms
         self.generation_ms_sum += generation_ms
+        self.image_count += max(0, int(image_count or 0))
+        self.estimated_cost_usd += max(0.0, float(estimated_cost_usd or 0.0))
 
 
 class SeriesTelemetryStore:
@@ -270,12 +344,18 @@ class SeriesTelemetryStore:
         flush_interval_seconds: float = _FLUSH_INTERVAL_SECONDS,
         flush_threshold: int = _FLUSH_PENDING_THRESHOLD,
         rolling_limit: int = _ROLLING_SAMPLE_LIMIT,
+        pricing: dict[str, tuple[float, float, float, float]] | None = None,
+        image_unit_cost: float = DEFAULT_IMAGE_COST_USD,
     ) -> None:
         self.db_path = Path(db_path) if db_path is not None else None
         self.retention_days = max(1, int(retention_days))
         self.flush_interval_seconds = max(0.0, float(flush_interval_seconds))
         self.flush_threshold = max(1, int(flush_threshold))
         self.rolling_limit = max(16, int(rolling_limit))
+        self._pricing: dict[str, tuple[float, float, float, float]] = dict(
+            DEFAULT_MODEL_PRICING if pricing is None else pricing
+        )
+        self._image_unit_cost = max(0.0, float(image_unit_cost))
 
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
@@ -283,10 +363,16 @@ class SeriesTelemetryStore:
         self._pending_count = 0
         self._last_flush_monotonic = time.monotonic()
         self._last_prune_wall = 0.0
+        self._flush_event = threading.Event()
+        self._flush_thread: threading.Thread | None = None
 
         # Pending deltas keyed by (bucket, plugin_id, provider_id, purpose)
         self._pending_hourly: dict[tuple[str, str, str, str], _BucketDelta] = {}
         self._pending_daily: dict[tuple[str, str, str, str], _BucketDelta] = {}
+        # Pending error counts keyed by (day_bucket, plugin_id, provider_id, error_type)
+        self._pending_errors: dict[tuple[str, str, str, str], int] = {}
+        # Pending dimension deltas keyed by (day_bucket, dim_type, dim_key, plugin_id)
+        self._pending_dims: dict[tuple[str, str, str, str], _BucketDelta] = {}
 
         # Rolling recent samples keyed by (plugin_id, provider_id, purpose)
         self._queue_samples: dict[tuple[str, str, str], deque[float]] = {}
@@ -294,6 +380,47 @@ class SeriesTelemetryStore:
 
         if self.db_path is not None:
             self._init_db()
+            self._start_flush_worker()
+
+    def set_pricing(
+        self,
+        pricing: dict[str, tuple[float, float, float, float]],
+        *,
+        image_unit_cost: float | None = None,
+    ) -> None:
+        with self._lock:
+            self._pricing = dict(pricing)
+            if image_unit_cost is not None:
+                self._image_unit_cost = max(0.0, float(image_unit_cost))
+
+    def _start_flush_worker(self) -> None:
+        if self._conn is None or self._flush_thread is not None:
+            return
+
+        def _worker() -> None:
+            while not self._closed:
+                self._flush_event.wait(timeout=max(0.25, self.flush_interval_seconds))
+                self._flush_event.clear()
+                if self._closed:
+                    break
+                with self._lock:
+                    if self._closed or self._conn is None:
+                        break
+                    if (
+                        self._pending_hourly
+                        or self._pending_daily
+                        or self._pending_errors
+                        or self._pending_dims
+                    ):
+                        self._flush_locked()
+
+        t = threading.Thread(
+            target=_worker,
+            name="cd-series-telemetry-flush",
+            daemon=True,
+        )
+        t.start()
+        self._flush_thread = t
 
     def _init_db(self) -> None:
         if self.db_path is None:
@@ -326,14 +453,65 @@ class SeriesTelemetryStore:
                     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
                     queue_ms_sum REAL NOT NULL DEFAULT 0.0,
                     generation_ms_sum REAL NOT NULL DEFAULT 0.0,
+                    image_count INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
                     updated_at INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (bucket, plugin_id, provider_id, purpose)
                 )
                 """
             )
+            existing_cols = {
+                row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "image_count" not in existing_cols:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN image_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "estimated_cost_usd" not in existing_cols:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0.0"
+                )
             conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{table}_bucket ON {table} (bucket)"
             )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_errors (
+                bucket TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (bucket, plugin_id, provider_id, error_type)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telemetry_errors_bucket ON telemetry_errors (bucket)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telemetry_dims_daily (
+                bucket TEXT NOT NULL,
+                dim_type TEXT NOT NULL,
+                dim_key TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                calls INTEGER NOT NULL DEFAULT 0,
+                error_calls INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                image_count INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (bucket, dim_type, dim_key, plugin_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telemetry_dims_bucket ON telemetry_dims_daily (bucket)"
+        )
         conn.commit()
         self._conn = conn
         self.prune_old()
@@ -349,12 +527,24 @@ class SeriesTelemetryStore:
         generation_seconds: float = 0.0,
         ok: bool = True,
         error_type: str = "",
+        model: str = "",
+        group_id: str = "",
+        image_count: int = 0,
         now: float | None = None,
     ) -> UsageSnapshot:
         clean_plugin = str(plugin_id or "unknown").strip()[:128] or "unknown"
         clean_provider = str(provider_id or "default").strip()[:128] or "default"
         clean_purpose = str(purpose or "background").strip()[:64] or "background"
-        _ = error_type  # reserved for future breakdown; counted via ok=False
+        clean_error = str(error_type or "").strip()[:64]
+        clean_model = str(model or "").strip()[:128]
+        if not clean_model and response is not None:
+            for attr in ("model", "model_name"):
+                raw_m = _get_field(response, attr)
+                if isinstance(raw_m, str) and raw_m.strip():
+                    clean_model = raw_m.strip()[:128]
+                    break
+        clean_group = str(group_id or "").strip()[:128]
+        clean_images = max(0, int(image_count or 0))
 
         q_ms = max(0.0, float(queue_seconds or 0.0) * 1000.0)
         g_ms = max(0.0, float(generation_seconds or 0.0) * 1000.0)
@@ -364,6 +554,14 @@ class SeriesTelemetryStore:
             g_ms = 0.0
 
         usage = extract_usage(response)
+        est_cost = estimate_cost_usd(
+            usage,
+            model=clean_model,
+            provider_id=clean_provider,
+            image_count=clean_images,
+            pricing=self._pricing,
+            image_unit_cost=self._image_unit_cost,
+        )
         dt = _utc_dt(now)
         h_bucket = _hour_bucket(dt)
         d_bucket = _day_bucket(dt)
@@ -382,20 +580,74 @@ class SeriesTelemetryStore:
             h_key = (h_bucket, clean_plugin, clean_provider, clean_purpose)
             d_key = (d_bucket, clean_plugin, clean_provider, clean_purpose)
             self._pending_hourly.setdefault(h_key, _BucketDelta()).add(
-                usage=usage, queue_ms=q_ms, generation_ms=g_ms, ok=bool(ok)
+                usage=usage,
+                queue_ms=q_ms,
+                generation_ms=g_ms,
+                ok=bool(ok),
+                image_count=clean_images,
+                estimated_cost_usd=est_cost,
             )
             self._pending_daily.setdefault(d_key, _BucketDelta()).add(
-                usage=usage, queue_ms=q_ms, generation_ms=g_ms, ok=bool(ok)
+                usage=usage,
+                queue_ms=q_ms,
+                generation_ms=g_ms,
+                ok=bool(ok),
+                image_count=clean_images,
+                estimated_cost_usd=est_cost,
             )
+            if not ok:
+                err_label = clean_error or "unknown_error"
+                e_key = (d_bucket, clean_plugin, clean_provider, err_label)
+                self._pending_errors[e_key] = self._pending_errors.get(e_key, 0) + 1
+            if clean_model:
+                m_key = (d_bucket, "model", clean_model, clean_plugin)
+                self._pending_dims.setdefault(m_key, _BucketDelta()).add(
+                    usage=usage,
+                    queue_ms=0.0,
+                    generation_ms=0.0,
+                    ok=bool(ok),
+                    image_count=clean_images,
+                    estimated_cost_usd=est_cost,
+                )
+            if clean_group and len(self._pending_dims) < _MAX_DIM_GROUPS * 4:
+                g_key = (d_bucket, "group", clean_group, clean_plugin)
+                self._pending_dims.setdefault(g_key, _BucketDelta()).add(
+                    usage=usage,
+                    queue_ms=0.0,
+                    generation_ms=0.0,
+                    ok=bool(ok),
+                    image_count=clean_images,
+                    estimated_cost_usd=est_cost,
+                )
+
             self._pending_count += 1
 
             mono = time.monotonic()
-            if self._conn is not None and (
+            should_flush = self._conn is not None and (
                 self._pending_count >= self.flush_threshold
                 or (mono - self._last_flush_monotonic) >= self.flush_interval_seconds
-            ):
-                self._flush_locked(now=now)
+            )
+            if should_flush:
+                if _in_running_event_loop() and self._flush_thread is not None:
+                    self._flush_event.set()
+                else:
+                    self._flush_locked(now=now)
         return usage
+
+    def today_usage_summary(self, *, now: float | None = None) -> dict[str, Any]:
+        """Fast daily token/cost totals for ProviderBudget soft/hard cap enforcement."""
+        day_bucket = _day_bucket(_utc_dt(now))
+        with self._lock:
+            rows = self._collect_rows_locked("day", day_bucket, day_bucket)
+            tokens = sum(d.total_tokens for _, _, _, _, d in rows)
+            cost_usd = sum(d.estimated_cost_usd for _, _, _, _, d in rows)
+            calls = sum(d.calls for _, _, _, _, d in rows)
+        return {
+            "bucket": day_bucket,
+            "calls": calls,
+            "total_tokens": tokens,
+            "estimated_cost_usd": round(cost_usd, 6),
+        }
 
     def flush(self, *, now: float | None = None) -> None:
         with self._lock:
@@ -406,7 +658,12 @@ class SeriesTelemetryStore:
     def _flush_locked(self, *, now: float | None = None) -> None:
         if self._conn is None:
             return
-        if not self._pending_hourly and not self._pending_daily:
+        if (
+            not self._pending_hourly
+            and not self._pending_daily
+            and not self._pending_errors
+            and not self._pending_dims
+        ):
             self._last_flush_monotonic = time.monotonic()
             return
         wall = int(time.time() if now is None else float(now))
@@ -416,8 +673,9 @@ class SeriesTelemetryStore:
                 calls, ok_calls, error_calls, usage_missing_calls,
                 input_tokens, output_tokens, total_tokens,
                 cached_tokens, cache_creation_tokens,
-                queue_ms_sum, generation_ms_sum, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                queue_ms_sum, generation_ms_sum,
+                image_count, estimated_cost_usd, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bucket, plugin_id, provider_id, purpose) DO UPDATE SET
                 calls = calls + excluded.calls,
                 ok_calls = ok_calls + excluded.ok_calls,
@@ -430,6 +688,8 @@ class SeriesTelemetryStore:
                 cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
                 queue_ms_sum = queue_ms_sum + excluded.queue_ms_sum,
                 generation_ms_sum = generation_ms_sum + excluded.generation_ms_sum,
+                image_count = image_count + excluded.image_count,
+                estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
                 updated_at = excluded.updated_at
         """
         cur = self._conn.cursor()
@@ -452,6 +712,8 @@ class SeriesTelemetryStore:
                         d.cache_creation_tokens,
                         d.queue_ms_sum,
                         d.generation_ms_sum,
+                        d.image_count,
+                        d.estimated_cost_usd,
                         wall,
                     )
                     for (bucket, pid, prov, purp), d in self._pending_hourly.items()
@@ -475,14 +737,70 @@ class SeriesTelemetryStore:
                         d.cache_creation_tokens,
                         d.queue_ms_sum,
                         d.generation_ms_sum,
+                        d.image_count,
+                        d.estimated_cost_usd,
                         wall,
                     )
                     for (bucket, pid, prov, purp), d in self._pending_daily.items()
                 ]
                 cur.executemany(upsert_sql.format(table="telemetry_daily"), rows)
+            if self._pending_errors:
+                err_rows = [
+                    (bucket, pid, prov, etype, cnt, wall)
+                    for (bucket, pid, prov, etype), cnt in self._pending_errors.items()
+                ]
+                cur.executemany(
+                    """
+                    INSERT INTO telemetry_errors (bucket, plugin_id, provider_id, error_type, calls, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket, plugin_id, provider_id, error_type) DO UPDATE SET
+                        calls = calls + excluded.calls,
+                        updated_at = excluded.updated_at
+                    """,
+                    err_rows,
+                )
+            if self._pending_dims:
+                dim_rows = [
+                    (
+                        bucket,
+                        dtype,
+                        dkey,
+                        pid,
+                        d.calls,
+                        d.error_calls,
+                        d.input_tokens,
+                        d.output_tokens,
+                        d.cached_tokens,
+                        d.image_count,
+                        d.estimated_cost_usd,
+                        wall,
+                    )
+                    for (bucket, dtype, dkey, pid), d in self._pending_dims.items()
+                ]
+                cur.executemany(
+                    """
+                    INSERT INTO telemetry_dims_daily (
+                        bucket, dim_type, dim_key, plugin_id,
+                        calls, error_calls, input_tokens, output_tokens,
+                        cached_tokens, image_count, estimated_cost_usd, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket, dim_type, dim_key, plugin_id) DO UPDATE SET
+                        calls = calls + excluded.calls,
+                        error_calls = error_calls + excluded.error_calls,
+                        input_tokens = input_tokens + excluded.input_tokens,
+                        output_tokens = output_tokens + excluded.output_tokens,
+                        cached_tokens = cached_tokens + excluded.cached_tokens,
+                        image_count = image_count + excluded.image_count,
+                        estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                        updated_at = excluded.updated_at
+                    """,
+                    dim_rows,
+                )
             self._conn.commit()
             self._pending_hourly.clear()
             self._pending_daily.clear()
+            self._pending_errors.clear()
+            self._pending_dims.clear()
             self._pending_count = 0
             self._last_flush_monotonic = time.monotonic()
         except Exception:
@@ -516,6 +834,12 @@ class SeriesTelemetryStore:
         for key in [k for k in self._pending_daily if k[0] < cutoff_day]:
             self._pending_daily.pop(key, None)
             removed += 1
+        for key in [k for k in self._pending_errors if k[0] < cutoff_day]:
+            self._pending_errors.pop(key, None)
+            removed += 1
+        for key in [k for k in self._pending_dims if k[0] < cutoff_day]:
+            self._pending_dims.pop(key, None)
+            removed += 1
 
         if self._conn is not None:
             cur = self._conn.cursor()
@@ -526,6 +850,14 @@ class SeriesTelemetryStore:
                 removed += max(0, cur.rowcount or 0)
                 cur.execute(
                     "DELETE FROM telemetry_daily WHERE bucket < ?", (cutoff_day,)
+                )
+                removed += max(0, cur.rowcount or 0)
+                cur.execute(
+                    "DELETE FROM telemetry_errors WHERE bucket < ?", (cutoff_day,)
+                )
+                removed += max(0, cur.rowcount or 0)
+                cur.execute(
+                    "DELETE FROM telemetry_dims_daily WHERE bucket < ?", (cutoff_day,)
                 )
                 removed += max(0, cur.rowcount or 0)
                 self._conn.commit()
@@ -558,6 +890,8 @@ class SeriesTelemetryStore:
                     cache_creation_tokens=delta.cache_creation_tokens,
                     queue_ms_sum=delta.queue_ms_sum,
                     generation_ms_sum=delta.generation_ms_sum,
+                    image_count=delta.image_count,
+                    estimated_cost_usd=delta.estimated_cost_usd,
                 )
             else:
                 acc.calls += delta.calls
@@ -571,6 +905,8 @@ class SeriesTelemetryStore:
                 acc.cache_creation_tokens += delta.cache_creation_tokens
                 acc.queue_ms_sum += delta.queue_ms_sum
                 acc.generation_ms_sum += delta.generation_ms_sum
+                acc.image_count += delta.image_count
+                acc.estimated_cost_usd += delta.estimated_cost_usd
 
         if self._conn is not None:
             table = "telemetry_hourly" if granularity == "hour" else "telemetry_daily"
@@ -582,7 +918,8 @@ class SeriesTelemetryStore:
                            calls, ok_calls, error_calls, usage_missing_calls,
                            input_tokens, output_tokens, total_tokens,
                            cached_tokens, cache_creation_tokens,
-                           queue_ms_sum, generation_ms_sum
+                           queue_ms_sum, generation_ms_sum,
+                           image_count, estimated_cost_usd
                     FROM {table}
                     WHERE bucket >= ? AND bucket <= ?
                     """,
@@ -604,6 +941,8 @@ class SeriesTelemetryStore:
                             cache_creation_tokens=int(row[12]),
                             queue_ms_sum=float(row[13]),
                             generation_ms_sum=float(row[14]),
+                            image_count=int(row[15] or 0),
+                            estimated_cost_usd=float(row[16] or 0.0),
                         ),
                     )
             finally:
@@ -615,6 +954,111 @@ class SeriesTelemetryStore:
                 _merge(key, delta)
 
         return [(b, p, prov, purp, d) for (b, p, prov, purp), d in merged.items()]
+
+    def _collect_errors_locked(self, start_day: str, end_day: str) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        if self._conn is not None:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT error_type, SUM(calls)
+                    FROM telemetry_errors
+                    WHERE bucket >= ? AND bucket <= ?
+                    GROUP BY error_type
+                    """,
+                    (start_day, end_day),
+                )
+                for etype, cnt in cur.fetchall():
+                    counts[str(etype)] = counts.get(str(etype), 0) + int(cnt or 0)
+            finally:
+                cur.close()
+        for (bucket, _pid, _prov, etype), cnt in self._pending_errors.items():
+            if start_day <= bucket <= end_day:
+                counts[etype] = counts.get(etype, 0) + cnt
+        return [
+            {"error_type": etype, "calls": cnt}
+            for etype, cnt in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:30]
+        ]
+
+    def _collect_dim_locked(
+        self, dim_type: str, start_day: str, end_day: str
+    ) -> list[dict[str, Any]]:
+        acc_map: dict[str, _BucketDelta] = {}
+
+        def _add(k: str, d: _BucketDelta) -> None:
+            cur_d = acc_map.get(k)
+            if cur_d is None:
+                acc_map[k] = _BucketDelta(
+                    calls=d.calls,
+                    error_calls=d.error_calls,
+                    input_tokens=d.input_tokens,
+                    output_tokens=d.output_tokens,
+                    total_tokens=d.input_tokens + d.output_tokens,
+                    cached_tokens=d.cached_tokens,
+                    image_count=d.image_count,
+                    estimated_cost_usd=d.estimated_cost_usd,
+                )
+            else:
+                cur_d.calls += d.calls
+                cur_d.error_calls += d.error_calls
+                cur_d.input_tokens += d.input_tokens
+                cur_d.output_tokens += d.output_tokens
+                cur_d.total_tokens += d.input_tokens + d.output_tokens
+                cur_d.cached_tokens += d.cached_tokens
+                cur_d.image_count += d.image_count
+                cur_d.estimated_cost_usd += d.estimated_cost_usd
+
+        if self._conn is not None:
+            cur = self._conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT dim_key, SUM(calls), SUM(error_calls),
+                           SUM(input_tokens), SUM(output_tokens),
+                           SUM(cached_tokens), SUM(image_count), SUM(estimated_cost_usd)
+                    FROM telemetry_dims_daily
+                    WHERE dim_type = ? AND bucket >= ? AND bucket <= ?
+                    GROUP BY dim_key
+                    """,
+                    (dim_type, start_day, end_day),
+                )
+                for row in cur.fetchall():
+                    _add(
+                        str(row[0]),
+                        _BucketDelta(
+                            calls=int(row[1] or 0),
+                            error_calls=int(row[2] or 0),
+                            input_tokens=int(row[3] or 0),
+                            output_tokens=int(row[4] or 0),
+                            cached_tokens=int(row[5] or 0),
+                            image_count=int(row[6] or 0),
+                            estimated_cost_usd=float(row[7] or 0.0),
+                        ),
+                    )
+            finally:
+                cur.close()
+        for (bucket, dt_key, dkey, _pid), delta in self._pending_dims.items():
+            if dt_key == dim_type and start_day <= bucket <= end_day:
+                _add(dkey, delta)
+        key_name = "model" if dim_type == "model" else "group_id"
+        return [
+            {
+                key_name: k,
+                "calls": d.calls,
+                "error_calls": d.error_calls,
+                "input_tokens": d.input_tokens,
+                "output_tokens": d.output_tokens,
+                "cached_tokens": d.cached_tokens,
+                "cache_hit_rate": _safe_rate(d.cached_tokens, d.input_tokens),
+                "image_count": d.image_count,
+                "estimated_cost_usd": round(d.estimated_cost_usd, 6),
+            }
+            for k, d in sorted(
+                acc_map.items(),
+                key=lambda kv: (-kv[1].estimated_cost_usd, -kv[1].calls, kv[0]),
+            )[:30]
+        ]
 
     def _latency_percentiles_locked(
         self,
@@ -670,6 +1114,8 @@ class SeriesTelemetryStore:
             "p95_queue_ms": p95_q,
             "p50_generation_ms": p50_g,
             "p95_generation_ms": p95_g,
+            "image_count": agg.image_count,
+            "estimated_cost_usd": round(agg.estimated_cost_usd, 6),
         }
 
     def snapshot(
@@ -692,11 +1138,16 @@ class SeriesTelemetryStore:
             end_bucket = _day_bucket(dt)
             start_dt = dt - timedelta(days=max(0, span - 1))
             start_bucket = _day_bucket(start_dt)
+        start_day = _day_bucket(start_dt)
+        end_day = _day_bucket(dt)
 
         with self._lock:
             if not self._closed:
                 self._flush_locked(now=now)
             rows = self._collect_rows_locked(granularity, start_bucket, end_bucket)
+            by_error_type = self._collect_errors_locked(start_day, end_day)
+            by_model = self._collect_dim_locked("model", start_day, end_day)
+            by_group = self._collect_dim_locked("group", start_day, end_day)
 
             total = _BucketDelta()
             by_plugin_acc: dict[str, _BucketDelta] = {}
@@ -715,6 +1166,8 @@ class SeriesTelemetryStore:
                 target.cache_creation_tokens += src.cache_creation_tokens
                 target.queue_ms_sum += src.queue_ms_sum
                 target.generation_ms_sum += src.generation_ms_sum
+                target.image_count += src.image_count
+                target.estimated_cost_usd += src.estimated_cost_usd
 
             for bucket, pid, prov, _purp, delta in rows:
                 _accum(total, delta)
@@ -765,6 +1218,8 @@ class SeriesTelemetryStore:
                         "avg_generation_ms": round(agg.generation_ms_sum / agg.calls, 2)
                         if agg.calls
                         else 0.0,
+                        "image_count": agg.image_count,
+                        "estimated_cost_usd": round(agg.estimated_cost_usd, 6),
                     }
                 )
 
@@ -784,11 +1239,15 @@ class SeriesTelemetryStore:
             "summary": summary,
             "by_plugin": by_plugin,
             "by_provider": by_provider,
+            "by_error_type": by_error_type,
+            "by_model": by_model,
+            "by_group": by_group,
             "timeline": timeline,
             "live_queue": live_queue if isinstance(live_queue, dict) else default_queue,
         }
 
     def close(self) -> None:
+        thread: threading.Thread | None = None
         with self._lock:
             if self._closed:
                 return
@@ -796,9 +1255,14 @@ class SeriesTelemetryStore:
                 self._flush_locked()
             finally:
                 self._closed = True
+                self._flush_event.set()
+                thread = self._flush_thread
+                self._flush_thread = None
                 if self._conn is not None:
                     try:
                         self._conn.close()
                     except Exception:
                         pass
                     self._conn = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)

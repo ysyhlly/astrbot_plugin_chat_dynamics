@@ -86,7 +86,25 @@ def _order_request_tools(request, runner, blocked_tools, *, internal=False):
         setattr(owner, attribute, copies[key])
 
 
-def _safe_generation_failure_fields(managed: Any, exc: BaseException) -> dict[str, Any]:
+def _sanitize_reply_narration(raw: str, *, max_chars: int = 118, wrap: bool = True) -> str:
+    """Normalize minor narration formatting issues (multiline, extra parens, slight overflow)."""
+    lines = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
+    text = " ".join(lines).strip()
+    while (text.startswith("（") and text.endswith("）")) or (
+        text.startswith("(") and text.endswith(")")
+    ):
+        text = text[1:-1].strip()
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        limit = max(1, max_chars - 1)
+        clipped = text[:limit].rstrip("，,、;；:： ")
+        text = (clipped or text[:limit]) + "…"
+    return f"（{text}）" if wrap else text
+
+
+def _safe_generation_failure_fields(managed: Any, exc: BaseException, event: Any = None) -> dict[str, Any]:
     """Return bounded, body-free identifiers and SDK exception metadata only."""
 
     def safe_id(value: Any) -> str:
@@ -119,9 +137,24 @@ def _safe_generation_failure_fields(managed: Any, exc: BaseException) -> dict[st
         return None
 
     managed_dict = managed if type(managed) is dict else {}
+    trace_dict = {}
+    if event is not None:
+        extras = getattr(event, "_extras", None)
+        if isinstance(extras, dict) and isinstance(extras.get("_chat_dynamics_trace_v1"), dict):
+            trace_dict = extras["_chat_dynamics_trace_v1"]
+    turn_id_raw = (
+        managed_dict.get("turn_id")
+        or trace_dict.get("turn_id")
+        or getattr(event, "_chat_dynamics_trace_turn_id", None)
+    )
+    bundle_id_raw = (
+        managed_dict.get("bundle_id")
+        or trace_dict.get("bundle_id")
+        or getattr(event, "_chat_dynamics_trace_bundle_id", None)
+    )
     fields: dict[str, Any] = {
-        "turn_id": safe_id(managed_dict.get("turn_id")),
-        "bundle_id": safe_id(managed_dict.get("bundle_id")),
+        "turn_id": safe_id(turn_id_raw),
+        "bundle_id": safe_id(bundle_id_raw),
         "exception_chain": [],
         "http_statuses": [],
     }
@@ -157,10 +190,10 @@ def _safe_generation_failure_fields(managed: Any, exc: BaseException) -> dict[st
     return fields
 
 
-def _log_generation_failure(managed: Any, exc: BaseException) -> None:
+def _log_generation_failure(managed: Any, exc: BaseException, event: Any = None) -> None:
     """Best-effort diagnostics must never mask the original generation failure."""
     try:
-        fields = _safe_generation_failure_fields(managed, exc)
+        fields = _safe_generation_failure_fields(managed, exc, event=event)
         logger.error(
             "chat_dynamics_generation_failure turn_id=%s bundle_id=%s exception_chain=%s http_statuses=%s",
             fields["turn_id"],
@@ -480,6 +513,7 @@ class MemberBoundaryProvider:
     def _deny(self, reason):
         try:
             setattr(self.event, "_chat_dynamics_boundary_failed_closed", True)
+            setattr(self.event, "_chat_dynamics_boundary_failed_closed_reason", str(reason or "boundary_denied"))
         except Exception:
             pass
         raise member_boundary.BoundaryCancelled(reason)
@@ -584,6 +618,60 @@ class AgentOutput:
             raise
         except Exception:
             return False
+
+
+class _AggregatedUsageResponse:
+    """Thin proxy preserving the final LLMResponse while exposing summed multi-round token usage."""
+
+    def __init__(self, inner: Any, usage: dict[str, Any], rounds: int) -> None:
+        self._inner = inner
+        self.usage = usage
+        self.telemetry_rounds = rounds
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _merge_round_usage(responses: list[Any], final_response: Any) -> Any:
+    """Sum token usage across all non-chunk LLM responses captured in a multi-step tool loop."""
+    if not responses:
+        return final_response
+    from .series_telemetry import extract_usage
+
+    seen_ids: set[int] = set()
+    ordered: list[Any] = []
+    for item in responses:
+        if item is None:
+            continue
+        oid = id(item)
+        if oid in seen_ids:
+            continue
+        seen_ids.add(oid)
+        ordered.append(item)
+    if final_response is not None and id(final_response) not in seen_ids:
+        ordered.append(final_response)
+    snapshots = []
+    for item in ordered:
+        snap = extract_usage(item)
+        if not snap.usage_missing:
+            snapshots.append(snap)
+    if len(snapshots) <= 1:
+        return final_response
+    total_in = sum(s.input_tokens for s in snapshots)
+    total_out = sum(s.output_tokens for s in snapshots)
+    total_all = sum(s.total_tokens for s in snapshots)
+    total_cached = sum(s.cached_tokens for s in snapshots)
+    total_creation = sum(s.cache_creation_tokens for s in snapshots)
+    merged_usage: dict[str, Any] = {
+        "prompt_tokens": total_in,
+        "completion_tokens": total_out,
+        "total_tokens": total_all,
+        "prompt_tokens_details": {
+            "cached_tokens": total_cached,
+            "cache_creation_tokens": total_creation,
+        },
+    }
+    return _AggregatedUsageResponse(final_response, merged_usage, len(snapshots))
 
 
 class AstrBotAgentBridge:
@@ -853,6 +941,8 @@ class AstrBotAgentBridge:
         # so the host builder can fill image_urls / audio_urls.
         if media_understand:
             for raw in events or (event,):
+                if getattr(raw, "_chat_dynamics_strip_quote_media", False):
+                    continue
                 for component in iter_message_components(raw):
                     if type(component).__name__.lower() in _SKIP_MEDIA_COPY:
                         continue
@@ -1374,6 +1464,7 @@ class AstrBotAgentBridge:
                     MemberBoundaryProvider(provider, boundary_host, event, boundary_callback, history_projection_state)
                     for provider in getattr(runner, "fallback_providers", ())
                 ]
+            captured_round_responses: list[Any] = []
             if reply_timeout is not None:
                 # Bound each model round, including its SDK retries/fallbacks.
                 # Tool execution retains the separate outer agent deadline.
@@ -1389,15 +1480,45 @@ class AstrBotAgentBridge:
                         async with budget.scope():
                             async for response in stream:
                                 if is_error_response(response):
+                                    if getattr(event, "_chat_dynamics_boundary_failed_closed", False):
+                                        reason = str(
+                                            getattr(event, "_chat_dynamics_boundary_failed_closed_reason", "")
+                                            or "boundary_failed_closed"
+                                        )
+                                        raise member_boundary.BoundaryCancelled(reason)
                                     code = budget.failure_code or provider_failure_code(
                                         getattr(response, "completion_text", "")
                                     )
                                     raise ModelReplyFailure(code or "provider_reply_failed")
+                                if not getattr(response, "is_chunk", False):
+                                    captured_round_responses.append(response)
                                 yield response
                     finally:
                         await stream.aclose()
 
                 runner._iter_llm_responses_with_fallback = timed_responses
+            elif callable(getattr(runner, "_iter_llm_responses_with_fallback", None)):
+                original_responses = runner._iter_llm_responses_with_fallback
+
+                async def tracked_responses():
+                    stream = original_responses()
+                    try:
+                        async for response in stream:
+                            if is_error_response(response) and getattr(
+                                event, "_chat_dynamics_boundary_failed_closed", False
+                            ):
+                                reason = str(
+                                    getattr(event, "_chat_dynamics_boundary_failed_closed_reason", "")
+                                    or "boundary_failed_closed"
+                                )
+                                raise member_boundary.BoundaryCancelled(reason)
+                            if not getattr(response, "is_chunk", False):
+                                captured_round_responses.append(response)
+                            yield response
+                    finally:
+                        await stream.aclose()
+
+                runner._iter_llm_responses_with_fallback = tracked_responses
             if private_owned and managed is None:
                 # Install inside the already validated native-memory guard,
                 # after reset and all request-boundary wrappers are present.
@@ -1739,9 +1860,19 @@ class AstrBotAgentBridge:
                 getattr(meme_plan, "_reply_actions_v1", False) or '"reply_mode"' not in completion
             ):
                 plan_input = completion
-                if parsed_plan is not None and not poke_combos_native and "poke_target_uid" in parsed_plan:
-                    stripped_plan = {k: v for k, v in parsed_plan.items() if k != "poke_target_uid"}
-                    plan_input = json.dumps(stripped_plan, ensure_ascii=False)
+                if parsed_plan is not None:
+                    adjusted_plan = dict(parsed_plan)
+                    plan_changed = False
+                    if not poke_combos_native and "poke_target_uid" in adjusted_plan:
+                        adjusted_plan.pop("poke_target_uid", None)
+                        plan_changed = True
+                    if adjusted_plan.get("reply_mode") == "silent" and isinstance(adjusted_plan.get("narration"), str):
+                        cleaned = _sanitize_reply_narration(adjusted_plan["narration"], wrap=False)
+                        if cleaned and cleaned != adjusted_plan["narration"]:
+                            adjusted_plan["narration"] = cleaned
+                            plan_changed = True
+                    if plan_changed:
+                        plan_input = json.dumps(adjusted_plan, ensure_ascii=False)
                 try:
                     completion, meme_chains = meme_plan.resolve(plan_input)
                 except ValueError as exc:
@@ -1790,16 +1921,10 @@ class AstrBotAgentBridge:
                     requested_reply_mode = reply_mode
                     reply_reason = "model_selected_" + reply_mode
                     if reply_mode == "silent":
-                        narration = narration.strip()
-                        if len(narration.splitlines()) != 1:
+                        sanitized = _sanitize_reply_narration(narration, max_chars=118, wrap=True)
+                        if not sanitized:
                             raise ModelReplyFailure("invalid_reply_narration")
-                        while (narration.startswith("（") and narration.endswith("）")) or (
-                            narration.startswith("(") and narration.endswith(")")
-                        ):
-                            narration = narration[1:-1].strip()
-                        if not narration or len(narration) > 118:
-                            raise ModelReplyFailure("invalid_reply_narration")
-                        narration = f"（{narration}）"
+                        narration = sanitized
                         reply_mode = "narration"
                         reply_reason = "model_silent_narration"
             external_tool_effect = (
@@ -1829,6 +1954,7 @@ class AstrBotAgentBridge:
                     return False
                 return native_validator is None or await native_validator() is True
 
+            telemetry_response = _merge_round_usage(captured_round_responses, response)
             output = AgentOutput(
                 completion,
                 str(req.conversation.cid),
@@ -1845,7 +1971,7 @@ class AstrBotAgentBridge:
                 reply_reason=reply_reason,
                 narration=narration,
                 poke_target_uid=poke_target_uid,
-                llm_response=response,
+                llm_response=telemetry_response,
             )
             if partial_output is not None:
                 if output.chains or not output.text.startswith(partial_output.stream_prefix):
@@ -1855,7 +1981,7 @@ class AstrBotAgentBridge:
                 partial_output.turn_start = output.turn_start
                 partial_output.tool_count = output.tool_count
                 partial_output.media_events = output.media_events
-                partial_output.llm_response = response
+                partial_output.llm_response = telemetry_response
                 output = partial_output
             if on_output_ready is not None and output.text and not output.chains:
                 if tool_source_registry is not None:
@@ -1869,10 +1995,22 @@ class AstrBotAgentBridge:
             if owned_executor is not None:
                 await owned_executor.cancel()
             raise
+        except member_boundary.BoundaryCancelled:
+            if owned_executor is not None:
+                await owned_executor.cancel()
+            raise
         except Exception as exc:
+            if getattr(event, "_chat_dynamics_boundary_failed_closed", False):
+                if owned_executor is not None:
+                    await owned_executor.cancel()
+                reason = str(
+                    getattr(event, "_chat_dynamics_boundary_failed_closed_reason", "")
+                    or "boundary_failed_closed"
+                )
+                raise member_boundary.BoundaryCancelled(reason) from None
             code = getattr(exc, "reason_code", "") or provider_failure_code(exc)
             if code or isinstance(exc, LLMErrorResponse) or type(exc).__name__ == "LLMErrorResponse":
-                _log_generation_failure(managed, exc)
+                _log_generation_failure(managed, exc, event=agent_event)
                 if owned_executor is not None:
                     await owned_executor.cancel()
                 raise ModelReplyFailure(code or "provider_reply_failed") from None

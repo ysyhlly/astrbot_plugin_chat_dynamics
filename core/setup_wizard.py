@@ -749,8 +749,9 @@ async def _probe_jev_provider(
         return await evaluator(state=state, questions=questions, timeout=timeout)
 
     try:
-        await asyncio.wait_for(_invoke(), timeout=timeout)
+        probe_resp = await asyncio.wait_for(_invoke(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
+        _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=False, error_type="TimeoutError")
         return {
             "status": "error",
             "code": "timeout",
@@ -762,6 +763,7 @@ async def _probe_jev_provider(
             "message": "连接超时",
         }
     except Exception as exc:
+        _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=False, error_type=type(exc).__name__)
         logger.warning(
             "[ChatDynamics] Setup Jev probe failed provider=%s type=%s",
             provider_id,
@@ -777,6 +779,7 @@ async def _probe_jev_provider(
             "latency_ms": round((time.perf_counter() - started) * 1000),
             "message": _sanitize_error_message(exc, "决策模型调用失败"),
         }
+    _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=True, response=probe_resp)
 
     return {
         "status": "ok",
@@ -833,6 +836,8 @@ async def _probe_chat_provider(
             "message": "所选模型不是可用的普通聊天模型",
         }
 
+    captured_resp: list[Any] = []
+
     async def _invoke() -> str:
         generate = getattr(context, "llm_generate", None) if context is not None else None
         if callable(generate) and provider_id:
@@ -850,6 +855,7 @@ async def _probe_chat_provider(
             )
             if inspect.isawaitable(resp):
                 resp = await resp
+        captured_resp.append(resp)
         text = require_completion_text(resp, "setup_probe")
         if not text.strip():
             raise RuntimeError("empty completion")
@@ -858,6 +864,7 @@ async def _probe_chat_provider(
     try:
         await asyncio.wait_for(_invoke(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
+        _record_probe_telemetry(context, provider_id or "default", model, time.perf_counter() - started, ok=False, error_type="TimeoutError")
         return {
             "status": "error",
             "code": "timeout",
@@ -868,6 +875,7 @@ async def _probe_chat_provider(
             "message": "连接超时",
         }
     except Exception as exc:
+        _record_probe_telemetry(context, provider_id or "default", model, time.perf_counter() - started, ok=False, error_type=type(exc).__name__)
         logger.warning(
             "[ChatDynamics] Setup chat probe failed provider=%s type=%s",
             provider_id or "(default)",
@@ -882,6 +890,14 @@ async def _probe_chat_provider(
             "latency_ms": round((time.perf_counter() - started) * 1000),
             "message": _sanitize_error_message(exc, "聊天模型调用失败"),
         }
+    _record_probe_telemetry(
+        context,
+        provider_id or "default",
+        model,
+        time.perf_counter() - started,
+        ok=True,
+        response=captured_resp[0] if captured_resp else None,
+    )
 
     return {
         "status": "ok",
@@ -892,6 +908,34 @@ async def _probe_chat_provider(
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "message": "连接正常",
     }
+
+
+def _record_probe_telemetry(
+    context: Any,
+    provider_id: str,
+    model: str,
+    elapsed_seconds: float,
+    *,
+    ok: bool,
+    error_type: str = "",
+    response: Any = None,
+) -> None:
+    try:
+        from .. import series_panels
+
+        series_panels.record_series_llm_usage(
+            context,
+            plugin_id="astrbot_plugin_chat_dynamics",
+            provider_id=provider_id or "default",
+            purpose="probe",
+            response=response,
+            generation_seconds=max(0.0, float(elapsed_seconds)),
+            ok=ok,
+            error_type=error_type,
+            model=model,
+        )
+    except Exception:
+        pass
 
 
 async def _probe_rerank_provider(
@@ -939,6 +983,7 @@ async def _probe_rerank_provider(
     try:
         await asyncio.wait_for(_invoke(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
+        _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=False, error_type="TimeoutError")
         return {
             "status": "error",
             "code": "timeout",
@@ -950,6 +995,7 @@ async def _probe_rerank_provider(
             "message": "连接超时",
         }
     except Exception as exc:
+        _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=False, error_type=type(exc).__name__)
         logger.warning(
             "[ChatDynamics] Setup rerank probe failed provider=%s type=%s",
             provider_id,
@@ -965,6 +1011,7 @@ async def _probe_rerank_provider(
             "latency_ms": round((time.perf_counter() - started) * 1000),
             "message": _sanitize_error_message(exc, "重排序模型调用失败"),
         }
+    _record_probe_telemetry(context, provider_id, model, time.perf_counter() - started, ok=True)
 
     return {
         "status": "ok",

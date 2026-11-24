@@ -45,7 +45,7 @@ _MATRIX_CACHE_MAX_ENTRIES = 64
 _SEARCH_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _SEARCH_EXECUTOR_LOCK = threading.Lock()
 _MATRIX_CACHE_LOCK = threading.Lock()
-_MATRIX_CACHE: dict[tuple[int, str, str, str], tuple[float, dict[str, Any]]] = {}
+_MATRIX_CACHE: dict[tuple[int, str, str, str, int], tuple[float, dict[str, Any]]] = {}
 _PRESENCE_SENTINEL_KEY = ("__series_matrix_cache_sentinel__", 0)
 
 
@@ -66,14 +66,18 @@ def _install_presence_invalidation_hook() -> None:
     if not callable(orig) or getattr(orig, "_series_matrix_hooked", False):
         return
 
-    def _wrapped(plugin_id: str | None = None) -> None:
-        orig(plugin_id)
+    def _wrapped(plugin_id: str | None = None, *, context=None) -> None:
+        try:
+            orig(plugin_id, context=context)
+        except TypeError:
+            orig(plugin_id)
         invalidate_series_matrix_cache()
 
     _wrapped._series_matrix_hooked = True  # type: ignore[attr-defined]
     series_panels.invalidate_presence_cache = _wrapped  # type: ignore[assignment]
 
 
+install_presence_invalidation_hook = _install_presence_invalidation_hook
 _install_presence_invalidation_hook()
 
 
@@ -683,7 +687,13 @@ async def build_series_matrix(
     clean_scope = str(scope or "").strip()
     clean_persona_filter = str(persona or "").strip().lower()
     scope_ver = chat_dynamics_scope_version(plugin)
-    cache_key = (id(plugin), clean_scope, clean_persona_filter, scope_ver)
+    context = getattr(plugin, "context", None)
+    epoch = (
+        series_panels.get_presence_epoch(context)
+        if callable(getattr(series_panels, "get_presence_epoch", None))
+        else 0
+    )
+    cache_key = (id(plugin), clean_scope, clean_persona_filter, scope_ver, epoch)
     now_mono = time.monotonic()
 
     if not force_refresh and _MATRIX_CACHE_TTL_SECONDS > 0 and _presence_sentinel_alive():
@@ -692,7 +702,6 @@ async def build_series_matrix(
             if cached is not None and cached[0] > now_mono:
                 return copy.deepcopy(cached[1])
 
-    context = getattr(plugin, "context", None)
     pres = series_panels.presence(
         context, CHAT_DYNAMICS_ID, force_refresh=force_refresh
     )
@@ -1271,4 +1280,177 @@ async def federated_series_search(
         "items": deduped,
         "timed_out_plugins": sorted(set(timed_out)),
         "elapsed_ms": elapsed_ms,
+    }
+
+
+def _check_host_default_provider(context: Any) -> dict[str, Any]:
+    """Inspect whether AstrBot's global default chat provider is explicitly configured."""
+    if context is None or not callable(getattr(context, "get_config", None)):
+        return {"status": "unknown", "provider_id": "", "detail": "host_config_unavailable"}
+    try:
+        cfg = context.get_config() or {}
+    except Exception:
+        return {"status": "unknown", "provider_id": "", "detail": "host_config_error"}
+    agent_cfg = cfg.get("agent_runner") if isinstance(cfg, dict) else None
+    model_cfg = (agent_cfg.get("config") or {}).get("model") if isinstance(agent_cfg, dict) else None
+    pid = str((model_cfg or {}).get("provider_id") or "").strip() if isinstance(model_cfg, dict) else ""
+    if not pid:
+        prov_settings = cfg.get("provider_settings") if isinstance(cfg, dict) else None
+        pid = str((prov_settings or {}).get("default_provider_id") or "").strip() if isinstance(prov_settings, dict) else ""
+    if not pid:
+        return {
+            "status": "warn",
+            "provider_id": "",
+            "detail": "宿主默认聊天模型 provider_id 留空，将隐式回退至首个可用模型",
+        }
+    found = series_panels.find_provider_silently(context, pid)
+    if found is None:
+        return {
+            "status": "error",
+            "provider_id": pid,
+            "detail": f"宿主默认聊天模型 {pid} 未找到或未启用",
+        }
+    return {"status": "ok", "provider_id": pid, "detail": "ok"}
+
+
+def _detect_stray_staging_dirs(plugin: Any) -> list[str]:
+    """Detect leftover temporary staging folders (e.g. .narrative-stage-*) next to plugins."""
+    from pathlib import Path
+
+    found: list[str] = []
+    try:
+        plugins_root = Path(__file__).resolve().parents[2]
+        if plugins_root.is_dir():
+            for child in sorted(plugins_root.iterdir()):
+                if child.is_dir() and child.name.startswith(".narrative-stage-"):
+                    found.append(child.name)
+    except OSError:
+        pass
+    return found[:16]
+
+
+def build_series_health(plugin: Any) -> dict[str, Any]:
+    """Aggregate read-only health, provider bindings, and environment diagnostics across all 8 plugins."""
+    context = getattr(plugin, "context", None)
+    pres = series_panels.presence(context, CHAT_DYNAMICS_ID, force_refresh=True)
+    presence_by_id = {
+        p["id"]: p
+        for p in (pres.get("plugins") or [])
+        if isinstance(p, dict) and p.get("id")
+    }
+    shared_cfg = series_panels.get_series_shared_config(context)
+    host_default = _check_host_default_provider(context)
+    stray_dirs = _detect_stray_staging_dirs(plugin)
+
+    plugins_out: list[dict[str, Any]] = []
+    all_issues: list[dict[str, str]] = []
+    ready_count = 0
+    installed_count = 0
+
+    for pid, label, mark, page in CORE_SERIES_PLUGINS:
+        pinfo = presence_by_id.get(pid) or {}
+        installed = bool(pinfo.get("installed", pid == CHAT_DYNAMICS_ID))
+        state = str(pinfo.get("state") or ("ready" if pid == CHAT_DYNAMICS_ID else "missing"))
+        owner = plugin if pid == CHAT_DYNAMICS_ID else series_panels.find_plugin_owner(context, pid)
+        if installed:
+            installed_count += 1
+        health = series_panels.read_plugin_health(pid, owner) if owner is not None else None
+        if health is None:
+            is_ready = state in {"ready", "enabled"}
+            degraded = installed and not is_ready and state != "inactive"
+            health = {
+                "plugin_id": pid,
+                "ready": is_ready,
+                "degraded": degraded,
+                "providers": [],
+                "issues": ([] if is_ready or not installed or state == "inactive" else [f"plugin_state:{state}"]),
+                "metrics": {},
+            }
+        else:
+            # Verify any declared provider_id against silent host lookup
+            for prov_item in health.get("providers") or ():
+                if not isinstance(prov_item, dict):
+                    continue
+                declared_id = str(prov_item.get("provider_id") or "").strip()
+                cur_status = str(prov_item.get("status") or "unknown")
+                if declared_id and cur_status in {"unknown", "configured"}:
+                    resolved = series_panels.find_provider_silently(context, declared_id)
+                    prov_item["status"] = "ok" if resolved is not None else "missing"
+                    if resolved is None:
+                        prov_item["detail"] = prov_item.get("detail") or f"Provider {declared_id} 未找到"
+                        health["degraded"] = True
+                        issue_msg = f"provider_missing:{prov_item.get('role') or 'default'}:{declared_id}"
+                        if issue_msg not in health["issues"]:
+                            health["issues"].append(issue_msg)
+
+        if health["ready"] and not health["degraded"]:
+            ready_count += 1
+        for msg in health.get("issues") or ():
+            all_issues.append({"plugin_id": pid, "label": label, "issue": str(msg)})
+
+        plugins_out.append(
+            {
+                "id": pid,
+                "label": label,
+                "mark": mark,
+                "page": page,
+                "installed": installed,
+                "state": state,
+                "version": str(pinfo.get("version") or ""),
+                "ready": bool(health["ready"]),
+                "degraded": bool(health["degraded"]),
+                "providers": health.get("providers") or [],
+                "issues": health.get("issues") or [],
+                "metrics": health.get("metrics") or {},
+            }
+        )
+
+    env_warnings: list[dict[str, str]] = []
+    if host_default["status"] != "ok":
+        env_warnings.append(
+            {
+                "code": f"host_default_provider_{host_default['status']}",
+                "severity": host_default["status"],
+                "message": str(host_default["detail"]),
+            }
+        )
+    for conflict in pres.get("legacy_conflicts") or ():
+        env_warnings.append(
+            {
+                "code": "legacy_plugin_conflict",
+                "severity": "warn",
+                "message": f"旧插件 {conflict.get('label') or conflict.get('id')} 仍启用，建议停用并交由 {conflict.get('owner')} 接管",
+            }
+        )
+    for dname in stray_dirs:
+        env_warnings.append(
+            {
+                "code": "stray_staging_dir",
+                "severity": "warn",
+                "message": f"插件目录存在临时残留文件夹 {dname}，建议清理",
+            }
+        )
+
+    overall_status = "ok"
+    if any(p["installed"] and (not p["ready"] or p["degraded"]) for p in plugins_out) or host_default["status"] == "error":
+        overall_status = "degraded"
+    elif env_warnings:
+        overall_status = "warn"
+
+    return {
+        "schema_version": 1,
+        "generated_at": _now_iso(),
+        "status": overall_status,
+        "summary": {
+            "installed_count": installed_count,
+            "ready_count": ready_count,
+            "issue_count": len(all_issues) + len(env_warnings),
+            "shared_reply_provider": str(shared_cfg.get("reply_provider") or ""),
+            "shared_decision_provider": str(shared_cfg.get("decision_provider") or ""),
+            "shared_timezone": str(shared_cfg.get("rhythm_timezone") or ""),
+        },
+        "host_default_provider": host_default,
+        "environment_warnings": env_warnings,
+        "plugins": plugins_out,
+        "issues": all_issues,
     }

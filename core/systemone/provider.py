@@ -217,9 +217,10 @@ class SystemOneProvider(DecisionProvider):
             client=self._http,
         )
         answers = validate_answers(envelope, questions)
-        usage = envelope.get("usage")
-        tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
-        self.last_decision_usage = {"input_tokens": tokens} if type(tokens) is int and tokens >= 0 else None
+        from .decisions import reported_usage
+
+        parsed_usage = reported_usage(envelope)
+        self.last_decision_usage = parsed_usage if parsed_usage.get("reported") else None
         return answers
 
     async def text_chat(self, prompt=None, contexts=None, model=None, **kwargs):

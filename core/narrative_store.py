@@ -18,13 +18,27 @@ from pathlib import Path
 class NarrativeJournal:
     """Keep platform uncertainty separate from retryable plugin notifications."""
 
+    DEFAULT_ARCHIVE_RETENTION_DAYS = 30
+    DEFAULT_MAX_ARCHIVE_ROWS = 50000
+    DEFAULT_DEAD_LETTER_TTL_DAYS = 7
+    DEFAULT_VACUUM_PAGES = 256
+    DEFAULT_CHECKPOINT_INTERVAL_SECONDS = 300.0
+
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn_lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
-        with self._tx(write=True) as db:
+        self._last_checkpoint_at: float = 0.0
+        with self._conn_lock:
+            db = self._shared_connection()
+            # Must be set before first table creation on new DBs; harmless no-op on existing DBs until VACUUM.
+            try:
+                db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            except sqlite3.DatabaseError:
+                pass
             db.execute("PRAGMA journal_mode=WAL")
+        with self._tx(write=True) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS events (
                     event_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
@@ -45,6 +59,8 @@ class NarrativeJournal:
                     umo TEXT NOT NULL, payload TEXT NOT NULL, captured_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS context_archive (
                     bundle_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, payload BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS character_blobs (
+                    fingerprint TEXT PRIMARY KEY, payload BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS maintenance (name TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS bundle_compaction_queue (
                     bundle_id TEXT PRIMARY KEY, captured_at REAL NOT NULL);
@@ -141,16 +157,51 @@ class NarrativeJournal:
             return [row[0] for row in db.execute(
                 "SELECT DISTINCT j.value FROM events e, json_each(e.recipients) j WHERE e.recipients!='[]'")]
 
+    def _dedupe_character_blob(self, db: sqlite3.Connection, data: dict) -> bytes:
+        """Store character payload once in character_blobs and return archived bundle bytes."""
+        character = data.get("character")
+        if isinstance(character, dict) and character:
+            char_bytes = json.dumps(
+                character, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            content_hash = hashlib.sha256(char_bytes).hexdigest()
+            raw_fp = str(character.get("fingerprint") or "").strip()
+            blob_key = raw_fp or content_hash
+            existing = db.execute(
+                "SELECT payload FROM character_blobs WHERE fingerprint=?", (blob_key,)
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    "INSERT OR IGNORE INTO character_blobs VALUES (?,?)",
+                    (blob_key, gzip.compress(char_bytes, compresslevel=3)),
+                )
+            else:
+                try:
+                    existing_bytes = gzip.decompress(existing["payload"])
+                except Exception:
+                    existing_bytes = b""
+                if existing_bytes != char_bytes:
+                    blob_key = f"{raw_fp}:{content_hash[:16]}" if raw_fp else content_hash
+                    db.execute(
+                        "INSERT OR IGNORE INTO character_blobs VALUES (?,?)",
+                        (blob_key, gzip.compress(char_bytes, compresslevel=3)),
+                    )
+            deduped = {k: v for k, v in data.items() if k != "character"}
+            deduped["character_blob_ref"] = blob_key
+            return json.dumps(deduped, ensure_ascii=False).encode("utf-8")
+        return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
     def save_bundle(self, bundle_id: str, turn_id: str, umo: str, payload: str, captured: float):
         from .narrative_projection import reply_material
         data = json.loads(payload)
         summary = dict(reply_material(data), archive_id=bundle_id,
                        character_fingerprint=data.get('character', {}).get('fingerprint'),
                        completed=data.get('completed', {}), availability=data.get('availability', {}))
-        raw = payload.encode('utf-8')
         with self._tx(write=True) as db:
+            archived_raw = self._dedupe_character_blob(db, data)
             db.execute("INSERT OR IGNORE INTO context_archive VALUES (?,?,?)",
-                       (bundle_id, hashlib.sha256(raw).hexdigest(), gzip.compress(raw, compresslevel=3)))
+                       (bundle_id, hashlib.sha256(archived_raw).hexdigest(),
+                        gzip.compress(archived_raw, compresslevel=3)))
             inserted = db.execute("INSERT OR IGNORE INTO bundles VALUES (?,?,?,?,?)",
                                   (bundle_id, turn_id, umo, json.dumps(summary, ensure_ascii=False), captured))
             if inserted.rowcount:
@@ -368,7 +419,16 @@ class NarrativeJournal:
                 raw = gzip.decompress(row['payload'])
                 if hashlib.sha256(raw).hexdigest() != row['sha256']:
                     raise ValueError('context archive checksum mismatch')
-                return json.loads(raw)
+                data = json.loads(raw)
+                if isinstance(data, dict) and 'character_blob_ref' in data and 'character' not in data:
+                    ref = str(data.pop('character_blob_ref') or '')
+                    if ref:
+                        blob = db.execute(
+                            'SELECT payload FROM character_blobs WHERE fingerprint=?', (ref,)
+                        ).fetchone()
+                        if blob is not None:
+                            data['character'] = json.loads(gzip.decompress(blob['payload']))
+                return data
             row = db.execute('SELECT payload FROM bundles WHERE bundle_id=?', (bundle_id,)).fetchone()
             return json.loads(row[0]) if row else None
 
@@ -389,10 +449,27 @@ class NarrativeJournal:
             "retention_policy": "compact_online_keep_verified_archive_and_receipts",
         }
 
-    def maintain(self, now, retention_days=7, limit=40):
+    def maintain(
+        self,
+        now,
+        retention_days=7,
+        limit=40,
+        *,
+        archive_retention_days=DEFAULT_ARCHIVE_RETENTION_DAYS,
+        max_archive_rows=DEFAULT_MAX_ARCHIVE_ROWS,
+        dead_letter_ttl_days=DEFAULT_DEAD_LETTER_TTL_DAYS,
+        vacuum_pages=DEFAULT_VACUUM_PAGES,
+        checkpoint_interval_seconds=DEFAULT_CHECKPOINT_INTERVAL_SECONDS,
+    ):
         """Compress legacy bundles in bounded transactions and prune expired terminal logs."""
         from .narrative_projection import reply_material
         cutoff = now - max(1, retention_days) * 86400
+        archive_cutoff = now - max(1, archive_retention_days) * 86400
+        dead_letter_cutoff = now - max(1, dead_letter_ttl_days) * 86400
+        batch_limit = max(1, int(limit)) * 5
+        pruned_archives = 0
+        pruned_bundles = 0
+        expired_recipients = 0
         with self._tx(write=True) as db:
             cursor = db.execute("SELECT value FROM maintenance WHERE name='bundle_backfill_cursor'").fetchone()
             # Inspect a bounded range even when every legacy row already has its archive.
@@ -421,8 +498,10 @@ class NarrativeJournal:
                 compact = dict(reply_material(data), archive_id=row['bundle_id'],
                                character_fingerprint=data.get('character', {}).get('fingerprint'),
                                availability=data.get('availability', {}), completed=data.get('completed', {}))
+                archived_raw = self._dedupe_character_blob(db, data)
                 db.execute('INSERT OR IGNORE INTO context_archive VALUES (?,?,?)',
-                           (row['bundle_id'], hashlib.sha256(raw).hexdigest(), gzip.compress(raw)))
+                           (row['bundle_id'], hashlib.sha256(archived_raw).hexdigest(),
+                            gzip.compress(archived_raw, compresslevel=3)))
                 db.execute('UPDATE bundles SET payload=? WHERE bundle_id=?',
                            (json.dumps(compact, ensure_ascii=False), row['bundle_id']))
                 db.execute("INSERT OR IGNORE INTO bundle_compaction_queue VALUES (?,?)",
@@ -444,38 +523,124 @@ class NarrativeJournal:
                 db.execute('UPDATE bundles SET payload=? WHERE bundle_id=?',
                            (json.dumps(brief, ensure_ascii=False), row['bundle_id']))
                 db.execute("DELETE FROM bundle_compaction_queue WHERE bundle_id=?", (row['bundle_id'],))
+            # Prune expired archive_only bundles and their context_archive rows by TTL.
+            expired_rows = db.execute(
+                "SELECT bundle_id FROM bundles WHERE captured_at<? "
+                "AND COALESCE(json_extract(payload,'$.archive_only'),0)=1 "
+                "ORDER BY captured_at ASC LIMIT ?",
+                (archive_cutoff, batch_limit),
+            ).fetchall()
+            if expired_rows:
+                expired_ids = [(r['bundle_id'],) for r in expired_rows]
+                pruned_archives += db.executemany(
+                    "DELETE FROM context_archive WHERE bundle_id=?", expired_ids
+                ).rowcount
+                db.executemany("DELETE FROM bundle_compaction_queue WHERE bundle_id=?", expired_ids)
+                pruned_bundles += db.executemany("DELETE FROM bundles WHERE bundle_id=?", expired_ids).rowcount
+            # Enforce optional hard row cap on context_archive (oldest first).
+            if max_archive_rows and max_archive_rows > 0:
+                archive_total = int(db.execute("SELECT count(*) FROM context_archive").fetchone()[0] or 0)
+                excess = archive_total - int(max_archive_rows)
+                if excess > 0:
+                    cap_batch = min(excess, batch_limit)
+                    capped = db.execute(
+                        "SELECT a.bundle_id, COALESCE(json_extract(b.payload,'$.archive_only'),0) AS is_arch "
+                        "FROM context_archive AS a LEFT JOIN bundles AS b ON b.bundle_id=a.bundle_id "
+                        "ORDER BY COALESCE(b.captured_at, 0) ASC, a.rowid ASC LIMIT ?",
+                        (cap_batch,),
+                    ).fetchall()
+                    if capped:
+                        cap_ids = [(r['bundle_id'],) for r in capped]
+                        pruned_archives += db.executemany(
+                            "DELETE FROM context_archive WHERE bundle_id=?", cap_ids
+                        ).rowcount
+                        arch_only_ids = [(r['bundle_id'],) for r in capped if r['is_arch']]
+                        if arch_only_ids:
+                            db.executemany("DELETE FROM bundle_compaction_queue WHERE bundle_id=?", arch_only_ids)
+                            pruned_bundles += db.executemany(
+                                "DELETE FROM bundles WHERE bundle_id=?", arch_only_ids
+                            ).rowcount
+            # Expire stale unacked/dead-letter recipients so events pruning can never stall permanently.
+            dead_events = db.execute(
+                "SELECT rowid FROM events WHERE recipients!='[]' AND created_at<? ORDER BY created_at ASC LIMIT ?",
+                (dead_letter_cutoff, batch_limit),
+            ).fetchall()
+            if dead_events:
+                dead_rowids = [(r['rowid'],) for r in dead_events]
+                expired_recipients = db.executemany(
+                    "UPDATE events SET recipients='[]' WHERE rowid=?", dead_rowids
+                ).rowcount
             # Revisit old rows on each sweep. A pending receipt may become terminal later.
             sweep = db.execute("SELECT value FROM maintenance WHERE name='event_expiry_cursor'").fetchone()
             start = int(sweep[0]) if sweep else 0
             scanned = db.execute("SELECT rowid FROM events WHERE rowid>? ORDER BY rowid LIMIT ?",
-                                 (start, limit * 5)).fetchall()
+                                 (start, batch_limit)).fetchall()
             end = scanned[-1][0] if scanned else 0
             pruned_events = db.execute(
                 "DELETE FROM events WHERE rowid>? AND rowid<=? AND recipients='[]' AND created_at<? "
                 "AND COALESCE(json_extract(payload,'$.data.effect_kind'),'')!='reminder.created'",
                 (start, end, cutoff),
             ).rowcount
+            if expired_recipients > 0:
+                pruned_events += db.execute(
+                    "DELETE FROM events WHERE recipients='[]' AND created_at<? "
+                    "AND COALESCE(json_extract(payload,'$.data.effect_kind'),'')!='reminder.created' "
+                    "AND rowid IN (SELECT rowid FROM events WHERE recipients='[]' AND created_at<? LIMIT ?)",
+                    (cutoff, cutoff, batch_limit),
+                ).rowcount
             db.execute("INSERT OR REPLACE INTO maintenance(name,value) VALUES('event_expiry_cursor',?)",
                        (str(end),))
             pruned_attempts = db.execute(
                 "DELETE FROM attempts WHERE attempt_id IN ("
                 "SELECT attempt_id FROM attempts WHERE status IN ('success','failed','cancelled') "
                 "AND COALESCE(finished_at, started_at)<? LIMIT ?)",
-                (cutoff, limit * 5),
+                (cutoff, batch_limit),
             ).rowcount
             pruned_intents = db.execute(
                 "DELETE FROM intents WHERE intent_id IN ("
                 "SELECT intent_id FROM intents WHERE status IN ('sent','failed','cancelled','expired') "
                 "AND COALESCE(attempted_at, 0)<? LIMIT ?)",
-                (cutoff, limit * 5),
+                (cutoff, batch_limit),
             ).rowcount
             db.execute("DELETE FROM intent_retries WHERE intent_id NOT IN (SELECT intent_id FROM intents)")
+        # Run bounded incremental vacuum and periodic WAL truncate checkpoint outside the write tx.
+        pruned_total = (
+            pruned_archives + pruned_bundles + pruned_events + pruned_attempts + pruned_intents
+        )
+        vacuumed = False
+        checkpointed = False
+        now_mono = time.monotonic()
+        should_checkpoint = (
+            pruned_total > 0
+            or self._last_checkpoint_at <= 0.0
+            or (now_mono - self._last_checkpoint_at) >= float(checkpoint_interval_seconds or 0.0)
+        )
+        if pruned_total > 0 or should_checkpoint:
+            with self._tx(write=False) as db:
+                if vacuum_pages and int(vacuum_pages) > 0:
+                    try:
+                        db.execute(f"PRAGMA incremental_vacuum({int(vacuum_pages)})")
+                        vacuumed = True
+                    except sqlite3.DatabaseError:
+                        pass
+                if should_checkpoint:
+                    try:
+                        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        self._last_checkpoint_at = now_mono
+                        checkpointed = True
+                    except sqlite3.DatabaseError:
+                        pass
         return {
             'compressed': compressed,
             'archived': len(old),
+            'pruned_archives': pruned_archives,
+            'pruned_bundles': pruned_bundles,
+            'expired_recipients': expired_recipients,
             'pruned_events': pruned_events,
             'pruned_attempts': pruned_attempts,
             'pruned_intents': pruned_intents,
+            'vacuumed': vacuumed,
+            'checkpointed': checkpointed,
         }
 
     def backfill_portraits(self, limit=100):

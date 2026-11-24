@@ -388,3 +388,196 @@ async def test_chat_dynamics_on_llm_response_records_native_reply_once(tmp_path)
     finally:
         plugin.series_telemetry.close()
 
+
+def test_series_telemetry_cost_error_model_and_group_attribution(tmp_path):
+    store = SeriesTelemetryStore(tmp_path / "ext.sqlite3", flush_threshold=1)
+    try:
+        store.record(
+            plugin_id="astrbot_plugin_chat_dynamics",
+            provider_id="p-ds",
+            purpose="reply",
+            model="deepseek-chat",
+            group_id="qq:GroupMessage:10001",
+            response={
+                "usage": {
+                    "prompt_tokens": 1_000_000,
+                    "completion_tokens": 100_000,
+                    "prompt_tokens_details": {"cached_tokens": 500_000},
+                }
+            },
+            ok=True,
+        )
+        store.record(
+            plugin_id="astrbot_plugin_visual_media",
+            provider_id="dashscope#1",
+            purpose="image_gen",
+            model="wanx",
+            image_count=2,
+            ok=True,
+        )
+        store.record(
+            plugin_id="astrbot_plugin_dynamics_world",
+            provider_id="p-ds",
+            purpose="life",
+            ok=False,
+            error_type="RateLimitError",
+        )
+        store.flush()
+        snap = store.snapshot("24h")
+        assert snap["summary"]["image_count"] == 2
+        assert snap["summary"]["estimated_cost_usd"] > 0.3
+        errs = {row["error_type"]: row["calls"] for row in snap["by_error_type"]}
+        assert errs["RateLimitError"] == 1
+        models = {row["model"]: row for row in snap["by_model"]}
+        assert models["deepseek-chat"]["calls"] == 1
+        assert models["wanx"]["image_count"] == 2
+        groups = {row["group_id"]: row for row in snap["by_group"]}
+        assert groups["qq:GroupMessage:10001"]["input_tokens"] == 1_000_000
+        today = store.today_usage_summary()
+        assert today["total_tokens"] == 1_100_000
+        assert today["estimated_cost_usd"] > 0.3
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_budget_daily_cap_and_circuit_breaker(tmp_path):
+    store = SeriesTelemetryStore(tmp_path / "guard.sqlite3", flush_threshold=1)
+    budget = ProviderBudget(
+        capacity=3,
+        reply_reserve=1,
+        telemetry=store,
+        daily_token_hard_limit=500,
+        circuit_breaker_threshold=2,
+        circuit_breaker_base_cooldown=30.0,
+    )
+    try:
+        # 1) Circuit breaker trips on 429 (weight 2) for background, priority reply still passes
+        async def fail_429():
+            raise RuntimeError("HTTP 429 rate limit exceeded")
+
+        with pytest.raises(RuntimeError):
+            await budget.run("p-429", "background", fail_429)
+
+        with pytest.raises(ProviderBudgetBusyError) as cb_exc:
+            await budget.run("p-429", "background", lambda: "never")
+        assert cb_exc.value.reason == "circuit_open"
+
+        # Priority reply bypasses circuit breaker and resets it on success
+        ok_reply = await budget.run(
+            "p-429",
+            "reply",
+            lambda: {"usage": {"prompt_tokens": 400, "completion_tokens": 200}},
+        )
+        assert ok_reply["usage"]["prompt_tokens"] == 400
+        # 2) Now daily_token_hard_limit (500) is exceeded (600 >= 500)
+        budget._budget_cache = (0.0, False, False)
+        with pytest.raises(ProviderBudgetBusyError) as cap_exc:
+            await budget.run("p-429", "background", lambda: "never")
+        assert cap_exc.value.reason == "daily_budget_exceeded"
+        # Priority reply still allowed even when background daily cap hit
+        assert await budget.run("p-429", "reply", lambda: "priority-ok") == "priority-ok"
+    finally:
+        store.close()
+
+
+def test_find_provider_silently_and_presence_epoch():
+    called = []
+    prov = SimpleNamespace(id="qw")
+    ctx_with_pm = SimpleNamespace(
+        provider_manager=SimpleNamespace(inst_map={"qw": prov}),
+        get_provider_by_id=lambda pid: (called.append(pid), None)[1],
+    )
+    assert series_panels.find_provider_silently(ctx_with_pm, "qw") is prov
+    assert series_panels.find_provider_silently(ctx_with_pm, "missing") is None
+    # Must NOT have called noisy get_provider_by_id when provider_manager.inst_map exists
+    assert called == []
+
+    # Test-double context without provider_manager falls back safely
+    ctx_double = SimpleNamespace(get_provider_by_id=lambda pid: prov if pid == "qw" else None)
+    assert series_panels.find_provider_silently(ctx_double, "qw") is prov
+
+    # Cross-plugin presence epoch increments on invalidate_presence_cache
+    e0 = series_panels.get_presence_epoch(ctx_with_pm)
+    series_panels.invalidate_presence_cache("astrbot_plugin_dynamics_world", context=ctx_with_pm)
+    e1 = series_panels.get_presence_epoch(ctx_with_pm)
+    assert e1 > e0
+    assert ctx_with_pm._chat_dynamics_presence_epoch == e1
+
+
+def test_merge_round_usage_sums_multi_step_tool_loops():
+    from astrbot_plugin_chat_dynamics.core.agent_bridge import _merge_round_usage
+
+    r1 = SimpleNamespace(completion_text="", usage={"prompt_tokens": 1000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 400}})
+    r2 = SimpleNamespace(completion_text="", usage={"prompt_tokens": 1400, "completion_tokens": 60, "prompt_tokens_details": {"cached_tokens": 800}})
+    r3 = SimpleNamespace(completion_text="final answer", role="assistant", usage={"prompt_tokens": 1800, "completion_tokens": 100, "prompt_tokens_details": {"cached_tokens": 1200}})
+    merged = _merge_round_usage([r1, r2, r3], r3)
+    assert merged.completion_text == "final answer"
+    assert merged.role == "assistant"
+    snap = extract_usage(merged)
+    assert snap.input_tokens == 4200
+    assert snap.output_tokens == 210
+    assert snap.cached_tokens == 2400
+    assert snap.total_tokens == 4410
+
+
+def test_build_series_health_aggregates_plugins_and_env_warnings(tmp_path):
+    from astrbot_plugin_chat_dynamics.core.series_hub import build_series_health
+
+    world_owner = SimpleNamespace(
+        get_dynamics_capabilities=lambda: {"schema_version": 1, "ready": True, "enabled": True},
+        get_series_health=lambda: {
+            "ready": True,
+            "degraded": False,
+            "providers": [{"role": "life", "provider_id": "missing-prov", "status": "configured"}],
+            "issues": [],
+            "metrics": {"active_groups": 2},
+        },
+    )
+    mem_owner = SimpleNamespace(
+        get_dynamics_capabilities=lambda: {"schema_version": 1, "ready": True, "enabled": True},
+        get_series_health=lambda: {
+            "ready": True,
+            "degraded": False,
+            "providers": [{"role": "embedding", "provider_id": "qw", "status": "configured"}],
+            "issues": [],
+            "metrics": {},
+        },
+    )
+    stars = [
+        SimpleNamespace(name="astrbot_plugin_dynamics_world", activated=True, version="v0.23.0", star_cls=world_owner),
+        SimpleNamespace(name="astrbot_plugin_dynamics_memory", activated=True, version="0.2.0", star_cls=mem_owner),
+        SimpleNamespace(name="astrbot_plugin_self_learning", activated=True, version="4.2.7", star_cls=SimpleNamespace()),
+        SimpleNamespace(name="astrbot_plugin_dynamics_learning", activated=True, version="v2.0.0", star_cls=SimpleNamespace()),
+    ]
+    ctx = SimpleNamespace(
+        get_all_stars=lambda: stars,
+        provider_manager=SimpleNamespace(inst_map={"qw": SimpleNamespace(id="qw")}),
+        get_config=lambda: {"agent_runner": {"config": {"model": {"provider_id": ""}}}},
+    )
+    plugin = SimpleNamespace(
+        context=ctx,
+        enabled=True,
+        _shutting_down=False,
+        _runtime_config=SimpleNamespace(
+            decision_provider_id="",
+            reply_provider_id="qw",
+            embedding_provider_id="",
+            discussion_rerank_provider_id="",
+        ),
+        get_series_shared_config=lambda: {"reply_provider": "qw", "rhythm_timezone": "Asia/Shanghai"},
+        get_series_health=lambda: {"ready": True, "degraded": False, "providers": [{"role": "reply", "provider_id": "qw", "status": "ok"}], "issues": [], "metrics": {}},
+    )
+    report = build_series_health(plugin)
+    assert report["schema_version"] == 1
+    assert report["status"] == "degraded"
+    by_id = {p["id"]: p for p in report["plugins"]}
+    assert by_id["astrbot_plugin_dynamics_world"]["degraded"] is True
+    assert by_id["astrbot_plugin_dynamics_world"]["providers"][0]["status"] == "missing"
+    assert by_id["astrbot_plugin_dynamics_memory"]["providers"][0]["status"] == "ok"
+    warn_codes = {w["code"] for w in report["environment_warnings"]}
+    assert "host_default_provider_warn" in warn_codes
+    assert "legacy_plugin_conflict" in warn_codes
+
+
+

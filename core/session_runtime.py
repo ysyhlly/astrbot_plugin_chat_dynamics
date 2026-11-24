@@ -251,6 +251,8 @@ class SessionRuntime:
     active_model_turn: Any = None
     # Each cancellable call has a member owner; the group worker stays alive on stop.
     owned_turn_tasks: Dict[asyncio.Task, str] = field(default_factory=dict, repr=False)
+    reply_generation_tasks: Set[asyncio.Task] = field(default_factory=set, repr=False)
+    reply_generation_owners: Dict[str, int] = field(default_factory=dict, repr=False)
     user_revisions: Dict[str, int] = field(default_factory=dict)
     recent_images: RecentImages = field(default_factory=RecentImages, repr=False)
     interaction_state: str = "observing"
@@ -292,8 +294,10 @@ class SessionRuntime:
             self.model_queue.popleft()
             self.model_admission.release()
 
-    def cancel_owned_turns(self, user_id: str | None = None) -> None:
+    def cancel_owned_turns(self, user_id: str | None = None, *, pre_reply_only: bool = False) -> None:
         for task, owner in tuple(self.owned_turn_tasks.items()):
+            if pre_reply_only and task in self.reply_generation_tasks:
+                continue
             if (user_id is None or owner == user_id) and not task.done():
                 task.cancel()
 
@@ -500,6 +504,8 @@ class SessionRuntime:
         self.topic_stop_revisions.clear()
         self.routing_state.clear()
         self.clear_model_queue()
+        self.reply_generation_tasks.clear()
+        self.reply_generation_owners.clear()
         self.user_revisions.clear()
         self.interaction_state = "observing"
         self.peer_bot_rounds.clear()

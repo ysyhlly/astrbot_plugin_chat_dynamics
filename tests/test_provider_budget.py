@@ -41,9 +41,10 @@ async def test_shared_adapters_queue_timeout_and_provider_selection():
     second = LLMAdapter(ctx, "p")
     assert first.provider_budget is second.provider_budget
     assert first.configured_provider("routing") == "p"
-    assert first.configured_provider("title") == "p"
+    assert first.configured_provider("title") == "v"
+    assert second.configured_provider("title") == "p"
     assert first.configured_provider("vibe") == "v"
-    tasks = [asyncio.create_task(first.generate(prompt="x", umo="u", system_prompt="", purpose="title")) for _ in range(3)]
+    tasks = [asyncio.create_task(second.generate(prompt="x", umo="u", system_prompt="", purpose="title")) for _ in range(3)]
     await asyncio.sleep(.01)
     with pytest.raises(LLMUnavailable, match="timed out"):
         await second.generate(prompt="x", umo="u", system_prompt="", purpose="title", timeout=.02)

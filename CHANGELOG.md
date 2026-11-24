@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.19.0-rc.10 — 2026-11-24
+
+- 升级全系列共享 `ProviderBudget` 与 `series_panels.py`：`ProviderBudgetBusyError` 增加结构化 `retry_after`/`reason`，新增只读预检 `provider_circuit_remaining()`、半开单探针恢复，并排除本地边界/策略拒绝计入上游熔断。
+- 修复 `afterthought`/`catchup` 合成事件缺少 `_chat_dynamics_boundary_uid` 导致的 100% 失败与主回复错误率污染，独立 `purpose='afterthought'`，`AgentBridge` 还原 `BoundaryCancelled`，对轻微旁白超长做清洗降级。
+- `narrative-delivery.sqlite3` 启用 `PRAGMA auto_vacuum=INCREMENTAL`、定期 `incremental_vacuum`/`wal_checkpoint(TRUNCATE)`、`context_archive`/`archive_only` TTL 与行数上限、`character_blobs` 指纹去重及死信 recipient 7 天过期。
+- 解锁 `systemone` Prompt 缓存（移出静态区动态 `learning_context`、补齐 `cached_tokens` 遥测），优化 `title` 路由与 `DiscussionReranker` 超时/单探针退避，止损 `user_revisions` 在途回复浪费。
+
 ## v1.19.0-rc.9 — 2026-11-22
 
 - 升级全系列共享 `ProviderBudget` 并发池并新增系列 Token/缓存/延迟遥测存储与看板（`core/series_telemetry.py`、`series-telemetry.sqlite3` WAL 小时/日桶聚合与 30 天自动清理、`/series_telemetry` API 及控制台遥测区块）。

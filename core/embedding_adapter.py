@@ -310,16 +310,45 @@ class EmbeddingAdapter:
             self.last_backend = "hashed"
             self.last_error = "no embedding provider"
             return None
+        started = time.monotonic()
         try:
             raw = await asyncio.wait_for(self._call_provider(provider, text), timeout=self.timeout)
         except Exception as exc:
             self._stats["timeouts" if isinstance(exc, asyncio.TimeoutError) else "failures"] += 1
+            try:
+                from .. import series_panels
+
+                series_panels.record_series_llm_usage(
+                    getattr(self, "context", None),
+                    plugin_id="astrbot_plugin_chat_dynamics",
+                    provider_id=str(getattr(self, "provider_id", "") or "embedding"),
+                    purpose="embedding",
+                    generation_seconds=max(0.0, time.monotonic() - started),
+                    ok=False,
+                    error_type=type(exc).__name__,
+                )
+            except Exception:
+                pass
             if generation != self._generation:
                 return None
             self.last_backend = "hashed"
             self.last_error = type(exc).__name__
             logger.debug("[ChatDynamics] Neural embedding failed code=CD_EMBED_FAILED type=%s", type(exc).__name__)
             return None
+        try:
+            from .. import series_panels
+
+            series_panels.record_series_llm_usage(
+                getattr(self, "context", None),
+                plugin_id="astrbot_plugin_chat_dynamics",
+                provider_id=str(getattr(self, "provider_id", "") or "embedding"),
+                purpose="embedding",
+                response=raw,
+                generation_seconds=max(0.0, time.monotonic() - started),
+                ok=True,
+            )
+        except Exception:
+            pass
         if generation != self._generation:
             return None
         vector = _extract_vector(raw)

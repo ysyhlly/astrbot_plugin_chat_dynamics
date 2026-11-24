@@ -202,9 +202,13 @@ class LLMAdapter:
     def _dedicated_provider(self, purpose: str) -> str:
         """The provider pinned for one kind of call, if any.
 
-        Reply and mood calls may select separate chat providers.
+        Reply and mood calls may select separate chat providers. Title naming
+        prefers the faster non-reasoning vibe provider before falling back to
+        the reply provider.
         """
-        if purpose in ("reply", "routing", "title"):
+        if purpose == "title":
+            return self.vibe_provider_id or self.reply_provider_id
+        if purpose in ("reply", "routing"):
             return self.reply_provider_id
         return self.vibe_provider_id if purpose == "vibe" else ""
 

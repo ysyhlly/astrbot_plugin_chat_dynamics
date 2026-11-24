@@ -199,6 +199,8 @@ class ConsoleWebAPI:
             ("series_matrix_batch", self.series_matrix_batch_post, ["POST"], "跨插件群聊整行批量切换与应用模板"),
             ("series_search", self.series_search_get, ["GET"], "跨插件联邦快捷搜索"),
             ("series_telemetry", self.series_telemetry_get, ["GET"], "跨插件 LLM 与 Token 遥测"),
+            ("series_health", self.series_health_get, ["GET"], "全系列 8 插件健康诊断与 Provider 体检"),
+            ("series_preflight", self.series_preflight_post, ["POST"], "全系列预检与模型绑定核查"),
             ("series_templates", self.series_templates_get, ["GET"], "查看群聊内置与自定义配置模板"),
             ("series_templates", self.series_templates_post, ["POST"], "新建/更新/删除群聊自定义模板"),
             ("series_templates", self.series_templates_delete, ["DELETE"], "删除群聊自定义模板"),
@@ -1098,12 +1100,43 @@ class ConsoleWebAPI:
                 if budget is not None and callable(getattr(budget, "live_snapshot", None))
                 else None
             )
-            return _json_ok(store.snapshot(window=window, live_queue=live_queue))
+            return _json_ok(await asyncio.to_thread(store.snapshot, window=window, live_queue=live_queue))
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:
             logger.error("[ChatDynamics] series_telemetry failed code=CD_SERIES_TELEMETRY type=%s", type(exc).__name__)
             return _json_err("series telemetry unavailable", 503)
+
+    async def series_health_get(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_health", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        try:
+            from .series_hub import build_series_health
+
+            return _json_ok(await asyncio.to_thread(build_series_health, self.plugin))
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_health failed code=CD_SERIES_HEALTH type=%s", type(exc).__name__)
+            return _json_err("series health unavailable", 503)
+
+    async def series_preflight_post(self):
+        if not await self._narrative_admin_allowed():
+            return _json_err("Dashboard administrator required", 403)
+        if (limited := self._rate_limit("series_preflight", 20)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        try:
+            from .series_hub import build_series_health
+
+            health = await asyncio.to_thread(build_series_health, self.plugin)
+            return _json_ok(health)
+        except Exception as exc:
+            logger.error("[ChatDynamics] series_preflight failed code=CD_SERIES_PREFLIGHT type=%s", type(exc).__name__)
+            return _json_err("series preflight unavailable", 503)
 
     def _template_store(self):
         from .series_templates import SeriesTemplateStore

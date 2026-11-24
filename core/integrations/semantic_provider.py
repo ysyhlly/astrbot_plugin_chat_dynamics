@@ -25,14 +25,14 @@ def resolve_embedding_provider(context: Any, configured_id: str = "") -> Any:
     if context is None:
         return None
     if configured_id:
-        getter = getattr(context, "get_provider_by_id", None)
-        if callable(getter):
-            try:
-                found = getter(configured_id)
-            except Exception:
-                found = None
-            if found is not None:
-                return found
+        try:
+            from ... import series_panels
+
+            found = series_panels.find_provider_silently(context, configured_id)
+        except Exception:
+            found = None
+        if found is not None:
+            return found
     listing = getattr(context, "get_all_embedding_providers", None)
     if not callable(listing):
         return None

@@ -444,6 +444,36 @@ def host_command_activated(event: Any) -> bool:
     return False
 
 
+def _iter_reply_media_types(comp: Any, *, _depth: int = 0) -> List[str]:
+    """Extract understandable media component type names nested inside a Reply chain."""
+    if _depth > 3:
+        return []
+    found: List[str] = []
+    chain = getattr(comp, "chain", None)
+    if not isinstance(chain, (list, tuple)):
+        return found
+    for inner in chain:
+        inner_name = _comp_type_name(inner)
+        inner_lowered = inner_name.lower()
+        if inner_lowered in _UNDERSTANDABLE_MEDIA:
+            found.append(inner_name)
+            continue
+        if inner_lowered == "forward":
+            for node in getattr(inner, "nodes", None) or ():
+                for content_item in getattr(node, "content", None) or ():
+                    c_name = _comp_type_name(content_item)
+                    if c_name.lower() in _UNDERSTANDABLE_MEDIA:
+                        found.append(c_name)
+        elif inner_lowered == "node":
+            for content_item in getattr(inner, "content", None) or ():
+                c_name = _comp_type_name(content_item)
+                if c_name.lower() in _UNDERSTANDABLE_MEDIA:
+                    found.append(c_name)
+        elif inner_lowered == "reply":
+            found.extend(_iter_reply_media_types(inner, _depth=_depth + 1))
+    return found
+
+
 def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) -> ParsedEvent:
     """Normalizes an AstrMessageEvent (or test double) into ParsedEvent."""
     group_id = str(_safe_call(event, "get_group_id", "") or "")
@@ -495,6 +525,9 @@ def parse_group_event(event: Any, command_prefixes: Optional[List[str]] = None) 
             poke_comps.append(comp)
             if not poke_target_id:
                 poke_target_id = _poke_target_id(comp)
+            continue
+        if lowered == "reply":
+            media_component_types.extend(_iter_reply_media_types(comp))
             continue
         # Unknown components are treated conservatively as media. This keeps
         # a new adapter component from accidentally opening an LLM call while

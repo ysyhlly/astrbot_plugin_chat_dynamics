@@ -192,6 +192,7 @@ def build_state(
     affection: Mapping[str, Any] | None = None,
     character_state: Mapping[str, Any] | None = None,
     character_rules: str | None = None,
+    learning_context: str | None = None,
 ) -> dict:
     """The bounded state a System One model judges, never the raw unbounded context."""
     relationship = normalize_affection(affection, user_id=turn.author)
@@ -213,6 +214,9 @@ def build_state(
         state["character_state"] = dict(character_state)
     if relationship is not None:
         state["affection"] = relationship
+    clean_learning = str(learning_context or "").strip()
+    if clean_learning:
+        state["learning_context"] = clean_learning[:2000]
     state["conversation"] = turn.payload()
     from .nearby_context import decision_payload, POLICY
     nearby = decision_payload(turn)
@@ -472,6 +476,7 @@ def _shrink(state: dict, max_chars: int) -> dict:
         character_state.pop("horizons", None)
     state.pop("affection", None)
     state.pop("affection_policy", None)
+    state.pop("learning_context", None)
     if _size(state) <= max_chars:
         return state
 

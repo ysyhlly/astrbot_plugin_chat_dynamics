@@ -80,7 +80,25 @@ async def refine_host_caption(
     provider = context.get_provider_by_id(provider_id)
     if provider is None:
         return ""
-    response = await asyncio.wait_for(provider.text_chat(
-        prompt=caption_settings(settings)["image_caption_prompt"], image_urls=images), timeout=30)
+    from .. import series_panels
+
+    prompt_text = caption_settings(settings)["image_caption_prompt"]
+    group_id = str(getattr(event, "unified_msg_origin", "") or "")
+
+    async def _invoke():
+        return await asyncio.wait_for(
+            provider.text_chat(prompt=prompt_text, image_urls=images),
+            timeout=30,
+        )
+
+    response = await series_panels.series_llm_call(
+        context,
+        str(provider_id),
+        "astrbot_plugin_chat_dynamics",
+        "vision",
+        _invoke,
+        acquire_timeout=15.0,
+        group_id=group_id,
+    )
     text = getattr(response, "completion_text", "")
     return str(text).strip()[:12000] if text else ""

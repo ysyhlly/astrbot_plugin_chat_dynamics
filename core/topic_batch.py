@@ -106,14 +106,15 @@ class TopicBatcher:
             rule_mode = getattr(h._runtime_config, 'rule_topic_routing_enabled', False)
             if rule_mode:
                 h.thread_router.refresh_topics(runtime)
+            max_title_failures = 2 if rule_mode else 3
             topics, title_work, deferred = {}, {}, []
             for topic in sorted(state.topics.values(), key=lambda t: t.updated_at, reverse=True):
                 if (not topic.label_requested or topic.generated_title or topic.title_in_flight
-                        or topic.title_failures >= 3 or now < topic.title_retry_at):
+                        or topic.title_failures >= max_title_failures or now < topic.title_retry_at):
                     continue
                 nodes = [dag.nodes[mid] for mid in topic.message_ids if mid in dag.nodes]
                 if rule_mode:
-                    if len(nodes) < 2:
+                    if len(nodes) < 4:
                         continue
                     representatives = [dag.nodes[mid] for mid, _ in topic.exemplar_messages if mid in dag.nodes and mid in topic.message_ids]
                     nodes = list({n.msg_id: n for n in (representatives[:1] + nodes[:1] + nodes[-3:])}.values())
@@ -165,7 +166,10 @@ class TopicBatcher:
                                     dag.nodes[mid].metadata["topic_title"] = title
                         else:
                             topic.title_failures += 1
-                            topic.title_retry_at = h.time_service.time() + min(300.0, 30.0 * 2 ** (topic.title_failures - 1))
+                            base_backoff = 60.0 if rule_mode else 30.0
+                            topic.title_retry_at = h.time_service.time() + min(
+                                300.0, base_backoff * 2 ** (topic.title_failures - 1)
+                            )
                     h._mark_panel_runtime_dirty()
 
     @staticmethod

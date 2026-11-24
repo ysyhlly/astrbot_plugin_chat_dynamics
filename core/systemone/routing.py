@@ -213,10 +213,38 @@ class RoutedSystemOneClient:
         except Exception:
             error_code = "systemone_provider_failed"
         finally:
+            elapsed_s = max(0.0, time.perf_counter() - started)
+            usage_obj = getattr(provider, "last_decision_usage", None) if completed else None
             if not tone:
                 self.last_context_budget = budget
-                self.last_usage = getattr(provider, "last_decision_usage", None) if completed else None
-                self.last_latency_ms = round((time.perf_counter() - started) * 1000)
+                self.last_usage = usage_obj
+                self.last_latency_ms = round(elapsed_s * 1000)
+            try:
+                from ... import series_panels
+
+                ctx = getattr(self.host, "context", None)
+                if ctx is not None:
+                    usage_payload = {"usage": usage_obj} if isinstance(usage_obj, dict) else usage_obj
+                    model_name = ""
+                    get_model = getattr(provider, "get_model", None)
+                    if callable(get_model):
+                        try:
+                            model_name = str(get_model() or "")
+                        except Exception:
+                            model_name = ""
+                    series_panels.record_series_llm_usage(
+                        ctx,
+                        plugin_id="astrbot_plugin_chat_dynamics",
+                        provider_id=provider_id or "decision",
+                        purpose="tone_review" if tone else "decision",
+                        response=usage_payload,
+                        generation_seconds=elapsed_s,
+                        ok=completed and error_code is None,
+                        error_type="" if (completed and error_code is None) else str(error_code or "decision_failed"),
+                        model=model_name,
+                    )
+            except Exception:
+                pass
         if error_code is not None:
             self.failures += 1
             if tone:

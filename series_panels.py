@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from datetime import timedelta, timezone
 from importlib import import_module
 from pathlib import Path
@@ -75,22 +76,223 @@ _SHARED_STR_KEYS = (
 _SUMMARY_TTL_SECONDS = 10.0
 _VALID_BADGE_TONES = frozenset({"accent", "warm", "info", "danger", "muted"})
 _SUMMARY_CACHE_LOCK = threading.Lock()
-_SUMMARY_CACHE: dict[tuple[str, int], tuple[float, dict[str, object] | None]] = {}
+_SUMMARY_CACHE: dict[tuple[str, int], tuple[float, int, dict[str, object] | None]] = {}
+_PRESENCE_EPOCH = 0
+_LAST_CONTEXT_REF: weakref.ref | None = None
 
 
-def invalidate_presence_cache(plugin_id: str | None = None) -> None:
-    """Drop cached get_series_summary() entries for one plugin or all plugins."""
+def _remember_context(context) -> None:
+    global _LAST_CONTEXT_REF
+    if context is None:
+        return
+    try:
+        _LAST_CONTEXT_REF = weakref.ref(context)
+    except TypeError:
+        pass
+
+
+def get_presence_epoch(context=None) -> int:
+    """Return a cross-plugin cache epoch shared on ``context`` when available."""
+    ctx = context
+    if ctx is None and _LAST_CONTEXT_REF is not None:
+        ctx = _LAST_CONTEXT_REF()
+    ctx_epoch = 0
+    if ctx is not None:
+        raw = getattr(ctx, "_chat_dynamics_presence_epoch", 0)
+        if isinstance(raw, int):
+            ctx_epoch = raw
+    with _SUMMARY_CACHE_LOCK:
+        return max(_PRESENCE_EPOCH, ctx_epoch)
+
+
+def bump_presence_epoch(context=None) -> int:
+    """Increment the shared presence/matrix cache epoch across all series plugins."""
+    global _PRESENCE_EPOCH
+    ctx = context
+    if ctx is None and _LAST_CONTEXT_REF is not None:
+        ctx = _LAST_CONTEXT_REF()
+    with _SUMMARY_CACHE_LOCK:
+        ctx_epoch = 0
+        if ctx is not None:
+            raw = getattr(ctx, "_chat_dynamics_presence_epoch", 0)
+            if isinstance(raw, int):
+                ctx_epoch = raw
+        next_epoch = max(_PRESENCE_EPOCH, ctx_epoch) + 1
+        _PRESENCE_EPOCH = next_epoch
+    if ctx is not None:
+        try:
+            setattr(ctx, "_chat_dynamics_presence_epoch", next_epoch)
+        except (AttributeError, TypeError):
+            pass
+    return next_epoch
+
+
+def invalidate_presence_cache(plugin_id: str | None = None, *, context=None) -> None:
+    """Drop cached get_series_summary() entries and bump the shared cross-plugin epoch."""
     with _SUMMARY_CACHE_LOCK:
         if plugin_id is None:
             _SUMMARY_CACHE.clear()
         else:
             for key in [k for k in _SUMMARY_CACHE if k[0] == plugin_id]:
                 _SUMMARY_CACHE.pop(key, None)
+    bump_presence_epoch(context)
 
 
 invalidate_summary_cache = invalidate_presence_cache
 clear_summary_cache = invalidate_presence_cache
 invalidate_series_summary_cache = invalidate_presence_cache
+
+
+def _provider_id_of(provider) -> str:
+    if provider is None:
+        return ""
+    meta = getattr(provider, "meta", None)
+    if callable(meta):
+        try:
+            meta = meta()
+        except Exception:
+            meta = None
+    if meta is not None:
+        for attr in ("id", "provider_id"):
+            val = getattr(meta, attr, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    cfg = getattr(provider, "provider_config", None)
+    if isinstance(cfg, dict):
+        val = cfg.get("id")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    for attr in ("id", "provider_id"):
+        val = getattr(provider, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def find_provider_silently(context, provider_id: str, *, allow_fallback: bool = False):
+    """Look up a provider ID without triggering AstrBot's missing-provider WARN during cold start.
+
+    Inspects ``provider_manager.inst_map`` and provider listing methods first.
+    Falls back to ``context.get_provider_by_id()`` only when ``allow_fallback=True``
+    or when the host/test-double does not expose ``provider_manager``.
+    """
+    clean_id = str(provider_id or "").strip()
+    if context is None or not clean_id:
+        return None
+    pm = getattr(context, "provider_manager", None)
+    has_pm_maps = False
+    if pm is not None:
+        for map_attr in (
+            "inst_map",
+            "embedding_provider_inst_map",
+            "rerank_provider_inst_map",
+            "stt_provider_inst_map",
+            "tts_provider_inst_map",
+        ):
+            inst_map = getattr(pm, map_attr, None)
+            if isinstance(inst_map, dict):
+                has_pm_maps = True
+                found = inst_map.get(clean_id)
+                if found is not None:
+                    return found
+        for list_attr in (
+            "provider_insts",
+            "embedding_provider_insts",
+            "rerank_provider_insts",
+            "stt_provider_insts",
+            "tts_provider_insts",
+        ):
+            insts = getattr(pm, list_attr, None)
+            if isinstance(insts, (list, tuple)):
+                has_pm_maps = True
+                for prov in insts:
+                    if _provider_id_of(prov) == clean_id:
+                        return prov
+    for list_method in (
+        "get_all_providers",
+        "get_all_embedding_providers",
+        "get_all_rerank_providers",
+        "get_all_stt_providers",
+    ):
+        getter = getattr(context, list_method, None)
+        if callable(getter) and not inspect.iscoroutinefunction(getter):
+            try:
+                items = getter() or ()
+            except Exception:
+                items = ()
+            if inspect.isawaitable(items):
+                if inspect.iscoroutine(items):
+                    items.close()
+                items = ()
+            for prov in items:
+                if _provider_id_of(prov) == clean_id:
+                    return prov
+    if allow_fallback or not has_pm_maps:
+        getter = getattr(context, "get_provider_by_id", None)
+        if callable(getter) and not inspect.iscoroutinefunction(getter):
+            try:
+                found = getter(clean_id)
+                if inspect.isawaitable(found):
+                    if inspect.iscoroutine(found):
+                        found.close()
+                    return None
+                return found
+            except Exception:
+                return None
+    return None
+
+
+def read_plugin_health(identity: str, owner) -> dict[str, object] | None:
+    """Safely read optional synchronous ``owner.get_series_health()`` diagnostics."""
+    if owner is None:
+        return None
+    getter = getattr(owner, "get_series_health", None)
+    if not callable(getter) or inspect.iscoroutinefunction(getter):
+        return None
+    try:
+        raw = getter()
+        if inspect.isawaitable(raw):
+            if inspect.iscoroutine(raw):
+                raw.close()
+            return None
+    except Exception as exc:
+        return {
+            "plugin_id": identity,
+            "ready": False,
+            "degraded": True,
+            "providers": [],
+            "issues": [f"health_hook_error:{type(exc).__name__}"],
+            "metrics": {},
+        }
+    if not isinstance(raw, dict):
+        return None
+    providers_out: list[dict[str, object]] = []
+    for item in (raw.get("providers") or ())[:16]:
+        if not isinstance(item, dict):
+            continue
+        providers_out.append(
+            {
+                "role": str(item.get("role") or "")[:48],
+                "provider_id": str(item.get("provider_id") or "")[:128],
+                "status": str(item.get("status") or "unknown")[:32],
+                "detail": str(item.get("detail") or "")[:160],
+            }
+        )
+    issues_out = [
+        str(x).strip()[:200]
+        for x in (raw.get("issues") or ())[:20]
+        if str(x).strip()
+    ]
+    metrics_raw = raw.get("metrics")
+    metrics_out = _safe_json_value(metrics_raw, depth=2) if isinstance(metrics_raw, dict) else {}
+    return {
+        "plugin_id": identity,
+        "ready": bool(raw.get("ready", True)),
+        "degraded": bool(raw.get("degraded", bool(issues_out))),
+        "providers": providers_out,
+        "issues": issues_out,
+        "metrics": metrics_out if isinstance(metrics_out, dict) else {},
+    }
 
 
 def _sanitize_summary(raw) -> dict[str, object] | None:
@@ -141,6 +343,7 @@ def _read_plugin_summary(
     *,
     ttl: float = _SUMMARY_TTL_SECONDS,
     force_refresh: bool = False,
+    context=None,
 ) -> dict[str, object] | None:
     if owner is None:
         return None
@@ -148,12 +351,13 @@ def _read_plugin_summary(
     if not callable(getter) or inspect.iscoroutinefunction(getter):
         return None
     now = time.monotonic()
+    epoch = get_presence_epoch(context)
     cache_key = (identity, id(owner))
     if not force_refresh and ttl > 0:
         with _SUMMARY_CACHE_LOCK:
             cached = _SUMMARY_CACHE.get(cache_key)
-            if cached is not None and cached[0] > now:
-                return cached[1]
+            if cached is not None and cached[0] > now and cached[1] == epoch:
+                return cached[2]
     summary = None
     try:
         raw = getter()
@@ -167,12 +371,15 @@ def _read_plugin_summary(
     if ttl > 0:
         with _SUMMARY_CACHE_LOCK:
             if len(_SUMMARY_CACHE) > 64:
-                expired = [k for k, (exp, _val) in _SUMMARY_CACHE.items() if exp <= now]
+                expired = [
+                    k for k, entry in _SUMMARY_CACHE.items()
+                    if entry[0] <= now or (len(entry) >= 3 and entry[1] != epoch)
+                ]
                 for k in expired:
                     _SUMMARY_CACHE.pop(k, None)
                 if len(_SUMMARY_CACHE) > 64:
                     _SUMMARY_CACHE.clear()
-            _SUMMARY_CACHE[cache_key] = (now + ttl, summary)
+            _SUMMARY_CACHE[cache_key] = (now + ttl, epoch, summary)
     return summary
 
 
@@ -469,11 +676,17 @@ class ProviderBudgetBusyError(RuntimeError):
         provider: str = "",
         purpose: str = "",
         reason: str = "busy",
+        retry_after: float = 0.0,
     ) -> None:
         super().__init__(message)
         self.provider = str(provider or "")
         self.purpose = str(purpose or "")
         self.reason = str(reason or "busy")
+        try:
+            retry_val = float(retry_after or 0.0)
+        except (TypeError, ValueError):
+            retry_val = 0.0
+        self.retry_after = max(0.0, retry_val) if math.isfinite(retry_val) else 0.0
 
 
 def is_provider_budget_busy_error(exc: BaseException | None) -> bool:
@@ -485,6 +698,34 @@ def is_provider_budget_busy_error(exc: BaseException | None) -> bool:
         or getattr(exc, "is_provider_budget_busy", False)
         or type(exc).__name__ == "ProviderBudgetBusyError"
     )
+
+
+def provider_circuit_remaining(context, provider_id: str) -> float:
+    """Read-only pre-flight check of remaining circuit cooldown seconds for a provider.
+
+    Reads ``context._chat_dynamics_provider_budget`` silently without logging or
+    calling ``context.get_provider_by_id``. Returns ``0.0`` when unavailable or closed.
+    """
+    clean_id = str(provider_id or "").strip()
+    if context is None or not clean_id:
+        return 0.0
+    budget = getattr(context, "_chat_dynamics_provider_budget", None)
+    if budget is None:
+        return 0.0
+    try:
+        public_fn = getattr(budget, "circuit_remaining", None)
+        if callable(public_fn) and not inspect.iscoroutinefunction(public_fn):
+            val = float(public_fn(clean_id) or 0.0)
+            return max(0.0, val) if math.isfinite(val) else 0.0
+        private_fn = getattr(budget, "_circuit_remaining", None)
+        if callable(private_fn) and not inspect.iscoroutinefunction(private_fn):
+            res = private_fn(clean_id)
+            rem = res[0] if isinstance(res, tuple) and res else res
+            val = float(rem or 0.0)
+            return max(0.0, val) if math.isfinite(val) else 0.0
+    except Exception:
+        return 0.0
+    return 0.0
 
 
 def get_series_shared_config(context) -> dict:
@@ -607,8 +848,11 @@ def record_series_llm_usage(
     generation_seconds: float = 0.0,
     ok: bool = True,
     error_type: str = "",
+    model: str = "",
+    group_id: str = "",
+    image_count: int = 0,
 ) -> bool:
-    """Report one LLM call's usage & timing to chat_dynamics telemetry if present."""
+    """Report one LLM/image call's usage & timing to chat_dynamics telemetry if present."""
     if context is None:
         return False
     telemetry = getattr(context, "_chat_dynamics_series_telemetry", None)
@@ -618,18 +862,31 @@ def record_series_llm_usage(
     recorder = getattr(telemetry, "record", None) if telemetry is not None else None
     if not callable(recorder):
         return False
+    base_kwargs = {
+        "plugin_id": str(plugin_id or "unknown").strip() or "unknown",
+        "provider_id": str(provider_id or "default").strip() or "default",
+        "purpose": str(purpose or "background").strip() or "background",
+        "response": response,
+        "queue_seconds": max(0.0, float(queue_seconds or 0.0)),
+        "generation_seconds": max(0.0, float(generation_seconds or 0.0)),
+        "ok": bool(ok),
+        "error_type": str(error_type or "").strip()[:64],
+    }
+    ext_kwargs = {
+        **base_kwargs,
+        "model": str(model or "").strip()[:128],
+        "group_id": str(group_id or "").strip()[:128],
+        "image_count": max(0, int(image_count or 0)),
+    }
     try:
-        recorder(
-            plugin_id=str(plugin_id or "unknown").strip() or "unknown",
-            provider_id=str(provider_id or "default").strip() or "default",
-            purpose=str(purpose or "background").strip() or "background",
-            response=response,
-            queue_seconds=max(0.0, float(queue_seconds or 0.0)),
-            generation_seconds=max(0.0, float(generation_seconds or 0.0)),
-            ok=bool(ok),
-            error_type=str(error_type or "").strip()[:64],
-        )
+        recorder(**ext_kwargs)
         return True
+    except TypeError:
+        try:
+            recorder(**base_kwargs)
+            return True
+        except Exception:
+            return False
     except Exception:
         return False
 
@@ -642,6 +899,8 @@ async def series_llm_call(
     invoke,
     *,
     acquire_timeout: float | None = 15.0,
+    model: str = "",
+    group_id: str = "",
 ):
     """Run an LLM call via shared ProviderBudget when present, else directly.
 
@@ -652,6 +911,8 @@ async def series_llm_call(
     clean_provider = str(provider_id or "").strip() or "default"
     clean_plugin = str(plugin_id or "").strip() or "unknown"
     clean_purpose = str(purpose or "").strip() or "background"
+    clean_model = str(model or "").strip()[:128]
+    clean_group = str(group_id or "").strip()[:128]
     budget = (
         getattr(context, "_chat_dynamics_provider_budget", None)
         if context is not None
@@ -661,12 +922,24 @@ async def series_llm_call(
     if callable(runner) and inspect.iscoroutinefunction(runner):
         if getattr(budget, "supports_series_telemetry", False) is True:
             try:
+                run_kwargs: dict[str, object] = {
+                    "plugin_id": clean_plugin,
+                    "acquire_timeout": acquire_timeout,
+                }
+                if clean_model or clean_group:
+                    try:
+                        sig = inspect.signature(runner)
+                        if "model" in sig.parameters:
+                            run_kwargs["model"] = clean_model
+                        if "group_id" in sig.parameters:
+                            run_kwargs["group_id"] = clean_group
+                    except (TypeError, ValueError):
+                        pass
                 return await runner(
                     clean_provider,
                     clean_purpose,
                     invoke,
-                    plugin_id=clean_plugin,
-                    acquire_timeout=acquire_timeout,
+                    **run_kwargs,
                 )
             except BaseException as exc:
                 if is_provider_budget_busy_error(exc):
@@ -677,6 +950,7 @@ async def series_llm_call(
                         provider=getattr(exc, "provider", clean_provider),
                         purpose=getattr(exc, "purpose", clean_purpose),
                         reason=getattr(exc, "reason", "busy"),
+                        retry_after=float(getattr(exc, "retry_after", 0.0) or 0.0),
                     ) from exc
                 raise
         started = time.monotonic()
@@ -693,6 +967,8 @@ async def series_llm_call(
                     queue_seconds=elapsed,
                     ok=False,
                     error_type=f"budget_{getattr(exc, 'reason', 'busy')}",
+                    model=clean_model,
+                    group_id=clean_group,
                 )
                 if isinstance(exc, ProviderBudgetBusyError):
                     raise
@@ -701,6 +977,7 @@ async def series_llm_call(
                     provider=getattr(exc, "provider", clean_provider),
                     purpose=getattr(exc, "purpose", clean_purpose),
                     reason=getattr(exc, "reason", "busy"),
+                    retry_after=float(getattr(exc, "retry_after", 0.0) or 0.0),
                 ) from exc
             record_series_llm_usage(
                 context,
@@ -710,6 +987,8 @@ async def series_llm_call(
                 generation_seconds=elapsed,
                 ok=False,
                 error_type=type(exc).__name__,
+                model=clean_model,
+                group_id=clean_group,
             )
             raise
         elapsed = max(0.0, time.monotonic() - started)
@@ -723,6 +1002,8 @@ async def series_llm_call(
             generation_seconds=elapsed,
             ok=not is_err,
             error_type="host_error_response" if is_err else "",
+            model=clean_model,
+            group_id=clean_group,
         )
         return result
 
@@ -739,6 +1020,8 @@ async def series_llm_call(
             generation_seconds=max(0.0, time.monotonic() - started),
             ok=False,
             error_type=type(exc).__name__,
+            model=clean_model,
+            group_id=clean_group,
         )
         raise
     elapsed = max(0.0, time.monotonic() - started)
@@ -752,11 +1035,14 @@ async def series_llm_call(
         generation_seconds=elapsed,
         ok=not is_err,
         error_type="host_error_response" if is_err else "",
+        model=clean_model,
+        group_id=clean_group,
     )
     return result
 
 
 def presence(context, current, root=None, *, force_refresh: bool = False):
+    _remember_context(context)
     root = Path(root) if root else Path(__file__).resolve().parent.parent
     registered_entries = _iter_registered_entries(context)
     output = []
@@ -857,7 +1143,7 @@ def presence(context, current, root=None, *, force_refresh: bool = False):
                     except Exception as exc:
                         data.update(state="error", error=type(exc).__name__)
                 summary = _read_plugin_summary(
-                    identity, owner, force_refresh=force_refresh
+                    identity, owner, force_refresh=force_refresh, context=context
                 )
                 if summary:
                     data["badge"] = summary.get("badge")
@@ -937,7 +1223,7 @@ class SeriesPanels:
                 "yes",
             }
             if refresh_flag:
-                invalidate_presence_cache()
+                invalidate_presence_cache(context=self.owner.context)
             return json_response(
                 {
                     "status": "ok",
@@ -972,6 +1258,7 @@ class SeriesPanels:
 
 
 def register_series_panels(owner, identity):
+    _remember_context(getattr(owner, "context", None))
     old = getattr(owner, "_series_panels", None)
     if old:
         old.close()

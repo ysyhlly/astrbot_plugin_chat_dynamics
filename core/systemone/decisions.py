@@ -186,6 +186,17 @@ def reported_usage(envelope):
             count = source.get(name) if isinstance(source, dict) else None
             if type(count) is int and count >= 0:
                 result[name] = count
+    if "cached_tokens" not in result:
+        for source, name in (
+            (value, "cached_tokens"),
+            (value.get("prompt_tokens_details"), "cached_tokens"),
+            (value, "cache_read_input_tokens"),
+            (value, "prompt_cache_hit_tokens"),
+        ):
+            count = source.get(name) if isinstance(source, dict) else None
+            if type(count) is int and count >= 0:
+                result["cached_tokens"] = count
+                break
     return result
 
 

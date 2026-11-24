@@ -507,3 +507,77 @@ async def test_send_onebot_chain_partial_exception_attaches_receipt(tmp_path, mo
     assert parsed.message_ids == ("101",)
     assert parsed.error == "upload timeout"
     assert parsed.parts == ((0, ("101",)),)
+
+
+def test_parse_group_event_detects_quoted_image_media():
+    class Image:
+        url = "/tmp/quoted.jpg"
+
+    class Plain:
+        def __init__(self, text):
+            self.text = text
+
+    class Face:
+        id = 1
+
+    class Node:
+        def __init__(self, content):
+            self.content = content
+
+    class Forward:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+    class Reply:
+        def __init__(self, rid, chain, sender_id="u1", sender_nickname="Alice"):
+            self.id = rid
+            self.chain = chain
+            self.sender_id = sender_id
+            self.sender_nickname = sender_nickname
+
+    def _make_event(comps, text, outline="[引用消息]"):
+        class Event:
+            message_str = text
+            message_id = "m-quote"
+            unified_msg_origin = "mock:FriendMessage:u1"
+            is_at_or_wake_command = False
+            message_obj = type("M", (), {"message_id": "m-quote", "message": comps})()
+
+            def get_group_id(self):
+                return ""
+
+            def get_sender_id(self):
+                return "u1"
+
+            def get_self_id(self):
+                return "bot"
+
+            def get_messages(self):
+                return list(self.message_obj.message)
+
+            def get_message_outline(self):
+                return outline
+
+        return Event()
+
+    quoted_img = parse_group_event(
+        _make_event([Reply("m-img", [Image()]), Plain("请参考这张图重绘")], "请参考这张图重绘")
+    )
+    assert quoted_img.has_media is True
+    assert quoted_img.media_only is False
+    assert has_understandable_media(quoted_img) is True
+    assert quoted_img.media_component_types == ["Image"]
+
+    quoted_text_face = parse_group_event(
+        _make_event([Reply("m-txt", [Plain("hello"), Face()]), Plain("同意")], "同意")
+    )
+    assert quoted_text_face.has_media is False
+    assert has_understandable_media(quoted_text_face) is False
+    assert quoted_text_face.media_component_types == []
+
+    quoted_forward_img = parse_group_event(
+        _make_event([Reply("m-fwd", [Forward([Node([Image()])])]), Plain("看看这个")], "看看这个")
+    )
+    assert quoted_forward_img.has_media is True
+    assert has_understandable_media(quoted_forward_img) is True
+    assert quoted_forward_img.media_component_types == ["Image"]

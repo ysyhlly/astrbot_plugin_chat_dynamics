@@ -29,6 +29,7 @@ class DiscussionCalls:
         self.memo = ExactMemo(ttl=45, capacity=256)
         self.bindings = {}
         self.failures = {}
+        self.probes = set()
         self.counts = Counter()
         self.timings = CallTimings()
         self.slots = {}
@@ -36,13 +37,30 @@ class DiscussionCalls:
     def snapshot(self):
         now = time.monotonic()
         return {**self.counts, 'memo': self.memo.snapshot(), 'timings': self.timings.snapshot(),
-                'providers_in_backoff': sum(until > now for _, until in self.failures.values())}
+                'providers_in_backoff': sum(until > now for _, until in self.failures.values()),
+                'probes_in_flight': len(self.probes)}
 
 
 class DiscussionReranker:
-    def __init__(self, context, provider_id, *, timeout=3.0, threshold=.65, margin=.10):
+    DEFAULT_TIMEOUT = 6.0
+    MAX_BACKOFF_SECONDS = 120.0
+    HIGH_RULE_CONFIDENCE = 0.85
+
+    def __init__(
+        self,
+        context,
+        provider_id,
+        *,
+        timeout=DEFAULT_TIMEOUT,
+        threshold=.65,
+        margin=.10,
+        min_candidates=2,
+        high_rule_confidence=HIGH_RULE_CONFIDENCE,
+    ):
         self.context, self.provider_id = context, provider_id
         self.timeout, self.threshold, self.margin = timeout, threshold, margin
+        self.min_candidates = max(1, int(min_candidates))
+        self.high_rule_confidence = float(high_rule_confidence)
         calls = getattr(context, '_cd_discussion_calls', None)
         if not isinstance(calls, DiscussionCalls):
             calls = DiscussionCalls()
@@ -55,12 +73,22 @@ class DiscussionReranker:
     def count(self, name, amount=1):
         self.calls.counts[name] += amount
 
-    async def rank_scoped(self, text, candidates, scope):
-        return await self.rank(text, candidates, scope=scope)
+    async def rank_scoped(self, text, candidates, scope, *, rule_confidence=None):
+        return await self.rank(text, candidates, scope=scope, rule_confidence=rule_confidence)
 
-    async def rank(self, text, candidates, *, scope=None):
+    async def rank(self, text, candidates, *, scope=None, rule_confidence=None):
         if not self.provider_id or not text.strip() or not candidates:
             return DiscussionRanking(reason='not_configured' if not self.provider_id else 'insufficient_context')
+        if rule_confidence is not None:
+            try:
+                if float(rule_confidence) >= self.high_rule_confidence:
+                    self.calls.counts['high_confidence_skips'] += 1
+                    return DiscussionRanking(reason='high_rule_confidence')
+            except (TypeError, ValueError):
+                pass
+        if len(candidates) < self.min_candidates:
+            self.calls.counts['single_candidate_skips'] += 1
+            return DiscussionRanking(reason='single_candidate')
         try:
             provider = self.context.get_provider_by_id(self.provider_id)
             fingerprint = provider_stamp(provider)
@@ -68,6 +96,7 @@ class DiscussionReranker:
             if binding is None or binding[0] is not provider or binding[1] != fingerprint:
                 self.calls.bindings[self.provider_id] = (provider, fingerprint)
                 self.calls.failures.pop(self.provider_id, None)
+                self.calls.probes.discard(self.provider_id)
             signature = (id(provider), fingerprint)
             documents = [json.dumps({'discussion': c.summary, 'recent_messages': c.exemplars}, ensure_ascii=False)
                          for c in candidates]
@@ -83,27 +112,62 @@ class DiscussionReranker:
                             or self.context.get_provider_by_id(self.provider_id) is not provider
                             or provider_stamp(provider) != fingerprint):
                         return DiscussionRanking(reason='provider_changed')
-                    if self.calls.failures.get(self.provider_id, (0, 0))[1] > time.monotonic():
+                    now_mono = time.monotonic()
+                    fail_count, backoff_until = self.calls.failures.get(self.provider_id, (0, 0.0))
+                    if backoff_until > now_mono:
                         self.calls.counts['backoff_skips'] += 1
                         return DiscussionRanking(reason='backoff')
+                    owns_probe = False
+                    if fail_count > 0:
+                        if self.provider_id in self.calls.probes:
+                            self.calls.counts['backoff_skips'] += 1
+                            return DiscussionRanking(reason='backoff')
+                        self.calls.probes.add(self.provider_id)
+                        owns_probe = True
                     start = time.monotonic()
+                    queue_elapsed = max(0.0, start - queued)
                     if callable(getattr(provider, 'rerank', None)):
                         self.calls.counts['provider_calls'] += 1
+                    result = None
                     try:
-                        result = await self._request(provider, query, documents, candidates)
+                        try:
+                            result = await self._request(provider, query, documents, candidates)
+                        finally:
+                            gen_elapsed = max(0.0, time.monotonic() - start)
+                            self.calls.timings.observe('rerank', gen_elapsed)
+                            try:
+                                from .. import series_panels
+
+                                ok_flag = result is not None and result.reason == 'ranked'
+                                err_label = '' if ok_flag else (result.reason if result is not None else 'rerank_error')
+                                series_panels.record_series_llm_usage(
+                                    self.context,
+                                    plugin_id='astrbot_plugin_chat_dynamics',
+                                    provider_id=str(self.provider_id),
+                                    purpose='rerank',
+                                    queue_seconds=queue_elapsed,
+                                    generation_seconds=gen_elapsed,
+                                    ok=ok_flag,
+                                    error_type=err_label,
+                                    group_id=str(scope or ''),
+                                )
+                            except Exception:
+                                pass
+                        if (self.calls.bindings.get(self.provider_id) != (provider, fingerprint)
+                                or self.context.get_provider_by_id(self.provider_id) is not provider
+                                or provider_stamp(provider) != fingerprint):
+                            return DiscussionRanking(reason='provider_changed')
+                        if result.reason == 'ranked':
+                            self.calls.failures.pop(self.provider_id, None)
+                        else:
+                            count = min(self.calls.failures.get(self.provider_id, (0, 0.0))[0] + 1, 6)
+                            delay = min(self.MAX_BACKOFF_SECONDS, 4.0 * (2 ** (count - 1)))
+                            self.calls.failures[self.provider_id] = (count, time.monotonic() + delay)
+                        self.calls.counts[result.reason] += 1
+                        return result
                     finally:
-                        self.calls.timings.observe('rerank', time.monotonic() - start)
-                    if (self.calls.bindings.get(self.provider_id) != (provider, fingerprint)
-                            or self.context.get_provider_by_id(self.provider_id) is not provider
-                            or provider_stamp(provider) != fingerprint):
-                        return DiscussionRanking(reason='provider_changed')
-                    if result.reason == 'ranked':
-                        self.calls.failures.pop(self.provider_id, None)
-                    else:
-                        count = min(self.calls.failures.get(self.provider_id, (0, 0))[0] + 1, 5)
-                        self.calls.failures[self.provider_id] = (count, time.monotonic() + min(30, 2 ** count))
-                    self.calls.counts[result.reason] += 1
-                    return result
+                        if owns_probe:
+                            self.calls.probes.discard(self.provider_id)
             # Unscoped diagnostic callers get no cross-request memoization.
             if scope is None:
                 return await invoke()

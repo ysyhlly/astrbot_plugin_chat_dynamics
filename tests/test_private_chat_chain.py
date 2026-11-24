@@ -196,3 +196,61 @@ async def test_group_fast_path_flush_runs_after_session_lock_is_released(monkeyp
         assert entered.is_set()
     finally:
         await plugin.terminate()
+
+
+@pytest.mark.asyncio
+async def test_private_quoted_image_enables_media_understand_and_preserves_reply(private_plugin, tmp_path):
+    plugin, bridge = private_plugin
+    img_path = tmp_path / "quoted_ref.png"
+    img_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    class Image:
+        def __init__(self, path):
+            self.file = str(path)
+            self.url = str(path)
+
+    class Plain:
+        def __init__(self, text):
+            self.text = text
+
+    class Reply:
+        def __init__(self, rid, chain):
+            self.id = rid
+            self.chain = chain
+            self.sender_id = "user_1"
+            self.sender_nickname = "Tester"
+            self.message_str = ""
+
+    event = private_event("请参考我上传的角色图片重绘", message_id="dm-quote-1")
+    event.message_obj.message = [Reply("dm-img-0", [Image(img_path)]), Plain("请参考我上传的角色图片重绘")]
+    event.get_messages = lambda: list(event.message_obj.message)
+    event.get_message_outline = lambda: "[引用消息] 请参考我上传的角色图片重绘"
+
+    captured_kwargs = []
+    orig_generate = bridge.generate
+
+    async def capture_generate(ev, evs, prompt, persona, provider, **kwargs):
+        captured_kwargs.append((evs, kwargs))
+        return await orig_generate(ev, evs, prompt, persona, provider, **kwargs)
+
+    bridge.generate = capture_generate
+
+    try:
+        await plugin.on_private_message(event)
+        await flush(plugin, event)
+        await drain(plugin)
+
+        assert len(captured_kwargs) == 1
+        forwarded_events, kwargs = captured_kwargs[0]
+        assert kwargs.get("media_understand") is True
+        reply_comps = [
+            comp
+            for ev in forwarded_events
+            for comp in ev.get_messages()
+            if type(comp).__name__.lower() == "reply"
+        ]
+        assert len(reply_comps) == 1
+        assert len(reply_comps[0].chain) == 1
+        assert type(reply_comps[0].chain[0]).__name__.lower() == "image"
+    finally:
+        await plugin.terminate()

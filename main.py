@@ -157,6 +157,85 @@ VIBE_QUESTION = {
         },
     }
 }
+_TRIVIAL_FOLLOWUP_EXACT = frozenset(
+    {
+        "嗯", "嗯嗯", "哦", "哦哦", "好", "好的", "好呀", "好滴", "好吧", "行", "行吧",
+        "可以", "收到", "了解", "明白", "ok", "okay", "kk", "k", "yes", "yeah", "yep",
+        "哈哈", "哈哈哈", "哈哈哈哈", "呵呵", "嘻嘻", "嘿嘿", "ww", "www", "233", "2333",
+        "6", "66", "666", "牛", "草", "笑死", "awsl", "确实", "对", "对呀", "对的",
+        "是的", "是吧", "在吗", "在不在", "有人吗", "喂", "额", "呃", "啊", "呀",
+        "哇", "哎", "唉", "唔", "呜", "喵", "噗", "汗", "晕", "emmm", "emm", "hmm",
+        "hm", "lol", "lmao", "xd",
+    }
+)
+_FOLLOWUP_OVERRIDE_MARKERS = (
+    "不对", "不是", "别", "不要", "不用", "算了", "等等", "等下", "补充",
+    "改成", "换成", "改一下", "停", "取消", "cancel", "stop", "wait",
+    "actually", "instead", "nvm",
+)
+_TRIVIAL_FOLLOWUP_RE = re.compile(r"^[\s\W_哈呵嘻嘿呜啊呀哇哦嗯额呃623wW\.。!！?？~～…]+$")
+_REASONING_MODEL_TOKENS = (
+    "reasoner",
+    "thinking",
+    "deepseek-r",
+    "-r1",
+    "/r1",
+    "qwq",
+    "gpt-5",
+    "o1",
+    "o3",
+    "o4-mini",
+)
+
+
+def _is_trivial_followup(text: str, parsed: Any = None) -> bool:
+    """Return True for short non-corrective follow-ups that shouldn't discard an in-flight reply."""
+    clean = str(text or "").strip()
+    if not clean:
+        return not bool(getattr(parsed, "has_media", False))
+    lower = clean.lower()
+    if any(marker in lower for marker in _FOLLOWUP_OVERRIDE_MARKERS):
+        return False
+    if lower in _TRIVIAL_FOLLOWUP_EXACT:
+        return True
+    if len(clean) <= 12 and _TRIVIAL_FOLLOWUP_RE.fullmatch(clean):
+        return True
+    return False
+
+
+def _looks_like_reasoning_provider(context: Any, provider_id: str) -> bool:
+    """Heuristic check for reasoning models (silently inspects provider metadata without noisy lookups)."""
+    clean_id = str(provider_id or "").strip()
+    candidates: list[str] = [clean_id.lower()] if clean_id else []
+    if context is not None and clean_id:
+        try:
+            from . import series_panels
+
+            prov = series_panels.find_provider_silently(context, clean_id)
+            if prov is not None:
+                get_model = getattr(prov, "get_model", None)
+                if callable(get_model):
+                    m = str(get_model() or "").strip().lower()
+                    if m:
+                        candidates.append(m)
+                for attr in ("model_name", "model"):
+                    v = getattr(prov, attr, None)
+                    if isinstance(v, str) and v.strip():
+                        candidates.append(v.strip().lower())
+                cfg = getattr(prov, "provider_config", None)
+                if isinstance(cfg, dict):
+                    m = str(cfg.get("model") or "").strip().lower()
+                    if m:
+                        candidates.append(m)
+        except Exception:
+            pass
+    for text in candidates:
+        for tok in _REASONING_MODEL_TOKENS:
+            if tok in text:
+                return True
+    return False
+
+
 _SESSION_IDLE_SECONDS = 3600.0
 _SESSION_SWEEP_INTERVAL = 300.0
 _PERSIST_INTERVAL_SECONDS = 30.0
@@ -1613,7 +1692,11 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     async def initialize(self) -> None:
         from importlib import reload
         from . import series_panels
-        reload(series_panels).register_series_panels(self,'astrbot_plugin_chat_dynamics')
+        from .core import series_hub
+        reloaded_panels = reload(series_panels)
+        reloaded_panels.register_series_panels(self, 'astrbot_plugin_chat_dynamics')
+        series_hub.series_panels = reloaded_panels
+        series_hub.install_presence_invalidation_hook()
         self._sync_runtime_from_config()
         await self._systemone_service.refresh_providers()
         if self._runtime_config.selflearning_hub_url:
@@ -1660,6 +1743,48 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     @filter.on_astrbot_loaded()
     async def on_astrbot_loaded(self):
         await self._systemone_service.refresh_providers()
+        try:
+            if hasattr(self, "integrations") and callable(getattr(self.integrations, "refresh", None)):
+                res = self.integrations.refresh()
+                if inspect.isawaitable(res):
+                    await res
+        except Exception:
+            pass
+
+    def get_series_health(self) -> dict[str, Any]:
+        """Read-only health & provider binding summary for GET /series_health."""
+        from . import series_panels
+
+        cfg = getattr(self, "_runtime_config", None)
+        providers: list[dict[str, str]] = []
+        issues: list[str] = []
+        slots = (
+            ("decision", str(getattr(cfg, "decision_provider_id", "") or "")),
+            ("reply", str(getattr(cfg, "reply_provider_id", "") or "")),
+            ("embedding", str(getattr(cfg, "embedding_provider_id", "") or "")),
+            ("rerank", str(getattr(cfg, "discussion_rerank_provider_id", "") or "")),
+        )
+        for role, pid in slots:
+            if not pid:
+                continue
+            found = series_panels.find_provider_silently(self.context, pid)
+            status = "ok" if found is not None else "missing"
+            detail = "ok" if found is not None else f"Provider {pid} 未找到"
+            providers.append({"role": role, "provider_id": pid, "status": status, "detail": detail})
+            if found is None:
+                issues.append(f"provider_missing:{role}:{pid}")
+        ready = not bool(getattr(self, "_shutting_down", False))
+        return {
+            "ready": ready,
+            "degraded": bool(issues),
+            "providers": providers,
+            "issues": issues,
+            "metrics": {
+                "enabled": bool(getattr(self, "enabled", True)),
+                "sessions": len(getattr(self, "_sessions", {}) or {}),
+                "pipeline_mode": str(getattr(self, "pipeline_mode", "")),
+            },
+        }
 
     @filter.on_plugin_loaded()
     async def on_plugin_loaded(self, metadata):
@@ -2231,14 +2356,17 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 and not getattr(parsed, "has_media", False)
                 and is_poke_placeholder(parsed.text)
             )
+            in_flight_reply = self.persona_engine.has_in_flight_reply_generation(runtime, parsed.sender_id)
             if (
                 self._persona_mode()
                 and not addressed_elsewhere
                 and not is_peer_poke_only
+                and not (in_flight_reply and _is_trivial_followup(bounded_text, parsed))
                 and not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id, mandatory_only=True)
                 and (strong_address or not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id))
             ):
                 runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
+                runtime.cancel_owned_turns(parsed.sender_id, pre_reply_only=True)
             # Native callbacks arrive after ingress.  Capture the member
             # revision on the exact event so a later /dynamics_stop can
             # invalidate decoration without touching other users' events.
@@ -2442,14 +2570,17 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                     self._stop_boundary_event(event, clear_result=True)
                     self._metric("peer_bot_round_limit")
                     return
+            in_flight_reply = self.persona_engine.has_in_flight_reply_generation(runtime, parsed.sender_id)
+            if not (in_flight_reply and _is_trivial_followup(bounded_text, parsed)):
+                runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
+                runtime.cancel_owned_turns(parsed.sender_id, pre_reply_only=True)
             if parsed.message_id:
                 try:
                     setattr(event, "_chat_dynamics_epoch", runtime.epoch)
                     setattr(event, "_chat_dynamics_user_revision",
-                            runtime.user_revisions.get(parsed.sender_id, 0) + 1)
+                            runtime.user_revisions.get(parsed.sender_id, 0))
                 except Exception:
                     pass
-            runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
             if bounded_text != parsed.text:
                 self._metric("input_truncated")
                 from .core.systemone.window import remember_input
@@ -2997,9 +3128,25 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             return DiscussionReranker(self.context, cfg.discussion_reranker_provider,
                 timeout=cfg.topic_reranker_timeout, threshold=cfg.discussion_rerank_threshold,
                 margin=cfg.discussion_rerank_margin)
+        if for_display:
+            title_provider = (
+                cfg.topic_reranker_provider
+                or cfg.vibe_provider_id
+                or cfg.discussion_llm_provider
+                or cfg.reply_provider_id
+            )
+            title_timeout = cfg.topic_title_timeout
+            if _looks_like_reasoning_provider(self.context, title_provider):
+                title_timeout = max(float(title_timeout), 25.0)
+            return TopicReranker(
+                LLMAdapter(self.context, configured_provider_id=title_provider),
+                enabled=True,
+                timeout_seconds=title_timeout,
+            )
         return TopicReranker(
             LLMAdapter(self.context, configured_provider_id=cfg.topic_reranker_provider or cfg.reply_provider_id),
-            enabled=True, timeout_seconds=cfg.topic_title_timeout if for_display else cfg.topic_reranker_timeout,
+            enabled=True,
+            timeout_seconds=cfg.topic_reranker_timeout,
         )
 
     async def _enrich_turn(self, turn: _PreparedTurn) -> None:

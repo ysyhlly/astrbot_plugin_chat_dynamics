@@ -16,7 +16,7 @@ from .pacer import PacingShaper, is_rhythm_short_act, scale_delay
 from .topic_identity import confirmed_topic_id
 from .active_dialogue import dialogue_for_node
 from .dialogue_context import capture_dialogue
-from .platform_bridge import _comp_type_name, _safe_call, chain_plain_text
+from .platform_bridge import _comp_type_name, _iter_reply_media_types, _safe_call, chain_plain_text
 from .bot_identity import BotIdentityMatcher
 from .group_context import select_group_events
 from .deferred_reply_media import DeferredReplyMedia
@@ -1007,8 +1007,9 @@ class PersonaEngine:
         self._projection_tasks = {}
         self.telemetry = PipelineTelemetry()
 
-    def _invalid(self, runtime, item: ModelTurn, reason: str) -> bool:
+    def _invalid(self, runtime, item: ModelTurn, reason: str, *, stage: str = "") -> bool:
         """Refuse a turn and leave one WARNING with ids only (never message text)."""
+        drop_stage = str(stage or "unknown").strip() or "unknown"
         record_terminal_outcome(runtime, item, outcomes.mark_suppressed, reason, stage="generation")
         event = item.events[-1] if item.events else None
         if event is not None and not getattr(event, "_cd_invalid_warned_v1", False):
@@ -1017,14 +1018,15 @@ class PersonaEngine:
             except Exception:
                 pass
             logger.warning(
-                "[ChatDynamics] turn dropped session=%s turn=%s reason=%s",
+                "[ChatDynamics] turn dropped session=%s turn=%s reason=%s stage=%s",
                 runtime.session_key,
                 _turn_log_id(runtime, item),
                 reason,
+                drop_stage,
             )
         return False
 
-    def _valid_prefix(self, runtime, item: ModelTurn):
+    def _valid_prefix(self, runtime, item: ModelTurn, *, stage: str = ""):
         """事件/边界前置检查。
 
         返回值 True/False 表示已可判定，None 表示需要继续做证据校验与尾部判定。
@@ -1033,24 +1035,24 @@ class PersonaEngine:
         if item.events:
             event = item.events[-1]
             if getattr(event, "_chat_dynamics_boundary_failed_closed", False):
-                return self._invalid(runtime, item, "boundary_failed_closed")
+                return self._invalid(runtime, item, "boundary_failed_closed", stage=stage)
             if getattr(event, "_chat_dynamics_evidence_failed_closed", False):
-                return self._invalid(runtime, item, "evidence_failed_closed")
+                return self._invalid(runtime, item, "evidence_failed_closed", stage=stage)
             policy, token, state = member_boundary.peek(p, event, turn.author)
             if not state.available and member_boundary.fail_closed(state):
-                return self._invalid(runtime, item, "boundary_service_unavailable")
+                return self._invalid(runtime, item, "boundary_service_unavailable", stage=stage)
             if member_boundary.blocked(policy):
-                return self._invalid(runtime, item, "boundary_policy_blocked")
+                return self._invalid(runtime, item, "boundary_policy_blocked", stage=stage)
             captured = getattr(event, "_chat_dynamics_boundary_token", None)
             if captured is not None and token != captured:
-                return self._invalid(runtime, item, "boundary_policy_changed")
+                return self._invalid(runtime, item, "boundary_policy_changed", stage=stage)
         return None
 
-    def _valid_suffix(self, runtime, item: ModelTurn) -> bool:
+    def _valid_suffix(self, runtime, item: ModelTurn, *, stage: str = "") -> bool:
         """尾部判定（会话/epoch/冷却等纯本地状态检查）。"""
         p, turn = self.plugin, item.context
         if not dynamics_learning.current(runtime, item):
-            return self._invalid(runtime, item, "learning_revision_changed")
+            return self._invalid(runtime, item, "learning_revision_changed", stage=stage)
         scope_enabled = (
             p.is_runtime_scope_enabled(runtime)
             if callable(getattr(p, "is_runtime_scope_enabled", None))
@@ -1084,7 +1086,7 @@ class PersonaEngine:
                 if item.debounce_result is not None and not p.debounce.is_result_current(item.debounce_result)
                 else "runtime_policy_changed"
             )
-            return self._invalid(runtime, item, reason)
+            return self._invalid(runtime, item, reason, stage=stage)
         return True
 
     def _evidence_view_current(self, item: ModelTurn) -> bool:
@@ -1114,26 +1116,26 @@ class PersonaEngine:
         except Exception:
             return False
 
-    def valid(self, runtime, item: ModelTurn) -> bool:
-        verdict = self._valid_prefix(runtime, item)
+    def valid(self, runtime, item: ModelTurn, *, stage: str = "") -> bool:
+        verdict = self._valid_prefix(runtime, item, stage=stage)
         if verdict is not None:
             return verdict
         if not self._evidence_view_current(item):
-            return self._invalid(runtime, item, "evidence_revision_changed")
-        return self._valid_suffix(runtime, item)
+            return self._invalid(runtime, item, "evidence_revision_changed", stage=stage)
+        return self._valid_suffix(runtime, item, stage=stage)
 
-    async def valid_async(self, runtime, item: ModelTurn) -> bool:
+    async def valid_async(self, runtime, item: ModelTurn, *, stage: str = "") -> bool:
         """与 valid() 完全同判据，但证据读库不阻塞事件循环。
 
         供 async 调用点使用；valid() 保持同步与逐字原行为，供少数同步调用点
         （_finish_generation_failure / has_pending_explicit_request）继续使用。
         """
-        verdict = self._valid_prefix(runtime, item)
+        verdict = self._valid_prefix(runtime, item, stage=stage)
         if verdict is not None:
             return verdict
         if not await self._evidence_view_current_async(item):
-            return self._invalid(runtime, item, "evidence_revision_changed")
-        return self._valid_suffix(runtime, item)
+            return self._invalid(runtime, item, "evidence_revision_changed", stage=stage)
+        return self._valid_suffix(runtime, item, stage=stage)
 
     def _finish_generation_failure(
         self, runtime, item: ModelTurn, reason: str, *, error_type: str = "", suppressed: bool = False
@@ -1218,6 +1220,13 @@ class PersonaEngine:
                 runtime.model_admission.release()
             if not queued:
                 self.plugin.debounce.finish_result(item.debounce_result)
+
+    def has_in_flight_reply_generation(self, runtime, user_id: str) -> bool:
+        """True while generate_ready() is in flight or completing delivery validation for user_id."""
+        owners = getattr(runtime, "reply_generation_owners", None)
+        if not isinstance(owners, dict):
+            return False
+        return int(owners.get(str(user_id or ""), 0) or 0) > 0
 
     def has_pending_explicit_request(self, runtime, user_id: str, *, mandatory_only: bool = False) -> bool:
         """Ordinary chatter must not cancel a pending, unanswered wake request.
@@ -1390,7 +1399,7 @@ class PersonaEngine:
             # participation preset. Keep the operator's public-chat policy.
             decision_prompt += "\n" + DECISION_GUIDANCE
         learning = dynamics_learning.selected(runtime, item)
-        decision_prompt += learning["context"]
+        learning_context = str(learning.get("context") or "").strip() if isinstance(learning, dict) else ""
         horizons_slot = dynamics_horizons.decision_slot(runtime, item)
         if item.narrative_bundle is None and horizons_slot is not None:
             decision_prompt = decision_prompt.rstrip() + "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
@@ -1434,6 +1443,7 @@ class PersonaEngine:
                 character_rules=bundle_character.get("group_rules", "")
                 if bundle_character is not None
                 else None,
+                learning_context=learning_context or None,
             )
             # Initial state packing may prune optional scene observations.
             # Reoffer the filtered snapshot to the whole-request packer so
@@ -1675,9 +1685,14 @@ class PersonaEngine:
         )
         child = self.plugin._create_background_task(self.telemetry.run("native_agent", turn, operation))
         runtime.owned_turn_tasks[child] = turn.author
+        reply_tasks = getattr(runtime, "reply_generation_tasks", None)
+        if isinstance(reply_tasks, set):
+            reply_tasks.add(child)
 
         def finished(task):
             runtime.owned_turn_tasks.pop(task, None)
+            if isinstance(reply_tasks, set):
+                reply_tasks.discard(task)
             if not task.cancelled():
                 task.exception()
 
@@ -1705,6 +1720,7 @@ class PersonaEngine:
 
     async def generate(self, event, events, prompt, persona, provider, **kwargs):
         """All owned native agents share the adapter's per-provider admission budget."""
+        budget_purpose = str(kwargs.pop("budget_purpose", "reply") or "reply").strip() or "reply"
         timeout = self.plugin._runtime_config.reply_timeout
         started = time.monotonic()
         if isinstance(self.bridge, AstrBotAgentBridge):
@@ -1717,7 +1733,7 @@ class PersonaEngine:
             self.plugin.media_archive.prune()
         call = self.plugin.llm.provider_budget.run(
             provider,
-            "reply",
+            budget_purpose,
             lambda: self.bridge.generate(event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs),
             plugin_id="astrbot_plugin_chat_dynamics",
         )
@@ -1757,7 +1773,7 @@ class PersonaEngine:
                     )
                     retry = self.plugin.llm.provider_budget.run(
                         provider,
-                        "reply",
+                        budget_purpose,
                         lambda: self.bridge.generate(
                             event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs
                         ),
@@ -2644,14 +2660,14 @@ class PersonaEngine:
                     extras = event._extras
                 extras["_narrative_plan_diagnostic_v1"] = plan
         async with self.bridge.session_lock(turn.session_key):
-            if not await self.valid_async(runtime, item):
+            if not await self.valid_async(runtime, item, stage="pre_generation_lock"):
                 return
             if not await self.bridge.current(event, persona):
                 record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
                 return
             provider = await p.llm.resolve_provider_id(turn.session_key)
             async with runtime.state_lock:
-                if not await self.valid_async(runtime, item) or any(
+                if not await self.valid_async(runtime, item, stage="pre_generation") or any(
                     _dag_node(runtime, message.message_id) is None for message in turn.messages
                 ):
                     return
@@ -2669,148 +2685,164 @@ class PersonaEngine:
             record_outcome(runtime, item, outcomes.mark_in_flight)
             if bundle is not None:
                 await narrative.attach_reply_evidence_async(item, decision, runtime.jev_decision)
-            try:
-                p._metric("native_agent_started")
-                generation_started = time.monotonic()
-                frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
-                output = await self.generate_ready(
-                    runtime,
-                    turn,
-                    event,
-                    item.events,
-                    dynamics_horizons.augment_reply(
-                        await scene_learning.prepare_all(reply_prompt(
-                            turn,
-                            decision,
-                            interaction_frame=frame,
-                            tone_context=tone_rows,
-                            interaction_floor=p._runtime_config.jev_min_confidence,
-                            conversation_map=conversation_map(
-                                turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
-                            ),
-                            delivery_constraints={
-                                "length_hint": decision.length,
-                                "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
-                                "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
-                                **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
-                            },
-                            reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
-                            group_reminders=reminder_context,
-                            character_context=(
-                                {"horizons": h_slot}
-                                if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
-                                else None
-                            ),
-                            include_reply_guidance=bundle is None,
-                        ), runtime, item),
+            from contextlib import ExitStack
+
+            def _release_reply_owner():
+                owners = getattr(runtime, "reply_generation_owners", None)
+                if isinstance(owners, dict):
+                    rem = int(owners.get(turn.author, 0) or 0) - 1
+                    if rem > 0:
+                        owners[turn.author] = rem
+                    else:
+                        owners.pop(turn.author, None)
+
+            with ExitStack() as _reply_gen_scope:
+                owners = getattr(runtime, "reply_generation_owners", None)
+                if isinstance(owners, dict):
+                    owners[turn.author] = int(owners.get(turn.author, 0) or 0) + 1
+                    _reply_gen_scope.callback(_release_reply_owner)
+                try:
+                    p._metric("native_agent_started")
+                    generation_started = time.monotonic()
+                    frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
+                    output = await self.generate_ready(
                         runtime,
-                        item,
-                    ),
-                    persona,
-                    provider,
-                    execution_log=runtime.tool_executions,
-                    history_text=turn.history_text(),
-                    media_understand=understand,
-                    context_images=context_images,
-                    private_direct=item.private_direct,
-                    deferred_reply_media=deferred_media,
-                )
-            except ModelReplyFailure as exc:
-                p._metric("native_agent_failed")
-                record_outcome(runtime, item, outcomes.mark_generation_failed, exc.reason_code)
-                self.diagnostic(runtime, exc.reason_code, reason_zh="回复模型未提供可发送内容")
-                p._metric("llm_reply_unavailable")
-                logger.warning(
-                    "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s private=%s",
-                    getattr(event, "unified_msg_origin", ""),
-                    getattr(turn, "turn_id", "") or getattr(item, "turn_id", ""),
-                    str(exc.reason_code)[:64],
-                    bool(item.private_direct),
-                )
-                return
-            except asyncio.CancelledError:
-                p._metric("native_agent_cancelled")
-                raise
-            except (PersonaChanged, member_boundary.BoundaryCancelled):
-                p._metric("native_agent_cancelled")
-                raise
-            except Exception:
-                p._metric("native_agent_failed")
-                p._metric("llm_reply_failed")
-                raise
-            reply_mode = getattr(output, "reply_mode", "")
-            narration = str(getattr(output, "narration", "") or "")
-            reply_reason = getattr(output, "reply_reason", "")
-            requested_poke_target = str(getattr(output, "poke_target_uid", "") or "").strip()
-            poke_target = ""
-            if reply_mode == "narration" and not turn.mandatory_reply:
-                # An admitted ambient turn is not permission to publish a no-reply notice.
-                reply_mode = "silent"
-                narration = ""
-                reply_reason = "narration_requires_at"
-            poke_target_invalid = False
-            if reply_mode in {"poke", "poke_text", "poke_meme"}:
-                poke_target = _resolve_poke_target(turn, event, str(runtime.bot_id or ""), requested_poke_target)
-                if not poke_target:
-                    poke_target_invalid = True
-                    if reply_mode == "poke_text":
-                        reply_mode = "text"
-                        reply_reason = "invalid_poke_target"
-                    elif reply_mode == "poke_meme":
-                        reply_mode = "meme_only"
-                        reply_reason = "invalid_poke_target"
-            nonverbal_mode = reply_mode in {"narration", "poke"}
-            if reply_mode:
-                if deferred_media is not None:
-                    deferred_media.cancel()
-                choice = {
-                    "requested": getattr(output, "requested_reply_mode", reply_mode),
-                    "actual": reply_mode,
-                    "reason": reply_reason,
-                    "no_reply": reply_mode == "silent",
-                    "intentional_nonverbal": nonverbal_mode,
-                    "delivered": False,
-                }
-                if reply_mode == "narration":
-                    choice["no_reply"] = False
-                    choice["narration"] = True
-                if poke_target and reply_mode in {"poke", "poke_text", "poke_meme"}:
-                    choice["poke_target_uid"] = poke_target
-                for node in item.outcome_nodes:
-                    if node is not None:
-                        node.metadata["reply_choice"] = dict(choice)
-                # Later ingress may replace the session diagnostic while a send
-                # is awaiting its receipt. Keep this turn's choice by reference.
-                runtime.model_diagnostic["reply_choice"] = choice
-                if reply_mode == "silent":
-                    record_outcome(
-                        runtime, item, outcomes.mark_suppressed, choice["reason"] or "model_silent", stage="generation"
+                        turn,
+                        event,
+                        item.events,
+                        dynamics_horizons.augment_reply(
+                            await scene_learning.prepare_all(reply_prompt(
+                                turn,
+                                decision,
+                                interaction_frame=frame,
+                                tone_context=tone_rows,
+                                interaction_floor=p._runtime_config.jev_min_confidence,
+                                conversation_map=conversation_map(
+                                    turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
+                                ),
+                                delivery_constraints={
+                                    "length_hint": decision.length,
+                                    "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
+                                    "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
+                                    **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
+                                },
+                                reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
+                                group_reminders=reminder_context,
+                                character_context=(
+                                    {"horizons": h_slot}
+                                    if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
+                                    else None
+                                ),
+                                include_reply_guidance=bundle is None,
+                            ), runtime, item),
+                            runtime,
+                            item,
+                        ),
+                        persona,
+                        provider,
+                        execution_log=runtime.tool_executions,
+                        history_text=turn.history_text(),
+                        media_understand=understand,
+                        context_images=context_images,
+                        private_direct=item.private_direct,
+                        deferred_reply_media=deferred_media,
                     )
-                    p._metric("speech_withheld")
+                except ModelReplyFailure as exc:
+                    p._metric("native_agent_failed")
+                    record_outcome(runtime, item, outcomes.mark_generation_failed, exc.reason_code)
+                    self.diagnostic(runtime, exc.reason_code, reason_zh="回复模型未提供可发送内容")
+                    p._metric("llm_reply_unavailable")
+                    logger.warning(
+                        "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s private=%s",
+                        getattr(event, "unified_msg_origin", ""),
+                        _turn_log_id(runtime, item) or getattr(getattr(item, "narrative_bundle", None), "turn_id", "") or "unknown",
+                        str(exc.reason_code)[:64],
+                        bool(item.private_direct),
+                    )
                     return
-                if reply_mode == "narration" and not narration:
-                    record_outcome(runtime, item, outcomes.mark_delivery_failed, "empty_narration")
-                    return
-                if reply_mode == "poke" and (poke_target_invalid or not poke_target):
-                    record_outcome(runtime, item, outcomes.mark_delivery_failed, "invalid_poke_target")
-                    return
-            if not getattr(output, "stream_prefix", ""):
-                if output.text or output.chains or nonverbal_mode:
-                    p._metric("native_agent_succeeded")
-                    p._metric("llm_reply_succeeded")
-                else:
+                except asyncio.CancelledError:
+                    p._metric("native_agent_cancelled")
+                    raise
+                except (PersonaChanged, member_boundary.BoundaryCancelled):
+                    p._metric("native_agent_cancelled")
+                    raise
+                except Exception:
                     p._metric("native_agent_failed")
                     p._metric("llm_reply_failed")
-            # A first request may create the host conversation; keep that exact identity for sending.
-            effective = await self.bridge.snapshot(event)
-            if persona.conversation_id and effective.fingerprint != persona.fingerprint:
-                record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
-                return
-            if (effective.persona_id, effective.prompt) != (persona.persona_id, persona.prompt):
-                record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
-                return
-            if not await self.valid_async(runtime, item):
-                return
+                    raise
+                reply_mode = getattr(output, "reply_mode", "")
+                narration = str(getattr(output, "narration", "") or "")
+                reply_reason = getattr(output, "reply_reason", "")
+                requested_poke_target = str(getattr(output, "poke_target_uid", "") or "").strip()
+                poke_target = ""
+                if reply_mode == "narration" and not turn.mandatory_reply:
+                    # An admitted ambient turn is not permission to publish a no-reply notice.
+                    reply_mode = "silent"
+                    narration = ""
+                    reply_reason = "narration_requires_at"
+                poke_target_invalid = False
+                if reply_mode in {"poke", "poke_text", "poke_meme"}:
+                    poke_target = _resolve_poke_target(turn, event, str(runtime.bot_id or ""), requested_poke_target)
+                    if not poke_target:
+                        poke_target_invalid = True
+                        if reply_mode == "poke_text":
+                            reply_mode = "text"
+                            reply_reason = "invalid_poke_target"
+                        elif reply_mode == "poke_meme":
+                            reply_mode = "meme_only"
+                            reply_reason = "invalid_poke_target"
+                nonverbal_mode = reply_mode in {"narration", "poke"}
+                if reply_mode:
+                    if deferred_media is not None:
+                        deferred_media.cancel()
+                    choice = {
+                        "requested": getattr(output, "requested_reply_mode", reply_mode),
+                        "actual": reply_mode,
+                        "reason": reply_reason,
+                        "no_reply": reply_mode == "silent",
+                        "intentional_nonverbal": nonverbal_mode,
+                        "delivered": False,
+                    }
+                    if reply_mode == "narration":
+                        choice["no_reply"] = False
+                        choice["narration"] = True
+                    if poke_target and reply_mode in {"poke", "poke_text", "poke_meme"}:
+                        choice["poke_target_uid"] = poke_target
+                    for node in item.outcome_nodes:
+                        if node is not None:
+                            node.metadata["reply_choice"] = dict(choice)
+                    # Later ingress may replace the session diagnostic while a send
+                    # is awaiting its receipt. Keep this turn's choice by reference.
+                    runtime.model_diagnostic["reply_choice"] = choice
+                    if reply_mode == "silent":
+                        record_outcome(
+                            runtime, item, outcomes.mark_suppressed, choice["reason"] or "model_silent", stage="generation"
+                        )
+                        p._metric("speech_withheld")
+                        return
+                    if reply_mode == "narration" and not narration:
+                        record_outcome(runtime, item, outcomes.mark_delivery_failed, "empty_narration")
+                        return
+                    if reply_mode == "poke" and (poke_target_invalid or not poke_target):
+                        record_outcome(runtime, item, outcomes.mark_delivery_failed, "invalid_poke_target")
+                        return
+                if not getattr(output, "stream_prefix", ""):
+                    if output.text or output.chains or nonverbal_mode:
+                        p._metric("native_agent_succeeded")
+                        p._metric("llm_reply_succeeded")
+                    else:
+                        p._metric("native_agent_failed")
+                        p._metric("llm_reply_failed")
+                # A first request may create the host conversation; keep that exact identity for sending.
+                effective = await self.bridge.snapshot(event)
+                if persona.conversation_id and effective.fingerprint != persona.fingerprint:
+                    record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
+                    return
+                if (effective.persona_id, effective.prompt) != (persona.persona_id, persona.prompt):
+                    record_outcome(runtime, item, outcomes.mark_suppressed, "persona_changed", stage="generation")
+                    return
+                if not await self.valid_async(runtime, item, stage="post_generation"):
+                    return
             rhythm_action = str(
                 getattr(getattr(gate, "rhythm", None), "action", "") or getattr(runtime, "last_rhythm_action", "")
             )
@@ -3310,34 +3342,93 @@ class PersonaEngine:
                     high_affection=high_affection,
                 )
 
-    def _synthetic_rhythm_event(self, runtime) -> Any:
+    def _synthetic_rhythm_event(
+        self,
+        runtime,
+        *,
+        target_user_id: str = "",
+        trace_turn_id: str = "",
+        trace_bundle_id: str = "",
+    ) -> Any:
         """Build a lightweight event bound to runtime.umo for background catch-up/afterthought."""
         p = self.plugin
+        event = None
         narrative = getattr(p, "narrative", None)
         if narrative is not None and callable(getattr(narrative, "internal_event", None)):
             parts = str(runtime.umo or runtime.session_key).split(":", 2)
             platform = parts[0] if parts and parts[0] else "default"
             scope = {"platform": platform, "umo": runtime.umo or runtime.session_key}
             try:
-                return narrative.internal_event(scope)
+                event = narrative.internal_event(scope)
+            except Exception:
+                event = None
+        if event is None:
+            from types import SimpleNamespace
+
+            umo = runtime.umo or runtime.session_key
+
+            async def _send(chain):
+                return await p.context.send_message(umo, chain)
+
+            event = SimpleNamespace(
+                unified_msg_origin=umo,
+                session_id=runtime.session_key,
+                get_sender_id=lambda: str(runtime.bot_id or "bot"),
+                get_group_id=lambda: str(runtime.group_id or ""),
+                get_platform_name=lambda: umo.split(":", 1)[0] if ":" in umo else "default",
+                send=_send,
+                _extras={},
+            )
+        if getattr(event, "_extras", None) is None:
+            try:
+                event._extras = {}
             except Exception:
                 pass
-        from types import SimpleNamespace
+        clean_uid = str(target_user_id or "").strip()
+        clean_turn = str(trace_turn_id or "").strip()
+        clean_bundle = str(trace_bundle_id or clean_turn).strip()
+        try:
+            setattr(event, "_chat_dynamics_boundary_uid", clean_uid)
+            if clean_turn or clean_bundle:
+                setattr(event, "_chat_dynamics_trace_turn_id", clean_turn)
+                setattr(event, "_chat_dynamics_trace_bundle_id", clean_bundle)
+                extras = getattr(event, "_extras", None)
+                if isinstance(extras, dict):
+                    extras["_chat_dynamics_trace_v1"] = {
+                        "turn_id": clean_turn,
+                        "bundle_id": clean_bundle,
+                    }
+        except Exception:
+            pass
+        return event
 
-        umo = runtime.umo or runtime.session_key
+    def _prepare_synthetic_boundary(self, event: Any, target_user_id: str) -> str | None:
+        """Validate/capture member boundary metadata on synthetic rhythm events.
 
-        async def _send(chain):
-            return await p.context.send_message(umo, chain)
-
-        return SimpleNamespace(
-            unified_msg_origin=umo,
-            session_id=runtime.session_key,
-            get_sender_id=lambda: str(runtime.bot_id or "bot"),
-            get_group_id=lambda: str(runtime.group_id or ""),
-            get_platform_name=lambda: umo.split(":", 1)[0] if ":" in umo else "default",
-            send=_send,
-            _extras={},
-        )
+        Returns a skip reason string when the turn must be skipped cleanly, else None.
+        """
+        p = self.plugin
+        clean_uid = str(target_user_id or "").strip()
+        state = member_boundary.resolve_state(p, event)
+        if not clean_uid and state.required:
+            return "boundary_uid_missing"
+        if not state.available:
+            if member_boundary.fail_closed(state):
+                return "boundary_unavailable"
+            return None
+        if state.disabled or not clean_uid:
+            return None
+        policy, token, policy_state = member_boundary.peek(p, event, clean_uid)
+        if not policy_state.available and member_boundary.fail_closed(policy_state):
+            return "boundary_unavailable"
+        if member_boundary.blocked(policy):
+            return "boundary_blocked"
+        try:
+            setattr(event, "_chat_dynamics_boundary_uid", clean_uid)
+            setattr(event, "_chat_dynamics_boundary_token", token)
+        except Exception:
+            pass
+        return None
 
     async def execute_catchup_item(
         self,
@@ -3361,7 +3452,21 @@ class PersonaEngine:
             return {"status": "skipped", "reason": "rhythm_catchup_skipped_recalled"}
         catchup_events = tuple(ev for ev in live_events if ev is not None)
         if not catchup_events:
-            catchup_events = (live_event,) if live_event is not None else (self._synthetic_rhythm_event(runtime),)
+            if live_event is not None:
+                catchup_events = (live_event,)
+            else:
+                target_uid = str(getattr(plan_item, "author_id", "") or "").strip()
+                trace_id = f"catchup:{getattr(plan_item, 'primary_msg_id', '') or nodes[-1].msg_id}"
+                synthetic = self._synthetic_rhythm_event(
+                    runtime,
+                    target_user_id=target_uid,
+                    trace_turn_id=trace_id,
+                    trace_bundle_id=trace_id,
+                )
+                skip_reason = self._prepare_synthetic_boundary(synthetic, target_uid)
+                if skip_reason is not None:
+                    return {"status": "skipped", "reason": f"rhythm_catchup_skipped_{skip_reason}"}
+                catchup_events = (synthetic,)
         for ev in catchup_events:
             if getattr(ev, "_extras", None) is None:
                 ev._extras = {}
@@ -3378,7 +3483,12 @@ class PersonaEngine:
             for ev in evs or ():
                 for comp in iter_message_components(ev):
                     cname = type(comp).__name__.lower()
-                    if cname in _media_kinds and cname not in found:
+                    if cname == "reply":
+                        for inner_name in _iter_reply_media_types(comp):
+                            inner_lower = inner_name.lower()
+                            if inner_lower not in found:
+                                found.append(inner_lower)
+                    elif cname in _media_kinds and cname not in found:
                         found.append(cname)
             return tuple(found)
 
@@ -3483,7 +3593,18 @@ class PersonaEngine:
         from .natural_rhythm import NaturalRhythmController, build_afterthought_prompt
 
         p = self.plugin
-        event = self._synthetic_rhythm_event(runtime)
+        target_uid = str(getattr(slot, "target_user_id", "") or "").strip()
+        slot_id = str(getattr(slot, "trigger_msg_id", "") or getattr(slot, "anchor_bot_msg_id", "") or "slot")
+        trace_id = f"afterthought:{slot_id}"
+        event = self._synthetic_rhythm_event(
+            runtime,
+            target_user_id=target_uid,
+            trace_turn_id=trace_id,
+            trace_bundle_id=trace_id,
+        )
+        skip_reason = self._prepare_synthetic_boundary(event, target_uid)
+        if skip_reason is not None:
+            return {"status": "skipped", "reason": f"rhythm_afterthought_skipped_{skip_reason}"}
         persona = await self.bridge.snapshot(event)
         if slot.persona_fingerprint and persona.fingerprint != slot.persona_fingerprint:
             return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
@@ -3542,7 +3663,15 @@ class PersonaEngine:
                     media_understand=False,
                     context_images=(),
                     private_direct=slot.private_direct,
+                    budget_purpose="afterthought",
                 )
+            except member_boundary.BoundaryCancelled as exc:
+                logger.info(
+                    "[ChatDynamics] afterthought cancelled by boundary session=%s reason=%s",
+                    runtime.session_key,
+                    str(exc)[:64],
+                )
+                return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_boundary"}
             except Exception as exc:
                 logger.warning("[ChatDynamics] afterthought generation failed type=%s", type(exc).__name__)
                 return {"status": "skipped", "reason": "rhythm_afterthought_skipped_empty"}

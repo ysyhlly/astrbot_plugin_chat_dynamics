@@ -76,7 +76,7 @@ class RuntimeConfig:
     discussion_rerank_margin: float = 0.10
     topic_reranker_enabled: bool = True
     topic_reranker_provider: str = ""
-    topic_reranker_timeout: float = 3.0
+    topic_reranker_timeout: float = 6.0
     topic_title_timeout: float = 10.0
     topic_batch_interval: float = 30.0
     replay_show_topic_titles: bool = True
@@ -162,6 +162,8 @@ class RuntimeConfig:
     narrative_outreach_enabled: bool = False
     narrative_outreach_sessions: frozenset[str] = frozenset()
     narrative_context_retention_days: int = 7
+    narrative_archive_retention_days: int = 30
+    narrative_dead_letter_ttl_days: int = 7
     narrative_rpc_timeout_seconds: int = 5
     narrative_evidence_timeout_seconds: int = 10
     stream_safe_strip_tools: bool = False
@@ -381,7 +383,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
             lambda value: 60 <= value <= 86400, warnings),
         provider_id="",
         reply_provider_id=str(_get(raw, "reply_provider", "") or "").strip(),
-        vibe_provider_id="",
+        vibe_provider_id=str(_get(raw, "vibe_provider", "") or _get(raw, "vibe_provider_id", "") or "").strip(),
         command_prefix=prefix,
         debounce_base_cooldown=base,
         debounce_extended_cooldown=extended,
@@ -416,7 +418,7 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         discussion_rerank_threshold=_number(raw, "discussion_rerank_threshold", 0.65, lambda value: 0 <= value <= 1, warnings),
         discussion_rerank_margin=_number(raw, "discussion_rerank_margin", 0.10, lambda value: 0 <= value <= 1, warnings),
         topic_reranker_provider=str(_get(raw, "topic_reranker_provider", "") or "").strip(),
-        topic_reranker_timeout=_number(raw, "topic_reranker_timeout", 3.0, lambda value: 0.1 <= value <= 10, warnings),
+        topic_reranker_timeout=_number(raw, "topic_reranker_timeout", 6.0, lambda value: 0.1 <= value <= 30, warnings),
         topic_title_timeout=_number(raw, "topic_title_timeout", 10.0, lambda value: 1 <= value <= 30, warnings),
         topic_batch_interval=_number(raw, "topic_batch_interval", 30.0, lambda value: 5 <= value <= 300, warnings),
         replay_show_topic_titles=_bool(_get(raw, "replay_show_topic_titles", True), True),
@@ -464,6 +466,8 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         narrative_sessions=frozenset(_strings(_get(raw, "narrative_sessions", []))),
         narrative_outreach_sessions=frozenset(_strings(_get(raw, "narrative_outreach_sessions", []))),
         narrative_context_retention_days=_integer(raw, "narrative_context_retention_days", 7, 1, 90, warnings),
+        narrative_archive_retention_days=_integer(raw, "narrative_archive_retention_days", 30, 1, 365, warnings),
+        narrative_dead_letter_ttl_days=_integer(raw, "narrative_dead_letter_ttl_days", 7, 1, 90, warnings),
         narrative_outreach_enabled=_bool(_get(raw, "narrative_outreach_enabled", False), False),
         narrative_rpc_timeout_seconds=_integer(raw, "narrative_rpc_timeout_seconds", 5, 1, 60, warnings),
         narrative_evidence_timeout_seconds=_integer(raw, "narrative_evidence_timeout_seconds", 10, 1, 120, warnings),

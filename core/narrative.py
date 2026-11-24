@@ -1671,7 +1671,10 @@ class NarrativeCoordinator:
             if envelope["event_id"] in prior_events:
                 envelope = prior_events[envelope["event_id"]]
             else:
-                await self._io.call('incoming_event', self.journal.enqueue, envelope, ("livingmemory", "self_learning", "portrayal"), now)
+                incoming_recipients = ["livingmemory", "self_learning"]
+                if self.plugin.integrations.narrative_provider("portrayal") is not None:
+                    incoming_recipients.append("portrayal")
+                await self._io.call('incoming_event', self.journal.enqueue, envelope, tuple(incoming_recipients), now)
             envelopes.append(envelope)
         payload["events"] = envelopes
         if not getattr(event, "_extras", {}).get("_narrative_internal_v1"):
@@ -2214,8 +2217,18 @@ class NarrativeCoordinator:
         while not self.plugin._shutting_down:
             try:
                 await self.flush_receipts()
-                await self._io.call('maintain', self.journal.maintain, self.plugin.time_service.wall_time(),
-                    getattr(self.plugin._runtime_config, "narrative_context_retention_days", 7))
+                await self._io.call(
+                    'maintain',
+                    self.journal.maintain,
+                    self.plugin.time_service.wall_time(),
+                    getattr(self.plugin._runtime_config, "narrative_context_retention_days", 7),
+                    archive_retention_days=getattr(
+                        self.plugin._runtime_config, "narrative_archive_retention_days", 30
+                    ),
+                    dead_letter_ttl_days=getattr(
+                        self.plugin._runtime_config, "narrative_dead_letter_ttl_days", 7
+                    ),
+                )
                 if self.plugin.integrations.narrative_provider("portrayal") is not None:
                     await self._io.call('backfill_portraits', self.journal.backfill_portraits)
                 await self.dispatch()

@@ -286,8 +286,18 @@ class RuleTopicRouter(ThreadRouter):
         if llm_mode:
             ranking = await judge(query, candidates, history=history, author_id=nodes[0].user_id, umo=runtime.umo)
         else:
-            ranking = (await scoped(query, candidates, (runtime.session_key, epoch, sorted(revisions.items())))
-                       if callable(scoped) else await reranker.rank(query, candidates))
+            rule_conf = max((float(s.get('topic_confidence') or 0.0) for s in snapshots), default=0.0)
+            scope_key = (runtime.session_key, epoch, sorted(revisions.items()))
+            if callable(scoped):
+                try:
+                    ranking = await scoped(query, candidates, scope_key, rule_confidence=rule_conf)
+                except TypeError:
+                    ranking = await scoped(query, candidates, scope_key)
+            else:
+                try:
+                    ranking = await reranker.rank(query, candidates, rule_confidence=rule_conf)
+                except TypeError:
+                    ranking = await reranker.rank(query, candidates)
         async with _state_guard(runtime):
             if (runtime.dag is not dag or runtime.routing_state is not state or getattr(runtime, 'epoch', None) != epoch
                     or any(dag.get_node(n.msg_id) is not n or n.metadata.get('routing') is not s for n, s in zip(nodes, snapshots))
