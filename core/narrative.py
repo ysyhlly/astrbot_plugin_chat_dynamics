@@ -664,6 +664,8 @@ class NarrativeCoordinator:
 
     _MAX_BUNDLES = 256
     _MAX_SYNCED_FAILED_INTENTS = 512
+    _ACTIVE_LOOP_INTERVAL_SECONDS = 30.0
+    _DISABLED_MAINTENANCE_INTERVAL_SECONDS = 300.0
 
     def __init__(self, plugin, path):
         self.plugin = plugin
@@ -2209,12 +2211,22 @@ class NarrativeCoordinator:
 
     async def run(self):
         await self._io.call('ensure_indexes', self.journal.ensure_indexes)
-        horizons_source=dynamics_horizons.provider(self.plugin)
-        horizons_active=bool(horizons_source and horizons_source.horizons_capabilities().get('proactive_enabled'))
-        if (not getattr(self.plugin._runtime_config, "narrative_enabled", False)
-                and not horizons_active and not await asyncio.to_thread(self.journal.pending, 1)):
+        horizons_source = dynamics_horizons.provider(self.plugin)
+        horizons_active = bool(horizons_source and horizons_source.horizons_capabilities().get('proactive_enabled'))
+        narrative_on = bool(getattr(self.plugin._runtime_config, "narrative_enabled", False))
+        has_pending = bool(await asyncio.to_thread(self.journal.pending, 1))
+        has_backlog = (
+            True
+            if (narrative_on or horizons_active or has_pending)
+            else bool(await asyncio.to_thread(self.journal.has_maintenance_backlog))
+        )
+        if not narrative_on and not horizons_active and not has_pending and not has_backlog:
             return
         while not self.plugin._shutting_down:
+            narrative_on = bool(getattr(self.plugin._runtime_config, "narrative_enabled", False))
+            horizons_source = dynamics_horizons.provider(self.plugin)
+            horizons_active = bool(horizons_source and horizons_source.horizons_capabilities().get('proactive_enabled'))
+            active_mode = narrative_on or horizons_active
             try:
                 await self.flush_receipts()
                 await self._io.call(
@@ -2229,15 +2241,25 @@ class NarrativeCoordinator:
                         self.plugin._runtime_config, "narrative_dead_letter_ttl_days", 7
                     ),
                 )
-                if self.plugin.integrations.narrative_provider("portrayal") is not None:
-                    await self._io.call('backfill_portraits', self.journal.backfill_portraits)
-                await self.dispatch()
-                await self.dispatch_intents()
+                if active_mode:
+                    if self.plugin.integrations.narrative_provider("portrayal") is not None:
+                        await self._io.call('backfill_portraits', self.journal.backfill_portraits)
+                    await self.dispatch()
+                    await self.dispatch_intents()
+                else:
+                    if await asyncio.to_thread(self.journal.pending, 1):
+                        await self.dispatch()
+                    elif not await asyncio.to_thread(self.journal.has_maintenance_backlog):
+                        return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("Narrative dispatch deferred type=%s", type(exc).__name__)
-            await asyncio.sleep(30)
+            await asyncio.sleep(
+                self._ACTIVE_LOOP_INTERVAL_SECONDS
+                if active_mode
+                else self._DISABLED_MAINTENANCE_INTERVAL_SECONDS
+            )
 
     async def dispatch(self):
         async with self._dispatch_lock:
