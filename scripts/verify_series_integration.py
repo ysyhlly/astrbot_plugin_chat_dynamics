@@ -8,6 +8,7 @@ import asyncio
 import importlib.util
 import sys
 import tempfile
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,6 +80,76 @@ def check_health_hooks_present(workspace: Path) -> list[str]:
     return errors
 
 
+def _install_minimal_astrbot_stubs() -> None:
+    """Install lightweight AstrBot module stubs only when running offline without AstrBot."""
+    if "astrbot" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("astrbot") is not None:
+            return
+    except (ImportError, ValueError):
+        pass
+
+    class _SilentLogger:
+        def debug(self, *_args, **_kwargs):
+            return None
+
+        def info(self, *_args, **_kwargs):
+            return None
+
+        def warning(self, *_args, **_kwargs):
+            return None
+
+        def error(self, *_args, **_kwargs):
+            return None
+
+        def exception(self, *_args, **_kwargs):
+            return None
+
+    def _pkg(name: str) -> types.ModuleType:
+        mod = types.ModuleType(name)
+        mod.__path__ = []  # type: ignore[attr-defined]
+        sys.modules[name] = mod
+        return mod
+
+    astrbot_pkg = _pkg("astrbot")
+    api_pkg = _pkg("astrbot.api")
+    web_mod = types.ModuleType("astrbot.api.web")
+    star_mod = types.ModuleType("astrbot.api.star")
+    event_mod = types.ModuleType("astrbot.api.event")
+    mc_mod = types.ModuleType("astrbot.api.message_components")
+    core_pkg = _pkg("astrbot.core")
+    prov_pkg = _pkg("astrbot.core.provider")
+    entities_mod = types.ModuleType("astrbot.core.provider.entities")
+
+    api_pkg.logger = _SilentLogger()  # type: ignore[attr-defined]
+    web_mod.request = None  # type: ignore[attr-defined]
+    web_mod.json_response = lambda data, status_code=200: (status_code, data)  # type: ignore[attr-defined]
+    web_mod.error_response = lambda msg, status_code=400, **kw: (status_code, {"status": "error", "message": msg, **kw})  # type: ignore[attr-defined]
+    star_mod.Context = object  # type: ignore[attr-defined]
+    star_mod.Star = object  # type: ignore[attr-defined]
+    event_mod.AstrMessageEvent = object  # type: ignore[attr-defined]
+    for cname in ("Plain", "At", "Reply", "Image", "Face", "Poke", "Record", "File", "Video"):
+        setattr(mc_mod, cname, type(cname, (), {}))
+    entities_mod.LLMResponse = SimpleNamespace  # type: ignore[attr-defined]
+    entities_mod.TokenUsage = SimpleNamespace  # type: ignore[attr-defined]
+
+    astrbot_pkg.api = api_pkg  # type: ignore[attr-defined]
+    astrbot_pkg.core = core_pkg  # type: ignore[attr-defined]
+    api_pkg.web = web_mod  # type: ignore[attr-defined]
+    api_pkg.star = star_mod  # type: ignore[attr-defined]
+    api_pkg.event = event_mod  # type: ignore[attr-defined]
+    api_pkg.message_components = mc_mod  # type: ignore[attr-defined]
+    core_pkg.provider = prov_pkg  # type: ignore[attr-defined]
+    prov_pkg.entities = entities_mod  # type: ignore[attr-defined]
+
+    sys.modules["astrbot.api.web"] = web_mod
+    sys.modules["astrbot.api.star"] = star_mod
+    sys.modules["astrbot.api.event"] = event_mod
+    sys.modules["astrbot.api.message_components"] = mc_mod
+    sys.modules["astrbot.core.provider.entities"] = entities_mod
+
+
 def _load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, str(path))
     if spec is None or spec.loader is None:
@@ -91,6 +162,7 @@ def _load_module(name: str, path: Path):
 async def check_cross_plugin_runtime_contracts(workspace: Path) -> list[str]:
     """Verify cross-plugin silent provider lookup, presence_epoch invalidation, and telemetry."""
     errors: list[str] = []
+    _install_minimal_astrbot_stubs()
     chat_root = workspace / "astrbot_plugin_chat_dynamics"
     if str(workspace) not in sys.path:
         sys.path.insert(0, str(workspace))

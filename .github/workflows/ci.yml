@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "release/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline-gates:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/astrbot_plugin_chat_dynamics
+    env:
+      PYTHONPATH: ${{ github.workspace }}/plugins
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugins/astrbot_plugin_chat_dynamics
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test & lint dependencies
+        run: python -m pip install pytest pytest-asyncio ruff
+      - name: Release contract check
+        run: python scripts/check_release.py
+      - name: Series CI & dependency gate
+        run: python scripts/check_series_ci.py --workspace ${{ github.workspace }}/plugins --plugin astrbot_plugin_chat_dynamics --skip-sync-check
+      - name: Offline cross-plugin integration smoke check
+        run: python scripts/verify_series_integration.py --workspace ${{ github.workspace }}/plugins --skip-asset-sync
+      - name: Syntax & lint check
+        run: |
+          python -m compileall -q main.py series_panels.py series_workspace.py core scripts
+          python -m ruff check main.py series_panels.py series_workspace.py core scripts tests/test_web_api_auth_csrf.py tests/test_series_panels.py tests/test_narrative_storage_p0_3.py tests/test_batch3_hotpath_cache_budget.py tests/test_batch4_ci_and_series_gates.py
+      - name: Offline pytest regression gates
+        run: |
+          python -m pytest -q \
+            tests/test_web_api_auth_csrf.py \
+            tests/test_series_panels.py \
+            tests/test_portable_panels.py \
+            tests/test_narrative_storage_p0_3.py \
+            tests/test_batch3_hotpath_cache_budget.py \
+            tests/test_batch4_ci_and_series_gates.py \
+            tests/test_release_contract.py \
+            tests/test_natural_rhythm.py \
+            tests/test_cache_optimization.py \
+            tests/test_provider_budget.py \
+            tests/test_series_hub_v2.py \
+            tests/test_series_telemetry_and_budget.py \
+            tests/test_reply_prompt_assembly.py \
+            tests/test_config_concurrency.py \
+            tests/test_config_fallback.py \
+            tests/test_jev_decision_layer.py \
+            tests/test_evaluative_reading.py \
+            tests/test_simplified_decision.py
+      - name: Build release archive & verify packaging hygiene
+        run: |
+          python scripts/build_release.py --allow-empty-repo --output dist/install.zip
+          python scripts/check_series_ci.py --workspace ${{ github.workspace }}/plugins --plugin astrbot_plugin_chat_dynamics --skip-sync-check --zip dist/install.zip --allow-flat-zip

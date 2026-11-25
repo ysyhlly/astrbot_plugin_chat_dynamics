@@ -26,6 +26,13 @@ SERIES_PY_FILES = (
     "series_panels.py",
     "series_workspace.py",
 )
+COMPANION_THEME_SOURCE = "series-theme.js"
+COMPANION_THEME_TARGETS = (
+    "astrbot_plugin_dynamics_games/pages/games/theme.js",
+    "astrbot_plugin_dynamics_learning/pages/review/theme.js",
+    "astrbot_plugin_dynamics_world/pages/world/theme.js",
+    "astrbot_plugin_group_chronicle/pages/culture/theme.js",
+)
 COMPANION_PLUGINS = (
     "astrbot_plugin_dynamics_learning",
     "astrbot_plugin_dynamics_memory",
@@ -249,6 +256,16 @@ def iter_pairs(
         for filename in SERIES_WEB_FILES:
             yield web_source_dir / filename, target_dir / filename
 
+    theme_source = web_source_dir / COMPANION_THEME_SOURCE
+    if theme_source.is_file():
+        if source_dir is not None and chat_root.is_dir():
+            yield theme_source, chat_root / "pages" / "shared" / COMPANION_THEME_SOURCE
+        for rel_target in COMPANION_THEME_TARGETS:
+            plugin_name = rel_target.split("/", 1)[0]
+            if not (workspace / plugin_name).is_dir():
+                continue
+            yield theme_source, workspace / rel_target
+
     if web_only:
         return
 
@@ -387,6 +404,9 @@ def sync_workspace(
     """Normalize canonical sources to LF and publish to all companion targets."""
     web_source_dir, py_source_dir = _resolve_source_dirs(workspace, source_dir)
     canonical_files = [web_source_dir / f for f in SERIES_WEB_FILES]
+    theme_src = web_source_dir / COMPANION_THEME_SOURCE
+    if theme_src.is_file():
+        canonical_files.append(theme_src)
     if not web_only:
         canonical_files.extend(py_source_dir / f for f in SERIES_PY_FILES)
     for canonical in canonical_files:

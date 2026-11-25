@@ -54,7 +54,7 @@ CATALOG = (
     ),
 )
 
-# These four IDs and titles mirror Dynamics Games' runtime.LEGACY_PLUGINS.
+# Legacy standalone plugins superseded by consolidated series plugins.
 LEGACY_CONFLICTS = (
     (
         "astrbot_plugin_self_learning",
@@ -65,6 +65,25 @@ LEGACY_CONFLICTS = (
     ("astrbot_plugin_blackjack21", "21点", "astrbot_plugin_dynamics_games"),
     ("astrbot_plugin_rollpig", "今日小猪", "astrbot_plugin_dynamics_games"),
     ("astrbot_plugin_what_to_eat", "是啊，吃什么", "astrbot_plugin_dynamics_games"),
+    ("steam_status_monitor_V3", "Steam 状态监控", "astrbot_plugin_dynamics_games"),
+    (
+        "astrbot_plugin_livingmemory",
+        "旧 LivingMemory",
+        "astrbot_plugin_dynamics_memory",
+    ),
+    ("astrbot_plugin_worldbook", "旧世界书", "astrbot_plugin_dynamics_world"),
+    (
+        "astrbot_plugin_dynamic_life_state",
+        "旧动态生活",
+        "astrbot_plugin_dynamics_world",
+    ),
+    ("astrbot_plugin_stealer", "旧表情偷图", "astrbot_plugin_visual_media"),
+    (
+        "astrbot_plugin_gemini_image_generation",
+        "旧生图插件",
+        "astrbot_plugin_visual_media",
+    ),
+    ("astrbot_plugin_meme_manager", "旧表情管理", "astrbot_plugin_visual_media"),
 )
 LEGACY_GAME_IDS = frozenset(
     identity
@@ -1550,21 +1569,22 @@ class SeriesPanels:
                 )
                 if _PRESENCE_RESPONSE_TTL_SECONDS > 0:
                     post_epoch = get_presence_epoch(ctx)
-                    with _SUMMARY_CACHE_LOCK:
-                        if len(_PRESENCE_RESPONSE_CACHE) > 32:
-                            expired = [
-                                k
-                                for k, entry in _PRESENCE_RESPONSE_CACHE.items()
-                                if entry[0] <= now
-                            ]
-                            for k in expired:
-                                _PRESENCE_RESPONSE_CACHE.pop(k, None)
+                    if post_epoch == epoch:
+                        with _SUMMARY_CACHE_LOCK:
                             if len(_PRESENCE_RESPONSE_CACHE) > 32:
-                                _PRESENCE_RESPONSE_CACHE.clear()
-                        _PRESENCE_RESPONSE_CACHE[(id(ctx), self.identity, post_epoch)] = (
-                            time.monotonic() + _PRESENCE_RESPONSE_TTL_SECONDS,
-                            data,
-                        )
+                                expired = [
+                                    k
+                                    for k, entry in _PRESENCE_RESPONSE_CACHE.items()
+                                    if entry[0] <= now
+                                ]
+                                for k in expired:
+                                    _PRESENCE_RESPONSE_CACHE.pop(k, None)
+                                if len(_PRESENCE_RESPONSE_CACHE) > 32:
+                                    _PRESENCE_RESPONSE_CACHE.clear()
+                            _PRESENCE_RESPONSE_CACHE[(id(ctx), self.identity, post_epoch)] = (
+                                time.monotonic() + _PRESENCE_RESPONSE_TTL_SECONDS,
+                                data,
+                            )
             return _web_json_response({"status": "ok", "data": data})
         except PermissionError:
             return _web_json_response(
