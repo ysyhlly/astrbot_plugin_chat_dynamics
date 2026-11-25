@@ -884,9 +884,14 @@ class NarrativeCoordinator:
             return None
 
         async def read():
-            if inspect.iscoroutinefunction(reader):
-                return await reader(scope)
-            return await asyncio.to_thread(reader, scope)
+            try:
+                if inspect.iscoroutinefunction(reader):
+                    return await reader(scope)
+                return await asyncio.to_thread(reader, scope)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return None
 
         task = self._revision_reads.get(read_key)
         if task is None or task.done():
