@@ -39,8 +39,11 @@ def test_register_keeps_manual_endpoints_only():
 
 @pytest.mark.asyncio
 async def test_removed_page_cannot_get_signed_navigation(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     monkeypatch.setattr(web_api, "query_value", lambda name: "drafts" if name == "page" else "")
     api = web_api.ConsoleWebAPI(SimpleNamespace(_shutting_down=False))
+    monkeypatch.setattr(api, "_narrative_admin_allowed", AsyncMock(return_value=True))
     assert (await api.page_nav())["status_code"] == 400
 
 

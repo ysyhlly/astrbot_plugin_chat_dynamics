@@ -173,6 +173,7 @@ async def test_setup_routes_registered_and_page_nav_supports_setup(monkeypatch, 
             )
         ),
     )
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="admin", _get_current=lambda: plugin_req))
     monkeypatch.setattr(web_api, "query_value", lambda name: "setup" if name == "page" else "")
 
@@ -242,6 +243,7 @@ async def test_discover_setup_groups_merges_onebot_list_dict_sessions_and_config
         last_activity=1732000600.0,
     )
 
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="admin"))
     res = await plugin._web.setup_groups()
     assert res["status_code"] == 200
@@ -353,6 +355,7 @@ async def test_probe_setup_providers_jev_and_default_reply(monkeypatch, offline_
     ctx.llm_generate = fake_llm_generate
 
     plugin = _make_plugin({"enable": True}, context=ctx)
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="admin"))
 
     async def body():
@@ -553,6 +556,7 @@ async def test_setup_probe_validation_rate_limit_and_shutdown(monkeypatch, offli
     chat = _FakeChatProvider(pid="chat-1")
     ctx.get_provider_by_id = lambda pid: chat if pid == "chat-1" else None
     plugin = _make_plugin({"enable": True}, context=ctx)
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="admin"))
 
     bad_payloads = [
@@ -643,6 +647,7 @@ async def test_setup_routes_registered_on_series_workspace(monkeypatch, offline_
 
     ctx.register_web_api = track_register
     plugin = _make_plugin({"enable": True}, context=ctx)
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="admin"))
 
     panel = SimpleNamespace(owner=plugin, identity=PLUGIN_NAME)

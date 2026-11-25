@@ -274,6 +274,12 @@ async def test_series_search_and_matrix_web_endpoints(monkeypatch, offline_web_r
     plugin = _plugin({"takeover_all": False, "takeover_groups": ["room-9"]})
     plugin.context.get_all_stars = lambda: [_make_star_entry("astrbot_plugin_chat_dynamics", plugin)]
 
+    # Unauthenticated requests to series_search_get and series_matrix_get are rejected
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=False))
+    assert (await plugin._web.series_search_get())["status_code"] == 403
+    assert (await plugin._web.series_matrix_get())["status_code"] == 403
+
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "query_value", lambda name: {"q": "room-9", "limit": "10"}.get(name, ""))
     search_res = await plugin._web.series_search_get()
     assert search_res["ok"] is True

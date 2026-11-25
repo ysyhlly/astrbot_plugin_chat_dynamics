@@ -142,10 +142,13 @@ async def test_cold_start_reminder_has_actual_bot_identity(jev_plugin, tmp_path)
 
 @pytest.mark.asyncio
 async def test_annotation_post_honors_hidden_identifiers(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     p, _ = fixture_plugin()
     p.dags['a'].nodes['m'].metadata['routing'].update(
         parent_message_id='HIDDEN_PARENT_MESSAGE', addressee_ids=['HIDDEN_MEMBER_QQ'])
     api = web_api.ConsoleWebAPI(p)
+    monkeypatch.setattr(api, '_narrative_admin_allowed', AsyncMock(return_value=True))
     await api.topic_annotations.save(label())
     monkeypatch.setattr(web_api, '_query_param', lambda name: 'a')
     read = await api.annotations_get()
@@ -159,8 +162,11 @@ async def test_annotation_post_honors_hidden_identifiers(monkeypatch, offline_we
 
 @pytest.mark.asyncio
 async def test_topic_edit_in_hidden_mode_preserves_existing_recipient_labels(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     p, _ = fixture_plugin()
     api = web_api.ConsoleWebAPI(p)
+    monkeypatch.setattr(api, '_narrative_admin_allowed', AsyncMock(return_value=True))
     await api.topic_annotations.save(label(recipient_ids=['member-42'], subject_ids=['member-17']))
     monkeypatch.setattr(web_api, '_query_param', lambda name: 'a')
     read = await api.annotations_get()

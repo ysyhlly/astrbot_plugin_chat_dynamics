@@ -85,6 +85,8 @@ class DecisionStatusWebAPI(web.ConsoleWebAPI):
         self.registered = len(self._registered_endpoints) == len(routes)
 
     async def status(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (error := self._rate_limit("decision/status", 60)) is not None:
             return error
         if getattr(self.plugin, "_shutting_down", False):
@@ -103,6 +105,8 @@ class DecisionStatusWebAPI(web.ConsoleWebAPI):
         })
 
     async def history(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (error := self._rate_limit("decision/history", 30)) is not None:
             return error
         if getattr(self.plugin, "_shutting_down", False):

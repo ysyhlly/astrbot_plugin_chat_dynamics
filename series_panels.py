@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import inspect
 import math
 import re
@@ -13,9 +14,17 @@ import weakref
 from datetime import timedelta, timezone
 from importlib import import_module
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from astrbot.api.web import json_response, request
+# Optional test overrides; runtime resolves astrbot.api.web lazily so offline
+# unit tests and standalone CI checks can import series_panels without AstrBot.
+json_response: Any = None
+request: Any = None
+
+CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+CSRF_PROTECTED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 CATALOG = (
     ("astrbot_plugin_chat_dynamics", "对话主控", "app", "对话调度与回复"),
@@ -1194,6 +1203,257 @@ def _installed_commit(root: Path) -> str:
     return ""
 
 
+def _resolve_web_request(req: Any = None) -> Any:
+    """Resolve the active AstrBot web request lazily (honoring test overrides)."""
+    if req is not None:
+        return req
+    if request is not None:
+        return request
+    try:
+        from astrbot.api.web import request as web_request
+
+        return web_request
+    except ImportError:
+        return None
+
+
+def _web_json_response(data: Any, *, status_code: int = 200) -> Any:
+    """Build a JSON response lazily so module import works without astrbot.api.web."""
+    responder = json_response
+    if responder is None:
+        from astrbot.api.web import json_response as responder
+    return responder(data, status_code=status_code)
+
+
+def _mapping_get_ci(mapping: Any, name: str) -> str:
+    if mapping is None:
+        return ""
+    target = name.lower()
+    getter = getattr(mapping, "get", None)
+    if callable(getter):
+        try:
+            direct = getter(name)
+            if direct is None:
+                direct = getter(target)
+            if direct is not None:
+                return str(direct)
+        except Exception:
+            pass
+    items = getattr(mapping, "items", None)
+    if callable(items):
+        try:
+            for key, val in items():
+                if str(key).lower() == target and val is not None:
+                    return str(val)
+        except Exception:
+            pass
+    return ""
+
+
+def _header_get(req: Any, name: str) -> str:
+    value = _mapping_get_ci(getattr(req, "headers", None), name)
+    if value:
+        return value
+    raw = getattr(req, "_request", None)
+    if raw is not None:
+        return _mapping_get_ci(getattr(raw, "headers", None), name)
+    return ""
+
+
+def _cookie_get(req: Any, name: str) -> str:
+    value = _mapping_get_ci(getattr(req, "cookies", None), name)
+    if value:
+        return value
+    raw = getattr(req, "_request", None)
+    if raw is not None:
+        return _mapping_get_ci(getattr(raw, "cookies", None), name)
+    return ""
+
+
+def _normalize_host_for_scheme(host: str, scheme: str) -> str:
+    clean = host.strip().lower()
+    if not clean:
+        return ""
+    if scheme == "http" and clean.endswith(":80"):
+        return clean[:-3]
+    if scheme == "https" and clean.endswith(":443"):
+        return clean[:-4]
+    return clean
+
+
+def _extract_expected_hosts(req: Any) -> set[str]:
+    hosts: set[str] = set()
+    for header_name in ("Host", "X-Forwarded-Host"):
+        raw_val = _header_get(req, header_name).strip()
+        if raw_val:
+            first = raw_val.split(",", 1)[0].strip().lower()
+            if first:
+                hosts.add(first)
+    if not hosts:
+        raw = getattr(req, "_request", None)
+        url_obj = getattr(raw, "url", None) if raw is not None else None
+        netloc = str(getattr(url_obj, "netloc", "") or "").strip().lower()
+        if netloc:
+            hosts.add(netloc)
+    return hosts
+
+
+def _origin_matches_hosts(origin_or_referer: str, expected_hosts: set[str]) -> bool:
+    parsed = urlsplit(origin_or_referer.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    origin_netloc = _normalize_host_for_scheme(parsed.netloc, scheme)
+    if not origin_netloc:
+        return False
+    for expected in expected_hosts:
+        if origin_netloc == _normalize_host_for_scheme(expected, scheme):
+            return True
+    return False
+
+
+def verify_series_csrf(
+    request: Any = None,
+    *,
+    methods: frozenset[str] | set[str] | tuple[str, ...] = CSRF_PROTECTED_METHODS,
+) -> None:
+    """Enforce fail-closed same-origin / Fetch-Metadata / CSRF checks on write requests.
+
+    Safe methods (GET/HEAD/OPTIONS) pass without CSRF checks.
+    State-changing methods (POST/PUT/PATCH/DELETE or unknown/empty method) must:
+    - Not carry a cross-site ``Sec-Fetch-Site`` value (only ``same-origin``/``none`` allowed).
+    - Match ``Host`` when ``Origin`` (or fallback ``Referer``) is present (blocks ``Origin: null``).
+    - Match ``X-CSRF-Token``/``X-XSRF-Token`` against ``csrf_token``/``XSRF-TOKEN`` cookie if cookie is set.
+    - When both ``Origin`` and ``Referer`` are absent, fail closed unless an explicit
+      non-ambient proof is present (``Sec-Fetch-Site: same-origin|none``,
+      ``Authorization: Bearer ...``, ``X-CSRF-Token``/``X-XSRF-Token``, or ``X-Requested-With``).
+    """
+    req = _resolve_web_request(request)
+    if req is None:
+        raise PermissionError("CSRF 校验失败：缺少请求上下文")
+    raw_method = getattr(req, "method", None)
+    if not raw_method:
+        raw = getattr(req, "_request", None)
+        raw_method = getattr(raw, "method", None) if raw is not None else None
+    method = str(raw_method or "").strip().upper()
+    if method in CSRF_SAFE_METHODS:
+        return
+    protected = {str(m).strip().upper() for m in methods}
+    if method and method not in protected:
+        return
+
+    sec_fetch_site = _header_get(req, "Sec-Fetch-Site").strip().lower()
+    if sec_fetch_site and sec_fetch_site not in {"same-origin", "none"}:
+        raise PermissionError("CSRF 校验失败：拒绝跨站请求")
+
+    origin = _header_get(req, "Origin").strip()
+    referer = _header_get(req, "Referer").strip()
+    expected_hosts = _extract_expected_hosts(req)
+
+    if origin:
+        if not expected_hosts or not _origin_matches_hosts(origin, expected_hosts):
+            raise PermissionError("CSRF 校验失败：请求来源与宿主不一致")
+    elif referer:
+        if not expected_hosts or not _origin_matches_hosts(referer, expected_hosts):
+            raise PermissionError("CSRF 校验失败：Referer 来源与宿主不一致")
+
+    csrf_header = (
+        _header_get(req, "X-CSRF-Token") or _header_get(req, "X-XSRF-Token")
+    ).strip()
+    csrf_cookie = (
+        _cookie_get(req, "csrf_token")
+        or _cookie_get(req, "csrftoken")
+        or _cookie_get(req, "XSRF-TOKEN")
+    ).strip()
+    if csrf_cookie:
+        if not csrf_header or not hmac.compare_digest(csrf_header, csrf_cookie):
+            raise PermissionError("CSRF 校验失败：CSRF Token 不匹配")
+
+    if not origin and not referer:
+        auth_header = _header_get(req, "Authorization").strip()
+        has_bearer = (
+            auth_header.lower().startswith("bearer ") and len(auth_header[7:].strip()) > 0
+        )
+        has_xhr = bool(_header_get(req, "X-Requested-With").strip())
+        has_same_origin_fetch = sec_fetch_site in {"same-origin", "none"}
+        if not (has_same_origin_fetch or has_bearer or csrf_header or has_xhr):
+            raise PermissionError("CSRF 校验失败：缺少同源来源头或 CSRF 凭据")
+
+
+async def require_series_admin(
+    context: Any,
+    request: Any = None,
+    *,
+    check_csrf: bool = False,
+) -> str:
+    """Verify the current HTTP request is authenticated as the configured Dashboard admin.
+
+    - Fails closed if request/raw request is missing or ``astrbot.dashboard.api.auth`` is unavailable.
+    - Rejects unauthenticated users, ``api_key:`` principals, and mismatched ``request.username``.
+    - Fails closed when ``dashboard.username`` is missing or empty in host config.
+    - When ``check_csrf=True``, enforces :func:`verify_series_csrf` on write HTTP methods
+      (``POST``/``PUT``/``PATCH``/``DELETE``).
+    - Returns the verified Dashboard admin username string; raises ``PermissionError`` otherwise.
+    """
+    req = _resolve_web_request(request)
+    if req is None:
+        raise PermissionError("需要 Dashboard 管理员登录")
+    raw = getattr(req, "_request", None)
+    if raw is None:
+        raise PermissionError("需要 Dashboard 管理员登录")
+
+    req_username = getattr(req, "username", None)
+    if req_username is not None:
+        if not isinstance(req_username, str):
+            raise PermissionError("需要 Dashboard 管理员登录")
+        req_actor = req_username.strip()
+        if not req_actor or req_actor.startswith("api_key:"):
+            raise PermissionError("需要 Dashboard 管理员登录")
+    else:
+        req_actor = None
+
+    try:
+        from astrbot.dashboard.api.auth import require_dashboard_user
+    except ImportError as exc:
+        raise PermissionError("需要 Dashboard 管理员登录") from exc
+
+    try:
+        username = await require_dashboard_user(raw)
+    except PermissionError:
+        raise
+    except Exception as exc:
+        raise PermissionError("需要 Dashboard 管理员登录") from exc
+
+    if not isinstance(username, str):
+        raise PermissionError("需要 Dashboard 管理员登录")
+    actor = username.strip()
+    if not actor or actor.startswith("api_key:"):
+        raise PermissionError("需要 Dashboard 管理员登录")
+    if req_actor is not None and req_actor != actor:
+        raise PermissionError("需要 Dashboard 管理员登录")
+
+    get_config = getattr(context, "get_config", None)
+    if not callable(get_config):
+        raise PermissionError("需要 Dashboard 管理员登录")
+    try:
+        cfg = get_config()
+    except Exception as exc:
+        raise PermissionError("需要 Dashboard 管理员登录") from exc
+    dashboard_cfg = cfg.get("dashboard") if isinstance(cfg, dict) else None
+    expected_raw = (
+        dashboard_cfg.get("username") if isinstance(dashboard_cfg, dict) else None
+    )
+    if not isinstance(expected_raw, str) or not expected_raw.strip():
+        raise PermissionError("需要 Dashboard 管理员登录")
+    if actor != expected_raw.strip():
+        raise PermissionError("需要 Dashboard 管理员登录")
+
+    if check_csrf:
+        verify_series_csrf(req)
+
+    return actor
+
+
 class SeriesPanels:
     def __init__(self, owner, identity):
         self.owner = owner
@@ -1205,18 +1465,9 @@ class SeriesPanels:
 
     async def status(self):
         try:
-            from astrbot.dashboard.api.auth import require_dashboard_user
-
-            raw = getattr(request, "_request", None)
-            if raw is None:
-                raise PermissionError()
-            username = await require_dashboard_user(raw)
-            expected = (
-                self.owner.context.get_config().get("dashboard", {}).get("username")
-            )
-            if not username or expected and username != expected:
-                raise PermissionError()
-            query = getattr(request, "query", None) or {}
+            req = _resolve_web_request()
+            await require_series_admin(self.owner.context, req, check_csrf=False)
+            query = getattr(req, "query", None) or {}
             refresh_flag = str(query.get("refresh") or "").strip().lower() in {
                 "1",
                 "true",
@@ -1224,7 +1475,7 @@ class SeriesPanels:
             }
             if refresh_flag:
                 invalidate_presence_cache(context=self.owner.context)
-            return json_response(
+            return _web_json_response(
                 {
                     "status": "ok",
                     "data": presence(
@@ -1233,12 +1484,12 @@ class SeriesPanels:
                 }
             )
         except PermissionError:
-            return json_response(
+            return _web_json_response(
                 {"status": "error", "message": "需要 Dashboard 管理员登录"},
                 status_code=403,
             )
         except Exception:
-            return json_response(
+            return _web_json_response(
                 {"status": "error", "message": "互通状态暂不可用"}, status_code=503
             )
 

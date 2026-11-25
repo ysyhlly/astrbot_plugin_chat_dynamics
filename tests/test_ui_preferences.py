@@ -1,6 +1,7 @@
 """Account-scoped theme persistence, independent of the plugin's runtime config."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +12,7 @@ from .test_plugin_lifecycle import _plugin
 @pytest.mark.asyncio
 async def test_theme_is_persistent_and_isolated_by_authenticated_account(monkeypatch, offline_web_responses):
     plugin = _plugin()
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     caller = SimpleNamespace(username="alice")
     monkeypatch.setattr(web_api, "request", caller)
 
@@ -22,6 +24,7 @@ async def test_theme_is_persistent_and_isolated_by_authenticated_account(monkeyp
     assert (await plugin._web.ui_preferences_save())["data"] == {"ui": "night", "saved": True}
     # Recreating the API object does not reset the stored preference.
     api = web_api.ConsoleWebAPI(plugin)
+    monkeypatch.setattr(api, "_narrative_admin_allowed", AsyncMock(return_value=True))
     assert (await api.ui_preferences_get())["data"] == {"ui": "night", "setup_dismissed": False}
     caller.username = "bob"
     assert (await api.ui_preferences_get())["data"] == {"ui": None, "setup_dismissed": False}
@@ -34,6 +37,7 @@ async def test_theme_is_persistent_and_isolated_by_authenticated_account(monkeyp
 @pytest.mark.asyncio
 async def test_setup_dismissed_is_persistent_and_isolated_by_account(monkeypatch, offline_web_responses):
     plugin = _plugin()
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     caller = SimpleNamespace(username="alice")
     monkeypatch.setattr(web_api, "request", caller)
 
@@ -77,6 +81,7 @@ async def test_setup_dismissed_is_persistent_and_isolated_by_account(monkeypatch
 )
 async def test_invalid_preferences_do_not_write(monkeypatch, offline_web_responses, payload):
     plugin = _plugin()
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     monkeypatch.setattr(web_api, "request", SimpleNamespace(username="alice"))
 
     async def body():
@@ -91,6 +96,7 @@ async def test_invalid_preferences_do_not_write(monkeypatch, offline_web_respons
 @pytest.mark.asyncio
 async def test_preferences_require_login_and_report_storage_failure(monkeypatch, offline_web_responses):
     plugin = _plugin()
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", AsyncMock(return_value=True))
     caller = SimpleNamespace(username=None)
     monkeypatch.setattr(web_api, "request", caller)
     assert (await plugin._web.ui_preferences_get())["status_code"] == 401

@@ -59,9 +59,12 @@ async def test_invalid_annotation(overrides):
 
 @pytest.mark.asyncio
 async def test_api_redacts_previously_stored_text(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     plugin, _ = fixture_plugin()
     plugin.console_show_message_content = True
     api = web_api.ConsoleWebAPI(plugin)
+    monkeypatch.setattr(api, "_narrative_admin_allowed", AsyncMock(return_value=True))
     await api.topic_annotations.save(label())
     plugin.console_show_message_content = False
     monkeypatch.setattr(web_api, "_query_param", lambda name: "a")

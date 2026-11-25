@@ -273,23 +273,41 @@ class ConsoleWebAPI:
             return _json_err("unknown fields: " + ", ".join(unknown), 400)
         return None
 
-    async def _narrative_admin_allowed(self):
-        """Require the host Dashboard JWT, not a plugin-scoped API key."""
-        try:
-            from astrbot.dashboard.api.auth import require_dashboard_user
+    async def _narrative_admin_allowed(self, *, check_csrf: bool = False) -> bool:
+        """Require the host Dashboard admin JWT (and CSRF on writes), never api_key:."""
+        from ..series_panels import require_series_admin
 
-            raw = getattr(request, "_request", None)
-            if raw is None:
-                return False
-            username = await require_dashboard_user(raw)
-            expected = self.plugin.context.get_config().get("dashboard", {}).get("username")
-            return bool(username and (not expected or username == expected))
+        context = getattr(self.plugin, "context", None)
+        active_req = request
+        if getattr(active_req, "_request", None) is None:
+            getter = getattr(active_req, "_get_current", None)
+            if callable(getter):
+                try:
+                    resolved = getter()
+                    if resolved is not None:
+                        active_req = resolved
+                except Exception:
+                    pass
+        try:
+            await require_series_admin(context, active_req, check_csrf=check_csrf)
+            return True
         except Exception:
             return False
 
-    async def narrative_get(self):
-        if not await self._narrative_admin_allowed():
+    async def _require_admin(self, *, check_csrf: bool = False) -> Any:
+        """Return a 403 error response when Dashboard admin / CSRF guard fails."""
+        fn = self._narrative_admin_allowed
+        try:
+            allowed = await fn(check_csrf=check_csrf)
+        except TypeError:
+            allowed = await fn()
+        if not allowed:
             return _json_err("Dashboard administrator required", 403)
+        return None
+
+    async def narrative_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("narrative_get", 60)) is not None:
             return limited
         umo = (_query_param("umo") or "").strip()
@@ -302,8 +320,8 @@ class ConsoleWebAPI:
             return _json_err("narrative unavailable", 503)
 
     async def narrative_post(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("narrative_post", 20)) is not None:
             return limited
         body = await _json_body()
@@ -378,6 +396,8 @@ class ConsoleWebAPI:
         return _json_ok(await coordinator.admin(umo))
 
     async def overview(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("overview", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -389,6 +409,8 @@ class ConsoleWebAPI:
             return _json_err("runtime state unavailable", 503)
 
     async def sessions(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("sessions", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -400,6 +422,8 @@ class ConsoleWebAPI:
             return _json_err("runtime state unavailable", 503)
 
     async def session(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("session", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -427,6 +451,8 @@ class ConsoleWebAPI:
         return _json_ok(data)
 
     async def cool(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("cool", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -465,6 +491,8 @@ class ConsoleWebAPI:
         return _json_ok(data)
 
     async def reset(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("reset", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -494,6 +522,8 @@ class ConsoleWebAPI:
 
 
     async def integrations(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("integrations", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -506,6 +536,8 @@ class ConsoleWebAPI:
             return _json_err("integration snapshot unavailable", 503)
 
     async def config_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         limited = self._rate_limit("config_get", 60)
         if limited is not None:
             return limited
@@ -521,6 +553,8 @@ class ConsoleWebAPI:
             return _json_err("config unavailable", 503)
 
     async def config_save(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         limited = self._rate_limit("config_save", 20)
         if limited is not None:
             return limited
@@ -574,6 +608,8 @@ class ConsoleWebAPI:
         digest = self._ui_preference_digest()
         if digest is None:
             return _json_err("unauthorized", 401)
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         limited = self._rate_limit("ui_preferences_get", 120)
         if limited is not None:
             return limited
@@ -594,6 +630,8 @@ class ConsoleWebAPI:
         digest = self._ui_preference_digest()
         if digest is None:
             return _json_err("unauthorized", 401)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         limited = self._rate_limit("ui_preferences_save", 60)
         if limited is not None:
             return limited
@@ -623,6 +661,8 @@ class ConsoleWebAPI:
             return _json_err("UI preference save failed", 503)
 
     async def setup_groups(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("setup_groups", 20)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -641,6 +681,8 @@ class ConsoleWebAPI:
             return _json_err("setup groups unavailable", 503)
 
     async def setup_probe(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("setup_probe", 6)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -684,6 +726,8 @@ class ConsoleWebAPI:
         arbitrary page-scoped asset_token. Parent-authenticated bridge.apiGet hits
         this endpoint; the host signs the single app scope before selecting a section.
         """
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         limited = self._rate_limit("page_nav", 60)
         if limited is not None:
             return limited
@@ -773,6 +817,8 @@ class ConsoleWebAPI:
 
 
     async def providers(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         limited = self._rate_limit("providers", 60)
         if limited is not None:
             return limited
@@ -785,6 +831,8 @@ class ConsoleWebAPI:
             return _json_err("providers unavailable", 503)
 
     async def config_apply(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         limited = self._rate_limit("config_apply", 20)
         if limited is not None:
             return limited
@@ -798,6 +846,8 @@ class ConsoleWebAPI:
             return _json_err("config could not be applied", 503)
 
     async def presets(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("presets", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -812,6 +862,8 @@ class ConsoleWebAPI:
             return _json_err("preset catalog unavailable", 503)
 
     async def apply_preset(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("apply_preset", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -838,6 +890,8 @@ class ConsoleWebAPI:
 
 
     async def read_air(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("read_air", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -893,6 +947,8 @@ class ConsoleWebAPI:
             return _json_err("read air unavailable", 503)
 
     async def replay(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("replay", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -907,6 +963,8 @@ class ConsoleWebAPI:
             return _json_err("replay unavailable", 503)
 
     async def annotations_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("annotations_get", 60)) is not None:
             return limited
         session = (_query_param("session_key") or "").strip()
@@ -922,6 +980,8 @@ class ConsoleWebAPI:
 
 
     async def annotations_post(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("annotations_post", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -954,6 +1014,8 @@ class ConsoleWebAPI:
         return clean
 
     async def notebook_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("notebook_get", 60)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -973,6 +1035,8 @@ class ConsoleWebAPI:
             return _json_err("notebook unavailable", 503)
 
     async def notebook_post(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("notebook_post", 20)) is not None:
             return limited
         if self.plugin._shutting_down:
@@ -994,6 +1058,8 @@ class ConsoleWebAPI:
             return _json_err("notebook write failed", 503)
 
     async def series_matrix_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("series_matrix", 60)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1017,8 +1083,8 @@ class ConsoleWebAPI:
             return _json_err("series matrix unavailable", 503)
 
     async def series_matrix_toggle_post(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("series_matrix_toggle", 30)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1048,8 +1114,8 @@ class ConsoleWebAPI:
             return _json_err("series matrix toggle failed", 503)
 
     async def series_matrix_batch_post(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("series_matrix_batch", 20)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1079,8 +1145,8 @@ class ConsoleWebAPI:
             return _json_err("series matrix batch failed", 503)
 
     async def series_telemetry_get(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("series_telemetry", 60)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1108,8 +1174,8 @@ class ConsoleWebAPI:
             return _json_err("series telemetry unavailable", 503)
 
     async def series_health_get(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("series_health", 60)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1123,8 +1189,8 @@ class ConsoleWebAPI:
             return _json_err("series health unavailable", 503)
 
     async def series_preflight_post(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("series_preflight", 20)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1150,8 +1216,8 @@ class ConsoleWebAPI:
         return store
 
     async def series_templates_get(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("series_templates", 60)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1163,8 +1229,8 @@ class ConsoleWebAPI:
             return _json_err("series templates unavailable", 503)
 
     async def series_templates_post(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("series_templates_write", 30)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1202,8 +1268,8 @@ class ConsoleWebAPI:
             return _json_err("series template write failed", 503)
 
     async def series_templates_delete(self):
-        if not await self._narrative_admin_allowed():
-            return _json_err("Dashboard administrator required", 403)
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
         if (limited := self._rate_limit("series_templates_write", 30)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):
@@ -1231,6 +1297,8 @@ class ConsoleWebAPI:
             return _json_err("series template delete failed", 503)
 
     async def series_search_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
         if (limited := self._rate_limit("series_search", 60)) is not None:
             return limited
         if getattr(self.plugin, "_shutting_down", False):

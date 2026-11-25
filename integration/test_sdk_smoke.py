@@ -224,7 +224,8 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
     await plugin.initialize()
     assert {(route.split("/series_workspace/")[1], tuple(methods))
             for route, _, methods, _ in context.routes if "/series_workspace/" in route} == {
-        ("open/<target>", ("GET",)), ("panel/<target>/<path:operation>", ("GET", "POST")),
+        ("open/<target>", ("GET",)),
+        ("panel/<target>/<path:operation>", ("GET", "POST", "PUT", "PATCH", "DELETE")),
     }
     assert {(route.split("/setup/", 1)[1], tuple(methods))
             for route, _, methods, _ in context.routes if "/setup/" in route} == {

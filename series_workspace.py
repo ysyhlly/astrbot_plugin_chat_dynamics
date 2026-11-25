@@ -8,6 +8,7 @@ from importlib import import_module
 
 VERSION = 1
 _PARAM = re.compile(r"<([a-zA-Z_]\w*)>")
+PANEL_API_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
 def _series():
@@ -23,8 +24,9 @@ def register_panel_api(owner, register, route, handler, methods, description):
     if exports is None:
         exports = owner._series_view_api = {}
     for method in methods:
-        if method in ("GET", "POST"):
-            exports[method, route] = handler
+        verb = str(method or "").strip().upper()
+        if verb in PANEL_API_METHODS:
+            exports[verb, route] = handler
 
 
 @lru_cache(maxsize=128)
@@ -37,9 +39,9 @@ def _pattern(path):
 
 
 def _error(message, code):
-    from astrbot.api.web import json_response
-
-    return json_response({"status": "error", "message": message}, status_code=code)
+    return _series()._web_json_response(
+        {"status": "error", "message": message}, status_code=code
+    )
 
 
 class PanelWorkspace:
@@ -51,7 +53,11 @@ class PanelWorkspace:
         prefix = f"/{panel.identity}/series_workspace"
         self.routes = (
             (prefix + "/open/<target>", self.open, ["GET"]),
-            (prefix + "/panel/<target>/<path:operation>", self.call, ["GET", "POST"]),
+            (
+                prefix + "/panel/<target>/<path:operation>",
+                self.call,
+                list(PANEL_API_METHODS),
+            ),
         )
 
     def register(self):
@@ -68,19 +74,16 @@ class PanelWorkspace:
                 row for row in routes if getattr(row[1], "__self__", None) is not self
             ]
 
-    async def _admin(self):
-        from astrbot.api.web import request
-        from astrbot.dashboard.api.auth import require_dashboard_user
-
-        raw = getattr(request, "_request", None)
-        if self.closed or raw is None:
+    async def _admin(self, *, check_csrf: bool = False):
+        if self.closed:
             return None
+        series = _series()
         try:
-            username = await require_dashboard_user(raw)
-            expected = self.panel.owner.context.get_config()["dashboard"]["username"]
+            req = series._resolve_web_request()
+            username = await series.require_series_admin(
+                self.panel.owner.context, req, check_csrf=check_csrf
+            )
         except Exception:
-            return None
-        if not username or username != expected or username != request.username:
             return None
         return username if self._target(self.panel.identity) is self else None
 
@@ -120,29 +123,29 @@ class PanelWorkspace:
 
     async def entry(self, username):
         # Only ask AstrBot for this participating plugin's own declared view.
-        from astrbot.api.web import json_response, request
-
+        series = _series()
+        req = series._resolve_web_request()
         identity = self.panel.identity
-        view = next(page for name, _, page, _ in _series().CATALOG if name == identity)
+        view = next(page for name, _, page, _ in series.CATALOG if name == identity)
+        query = getattr(req, "query", None) or {}
         locale = {"zh": "zh-CN", "en": "en-US", "ja": "ja-JP", "ru": "ru-RU"}.get(
-            request.query.get("lang"), "zh-CN"
+            query.get("lang"), "zh-CN"
         )
         try:
-            service = request._request.app.state.services.plugin_pages
+            service = req._request.app.state.services.plugin_pages
             page = await service.get_plugin_page_entry_config(
                 plugin_name=identity, view_name=view, username=username, locale=locale
             )
             path = page["content_path"]
         except Exception:
             return _error("目标插件面板暂不可用", 503)
-        return json_response(
+        return series._web_json_response(
             {"status": "ok", "data": {"plugin": identity, "view": view, "path": path}}
         )
 
     async def call(self, target, operation):
-        from astrbot.api.web import request
-
-        if not await self._admin():
+        series = _series()
+        if not await self._admin(check_csrf=True):
             return _error("需要 Dashboard 管理员登录", 403)
         destination = self._target(target)
         if destination is None:
@@ -153,10 +156,17 @@ class PanelWorkspace:
             or any(part in ("", ".", "..") for part in operation.split("/"))
         ):
             return _error("无效的面板操作", 400)
-        return await destination.run(request.method, operation)
+        req = series._resolve_web_request()
+        method = str(
+            getattr(req, "method", None)
+            or getattr(getattr(req, "_request", None), "method", None)
+            or ""
+        ).strip().upper()
+        return await destination.run(method, operation)
 
     async def run(self, method, operation):
-        if method == "GET" and operation == "series_presence":
+        verb = str(method or "").strip().upper()
+        if verb == "GET" and operation == "series_presence":
             return await self.panel.status()
         # The target explicitly registers its own operations. Never look up arbitrary
         # host endpoints or dispatch client-supplied URLs.
@@ -165,12 +175,12 @@ class PanelWorkspace:
         prefix = f"/{self.panel.identity}/"
         path = prefix + operation
         route = path
-        handler = exports.get((method, path))
+        handler = exports.get((verb, path))
         arguments = {}
         if handler is None:
-            for (verb, route), callback in exports.items():
+            for (export_verb, route), callback in exports.items():
                 if (
-                    verb == method
+                    export_verb == verb
                     and route.startswith(prefix)
                     and "<" in route
                     and (match := _pattern(route).fullmatch(path))
@@ -181,7 +191,9 @@ class PanelWorkspace:
             return _error("目标插件未提供该面板操作", 404)
         # An engine may unregister or replace a handler while the Star remains active.
         if not any(
-            row[0] == route and row[1] == handler and method in row[2]
+            row[0] == route
+            and row[1] == handler
+            and verb in [str(m).strip().upper() for m in row[2]]
             for row in owner.context.registered_web_apis
         ):
             return _error("面板操作已更新，请重试", 409)

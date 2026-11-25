@@ -78,9 +78,13 @@ def test_history_rejects_invalid_pages(tmp_path, cursor, limit):
 
 @pytest.mark.asyncio
 async def test_status_uses_only_native_counters_and_never_reads_history(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     monkeypatch.setattr(web, "request", NS(username="admin"))
     cfg, _ = parse_runtime_config({"decision_provider": "native/jev"})
     host = NS(_runtime_config=cfg, jev=NS(snapshot=lambda: {"model": "jev", "calls": 3, "api_key": "SECRET"}))
-    result = await DecisionStatusWebAPI(host).status()
+    api = DecisionStatusWebAPI(host)
+    monkeypatch.setattr(api, "_narrative_admin_allowed", AsyncMock(return_value=True))
+    result = await api.status()
     assert result["data"]["service"] == {"model": "jev", "calls": 3}
     assert "SECRET" not in str(result)

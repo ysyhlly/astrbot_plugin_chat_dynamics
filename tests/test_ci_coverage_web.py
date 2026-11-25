@@ -13,7 +13,9 @@ def api(monkeypatch, offline_web_responses):
     monkeypatch.setattr(web, "query_value", lambda name: "")
     monkeypatch.setattr(web, "request_json", AsyncMock(return_value={}))
     plugin = NS(_shutting_down=False, _sessions={}, _metric=Mock())
-    return web.ConsoleWebAPI(plugin)
+    console = web.ConsoleWebAPI(plugin)
+    monkeypatch.setattr(console, "_narrative_admin_allowed", AsyncMock(return_value=True))
+    return console
 
 
 ENDPOINTS = ["overview", "sessions", "session", "cool", "reset", "config_get",

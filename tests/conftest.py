@@ -119,12 +119,122 @@ def _install_astrbot_test_double() -> None:
             pass
         return
 
+    from dataclasses import dataclass
+
     astrbot = types.ModuleType("astrbot")
+    astrbot.__path__ = []
     api = types.ModuleType("astrbot.api")
+    api.__path__ = []
     event = types.ModuleType("astrbot.api.event")
     star = types.ModuleType("astrbot.api.star")
     web = types.ModuleType("astrbot.api.web")
     components = types.ModuleType("astrbot.api.message_components")
+    core_mod = types.ModuleType("astrbot.core")
+    core_mod.__path__ = []
+    provider_pkg = types.ModuleType("astrbot.core.provider")
+    provider_pkg.__path__ = []
+    provider_entities = types.ModuleType("astrbot.core.provider.entities")
+    provider_mod = types.ModuleType("astrbot.core.provider.provider")
+    provider_register = types.ModuleType("astrbot.core.provider.register")
+    config_pkg = types.ModuleType("astrbot.core.config")
+    config_pkg.__path__ = []
+    config_default = types.ModuleType("astrbot.core.config.default")
+    utils_pkg = types.ModuleType("astrbot.core.utils")
+    utils_pkg.__path__ = []
+    llm_metadata_mod = types.ModuleType("astrbot.core.utils.llm_metadata")
+    dashboard_pkg = types.ModuleType("astrbot.dashboard")
+    dashboard_pkg.__path__ = []
+    dashboard_services_pkg = types.ModuleType("astrbot.dashboard.services")
+    dashboard_services_pkg.__path__ = []
+    dashboard_config_service = types.ModuleType("astrbot.dashboard.services.config_service")
+
+    @dataclass
+    class DecisionBooleanQuestion:
+        instructions: str = ""
+
+    @dataclass
+    class DecisionChoiceQuestion:
+        criteria: dict
+        instructions: str = ""
+
+    @dataclass
+    class DecisionScoreQuestion:
+        criteria: list
+        instructions: str = ""
+
+    @dataclass
+    class DecisionBooleanAnswer:
+        probability: float
+
+    @dataclass
+    class DecisionChoiceAnswer:
+        choice: str
+        probability: float
+        probabilities: dict
+        confidence: float
+
+    @dataclass
+    class DecisionScoreAnswer:
+        score: float
+        legend: dict
+        probabilities: dict
+        confidence: float
+
+    @dataclass
+    class TokenUsage:
+        input_other: int = 0
+        input_cached: int = 0
+        output: int = 0
+
+    @dataclass
+    class LLMResponse:
+        role: str = "assistant"
+        completion_text: str = ""
+        usage: TokenUsage | None = None
+
+    class DecisionError(RuntimeError):
+        pass
+
+    class ProviderType:
+        CHAT_COMPLETION = "chat_completion"
+        EMBEDDING = "embedding"
+        RERANK = "rerank"
+        DECISION = "decision"
+
+    class Provider:
+        def __init__(self, provider_config=None, provider_settings=None):
+            self.provider_config = provider_config or {}
+            self.provider_settings = provider_settings or {}
+
+    class DecisionProvider(Provider):
+        pass
+
+    class ProviderConfigService:
+        async def list_provider_source_models(self, source_id):
+            return {"models": [], "provider_source_id": source_id, "model_metadata": {}}
+
+    for _cls in (
+        DecisionBooleanQuestion,
+        DecisionChoiceQuestion,
+        DecisionScoreQuestion,
+        DecisionBooleanAnswer,
+        DecisionChoiceAnswer,
+        DecisionScoreAnswer,
+        TokenUsage,
+        LLMResponse,
+        DecisionError,
+        ProviderType,
+    ):
+        setattr(provider_entities, _cls.__name__, _cls)
+    provider_mod.Provider = Provider
+    provider_mod.DecisionProvider = DecisionProvider
+    provider_register.provider_cls_map = {}
+    provider_register.provider_registry = []
+    provider_register.llm_tools = []
+    provider_register.register_provider_adapter = lambda *a, **kw: (lambda cls: cls)
+    config_default.CONFIG_METADATA_2 = {"provider_group": {"metadata": {"provider": {"config_template": {}}}}}
+    llm_metadata_mod.LLM_METADATAS = {}
+    dashboard_config_service.ProviderConfigService = ProviderConfigService
 
     class MessageChain:
         def __init__(self, chain=None):
@@ -164,6 +274,8 @@ def _install_astrbot_test_double() -> None:
         on_llm_response=decorator,
         on_decorating_result=decorator,
         after_message_sent=decorator,
+        on_astrbot_loaded=decorator,
+        on_plugin_loaded=decorator,
     )
 
     class Star:
@@ -227,6 +339,18 @@ def _install_astrbot_test_double() -> None:
         "astrbot.api.star": star,
         "astrbot.api.web": web,
         "astrbot.api.message_components": components,
+        "astrbot.core": core_mod,
+        "astrbot.core.provider": provider_pkg,
+        "astrbot.core.provider.entities": provider_entities,
+        "astrbot.core.provider.provider": provider_mod,
+        "astrbot.core.provider.register": provider_register,
+        "astrbot.core.config": config_pkg,
+        "astrbot.core.config.default": config_default,
+        "astrbot.core.utils": utils_pkg,
+        "astrbot.core.utils.llm_metadata": llm_metadata_mod,
+        "astrbot.dashboard": dashboard_pkg,
+        "astrbot.dashboard.services": dashboard_services_pkg,
+        "astrbot.dashboard.services.config_service": dashboard_config_service,
     })
 
 

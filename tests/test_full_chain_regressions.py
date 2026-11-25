@@ -513,9 +513,12 @@ async def test_reminder_read_does_not_consume_and_timer_dispatches_without_new_m
 
 @pytest.mark.asyncio
 async def test_annotation_revision_survives_web_redaction(monkeypatch, offline_web_responses):
+    from unittest.mock import AsyncMock
+
     from astrbot_plugin_chat_dynamics.core import web_api
     plugin, _ = fixture_plugin()
     api = web_api.ConsoleWebAPI(plugin)
+    monkeypatch.setattr(api, "_narrative_admin_allowed", AsyncMock(return_value=True))
     saved = await api.topic_annotations.save(label(recipient_ids=["person-private"]))
     monkeypatch.setattr(web_api, "_query_param", lambda key: "a")
     response = await api.annotations_get()
