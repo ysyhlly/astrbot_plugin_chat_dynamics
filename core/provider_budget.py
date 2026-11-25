@@ -176,6 +176,8 @@ class ProviderBudget:
         # provider_id currently executing its single half-open probe after cooldown expiry
         self._circuit_probes: set[str] = set()
         self._budget_cache: tuple[float, bool, bool] = (0.0, False, False)
+        self._budget_refresh_task: asyncio.Task | None = None
+        self._budget_cache_ttl: float = 5.0
 
     def configure_limits(
         self,
@@ -198,27 +200,19 @@ class ProviderBudget:
             self.circuit_breaker_threshold = max(0, int(circuit_breaker_threshold))
         self._budget_cache = (0.0, False, False)
 
-    def _daily_budget_state(self) -> tuple[bool, bool]:
-        """Return (soft_exceeded, hard_exceeded), cached for 2s to avoid hot-path DB reads."""
-        if (
-            self.daily_token_soft_limit <= 0
-            and self.daily_token_hard_limit <= 0
-            and self.daily_cost_soft_usd <= 0.0
-            and self.daily_cost_hard_usd <= 0.0
-        ):
+    def _limits_configured(self) -> bool:
+        return bool(
+            self.daily_token_soft_limit > 0
+            or self.daily_token_hard_limit > 0
+            or self.daily_cost_soft_usd > 0.0
+            or self.daily_cost_hard_usd > 0.0
+        )
+
+    def _evaluate_today_usage(self, today: Any) -> tuple[bool, bool]:
+        if not isinstance(today, dict):
             return False, False
-        now = time.monotonic()
-        if now - self._budget_cache[0] < 2.0:
-            return self._budget_cache[1], self._budget_cache[2]
-        today_fn = getattr(self.telemetry, "today_usage_summary", None)
-        if not callable(today_fn):
-            return False, False
-        try:
-            today = today_fn()
-            tok = int(today.get("total_tokens", 0) or 0)
-            cost = float(today.get("estimated_cost_usd", 0.0) or 0.0)
-        except Exception:
-            return False, False
+        tok = int(today.get("total_tokens", 0) or 0)
+        cost = float(today.get("estimated_cost_usd", 0.0) or 0.0)
         hard = bool(
             (self.daily_token_hard_limit > 0 and tok >= self.daily_token_hard_limit)
             or (self.daily_cost_hard_usd > 0.0 and cost >= self.daily_cost_hard_usd)
@@ -227,8 +221,63 @@ class ProviderBudget:
             (self.daily_token_soft_limit > 0 and tok >= self.daily_token_soft_limit)
             or (self.daily_cost_soft_usd > 0.0 and cost >= self.daily_cost_soft_usd)
         )
-        self._budget_cache = (now, soft, hard)
         return soft, hard
+
+    def _schedule_budget_refresh(self) -> None:
+        if not self._limits_configured():
+            return
+        today_fn = getattr(self.telemetry, "today_usage_summary", None)
+        if not callable(today_fn):
+            return
+        if self._budget_refresh_task is not None and not self._budget_refresh_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _refresh() -> tuple[bool, bool]:
+            try:
+                today = await asyncio.to_thread(today_fn)
+                soft, hard = self._evaluate_today_usage(today)
+                self._budget_cache = (time.monotonic(), soft, hard)
+                return soft, hard
+            except Exception:
+                return self._budget_cache[1], self._budget_cache[2]
+            finally:
+                if self._budget_refresh_task is asyncio.current_task():
+                    self._budget_refresh_task = None
+
+        self._budget_refresh_task = loop.create_task(_refresh())
+
+    async def _daily_budget_state_async(self) -> tuple[bool, bool]:
+        """Return (soft_exceeded, hard_exceeded), refreshing SQLite off the event loop."""
+        if not self._limits_configured():
+            return False, False
+        now = time.monotonic()
+        if self._budget_cache[0] > 0.0 and (now - self._budget_cache[0]) < self._budget_cache_ttl:
+            return self._budget_cache[1], self._budget_cache[2]
+        today_fn = getattr(self.telemetry, "today_usage_summary", None)
+        if not callable(today_fn):
+            return False, False
+        self._schedule_budget_refresh()
+        task = self._budget_refresh_task
+        if task is not None:
+            try:
+                return await asyncio.shield(task)
+            except Exception:
+                return self._budget_cache[1], self._budget_cache[2]
+        return self._budget_cache[1], self._budget_cache[2]
+
+    def _daily_budget_state(self) -> tuple[bool, bool]:
+        """Non-blocking cached (soft_exceeded, hard_exceeded); refreshes in background off-loop."""
+        if not self._limits_configured():
+            return False, False
+        now = time.monotonic()
+        if self._budget_cache[0] > 0.0 and (now - self._budget_cache[0]) < self._budget_cache_ttl:
+            return self._budget_cache[1], self._budget_cache[2]
+        self._schedule_budget_refresh()
+        return self._budget_cache[1], self._budget_cache[2]
 
     def _circuit_remaining(self, provider: str) -> tuple[float, str]:
         if self.circuit_breaker_threshold <= 0:
@@ -468,7 +517,7 @@ class ProviderBudget:
         is_background = clean_purpose not in _PRIORITY_PURPOSES
         owns_half_open_probe = False
         if is_background:
-            _soft, hard = self._daily_budget_state()
+            _soft, hard = await self._daily_budget_state_async()
             if hard:
                 raise ProviderBudgetBusyError(
                     "Daily LLM budget hard limit reached for background tasks",
@@ -498,7 +547,14 @@ class ProviderBudget:
                     )
                 self._circuit_probes.add(clean_provider)
                 owns_half_open_probe = True
-        if len(self.waiters) >= self.max_queue:
+        lane_queued = sum(
+            1
+            for w_provider, w_purpose, _w_plugin, _w_started, w_future in self.waiters
+            if not w_future.done()
+            and w_provider == clean_provider
+            and (w_purpose not in _PRIORITY_PURPOSES) == is_background
+        )
+        if lane_queued >= self.max_queue:
             if owns_half_open_probe:
                 self._circuit_probes.discard(clean_provider)
             raise ProviderBudgetBusyError(

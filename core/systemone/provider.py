@@ -25,6 +25,7 @@ from .client import (
 )
 
 from . import window
+from .usage_context import record_decision_usage
 
 PROVIDER_TYPE = "systemone_catalog"
 DEFAULT_CONFIG = {
@@ -220,7 +221,7 @@ class SystemOneProvider(DecisionProvider):
         from .decisions import reported_usage
 
         parsed_usage = reported_usage(envelope)
-        self.last_decision_usage = parsed_usage if parsed_usage.get("reported") else None
+        record_decision_usage(self, parsed_usage if parsed_usage.get("reported") else None)
         return answers
 
     async def text_chat(self, prompt=None, contexts=None, model=None, **kwargs):

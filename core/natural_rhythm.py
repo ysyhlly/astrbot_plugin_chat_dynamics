@@ -315,6 +315,8 @@ class NaturalRhythmController:
         self._seq: int = 0
         self._wake_event = asyncio.Event()
         self._scheduler_task: Optional[asyncio.Task] = None
+        self._inflight_jobs: Dict[Tuple[str, str], asyncio.Task] = {}
+        self._dispatch_semaphore: Optional[asyncio.Semaphore] = None
         self._running = False
         self._catchup_executor = catchup_executor
         self._afterthought_executor = afterthought_executor
@@ -471,6 +473,13 @@ class NaturalRhythmController:
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        inflight = list(self._inflight_jobs.values())
+        self._inflight_jobs.clear()
+        for job in inflight:
+            if not job.done():
+                job.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
         for book in self._books.values():
             self._release_live_events(book)
 
@@ -481,37 +490,73 @@ class NaturalRhythmController:
         if self._scheduler_task is None or self._scheduler_task.done():
             self.start()
 
+    def _spawn_dispatch(self, session_key: str, kind: str) -> None:
+        key = (session_key, kind)
+        existing = self._inflight_jobs.get(key)
+        if existing is not None and not existing.done():
+            return
+        if self._dispatch_semaphore is None:
+            self._dispatch_semaphore = asyncio.Semaphore(4)
+        sem = self._dispatch_semaphore
+
+        async def _runner() -> None:
+            try:
+                async with sem:
+                    await self._dispatch_due(session_key, kind)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "[ChatDynamics] natural rhythm job error session=%s kind=%s type=%s",
+                    session_key,
+                    kind,
+                    type(exc).__name__,
+                )
+            finally:
+                if self._inflight_jobs.get(key) is asyncio.current_task():
+                    self._inflight_jobs.pop(key, None)
+
+        task = asyncio.create_task(_runner())
+        self._inflight_jobs[key] = task
+
     async def _scheduler_loop(self) -> None:
         """Sleep until the earliest pending catch-up or afterthought deadline."""
         try:
             while self._running and not getattr(self.plugin, "_shutting_down", False):
-                if not self._heap:
-                    self._wake_event.clear()
-                    await self._wake_event.wait()
-                    continue
-                wake_mono, _seq, kind, session_key = self._heap[0]
-                now_mono = self.time_service.time()
-                delay = wake_mono - now_mono
-                if delay > 0:
-                    self._wake_event.clear()
-                    sleep_task = asyncio.create_task(self.time_service.sleep(delay))
-                    wake_task = asyncio.create_task(self._wake_event.wait())
-                    done, pending = await asyncio.wait(
-                        {sleep_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    # Check if a closer deadline arrived while waiting.
-                    if wake_task in done and self._heap and self._heap[0][0] > self.time_service.time():
+                try:
+                    if not self._heap:
+                        self._wake_event.clear()
+                        await self._wake_event.wait()
                         continue
-                    continue
-                heapq.heappop(self._heap)
-                await self._dispatch_due(session_key, kind)
+                    wake_mono, _seq, kind, session_key = self._heap[0]
+                    now_mono = self.time_service.time()
+                    delay = wake_mono - now_mono
+                    if delay > 0:
+                        self._wake_event.clear()
+                        sleep_task = asyncio.create_task(self.time_service.sleep(delay))
+                        wake_task = asyncio.create_task(self._wake_event.wait())
+                        done, pending = await asyncio.wait(
+                            {sleep_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for task in pending:
+                            task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        # Check if a closer deadline arrived while waiting.
+                        if wake_task in done and self._heap and self._heap[0][0] > self.time_service.time():
+                            continue
+                        continue
+                    heapq.heappop(self._heap)
+                    self._spawn_dispatch(session_key, kind)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[ChatDynamics] natural rhythm scheduler tick error type=%s",
+                        type(exc).__name__,
+                    )
+                    await self.time_service.sleep(0.5)
         except asyncio.CancelledError:
             return
-        except Exception as exc:
-            logger.warning("[ChatDynamics] natural rhythm scheduler error type=%s", type(exc).__name__)
 
     async def _dispatch_due(self, session_key: str, kind: str) -> None:
         runtime = getattr(self.plugin, "_sessions", {}).get(session_key)
@@ -1234,10 +1279,12 @@ class NaturalRhythmController:
         if book.catching_up:
             return 0
         # If world availability is still busy/asleep (or not yet confirmed available),
-        # keep waiting instead of waking early.
+        # keep waiting instead of waking early. When live state is unreachable/disabled
+        # (returns "unmanaged"), release the away window so pending catch-up never starves.
         current_avail = await self._probe_world_availability(runtime)
         if current_avail in {"busy", "asleep"} or (
-            book.away_kind in {"world_busy", "world_asleep"} and current_avail != "available"
+            book.away_kind in {"world_busy", "world_asleep"}
+            and current_avail not in {"available", "unmanaged"}
         ):
             now_mono = self.time_service.time()
             effective_away = (
@@ -1340,20 +1387,72 @@ class NaturalRhythmController:
         return sent_count
 
     async def _probe_world_availability(self, runtime: Any) -> str:
-        """Read latest confirmed availability from narrative coordinator, or '' if unavailable."""
+        """Query live availability from dynamic_life_state before falling back to cached bundles."""
         narrative = getattr(self.plugin, "narrative", None)
         if narrative is None:
             return ""
+        umo = str(getattr(runtime, "umo", "") or getattr(runtime, "session_key", "") or "")
+        enabled_fn = getattr(narrative, "enabled", None)
+        if callable(enabled_fn):
+            try:
+                if not enabled_fn(umo):
+                    return "unmanaged"
+            except Exception:
+                pass
         bundles = getattr(narrative, "_bundles", None)
-        if isinstance(bundles, dict):
-            bundle = bundles.get(runtime.umo) or bundles.get(runtime.session_key)
+        bundle = (
+            bundles.get(runtime.umo) or bundles.get(runtime.session_key)
+            if isinstance(bundles, dict)
+            else None
+        )
+        # Prefer live dynamic_life_state.get_snapshot so idle groups never starve on a stale bundle cache.
+        call_fn = getattr(narrative, "call", None)
+        if callable(call_fn):
+            scope = None
             if bundle is not None:
+                raw_scope = getattr(bundle, "scope", None)
+                if isinstance(raw_scope, dict) and raw_scope.get("umo"):
+                    scope = dict(raw_scope)
+                else:
+                    try:
+                        snap = getattr(bundle, "snapshot", None)
+                        if isinstance(snap, dict) and isinstance(snap.get("scope"), dict):
+                            scope = dict(snap["scope"])
+                    except Exception:
+                        pass
+            if scope is None and umo:
+                platform = umo.split(":", 1)[0] if ":" in umo else ""
+                scope = {"platform": platform, "umo": umo, "persona_id": "", "instance_id": ""}
+            if scope is not None:
                 try:
-                    snap = bundle.snapshot
-                    if not snap.get("stale"):
-                        return str(snap.get("availability") or "").lower()
+                    live_snap = await call_fn("dynamic_life_state", "get_snapshot", scope, timeout=3.0)
+                except TypeError:
+                    try:
+                        live_snap = await call_fn("dynamic_life_state", "get_snapshot", scope)
+                    except Exception:
+                        live_snap = None
                 except Exception:
-                    pass
+                    live_snap = None
+                if isinstance(live_snap, dict):
+                    if live_snap.get("managed") is False:
+                        return "unmanaged"
+                    if not live_snap.get("stale"):
+                        live_avail = str(live_snap.get("availability") or "").strip().lower()
+                        if live_avail:
+                            return live_avail
+                elif live_snap is None:
+                    # Check whether dynamic_life_state provider is completely absent/unloaded.
+                    integrations = getattr(self.plugin, "integrations", None)
+                    provider_fn = getattr(integrations, "narrative_provider", None) if integrations else None
+                    if callable(provider_fn) and provider_fn("dynamic_life_state") is None:
+                        return "unmanaged"
+        if bundle is not None:
+            try:
+                snap = bundle.snapshot
+                if isinstance(snap, dict) and not snap.get("stale"):
+                    return str(snap.get("availability") or "").strip().lower()
+            except Exception:
+                pass
         return ""
 
     async def _execute_catchup_item(

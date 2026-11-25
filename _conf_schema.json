@@ -203,6 +203,16 @@
     "_special": "select_provider",
     "hint": "生成最终回复，沿用人格与已授权工具；留空使用当前会话模型。"
   },
+  "vibe_provider": {
+    "description": "标题与氛围辅助模型（可选）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "用于话题标题总结等低成本后台文字任务；留空时回退至回复模型或当前会话模型。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
   "reply_first_sentence_enabled": {
     "type": "bool",
     "default": true,
@@ -323,10 +333,10 @@
   "topic_reranker_timeout": {
     "description": "重排序请求超时（秒）",
     "type": "float",
-    "default": 3.0,
+    "default": 6.0,
     "slider": {
       "min": 0.1,
-      "max": 10,
+      "max": 30,
       "step": 0.1
     },
     "condition": {
@@ -335,7 +345,7 @@
       "topic_reranker_enabled": true,
       "discussion_judgment_mode": "rerank"
     },
-    "hint": "原生重排序或旧版话题复判的等待上限，0.1–10 秒。"
+    "hint": "原生重排序或旧版话题复判的等待上限，0.1–30 秒。"
   },
   "discussion_rerank_threshold": {
     "description": "讨论匹配分数阈值",
@@ -694,6 +704,36 @@
     "default": 7,
     "description": "上下文在线保留天数",
     "hint": "到期后压缩归档，保留发送回执，不自动删除完整历史。",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true
+    }
+  },
+  "narrative_archive_retention_days": {
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 1,
+      "max": 365,
+      "step": 1
+    },
+    "description": "归档上下文保留天数",
+    "hint": "已压缩归档的叙事上下文超过该天数后自动清理，范围 1–365 天（默认 30 天）。",
+    "condition": {
+      "show_advanced_options": true,
+      "narrative_enabled": true
+    }
+  },
+  "narrative_dead_letter_ttl_days": {
+    "type": "int",
+    "default": 7,
+    "slider": {
+      "min": 1,
+      "max": 90,
+      "step": 1
+    },
+    "description": "投递死信与事件日志保留天数",
+    "hint": "已完成投递事件、死信及孤立状态记录的保留上限，范围 1–90 天（默认 7 天）。",
     "condition": {
       "show_advanced_options": true,
       "narrative_enabled": true

@@ -161,7 +161,6 @@ STATIC_STATE_KEYS = (
     "decision_prompt",
     "persona",
     "character_rules",
-    "affection_policy",
 )
 
 
@@ -204,8 +203,6 @@ def build_state(
     }
     if character_rules is not None:
         state["character_rules"] = character_rules[:2000]
-    if relationship is not None:
-        state["affection_policy"] = AFFECTION_INSTRUCTIONS
     state["previous_state"] = str(previous_state or "observing")[:32]
     state["observations"] = dict(observations or {})
     if active_topics is not None:
@@ -213,6 +210,7 @@ def build_state(
     if character_state is not None:
         state["character_state"] = dict(character_state)
     if relationship is not None:
+        state["affection_policy"] = AFFECTION_INSTRUCTIONS
         state["affection"] = relationship
     clean_learning = str(learning_context or "").strip()
     if clean_learning:

@@ -1531,11 +1531,16 @@ class PersonaEngine:
                        and "expression_mode" in intent_questions and "speaker_stance" in intent_questions)
         stamp = client.tone_selection() if review_tone else None
         async with self.slots:
+            eval_kwargs: dict[str, Any] = {}
+            if p._runtime_config.decision_backend == 'llm':
+                eval_kwargs['umo'] = turn.session_key
+            elif getattr(client, 'is_systemone_router', False):
+                eval_kwargs['group_id'] = turn.session_key
             answers = await client.evaluate(
                 state=bounded_state,
                 questions=questions,
                 timeout=timeout,
-                **({'umo': turn.session_key} if p._runtime_config.decision_backend == 'llm' else {}),
+                **eval_kwargs,
             )
             if stamp is not None and answers:
                 reading = await evaluative_reading.review(p, item.events[-1] if item.events else None,
@@ -1646,11 +1651,16 @@ class PersonaEngine:
         finally:
             runtime.owned_turn_tasks.pop(child, None)
 
-    async def generate_ready(self, runtime, turn, *args, **kwargs):
+    async def generate_ready(self, runtime, turn, *args, allow_early: bool = True, **kwargs):
         """Release a validated final output before optional cleanup/diagnostics."""
         started = time.monotonic()
         ready = asyncio.get_running_loop().create_future()
-        early = getattr(self.plugin._runtime_config, "reply_first_sentence_enabled", True)
+        budget_purpose = str(kwargs.get("budget_purpose", "reply") or "reply").strip()
+        early = bool(
+            allow_early
+            and budget_purpose != "afterthought"
+            and getattr(self.plugin._runtime_config, "reply_first_sentence_enabled", True)
+        )
 
         def stage(name, seconds, outcome):
             if name.startswith("hook/"):
@@ -1686,8 +1696,13 @@ class PersonaEngine:
         child = self.plugin._create_background_task(self.telemetry.run("native_agent", turn, operation))
         runtime.owned_turn_tasks[child] = turn.author
         reply_tasks = getattr(runtime, "reply_generation_tasks", None)
+        caller_task = asyncio.current_task()
+        added_caller = False
         if isinstance(reply_tasks, set):
             reply_tasks.add(child)
+            if caller_task is not None and caller_task not in reply_tasks:
+                reply_tasks.add(caller_task)
+                added_caller = True
 
         def finished(task):
             runtime.owned_turn_tasks.pop(task, None)
@@ -1698,15 +1713,19 @@ class PersonaEngine:
 
         child.add_done_callback(finished)
         try:
-            completed, _ = await asyncio.wait({child, ready}, return_when=asyncio.FIRST_COMPLETED)
-            if ready in completed and not ready.cancelled():
-                return ready.result()
-            return child.result()
+            if early:
+                completed, _ = await asyncio.wait({child, ready}, return_when=asyncio.FIRST_COMPLETED)
+                if ready in completed and not ready.cancelled():
+                    return ready.result()
+                return child.result()
+            return await child
         except BaseException:
             child.cancel()
             await asyncio.gather(child, return_exceptions=True)
             raise
         finally:
+            if added_caller and isinstance(reply_tasks, set) and caller_task is not None:
+                reply_tasks.discard(caller_task)
             if not ready.done():
                 ready.cancel()
 
@@ -1718,24 +1737,62 @@ class PersonaEngine:
                 record_outcome(runtime, item, outcomes.mark_suppressed, "member_stopped", stage="generation")
         runtime.cancel_owned_turns(user_id)
 
+    def _schedule_media_maintenance(self, umo: str, conversation_id: str) -> None:
+        """Run MediaArchive touch/prune in a background thread off the reply hot path."""
+        archive = getattr(self.plugin, "media_archive", None)
+        if archive is None:
+            return
+
+        def _work() -> None:
+            archive.touch(umo, conversation_id)
+            try:
+                archive.prune(min_interval=30.0)
+            except TypeError:
+                archive.prune()
+
+        async def _run() -> None:
+            try:
+                await asyncio.to_thread(_work)
+            except Exception:
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                _work()
+            except Exception:
+                pass
+            return
+        tasks = getattr(self, "_media_maintenance_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._media_maintenance_tasks = tasks
+        if len(tasks) >= 16:
+            return
+        task = loop.create_task(_run())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     async def generate(self, event, events, prompt, persona, provider, **kwargs):
         """All owned native agents share the adapter's per-provider admission budget."""
         budget_purpose = str(kwargs.pop("budget_purpose", "reply") or "reply").strip() or "reply"
         timeout = self.plugin._runtime_config.reply_timeout
         started = time.monotonic()
+        event_group_id = str(getattr(event, "unified_msg_origin", "") or "")
         if isinstance(self.bridge, AstrBotAgentBridge):
             event._cd_memory_provider_started_v1 = False
             kwargs["reply_timeout"] = timeout
             self.bridge.media_archive = self.plugin.media_archive
             private_direct = bool(kwargs.pop("private_direct", False))
             kwargs["narrative_override"] = None if private_direct else getattr(self.plugin, "narrative", None)
-            self.plugin.media_archive.touch(event.unified_msg_origin, persona.conversation_id)
-            self.plugin.media_archive.prune()
+            self._schedule_media_maintenance(event.unified_msg_origin, persona.conversation_id)
         call = self.plugin.llm.provider_budget.run(
             provider,
             budget_purpose,
             lambda: self.bridge.generate(event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs),
             plugin_id="astrbot_plugin_chat_dynamics",
+            group_id=event_group_id,
         )
         if not isinstance(self.bridge, AstrBotAgentBridge):
             return await asyncio.wait_for(call, timeout)
@@ -1778,6 +1835,7 @@ class PersonaEngine:
                             event, events, prompt, persona, provider, boundary_host=self.plugin, **kwargs
                         ),
                         plugin_id="astrbot_plugin_chat_dynamics",
+                        group_id=event_group_id,
                     )
                     return await retry
                 finally:
@@ -1834,6 +1892,22 @@ class PersonaEngine:
                 except PersonaChanged:
                     self._finish_generation_failure(runtime, item, "persona_changed", suppressed=True)
                     self.diagnostic(runtime, "persona_changed")
+                except member_boundary.BoundaryCancelled as exc:
+                    item_cancelled = True
+                    bc_reason = str(exc).strip()[:64] or "boundary_cancelled"
+                    self._finish_generation_failure(
+                        runtime,
+                        item,
+                        bc_reason,
+                        suppressed=True,
+                        error_type=type(exc).__name__,
+                    )
+                    self.diagnostic(
+                        runtime,
+                        "boundary_cancelled",
+                        reason=bc_reason,
+                        error_type=type(exc).__name__,
+                    )
                 except Exception as exc:
                     self._finish_generation_failure(runtime, item, "agent_failed", error_type=type(exc).__name__)
                     self.diagnostic(runtime, "agent_failed", error_type=type(exc).__name__)
@@ -2701,6 +2775,11 @@ class PersonaEngine:
                 if isinstance(owners, dict):
                     owners[turn.author] = int(owners.get(turn.author, 0) or 0) + 1
                     _reply_gen_scope.callback(_release_reply_owner)
+                outer_task = asyncio.current_task()
+                reply_tasks = getattr(runtime, "reply_generation_tasks", None)
+                if outer_task is not None and isinstance(reply_tasks, set) and outer_task not in reply_tasks:
+                    reply_tasks.add(outer_task)
+                    _reply_gen_scope.callback(reply_tasks.discard, outer_task)
                 try:
                     p._metric("native_agent_started")
                     generation_started = time.monotonic()
@@ -3643,28 +3722,89 @@ class PersonaEngine:
             bot_id=str(runtime.bot_id or ""),
             snapshot_at=p.time_service.time(),
         )
-        async with self.bridge.session_lock(runtime.session_key):
+        lock_timeout = float(
+            getattr(p._runtime_config, "afterthought_lock_timeout", 5.0) or 5.0
+        )
+        gen_timeout = min(
+            float(getattr(p._runtime_config, "reply_timeout", 30.0) or 30.0),
+            30.0,
+        )
+        try:
+            lock_cm = self.bridge.session_lock(runtime.session_key, acquire_timeout=lock_timeout)
+            bounded_entered = False
+        except TypeError:
+            lock_cm = self.bridge.session_lock(runtime.session_key)
+            bounded_entered = True
+        entered = False
+        try:
+            if bounded_entered:
+                await asyncio.wait_for(lock_cm.__aenter__(), timeout=lock_timeout)
+            else:
+                await lock_cm.__aenter__()
+            entered = True
+        except asyncio.TimeoutError:
+            logger.info(
+                "[ChatDynamics] afterthought skipped due to session lock timeout session=%s",
+                runtime.session_key,
+            )
+            return {"status": "skipped", "reason": "rhythm_afterthought_lock_timeout"}
+        try:
             if runtime.epoch != slot.epoch or getattr(p, "_shutting_down", False):
                 return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
             if not await self.bridge.current(event, persona):
                 return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_stop"}
             provider = await p.llm.resolve_provider_id(runtime.session_key)
+            output = None
             try:
-                output = await self.generate_ready(
-                    runtime,
-                    turn,
-                    event,
-                    (event,),
-                    prompt,
-                    persona,
-                    provider,
-                    execution_log=runtime.tool_executions,
-                    history_text="",
-                    media_understand=False,
-                    context_images=(),
-                    private_direct=slot.private_direct,
-                    budget_purpose="afterthought",
-                )
+                try:
+                    output = await asyncio.wait_for(
+                        self.generate_ready(
+                            runtime,
+                            turn,
+                            event,
+                            (event,),
+                            prompt,
+                            persona,
+                            provider,
+                            execution_log=runtime.tool_executions,
+                            history_text="",
+                            media_understand=False,
+                            context_images=(),
+                            private_direct=slot.private_direct,
+                            budget_purpose="afterthought",
+                            allow_early=False,
+                        ),
+                        timeout=gen_timeout,
+                    )
+                except TypeError:
+                    output = await asyncio.wait_for(
+                        self.generate_ready(
+                            runtime,
+                            turn,
+                            event,
+                            (event,),
+                            prompt,
+                            persona,
+                            provider,
+                            execution_log=runtime.tool_executions,
+                            history_text="",
+                            media_understand=False,
+                            context_images=(),
+                            private_direct=slot.private_direct,
+                            budget_purpose="afterthought",
+                        ),
+                        timeout=gen_timeout,
+                    )
+                completion = getattr(output, "completion_task", None)
+                if completion is not None and not completion.done():
+                    try:
+                        final_output = await asyncio.wait_for(completion, timeout=gen_timeout)
+                        if final_output is not None:
+                            output = final_output
+                    except BaseException:
+                        completion.cancel()
+                        await asyncio.gather(completion, return_exceptions=True)
+                        raise
             except member_boundary.BoundaryCancelled as exc:
                 logger.info(
                     "[ChatDynamics] afterthought cancelled by boundary session=%s reason=%s",
@@ -3672,6 +3812,12 @@ class PersonaEngine:
                     str(exc)[:64],
                 )
                 return {"status": "skipped", "reason": "rhythm_afterthought_cancelled_boundary"}
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[ChatDynamics] afterthought generation timed out session=%s",
+                    runtime.session_key,
+                )
+                return {"status": "skipped", "reason": "rhythm_afterthought_timeout"}
             except Exception as exc:
                 logger.warning("[ChatDynamics] afterthought generation failed type=%s", type(exc).__name__)
                 return {"status": "skipped", "reason": "rhythm_afterthought_skipped_empty"}
@@ -3721,3 +3867,6 @@ class PersonaEngine:
                 p._observe_routed_bot(runtime, bot)
             p._metric("send_succeeded")
             return {"status": "sent", "message_id": msg_id}
+        finally:
+            if entered:
+                await lock_cm.__aexit__(None, None, None)

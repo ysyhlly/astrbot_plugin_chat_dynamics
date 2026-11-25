@@ -8,6 +8,25 @@ import time
 from .client import SystemOneError
 from . import window
 from .native import ask_native, is_decision_provider
+from .usage_context import capture_decision_usage
+
+
+def _extract_group_id(state, group_id: str = "") -> str:
+    clean = str(group_id or "").strip()
+    if clean:
+        return clean
+    if isinstance(state, dict):
+        for key in ("group_id", "session_key", "umo"):
+            val = state.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        conv = state.get("conversation")
+        if isinstance(conv, dict):
+            for key in ("group_id", "session_key", "umo"):
+                val = conv.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    return ""
 
 
 class RoutedSystemOneClient:
@@ -106,15 +125,15 @@ class RoutedSystemOneClient:
         except Exception:
             return None
 
-    async def evaluate_tone(self, *, state, questions, timeout, selection):
+    async def evaluate_tone(self, *, state, questions, timeout, selection, group_id: str = ""):
         if selection is None or self.tone_selection() != selection:
             return None
-        return await self._evaluate(state, questions, timeout, tone=True)
+        return await self._evaluate(state, questions, timeout, tone=True, group_id=group_id)
 
-    async def evaluate(self, *, state, questions, timeout=None):
-        return await self._evaluate(state, questions, timeout, tone=False)
+    async def evaluate(self, *, state, questions, timeout=None, group_id: str = ""):
+        return await self._evaluate(state, questions, timeout, tone=False, group_id=group_id)
 
-    async def _evaluate(self, state, questions, timeout, *, tone):
+    async def _evaluate(self, state, questions, timeout, *, tone, group_id: str = ""):
         if self._closed:
             return None
         provider_id, provider, identity = self._resolve()
@@ -138,6 +157,9 @@ class RoutedSystemOneClient:
         budget = None
         error_code = None
         started = time.perf_counter()
+        resolved_group_id = _extract_group_id(state, group_id)
+        usage_cm = capture_decision_usage()
+        usage_sink = usage_cm.__enter__()
         try:
             timeout = float(timeout if timeout is not None else getattr(provider, 'timeout', 30))
             if not math.isfinite(timeout) or timeout <= 0:
@@ -213,8 +235,12 @@ class RoutedSystemOneClient:
         except Exception:
             error_code = "systemone_provider_failed"
         finally:
+            usage_cm.__exit__(None, None, None)
             elapsed_s = max(0.0, time.perf_counter() - started)
-            usage_obj = getattr(provider, "last_decision_usage", None) if completed else None
+            if completed:
+                usage_obj = usage_sink[-1] if usage_sink else getattr(provider, "last_decision_usage", None)
+            else:
+                usage_obj = None
             if not tone:
                 self.last_context_budget = budget
                 self.last_usage = usage_obj
@@ -242,6 +268,7 @@ class RoutedSystemOneClient:
                         ok=completed and error_code is None,
                         error_type="" if (completed and error_code is None) else str(error_code or "decision_failed"),
                         model=model_name,
+                        group_id=resolved_group_id,
                     )
             except Exception:
                 pass

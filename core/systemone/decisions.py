@@ -19,6 +19,7 @@ from astrbot.core.provider.register import (
 from .client import SystemOneError, endpoint_url, request_json, validate_answers
 from .provider import DEFAULT_CONFIG as SYSTEMONE_CONFIG
 from .provider import SystemOneProvider
+from .usage_context import capture_decision_usage, record_decision_usage
 
 PROVIDER_TYPE = "openai_decisions"
 DEFAULT_CONFIG = {
@@ -219,8 +220,9 @@ class OpenAIDecisionsProvider(SystemOneProvider):
         return models
 
     async def text_chat(self, prompt=None, contexts=None, model=None, **kwargs):
-        response = await super().text_chat(prompt=prompt, contexts=contexts, model=model, **kwargs)
-        usage = self.last_decision_usage or {}
+        with capture_decision_usage() as usage_sink:
+            response = await super().text_chat(prompt=prompt, contexts=contexts, model=model, **kwargs)
+        usage = (usage_sink[-1] if usage_sink else self.last_decision_usage) or {}
         input_tokens, cached, output = (usage.get(name) for name in
                                        ("input_tokens", "cached_tokens", "output_tokens"))
         if (all(type(value) is int for value in (input_tokens, cached, output))
@@ -230,7 +232,6 @@ class OpenAIDecisionsProvider(SystemOneProvider):
         return response
 
     async def systemone_evaluate(self, *, state, questions, timeout=None, model=None):
-        self.last_decision_usage = None
         normalized = self._validated_questions(state=state, questions=questions)
         sent = convert_questions(normalized)
         json_data = {"state": state} if isinstance(state, list) else state
@@ -252,21 +253,26 @@ class OpenAIDecisionsProvider(SystemOneProvider):
         limit = self.timeout if timeout is None else min(self.timeout, float(timeout))
         if not math.isfinite(limit) or limit <= 0:
             raise SystemOneError("决策超时无效。", code="timeout")
-        envelope = await request_json(
-            "POST",
-            endpoint_url(
-                self.provider_config.get("api_base", ""),
-                self.provider_config.get("decision_path", "/v1/decisions"),
-            ),
-            key=self.get_current_key(),
-            headers=self.request_headers,
-            timeout=limit,
-            payload=payload,
-            max_body=256 * 1024,
-            client=self._http,
-        )
-        self.last_decision_usage = reported_usage(envelope)
-        return convert_answers(envelope, normalized, sent)
+        try:
+            envelope = await request_json(
+                "POST",
+                endpoint_url(
+                    self.provider_config.get("api_base", ""),
+                    self.provider_config.get("decision_path", "/v1/decisions"),
+                ),
+                key=self.get_current_key(),
+                headers=self.request_headers,
+                timeout=limit,
+                payload=payload,
+                max_body=256 * 1024,
+                client=self._http,
+            )
+            answers = convert_answers(envelope, normalized, sent)
+        except Exception:
+            record_decision_usage(self, None)
+            raise
+        record_decision_usage(self, reported_usage(envelope))
+        return answers
 
 
 def register_adapter():

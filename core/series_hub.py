@@ -44,6 +44,13 @@ _MATRIX_CACHE_MAX_ENTRIES = 64
 
 _SEARCH_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _SEARCH_EXECUTOR_LOCK = threading.Lock()
+_SYNC_SEARCH_GUARD_LOCK = threading.Lock()
+_SYNC_SEARCH_INFLIGHT: dict[tuple[int, str], int] = {}
+_SYNC_SEARCH_COOLDOWN_UNTIL: dict[tuple[int, str], float] = {}
+_SYNC_SEARCH_MAX_INFLIGHT_PER_PLUGIN = 1
+_SYNC_SEARCH_TIMEOUT_COOLDOWN_SECONDS = 5.0
+_SEARCH_MAX_CONCURRENT_FANOUTS = 4
+_SEARCH_SEMAPHORES: dict[int, asyncio.Semaphore] = {}
 _MATRIX_CACHE_LOCK = threading.Lock()
 _MATRIX_CACHE: dict[tuple[int, str, str, str, int], tuple[float, dict[str, Any]]] = {}
 _PRESENCE_SENTINEL_KEY = ("__series_matrix_cache_sentinel__", 0)
@@ -1173,6 +1180,51 @@ def _sanitize_search_item(raw: Any, *, fallback_plugin_id: str, fallback_page: s
     }
 
 
+def _search_semaphore_for_loop(loop: asyncio.AbstractEventLoop) -> asyncio.Semaphore:
+    lid = id(loop)
+    sem = _SEARCH_SEMAPHORES.get(lid)
+    if sem is None:
+        if len(_SEARCH_SEMAPHORES) > 16:
+            _SEARCH_SEMAPHORES.clear()
+        sem = asyncio.Semaphore(_SEARCH_MAX_CONCURRENT_FANOUTS)
+        _SEARCH_SEMAPHORES[lid] = sem
+    return sem
+
+
+def _mark_sync_search_timeout(guard_key: tuple[int, str]) -> None:
+    now = time.monotonic()
+    with _SYNC_SEARCH_GUARD_LOCK:
+        if len(_SYNC_SEARCH_COOLDOWN_UNTIL) > 128:
+            expired = [k for k, ts in _SYNC_SEARCH_COOLDOWN_UNTIL.items() if ts <= now]
+            for k in expired:
+                _SYNC_SEARCH_COOLDOWN_UNTIL.pop(k, None)
+        _SYNC_SEARCH_COOLDOWN_UNTIL[guard_key] = now + _SYNC_SEARCH_TIMEOUT_COOLDOWN_SECONDS
+
+
+def _try_acquire_sync_search_slot(guard_key: tuple[int, str]) -> bool:
+    now = time.monotonic()
+    with _SYNC_SEARCH_GUARD_LOCK:
+        cooldown_until = _SYNC_SEARCH_COOLDOWN_UNTIL.get(guard_key, 0.0)
+        if cooldown_until > now:
+            return False
+        if cooldown_until:
+            _SYNC_SEARCH_COOLDOWN_UNTIL.pop(guard_key, None)
+        inflight = _SYNC_SEARCH_INFLIGHT.get(guard_key, 0)
+        if inflight >= _SYNC_SEARCH_MAX_INFLIGHT_PER_PLUGIN:
+            return False
+        _SYNC_SEARCH_INFLIGHT[guard_key] = inflight + 1
+        return True
+
+
+def _release_sync_search_slot(guard_key: tuple[int, str]) -> None:
+    with _SYNC_SEARCH_GUARD_LOCK:
+        remaining = _SYNC_SEARCH_INFLIGHT.get(guard_key, 0) - 1
+        if remaining > 0:
+            _SYNC_SEARCH_INFLIGHT[guard_key] = remaining
+        else:
+            _SYNC_SEARCH_INFLIGHT.pop(guard_key, None)
+
+
 async def _run_search_hook(
     hook: Any,
     query: str,
@@ -1180,16 +1232,34 @@ async def _run_search_hook(
     limit: int,
     *,
     loop: asyncio.AbstractEventLoop,
+    guard_key: tuple[int, str] | None = None,
 ) -> Any:
     if inspect.iscoroutinefunction(hook):
         return await hook(query, scope, limit)
-    result = await loop.run_in_executor(
-        _get_search_executor(),
-        hook,
-        query,
-        scope,
-        limit,
-    )
+
+    released = False
+
+    def _release_once() -> None:
+        nonlocal released
+        if not released and guard_key is not None:
+            released = True
+            _release_sync_search_slot(guard_key)
+
+    def _run_guarded() -> Any:
+        try:
+            return hook(query, scope, limit)
+        finally:
+            _release_once()
+
+    try:
+        fut = loop.run_in_executor(
+            _get_search_executor(),
+            _run_guarded,
+        )
+    except Exception:
+        _release_once()
+        raise
+    result = await fut
     if inspect.isawaitable(result):
         return await result
     return result
@@ -1222,45 +1292,79 @@ async def federated_series_search(
 
     context = getattr(plugin, "context", None)
     loop = asyncio.get_running_loop()
-    items: list[dict[str, Any]] = []
-    timed_out: list[str] = []
-    tasks: dict[asyncio.Task[Any], tuple[str, str]] = {}
-    plugin_order: list[tuple[asyncio.Task[Any], str, str]] = []
+    sem = _search_semaphore_for_loop(loop)
+    acquired = False
+    try:
+        remaining_sem = max(0.01, deadline - time.monotonic())
+        await asyncio.wait_for(sem.acquire(), timeout=remaining_sem)
+        acquired = True
+    except asyncio.TimeoutError:
+        return {
+            "query": clean_query,
+            "scope": clean_scope,
+            "items": [],
+            "timed_out_plugins": [pid for pid, _, _, _ in CORE_SERIES_PLUGINS],
+            "elapsed_ms": int(round((time.monotonic() - started) * 1000)),
+        }
 
-    for pid, _label, _mark, page in CORE_SERIES_PLUGINS:
-        owner = plugin if pid == CHAT_DYNAMICS_ID else series_panels.find_plugin_owner(context, pid)
-        if owner is None:
-            continue
-        hook = getattr(owner, "series_search_items", None)
-        if not callable(hook):
-            continue
-        task = asyncio.create_task(
-            _run_search_hook(hook, clean_query, clean_scope, per_plugin_limit, loop=loop)
-        )
-        tasks[task] = (pid, page)
-        plugin_order.append((task, pid, page))
+    try:
+        items: list[dict[str, Any]] = []
+        timed_out: list[str] = []
+        tasks: dict[asyncio.Task[Any], tuple[str, str, tuple[int, str] | None]] = {}
+        plugin_order: list[tuple[asyncio.Task[Any], str, str]] = []
 
-    if tasks:
-        remaining = max(0.01, deadline - time.monotonic())
-        done, pending = await asyncio.wait(tasks.keys(), timeout=remaining)
-        for task, pid, page in plugin_order:
-            if task not in done:
+        for pid, _label, _mark, page in CORE_SERIES_PLUGINS:
+            owner = plugin if pid == CHAT_DYNAMICS_ID else series_panels.find_plugin_owner(context, pid)
+            if owner is None:
                 continue
-            try:
-                raw_result = task.result()
-            except Exception:
+            hook = getattr(owner, "series_search_items", None)
+            if not callable(hook):
                 continue
-            if isinstance(raw_result, (list, tuple)):
-                for entry in raw_result[:per_plugin_limit]:
-                    sanitized = _sanitize_search_item(entry, fallback_plugin_id=pid, fallback_page=page)
-                    if sanitized is not None:
-                        items.append(sanitized)
-        for task in pending:
-            pid, _page = tasks[task]
-            timed_out.append(pid)
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            guard_key: tuple[int, str] | None = None
+            if not inspect.iscoroutinefunction(hook):
+                guard_key = (id(owner), pid)
+                if not _try_acquire_sync_search_slot(guard_key):
+                    timed_out.append(pid)
+                    continue
+            task = asyncio.create_task(
+                _run_search_hook(
+                    hook,
+                    clean_query,
+                    clean_scope,
+                    per_plugin_limit,
+                    loop=loop,
+                    guard_key=guard_key,
+                )
+            )
+            tasks[task] = (pid, page, guard_key)
+            plugin_order.append((task, pid, page))
+
+        if tasks:
+            remaining = max(0.01, deadline - time.monotonic())
+            done, pending = await asyncio.wait(tasks.keys(), timeout=remaining)
+            for task, pid, page in plugin_order:
+                if task not in done:
+                    continue
+                try:
+                    raw_result = task.result()
+                except Exception:
+                    continue
+                if isinstance(raw_result, (list, tuple)):
+                    for entry in raw_result[:per_plugin_limit]:
+                        sanitized = _sanitize_search_item(entry, fallback_plugin_id=pid, fallback_page=page)
+                        if sanitized is not None:
+                            items.append(sanitized)
+            for task in pending:
+                pid, _page, guard_key = tasks[task]
+                timed_out.append(pid)
+                if guard_key is not None:
+                    _mark_sync_search_timeout(guard_key)
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+    finally:
+        if acquired:
+            sem.release()
 
     # Deduplicate by (plugin_id, kind, title, subtitle) preserving order
     deduped: list[dict[str, Any]] = []

@@ -417,7 +417,7 @@ def assemble_reply_prompts(
         if not internal:
             if plan is None:
                 available_modes = "text|poke|poke_text|silent" if poke_supported else "text|silent"
-                stable.append(f"本轮可选回应方式：{available_modes}。")
+                turn.append(f"本轮可选回应方式：{available_modes}。")
             else:
                 has_candidates = bool(getattr(plan, "candidates", ()))
                 if has_candidates and not supports_actions:

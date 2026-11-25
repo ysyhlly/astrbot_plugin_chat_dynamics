@@ -621,13 +621,16 @@ def test_assemble_reply_prompts_7_mode_matrix():
             tools=(),
         )
 
-    # 1. plan=None, poke_supported=False
-    sys1, _ = _assemble(poke_supported=False)
-    assert "本轮可选回应方式：text|silent。" in sys1
+    # 1. plan=None, poke_supported=False -> mode hint lives in volatile turn note (preserves system_prompt cache)
+    sys1, turn1 = _assemble(poke_supported=False)
+    assert "本轮可选回应方式：text|silent。" in turn1
+    assert "本轮可选回应方式：" not in sys1
 
-    # 2. plan=None, poke_supported=True
-    sys2, _ = _assemble(poke_supported=True)
-    assert "本轮可选回应方式：text|poke|poke_text|silent。" in sys2
+    # 2. plan=None, poke_supported=True -> system_prompt remains byte-identical across poke_supported flip
+    sys2, turn2 = _assemble(poke_supported=True)
+    assert "本轮可选回应方式：text|poke|poke_text|silent。" in turn2
+    assert "本轮可选回应方式：" not in sys2
+    assert sys1 == sys2
     assert "poke_target_uid" in sys2
 
     # 3. 3-tuple visual_media policy WITH candidates & _reply_actions_v1=True + poke_supported=True

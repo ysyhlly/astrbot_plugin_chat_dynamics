@@ -172,9 +172,10 @@ async def review(host, event, turn, state, answers, client, stamp, deadline, flo
                  "speaker_intent": _MEANING, "consequence": _CONSEQUENCE}
     result["calls"] = 1
     try:
+        tone_kwargs = {"group_id": turn.session_key} if getattr(client, "is_systemone_router", False) else {}
         direct = await asyncio.wait_for(
             client.evaluate_tone(state=_transcript(rows, turn, {**current, "words": spoken}), questions=questions,
-                                 timeout=timeout, selection=stamp), timeout=timeout,
+                                 timeout=timeout, selection=stamp, **tone_kwargs), timeout=timeout,
         )
     except asyncio.CancelledError:
         raise

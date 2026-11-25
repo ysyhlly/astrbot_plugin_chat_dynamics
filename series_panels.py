@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import inspect
 import math
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -136,6 +136,10 @@ def bump_presence_epoch(context=None) -> int:
     return next_epoch
 
 
+_PRESENCE_RESPONSE_TTL_SECONDS = 5.0
+_PRESENCE_RESPONSE_CACHE: dict[tuple[int, str, int], tuple[float, dict[str, object]]] = {}
+
+
 def invalidate_presence_cache(plugin_id: str | None = None, *, context=None) -> None:
     """Drop cached get_series_summary() entries and bump the shared cross-plugin epoch."""
     with _SUMMARY_CACHE_LOCK:
@@ -144,6 +148,7 @@ def invalidate_presence_cache(plugin_id: str | None = None, *, context=None) -> 
         else:
             for key in [k for k in _SUMMARY_CACHE if k[0] == plugin_id]:
                 _SUMMARY_CACHE.pop(key, None)
+        _PRESENCE_RESPONSE_CACHE.clear()
     bump_presence_epoch(context)
 
 
@@ -1181,24 +1186,78 @@ def presence(context, current, root=None, *, force_refresh: bool = False):
     }
 
 
-def _installed_commit(root: Path) -> str:
-    try:
-        metadata = (root / "metadata.yaml").read_text(encoding="utf-8-sig")
-        match = re.search(
-            r"^# source-commit: ([0-9a-f]{40}|[0-9a-f]{64})$", metadata, re.MULTILINE
-        )
-        if match:
-            return match.group(1)[:12]
-        if (root / ".git").exists():
-            revision = subprocess.check_output(
-                ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-                text=True,
-            ).strip()
+def _resolve_git_dir(root: Path) -> Path | None:
+    dot_git = root / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():
+        first_line = dot_git.read_text(encoding="utf-8", errors="replace").splitlines()
+        if first_line and first_line[0].startswith("gitdir:"):
+            raw = first_line[0].split(":", 1)[1].strip()
+            if raw:
+                target = Path(raw)
+                return target if target.is_absolute() else (root / target).resolve()
+    return None
+
+
+def _read_git_head_commit(root: Path) -> str:
+    """Read HEAD commit SHA directly from .git files without spawning a git subprocess."""
+    git_dir = _resolve_git_dir(root)
+    if git_dir is None:
+        return ""
+    head_file = git_dir / "HEAD"
+    if not head_file.is_file():
+        return ""
+    head = head_file.read_text(encoding="utf-8", errors="replace").strip()
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+        return head[:12]
+    if not head.startswith("ref:"):
+        return ""
+    ref_name = head.split(":", 1)[1].strip()
+    if not ref_name or ".." in Path(ref_name).parts:
+        return ""
+    search_dirs = [git_dir]
+    commondir_file = git_dir / "commondir"
+    if commondir_file.is_file():
+        raw_common = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+        if raw_common:
+            common_path = Path(raw_common)
+            search_dirs.append(
+                common_path if common_path.is_absolute() else (git_dir / common_path).resolve()
+            )
+    for base in search_dirs:
+        ref_path = base / ref_name
+        if ref_path.is_file():
+            revision = ref_path.read_text(encoding="utf-8", errors="replace").strip()
             if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
                 return revision[:12]
-    except (OSError, UnicodeError, subprocess.SubprocessError):
+    for base in search_dirs:
+        packed = base / "packed-refs"
+        if not packed.is_file():
+            continue
+        for line in packed.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line or line.startswith(("#", "^")):
+                continue
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and parts[1].strip() == ref_name:
+                revision = parts[0].strip()
+                if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+                    return revision[:12]
+    return ""
+
+
+def _installed_commit(root: Path) -> str:
+    try:
+        metadata_path = root / "metadata.yaml"
+        if metadata_path.is_file():
+            metadata = metadata_path.read_text(encoding="utf-8-sig")
+            match = re.search(
+                r"^# source-commit: ([0-9a-f]{40}|[0-9a-f]{64})$", metadata, re.MULTILINE
+            )
+            if match:
+                return match.group(1)[:12]
+        return _read_git_head_commit(root)
+    except (OSError, UnicodeError):
         pass
     return ""
 
@@ -1475,14 +1534,38 @@ class SeriesPanels:
             }
             if refresh_flag:
                 invalidate_presence_cache(context=self.owner.context)
-            return _web_json_response(
-                {
-                    "status": "ok",
-                    "data": presence(
-                        self.owner.context, self.identity, force_refresh=refresh_flag
-                    ),
-                }
-            )
+            ctx = self.owner.context
+            epoch = get_presence_epoch(ctx)
+            cache_key = (id(ctx), self.identity, epoch)
+            now = time.monotonic()
+            data = None
+            if not refresh_flag and _PRESENCE_RESPONSE_TTL_SECONDS > 0:
+                with _SUMMARY_CACHE_LOCK:
+                    cached = _PRESENCE_RESPONSE_CACHE.get(cache_key)
+                    if cached is not None and cached[0] > now:
+                        data = cached[1]
+            if data is None:
+                data = await asyncio.to_thread(
+                    presence, ctx, self.identity, force_refresh=refresh_flag
+                )
+                if _PRESENCE_RESPONSE_TTL_SECONDS > 0:
+                    post_epoch = get_presence_epoch(ctx)
+                    with _SUMMARY_CACHE_LOCK:
+                        if len(_PRESENCE_RESPONSE_CACHE) > 32:
+                            expired = [
+                                k
+                                for k, entry in _PRESENCE_RESPONSE_CACHE.items()
+                                if entry[0] <= now
+                            ]
+                            for k in expired:
+                                _PRESENCE_RESPONSE_CACHE.pop(k, None)
+                            if len(_PRESENCE_RESPONSE_CACHE) > 32:
+                                _PRESENCE_RESPONSE_CACHE.clear()
+                        _PRESENCE_RESPONSE_CACHE[(id(ctx), self.identity, post_epoch)] = (
+                            time.monotonic() + _PRESENCE_RESPONSE_TTL_SECONDS,
+                            data,
+                        )
+            return _web_json_response({"status": "ok", "data": data})
         except PermissionError:
             return _web_json_response(
                 {"status": "error", "message": "需要 Dashboard 管理员登录"},

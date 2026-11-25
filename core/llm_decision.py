@@ -35,11 +35,29 @@ Respect the question rubrics independently: uncertainty about style must not for
 The caller enforces actual mentions, privacy, stop and delivery rules independently."""
 
 
-_DYNAMIC_QUESTION_KEYS = frozenset({"target", "topic"})
+_STATIC_QUESTION_KEYS = frozenset({"completion", "join", "action", "state", "length", "reason"})
+_DYNAMIC_QUESTION_KEYS = frozenset(
+    {
+        "target",
+        "topic",
+        "recipient",
+        "continuity",
+        "impact",
+        "context_need",
+        "turn_update",
+        "communication_intent",
+        "expression_mode",
+        "interaction_frame",
+    }
+)
 
 
 def _is_dynamic_question(question_id: str) -> bool:
-    return question_id in _DYNAMIC_QUESTION_KEYS or question_id.startswith(ADDRESSEE_PREFIX)
+    return (
+        question_id in _DYNAMIC_QUESTION_KEYS
+        or question_id.startswith(ADDRESSEE_PREFIX)
+        or question_id not in _STATIC_QUESTION_KEYS
+    )
 
 
 def split_decision_payload(state: dict, questions: dict) -> tuple[str, str]:
@@ -200,7 +218,11 @@ class LLMDecisionClient:
                 )
 
             output = await adapter.provider_budget.run(
-                provider_id, 'routing', invoke, plugin_id="astrbot_plugin_chat_dynamics"
+                provider_id,
+                'routing',
+                invoke,
+                plugin_id="astrbot_plugin_chat_dynamics",
+                group_id=str(umo or ""),
             )
             if not self._current(identity):
                 return None

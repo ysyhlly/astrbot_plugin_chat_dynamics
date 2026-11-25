@@ -89,7 +89,7 @@ def _check_schema(root: Path) -> list[str]:
     for key in ("shadow_mode", "console_show_message_content"):
         if schema.get(key, {}).get("default") is not False:
             errors.append(f"{key} must default to false")
-    retired = {"decision_backend", "decision_mode", "vibe_provider", "vibe_llm_enabled", "learning_policy_mode", "decision_learning_mode"}
+    retired = {"decision_backend", "decision_mode", "vibe_llm_enabled", "learning_policy_mode", "decision_learning_mode"}
     if retired.intersection(schema):
         errors.append("retired runtime configuration must not be exposed")
     errors.extend(check_prompt_defaults(root, schema))

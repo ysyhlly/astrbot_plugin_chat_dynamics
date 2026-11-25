@@ -150,6 +150,7 @@ class ConfigPanel:
             "takeover_groups": sorted(getattr(cfg, "takeover_groups", ()) or ()),
             "exclude_groups": sorted(getattr(cfg, "exclude_groups", ()) or ()),
             "reply_provider": getattr(cfg, "reply_provider_id", ""),
+            "vibe_provider": getattr(cfg, "vibe_provider_id", ""),
             "parent_window_seconds": getattr(cfg, "parent_window_seconds", 180.0),
             "parent_accept_threshold": getattr(cfg, "parent_accept_threshold", 0.72),
             "bot_names": list(getattr(cfg, "bot_names", ()) or ()),
@@ -185,6 +186,8 @@ class ConfigPanel:
             "narrative_outreach_enabled": getattr(cfg, "narrative_outreach_enabled", False),
             "narrative_outreach_sessions": sorted(getattr(cfg, "narrative_outreach_sessions", ())),
             "narrative_context_retention_days": getattr(cfg, "narrative_context_retention_days", 7),
+            "narrative_archive_retention_days": getattr(cfg, "narrative_archive_retention_days", 30),
+            "narrative_dead_letter_ttl_days": getattr(cfg, "narrative_dead_letter_ttl_days", 7),
             "social_manners_enabled": bool(getattr(cfg, "social_manners_enabled", True)),
             "relay_baton_enabled": bool(getattr(cfg, "relay_baton_enabled", True)),
             "private_chat_enabled": bool(getattr(cfg, "private_chat_enabled", False)),
@@ -404,7 +407,13 @@ class ConfigPanel:
             provider = getter(updates['discussion_reranker_provider']) if callable(getter) else None
             if not callable(getattr(provider, 'rerank', None)):
                 raise ValueError('discussion_reranker_provider：请选择已加载的原生重排序模型服务。')
-        text_keys = {"reply_provider", "topic_reranker_provider", "discussion_llm_provider", "decision_llm_provider"}
+        text_keys = {
+            "reply_provider",
+            "vibe_provider",
+            "topic_reranker_provider",
+            "discussion_llm_provider",
+            "decision_llm_provider",
+        }
         for key in text_keys.intersection(updates):
             provider = getter(updates[key]) if callable(getter) and updates[key] else None
             if is_decision_provider(provider):

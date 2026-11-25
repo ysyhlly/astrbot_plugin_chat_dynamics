@@ -9,6 +9,7 @@ import inspect
 import json
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -678,6 +679,39 @@ class AstrBotAgentBridge:
     def __init__(self, context: Any):
         self.context = context
         self.diagnostic = "not_checked"
+        self._media_maintenance_tasks: set[asyncio.Task[Any]] = set()
+
+    def _schedule_media_touch(self, archive: Any, umo: str, cid: str, history: Any) -> None:
+        if isinstance(history, list):
+            history_snapshot: Any = list(history)
+        elif isinstance(history, dict):
+            history_snapshot = dict(history)
+        else:
+            history_snapshot = history
+
+        async def _run() -> None:
+            try:
+                await asyncio.to_thread(archive.touch, umo, cid, history=history_snapshot)
+            except Exception:
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                archive.touch(umo, cid, history=history_snapshot)
+            except Exception:
+                pass
+            return
+        tasks = getattr(self, "_media_maintenance_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._media_maintenance_tasks = tasks
+        if len(tasks) >= 16:
+            return
+        task = loop.create_task(_run())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     def check(self) -> bool:
         try:
@@ -703,10 +737,25 @@ class AstrBotAgentBridge:
         self.diagnostic = "ready"
         return True
 
-    def session_lock(self, umo: str):
+    def session_lock(self, umo: str, *, acquire_timeout: float | None = None):
         from astrbot.core.utils.session_lock import session_lock_manager
 
-        return session_lock_manager.acquire_lock(umo)
+        if acquire_timeout is None:
+            return session_lock_manager.acquire_lock(umo)
+
+        @asynccontextmanager
+        async def _bounded_lock():
+            cm = session_lock_manager.acquire_lock(umo)
+            entered = False
+            try:
+                await asyncio.wait_for(cm.__aenter__(), timeout=float(acquire_timeout))
+                entered = True
+                yield
+            finally:
+                if entered:
+                    await cm.__aexit__(None, None, None)
+
+        return _bounded_lock()
 
     async def snapshot(self, event: Any, *, record_media: bool = True) -> PersonaSnapshot:
         from astrbot.core import sp
@@ -717,7 +766,7 @@ class AstrBotAgentBridge:
         conv = await mgr.get_conversation(umo, cid) if cid else None
         archive = getattr(self, "media_archive", None)
         if record_media and archive is not None and conv is not None:
-            archive.touch(umo, cid, history=getattr(conv, "history", None))
+            self._schedule_media_touch(archive, umo, cid, getattr(conv, "history", None))
         settings = self.context.get_config(umo=umo).get("provider_settings", {})
         resolver = getattr(self.context.persona_manager, "resolve_selected_persona", None)
         if callable(resolver):
