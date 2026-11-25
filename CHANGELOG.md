@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.19.0-rc.11 — 2026-11-25
+
+- 安全加固（Batch 1）：全系列统一管理鉴权与 CSRF 防护，加固 Web API 权限与输入边界。
+- 数据与存储修复（Batch 2）：补齐 `narrative` 数据库索引、改为非阻塞 WAL checkpoint，并封堵存储保留策略缺口。
+- 性能与调度优化（Batch 3）：修复边界取消与 `afterthought` 锁竞争，优化前缀缓存与 `ProviderBudget` 队列隔离。
+- 工程与发布治理（Batch 4）：升级跨仓资产同步脚本、全系列 CI 门禁与面板冲突防护。
+
 ## v1.19.0-rc.10 — 2026-11-24
 
 - 升级全系列共享 `ProviderBudget` 与 `series_panels.py`：`ProviderBudgetBusyError` 增加结构化 `retry_after`/`reason`，新增只读预检 `provider_circuit_remaining()`、半开单探针恢复，并排除本地边界/策略拒绝计入上游熔断。

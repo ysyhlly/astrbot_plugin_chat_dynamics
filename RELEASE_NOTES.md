@@ -1,4 +1,11 @@
-# astrbot_plugin_chat_dynamics v1.19.0-rc.10
+# astrbot_plugin_chat_dynamics v1.19.0-rc.11
+
+## v1.19.0-rc.11 — 2026-11-25
+
+- 安全加固（Batch 1）：全系列统一管理鉴权与 CSRF 防护，加固 Web API 权限与输入边界。
+- 数据与存储修复（Batch 2）：补齐 `narrative` 数据库索引、改为非阻塞 WAL checkpoint，并封堵存储保留策略缺口。
+- 性能与调度优化（Batch 3）：修复边界取消与 `afterthought` 锁竞争，优化前缀缓存与 `ProviderBudget` 队列隔离。
+- 工程与发布治理（Batch 4）：升级跨仓资产同步脚本、全系列 CI 门禁与面板冲突防护。
 
 ## v1.19.0-rc.10 — 2026-11-24
 
