@@ -22,13 +22,14 @@ _ALLOWED_CITATION_KEYS = ("title", "creator", "bvid", "chapter_label")
 
 HORIZONS_DECISION_GUIDANCE = (
     "character_state.horizons 表示角色最近自主阅读或观看过的外部见闻话题与可选待聊问题（open_question）；"
-    "当本轮发言确实聊到相关话题，或群友主动询问角色最近在看什么、读什么时，可自然倾向接话分享；"
+    "当本轮发言确实聊到相关话题，或群友主动询问角色最近在看什么、读什么、有什么有趣或有意思的话题时，可自然倾向接话分享；"
     "若当前聊天与 horizons 无关，绝不强行把话题往见闻上引或借此抢话。"
 )
 
 HORIZONS_REPLY_GUIDANCE = (
-    'horizons（fact_kind="external_media"）是角色看过或读过的外部作品笔记，感悟只供参考。'
-    "先回应当前对话。契合时可用角色自己的话融入一个想法，别照抄笔记，也无需以‘刚看了’起头或跟着 questions 提问。"
+    'horizons（fact_kind="external_media"）是角色看过或读过的外部作品笔记与待讨论问题库（questions），感悟只供参考。'
+    "先回应当前对话。平时契合时可用角色自己的话融入一个想法，别照抄笔记，也无需以‘刚看了’起头或强行追问。"
+    "当群友主动询问最近有什么有趣/有意思的话题、想找点事聊、或在看什么读什么时，可直接从 horizons.questions 或近期见闻中挑 1-2 个自然展开；若当前上下文未附带见闻且可用 query_horizons_topics 工具，可主动调用查询问题库。"
     "保留角色原有性格。笔记里的类比、想象或打算不能当作角色已做过的事、既定承诺或群友的真实经历。"
     "转述作品观点或情节时交代其来自外部作品。digest 和 reflection 是摘要和感悟，不能当作作品原句引用。"
     "有人明确问读了什么或出处时，按阅读记录和 citation 中已核验的信息回答。"
@@ -589,6 +590,29 @@ def delivered(
             reply_message_ids.append(clean_id)
         if len(reply_message_ids) >= 64:
             break
+    merged_log_ids = [str(v)[:128] for v in sel.get("log_ids", ()) if str(v or "").strip()][:4]
+    merged_qids = [str(v)[:128] for v in sel.get("question_ids", ()) if str(v or "").strip()][:8]
+    merged_topics = [str(v)[:80] for v in sel.get("topics", ()) if str(v or "").strip()][:12]
+    tool_matched = False
+    for ev in getattr(item, "events", ()) or ():
+        tool_ctx = getattr(ev, "_horizons_tool_context_v1", None)
+        if not isinstance(tool_ctx, dict):
+            continue
+        for val in tool_ctx.get("log_ids", ()) or ():
+            s = str(val or "").strip()[:128]
+            if s and s not in merged_log_ids and len(merged_log_ids) < 4:
+                merged_log_ids.append(s)
+                tool_matched = True
+        for val in tool_ctx.get("question_ids", ()) or ():
+            s = str(val or "").strip()[:128]
+            if s and s not in merged_qids and len(merged_qids) < 8:
+                merged_qids.append(s)
+                tool_matched = True
+        for val in tool_ctx.get("topics", ()) or ():
+            s = str(val or "").strip()[:80]
+            if s and s not in merged_topics and len(merged_topics) < 12:
+                merged_topics.append(s)
+                tool_matched = True
     event_payload = {
         "schema_version": 1,
         "kind": "delivery.success",
@@ -609,11 +633,11 @@ def delivered(
             "delivered": True,
         },
         "reply_message_ids": reply_message_ids,
-        "matched": bool(sel.get("matched")),
+        "matched": bool(sel.get("matched") or tool_matched),
         "managed": True,
-        "log_ids": list(sel.get('log_ids',())),
-        "question_ids": list(sel.get("question_ids", ())),
-        "topics": list(sel.get("topics", ())),
+        "log_ids": merged_log_ids,
+        "question_ids": merged_qids,
+        "topics": merged_topics,
         "versions": list(sel.get("versions", ())),
         "timestamp": time.time(),
     }
