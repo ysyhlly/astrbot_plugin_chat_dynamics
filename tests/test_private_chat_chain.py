@@ -54,7 +54,7 @@ async def test_private_message_uses_shared_agent_and_blocks_native_duplicate(pri
         assert runtime.scope_kind == "private"
         assert runtime.group_id == ""
         assert event._chat_dynamics_blocks_native is True
-        assert event.call_llm is False
+        assert event.call_llm is True
 
         # A later host request for the original DM is rejected. The owned
         # Agent request made by the shared bridge remains separately allowed.

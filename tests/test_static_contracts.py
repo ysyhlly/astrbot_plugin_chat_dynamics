@@ -48,7 +48,9 @@ def _constants(tree: ast.Module) -> dict[str, str]:
 
 
 def _is_metadata(node: ast.AST) -> bool:
-    return (isinstance(node, ast.Name) and node.id == "metadata") or (
+    return (
+        isinstance(node, ast.Name) and node.id in {"metadata", "bot_metadata"}
+    ) or (
         isinstance(node, ast.Attribute) and node.attr == "metadata"
     )
 
