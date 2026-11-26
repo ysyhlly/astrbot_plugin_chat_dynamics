@@ -688,10 +688,19 @@ class AstrBotAgentBridge:
             history_snapshot = dict(history)
         else:
             history_snapshot = history
+        snap_generation = getattr(archive, "_generation", None)
+
+        def _do_touch() -> None:
+            try:
+                archive.touch(
+                    umo, cid, history=history_snapshot, before_generation=snap_generation
+                )
+            except TypeError:
+                archive.touch(umo, cid, history=history_snapshot)
 
         async def _run() -> None:
             try:
-                await asyncio.to_thread(archive.touch, umo, cid, history=history_snapshot)
+                await asyncio.to_thread(_do_touch)
             except Exception:
                 pass
 

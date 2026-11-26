@@ -173,7 +173,10 @@ async def _call_web_handler(
     from astrbot.api.web import PluginRequest, bind_request_context
     from starlette.requests import Request
 
-    headers_list: list[tuple[bytes, bytes]] = []
+    headers_list: list[tuple[bytes, bytes]] = [
+        (b"host", b"127.0.0.1:6185"),
+        (b"origin", b"http://127.0.0.1:6185"),
+    ]
     if json_body is not None:
         headers_list.append((b"content-type", b"application/json"))
         headers_list.append((b"content-length", str(len(raw_body)).encode("ascii")))
@@ -222,6 +225,14 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
     )
 
     await plugin.initialize()
+
+    async def _allow_admin(*_a, **_kw):
+        return True
+
+    async def _deny_admin(*_a, **_kw):
+        return False
+
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", _allow_admin)
     assert {(route.split("/series_workspace/")[1], tuple(methods))
             for route, _, methods, _ in context.routes if "/series_workspace/" in route} == {
         ("open/<target>", ("GET",)),
@@ -256,6 +267,8 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
         "replay",
         "topic_annotations",
         "series_presence",
+        "series_health",
+        "series_preflight",
         "series_matrix",
         "series_matrix_toggle",
         "series_matrix_batch",
@@ -337,6 +350,7 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
     )
 
     # 3) series_matrix_toggle: admin gate (403) + field validation (400) + conflict (409) + valid toggle (200)
+    monkeypatch.setattr(plugin._web, "_narrative_admin_allowed", _deny_admin)
     unauth_status, unauth_res = await _call_web_handler(
         toggle_handler,
         method="POST",

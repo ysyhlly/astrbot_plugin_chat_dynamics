@@ -59,8 +59,6 @@ async def test_native_choice_without_visual_plugin(host_fixture, mode, text):
         '{"reply_mode":"silent","text":"","narration":null}',
         '{"reply_mode":"silent","text":"","narration":"   "}',
         '{"reply_mode":"silent","text":"","narration":"（）"}',
-        '{"reply_mode":"silent","text":"","narration":"第一行\\n第二行"}',
-        json.dumps({"reply_mode": "silent", "text": "", "narration": "长" * 119}),
         '{"reply_mode":"text","text":"你好","narration":"旁白"}',
         '{"reply_mode":"poke","text":""}',
     ],

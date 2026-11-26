@@ -19,6 +19,7 @@ class MediaArchive:
         self.active = set()
         self._lock = threading.RLock()
         self._last_prune_at: float | None = None
+        self._generation = 0
 
     def _entries(self):
         if not self.root.exists():
@@ -88,14 +89,16 @@ class MediaArchive:
             owner = hashlib.sha256(str(session).encode()).hexdigest()
             if directory.parent != self.root / owner or directory not in self.active:
                 raise ValueError('attachment owner does not match conversation')
+            self._generation += 1
             atomic_write_json(directory / 'lease.json', {
                 'conversation_hash': hashlib.sha256(str(conversation_id).encode()).hexdigest(),
                 'expires_at': self.now() + self.ttl,
+                'retained_generation': self._generation,
             })
             cleanup.detach()
             self.active.discard(directory)
 
-    def touch(self, session, conversation_id, *, history=None):
+    def touch(self, session, conversation_id, *, history=None, before_generation=None):
         """Refresh referenced conversation leases without touching other sessions."""
         with self._lock:
             owner = self.root / hashlib.sha256(str(session).encode()).hexdigest()
@@ -116,7 +119,14 @@ class MediaArchive:
                     if data.get('conversation_hash') == digest and float(data['expires_at']) > self.now():
                         # The immutable directory UUID survives JSON/URI escaping
                         # of Unicode or Windows path prefixes in tool arguments.
+                        retained_gen = data.get('retained_generation')
+                        retained_after_snapshot = (
+                            before_generation is not None
+                            and retained_gen is not None
+                            and int(retained_gen) > int(before_generation)
+                        )
                         if (referenced is not None and directory not in self.active
+                                and not retained_after_snapshot
                                 and directory.name not in referenced):
                             self.release(directory)
                             continue
