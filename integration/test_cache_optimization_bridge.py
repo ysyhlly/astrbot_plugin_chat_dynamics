@@ -390,7 +390,7 @@ async def test_legacy_visual_media_without_static_flag_gets_full_fallback(host_f
     await bridge.generate(event, (event,), p1, persona, "provider")
     system = _extract_system(calls[0])
     assert "[已开启的视觉表达权限]" in system
-    assert "本轮回应方式" in system
+    assert "[回应方式协议]" in system
     assert "发送表情只能用本轮附带的候选" in system
 
 

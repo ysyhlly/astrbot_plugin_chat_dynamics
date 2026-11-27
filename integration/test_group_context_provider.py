@@ -28,7 +28,7 @@ async def test_group_events_and_topic_constraints_reach_real_provider(host_fixtu
                              for call in calls], ensure_ascii=False)
     assert 'member_joined' in serialized and '12345' in serialized
     assert '预算只有500元' in serialized and '必须离线运行' in serialized
-    assert 'not necessarily that newcomer' in serialized
+    assert '群事件中的 member_joined 才是新人' in serialized
 
 
 @pytest.mark.asyncio

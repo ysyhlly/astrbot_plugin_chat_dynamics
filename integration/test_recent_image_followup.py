@@ -60,7 +60,7 @@ async def test_silent_image_reaches_next_text_reply_without_becoming_current_req
         assert [m["message_id"] for m in payload["conversation"]["messages"]] == ["followup"]
         assert payload["recent_image_context"][0]["source_message_id"] == "picture"
         assert payload["response_plan"]["action"] == "acknowledge"
-        assert "without turning it into a request for identification" in json.dumps(messages, ensure_ascii=False)
+        assert "[群聊基本约定]" in json.dumps(messages, ensure_ascii=False)
         saved = json.loads(ctx.conv.history)
         assert any(
             "Earlier same-speaker image context" in json.dumps(row) and "picture" in json.dumps(row)

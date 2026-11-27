@@ -164,7 +164,6 @@ async def test_real_builder_preserves_persona_history_tools_and_delayed_commit(h
 
 @pytest.mark.asyncio
 async def test_real_builder_keeps_same_name_qq_members_distinct_in_history(host_fixture):
-    from astrbot_plugin_chat_dynamics.core.member_identity import IDENTITY_INSTRUCTIONS
     from astrbot_plugin_chat_dynamics.core.turn_decision import MessageSnapshot, TurnContext, TurnDecision, reply_prompt
 
     ctx, event, calls = host_fixture
@@ -184,7 +183,7 @@ async def test_real_builder_keeps_same_name_qq_members_distinct_in_history(host_
         assert await bridge.commit(event, output, "已送达回复")
     assert len(calls) == 2
     second_context = [m if isinstance(m, dict) else m.model_dump() for m in calls[-1]["contexts"]]
-    assert IDENTITY_INSTRUCTIONS in second_context[0]["content"]
+    assert "分清谁在说话、谁被引用" in second_context[0]["content"]
     second_json = json.dumps(second_context, ensure_ascii=False)
     assert "111001" in second_json and "222002" in second_json
     user_texts = []
@@ -214,7 +213,7 @@ async def test_real_builder_forwards_custom_reply_guidance_with_persona(host_fix
     await bridge.generate(event, (event,), prompt, await bridge.snapshot(event), "provider")
     messages = [m if isinstance(m, dict) else m.model_dump() for m in calls[0]["contexts"]]
     assert "克制但可靠" in messages[0]["content"]
-    assert "Follow reply_guidance" in messages[0]["content"]
+    assert "[风格偏好]" in messages[0]["content"]
     assert any("先分享做饭经验" in str(m["content"]) for m in messages)
     assert not event.sent and not ctx.saved
 

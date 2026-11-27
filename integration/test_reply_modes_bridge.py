@@ -40,8 +40,8 @@ async def test_native_choice_without_visual_plugin(host_fixture, mode, text):
     assert out.requested_reply_mode == mode
     assert out.narration == ("（安安暂时没有回应。）" if mode == "silent" else "")
     assert len(calls) == 1 and not event.sent and not ctx.saved
-    assert "本轮回应方式" in str(calls[0])
-    assert "只有当前回合因明确 @ 机器人而触发强制回应时" in str(calls[0])
+    assert "[回应方式协议]" in str(calls[0])
+    assert "仅在被明确 @ 触发强制回应时才会对外发出该旁白，其余场景完全静默" in str(calls[0])
     partial.assert_not_awaited()
     assert not out.stream_prefix and out.completion_task is None
 
