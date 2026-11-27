@@ -15,6 +15,8 @@
   "pages.memory.desc": "纪念日、约定与试用梗；忘掉或今晚别提。",
   "pages.replay.title": "场景回放",
   "pages.replay.desc": "色块时间轨回顾为什么开口 / 为什么安静；默认无明文，可顺手调分寸。",
+  "pages.learning.title": "决策模型",
+  "pages.learning.desc": "查看 Jev 或普通 LLM 决策连接、调用次数、耗时与历史样本只读导出。",
   "pages.app.title": "群间 · Chat Dynamics",
   "pages.app.desc": "统一管理设置、控制台、决策模型、记忆与场景回放。"
 }

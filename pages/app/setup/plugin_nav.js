@@ -222,13 +222,27 @@ export function mountPluginSideNav(currentId) {
   if (!root) return;
 
   const current = String(currentId || "");
-  root.innerHTML = PLUGIN_PAGES.map((page) => {
+  const renderPageItem = (page) => {
     const label = `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[page.id]}</svg><span data-series-text="${escapeHtml(page.label)}">${escapeHtml(page.label)}</span>`;
     if (page.id === current) {
       return `<span class="plugin-side-item is-current" aria-current="page">${label}</span>`;
     }
     return `<button type="button" class="plugin-side-item" data-nav-page="${escapeHtml(page.id)}">${label}</button>`;
-  }).join("");
+  };
+
+  const primaryPages = PLUGIN_PAGES.filter((page) => !page.legacy);
+  const legacyPages = PLUGIN_PAGES.filter((page) => Boolean(page.legacy));
+  const legacyCurrent = legacyPages.some((page) => page.id === current);
+
+  const primaryHtml = primaryPages.map(renderPageItem).join("");
+  const legacyHtml = legacyPages.length
+    ? `<details class="plugin-nav-more" id="pluginNavMore"${legacyCurrent ? " open" : ""}>` +
+      `<summary class="plugin-side-item plugin-nav-more-summary" data-series-text="更多与运维">更多与运维</summary>` +
+      `<div class="plugin-nav-more-menu">${legacyPages.map(renderPageItem).join("")}</div>` +
+      `</details>`
+    : "";
+
+  root.innerHTML = primaryHtml + legacyHtml;
 
   root.querySelectorAll("[data-nav-page]").forEach((btn) => {
     btn.addEventListener("click", (event) => {

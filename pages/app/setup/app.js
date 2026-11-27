@@ -1292,6 +1292,21 @@ function renderStyleCards() {
     }
 
     btn.append(head, desc, params);
+    if (!card.isKeepCustom && card.values && state.initialDraft) {
+      const diffs = [];
+      for (const key of STYLE_KEYS) {
+        const before = state.initialDraft[key];
+        const after = card.values[key];
+        if (!valuesEqual(key, before, after)) {
+          const label = FIELD_LABELS[key] || key;
+          diffs.push(`${label}: ${formatSettingValue(key, before)} → ${formatSettingValue(key, after)}`);
+        }
+      }
+      const diffEl = document.createElement("p");
+      diffEl.className = "ops-note style-card-diff";
+      diffEl.textContent = diffs.length ? `变更预览：${diffs.join(" · ")}` : "与当前已保存参数一致";
+      btn.append(diffEl);
+    }
     btn.addEventListener("click", () => selectStyleCard(card.id));
     els.styleCards.append(btn);
   }

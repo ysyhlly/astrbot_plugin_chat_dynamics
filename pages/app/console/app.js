@@ -80,8 +80,24 @@ const els = {
   shadowDecisionList: document.getElementById("shadowDecisionList"),
   presetSelect: document.getElementById("presetSelect"),
   btnPreset: document.getElementById("btnPreset"),
+  presetDiffPreview: document.getElementById("presetDiffPreview"),
   presetNote: document.getElementById("presetNote"),
+  gpPresence: document.getElementById("gpPresence"),
+  gpThreshold: document.getElementById("gpThreshold"),
+  gpShadow: document.getElementById("gpShadow"),
+  gpRhythm: document.getElementById("gpRhythm"),
+  btnSaveGroupProfile: document.getElementById("btnSaveGroupProfile"),
+  btnResetGroupProfile: document.getElementById("btnResetGroupProfile"),
+  groupProfileState: document.getElementById("groupProfileState"),
+  groupProfileNote: document.getElementById("groupProfileNote"),
+  shadowHealthCard: document.getElementById("shadowHealthCard"),
+  shadowHealthSummary: document.getElementById("shadowHealthSummary"),
+  shadowBorderlineList: document.getElementById("shadowBorderlineList"),
+  btnShadowGoLive: document.getElementById("btnShadowGoLive"),
+  shadowGoLiveNote: document.getElementById("shadowGoLiveNote"),
 };
+
+let presetCatalogCache = {};
 
 let bridge = (window.DynamicsPanelBridge || window.AstrBotPluginPage) || null;
 const SHARED_SCOPE_KEY = "dynamics_active_umo";
@@ -240,6 +256,9 @@ function updateManagementControls() {
   if (els.btnUncool) els.btnUncool.disabled = !canManage || !Boolean(lastDetail?.cooling);
   els.btnReset.disabled = !canManage;
   els.coolMinutes.disabled = !canManage;
+  for (const gpEl of [els.gpPresence, els.gpThreshold, els.gpShadow, els.gpRhythm, els.btnSaveGroupProfile, els.btnResetGroupProfile]) {
+    if (gpEl) gpEl.disabled = !canManage;
+  }
   els.btnPreset.disabled = !overviewOnline || !presetsLoaded || Boolean(presetsLoadInFlight) || busy;
   els.presetSelect.disabled = !overviewOnline || !presetsLoaded || Boolean(presetsLoadInFlight) || busy;
   els.btnRetryDetail.disabled = !selectedId || detailLoading || busy;
@@ -487,6 +506,7 @@ function renderOverview(data) {
     })
     .join("");
   setHtmlIfChanged(els.shadowDecisionList, shadowHtml);
+  renderShadowHealth(safeData.shadow_health);
   const hasScope = Boolean(safeData.takeover_all) || groups.length > 0;
   els.onboarding.classList.toggle("hidden", sessions.length > 0 || safeData.enabled !== true || hasScope);
   setFilterNote("");
@@ -600,6 +620,108 @@ function endOperation(token, kind) {
   updateManagementControls();
 }
 
+function renderShadowHealth(health) {
+  if (!els.shadowHealthCard) return;
+  const h = health && typeof health === "object" ? health : null;
+  const show = Boolean(h && (h.shadow_mode || Number(h.total_samples || 0) > 0));
+  els.shadowHealthCard.classList.toggle("hidden", !show);
+  if (!show || !h) return;
+  const rate = Number(h.estimated_per_hour || 0).toFixed(1);
+  const proactivePct = Math.round(Number(h.proactive_share || 0) * 100);
+  if (els.shadowHealthSummary) {
+    els.shadowHealthSummary.textContent = `已采样 ${Number(h.total_samples || 0)} 条（拟开口 ${Number(h.speak_count || 0)} / 安静 ${Number(h.quiet_count || 0)}）· 预估频次 ${rate} 次/时 · 主动插话占比 ${proactivePct}%`;
+  }
+  if (els.btnShadowGoLive) {
+    els.btnShadowGoLive.disabled = !overviewOnline || !h.shadow_mode || Boolean(operationInFlight);
+  }
+  if (els.shadowBorderlineList) {
+    const top5 = Array.isArray(h.borderline_top5) ? h.borderline_top5 : [];
+    els.shadowBorderlineList.innerHTML = top5.length
+      ? top5.map((row) => {
+          const prob = typeof row.probability === "number" ? `${Math.round(row.probability * 100)}%` : "—";
+          return `<li><b>${escapeHtml(row.action || "—")}</b> · 概率 ${escapeHtml(prob)} · ${escapeHtml(row.reason || "—")}</li>`;
+        }).join("")
+      : `<li class="ops-note">${escapeHtml(tr("暂无临界边界样本"))}</li>`;
+  }
+}
+
+async function goLiveFromShadow() {
+  if (!overviewOnline || operationInFlight) return;
+  if (!await window.DynamicsUI.confirm(msg("确认关闭全局观察模式并正式开始发送回复（灰度转正）？"))) return;
+  if (els.btnShadowGoLive) els.btnShadowGoLive.disabled = true;
+  if (els.shadowGoLiveNote) els.shadowGoLiveNote.textContent = "正在执行灰度转正…";
+  try {
+    await apiPost("shadow_go_live", { confirm: true });
+    if (els.shadowGoLiveNote) els.shadowGoLiveNote.textContent = "已关闭观察模式，正式进入发送状态。";
+    await refresh({ refreshDetail: true });
+  } catch (err) {
+    if (els.shadowGoLiveNote) els.shadowGoLiveNote.textContent = friendlyError(err, "灰度转正失败，请稍后重试。");
+  } finally {
+    updateManagementControls();
+  }
+}
+
+async function loadGroupProfile(sessionId) {
+  if (!sessionId || !els.groupProfilePanel) return;
+  try {
+    const data = await apiGet("group_profiles", { session_key: sessionId });
+    const sel = data?.selected || {};
+    const ov = sel.overrides || {};
+    if (els.gpPresence) els.gpPresence.value = ov.presence_knob || "";
+    if (els.gpThreshold) els.gpThreshold.value = ov.reply_probability_threshold != null ? String(ov.reply_probability_threshold) : "";
+    if (els.gpShadow) els.gpShadow.value = typeof ov.shadow_mode === "boolean" ? String(ov.shadow_mode) : "";
+    if (els.gpRhythm) els.gpRhythm.value = typeof ov.natural_reply_rhythm_enabled === "boolean" ? String(ov.natural_reply_rhythm_enabled) : "";
+    if (els.groupProfileState) {
+      els.groupProfileState.textContent = sel.has_overrides
+        ? `已启用本群独立覆写（生效：分寸 ${sel.effective?.presence_knob || "—"} · 门槛 ${sel.effective?.reply_probability_threshold ?? "—"}%）`
+        : "当前全部继承全局默认设置。";
+    }
+    if (els.groupProfileNote) els.groupProfileNote.textContent = "";
+  } catch {
+    /* keep existing values on transient poll error */
+  }
+}
+
+async function saveGroupProfile(reset = false) {
+  if (!selectedId || !overviewOnline) return;
+  const overrides = {};
+  if (!reset) {
+    if (els.gpPresence?.value) overrides.presence_knob = els.gpPresence.value;
+    if (els.gpThreshold?.value !== "" && els.gpThreshold?.value != null) {
+      const n = Number(els.gpThreshold.value);
+      if (Number.isFinite(n)) overrides.reply_probability_threshold = n;
+    }
+    if (els.gpShadow?.value === "true") overrides.shadow_mode = true;
+    if (els.gpShadow?.value === "false") overrides.shadow_mode = false;
+    if (els.gpRhythm?.value === "true") overrides.natural_reply_rhythm_enabled = true;
+    if (els.gpRhythm?.value === "false") overrides.natural_reply_rhythm_enabled = false;
+  }
+  if (els.groupProfileNote) els.groupProfileNote.textContent = reset ? "正在恢复继承全局…" : "正在保存本群调度画像…";
+  try {
+    await apiPost("group_profile", { session_key: selectedId, overrides, reset });
+    if (els.groupProfileNote) els.groupProfileNote.textContent = reset ? "已恢复继承全局设置。" : "本群独立调度画像已保存并生效。";
+    await loadGroupProfile(selectedId);
+  } catch (err) {
+    if (els.groupProfileNote) els.groupProfileNote.textContent = friendlyError(err, "保存本群画像失败，请稍后重试。");
+  }
+}
+
+function renderPresetDiffPreview() {
+  if (!els.presetDiffPreview) return;
+  const name = els.presetSelect?.value || "";
+  const info = presetCatalogCache[name];
+  if (!name || !info) {
+    els.presetDiffPreview.textContent = "";
+    return;
+  }
+  const diff = Array.isArray(info.diff) ? info.diff : [];
+  if (!diff.length) {
+    els.presetDiffPreview.textContent = "该预设与当前生效参数完全一致，无字段变更。";
+    return;
+  }
+  els.presetDiffPreview.textContent = "参数变更预览：" + diff.map((d) => `${d.key}: ${d.before} → ${d.after}`).join(" · ");
+}
+
 async function loadPresets() {
   if (presetsLoaded) return true;
   if (presetsLoadInFlight) return presetsLoadInFlight;
@@ -607,19 +729,29 @@ async function loadPresets() {
     try {
       const data = await apiGet("presets");
       const presets = data && data.presets ? data.presets : {};
+      presetCatalogCache = presets;
       Array.from(els.presetSelect.options)
         .filter((option) => option.value)
         .forEach((option) => option.remove());
+      const fallbackLabels = {
+        observe: "先观察试跑",
+        quiet: "安静克制",
+        sensible: "懂事自然",
+        lively: "活跃爱聊",
+        balanced: "懂事自然",
+        active: "活跃爱聊",
+      };
       Object.entries(presets).forEach(([name, info]) => {
         const option = document.createElement("option");
         option.value = name;
-        option.textContent = { observe: "观察模式", balanced: "平衡模式", active: "活跃群聊" }[name] || name;
+        option.textContent = (info && info.label) || fallbackLabels[name] || name;
         option.title = Object.keys((info && info.changes) || {}).join(", ");
         els.presetSelect.appendChild(option);
       });
       presetsLoaded = true;
       presetRetryPending = false;
       els.presetNote.textContent = "";
+      renderPresetDiffPreview();
       return true;
     } catch (err) {
       presetRetryPending = true;
@@ -1002,6 +1134,7 @@ async function selectSession(sessionId, { silent = false } = {}) {
     setDetailStatus("");
     if (els.opsNote.dataset.source === "detail") setOps("");
     updateManagementControls();
+    if (!silent) void loadGroupProfile(requestedId);
   } catch (err) {
     if (requestToken !== detailRequestToken || selectedId !== requestedId || !overviewOnline) return;
     console.warn("[ChatDynamics] session detail failed", err);
@@ -1272,6 +1405,10 @@ async function boot() {
     if (lastDetail) renderRoom(lastDetail);
   });
   els.btnPreset.addEventListener("click", applyPreset);
+  if (els.presetSelect) els.presetSelect.addEventListener("change", renderPresetDiffPreview);
+  if (els.btnSaveGroupProfile) els.btnSaveGroupProfile.addEventListener("click", () => { void saveGroupProfile(false); });
+  if (els.btnResetGroupProfile) els.btnResetGroupProfile.addEventListener("click", () => { void saveGroupProfile(true); });
+  if (els.btnShadowGoLive) els.btnShadowGoLive.addEventListener("click", () => { void goLiveFromShadow(); });
 
 if (els.btnPresence) els.btnPresence.addEventListener("click", () => { applyPresenceKnob(); });
 if (els.btnNotebookLoad) els.btnNotebookLoad.addEventListener("click", () => { loadNotebookLite(); });

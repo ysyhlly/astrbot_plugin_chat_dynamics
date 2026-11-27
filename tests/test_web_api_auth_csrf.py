@@ -67,6 +67,7 @@ CONSOLE_READ_HANDLERS = [
     "series_telemetry_get",
     "series_health_get",
     "series_templates_get",
+    "group_profiles_get",
 ]
 
 CONSOLE_WRITE_HANDLERS = [
@@ -87,6 +88,9 @@ CONSOLE_WRITE_HANDLERS = [
     ("series_preflight_post", "POST"),
     ("series_templates_post", "POST"),
     ("series_templates_delete", "DELETE"),
+    ("dry_run_post", "POST"),
+    ("group_profile_post", "POST"),
+    ("shadow_go_live_post", "POST"),
 ]
 
 

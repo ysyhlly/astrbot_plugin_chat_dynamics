@@ -206,6 +206,10 @@ class ConsoleWebAPI:
             ("series_templates", self.series_templates_get, ["GET"], "查看群聊内置与自定义配置模板"),
             ("series_templates", self.series_templates_post, ["POST"], "新建/更新/删除群聊自定义模板"),
             ("series_templates", self.series_templates_delete, ["DELETE"], "删除群聊自定义模板"),
+            ("dry_run", self.dry_run_post, ["POST"], "干跑决策沙盒对比"),
+            ("group_profiles", self.group_profiles_get, ["GET"], "读取按群差异化调度画像"),
+            ("group_profile", self.group_profile_post, ["POST"], "保存或清除单群差异化调度画像"),
+            ("shadow_go_live", self.shadow_go_live_post, ["POST"], "观察模式一键灰度转正"),
         ]
         for endpoint, handler, methods, desc in routes:
             route = f"/{PLUGIN_NAME}/{endpoint}"
@@ -1013,8 +1017,12 @@ class ConsoleWebAPI:
         umo = (_query_param("umo") or _query_param("session_key") or "").strip()
         if len(umo) > _MAX_SESSION_ID_LENGTH:
             return _json_err("umo too long", 400)
+        raw_show = (_query_param("show_content") or "").strip().lower()
+        show_override = True if raw_show in {"1", "true", "yes"} else None
         try:
-            return _json_ok(scene_replay_snapshot(self.plugin, session_key=umo))
+            return _json_ok(
+                scene_replay_snapshot(self.plugin, session_key=umo, show_content_override=show_override)
+            )
         except Exception as exc:
             logger.error("[ChatDynamics] replay failed code=CD_REPLAY type=%s", type(exc).__name__)
             return _json_err("replay unavailable", 503)
@@ -1299,7 +1307,7 @@ class ConsoleWebAPI:
         body = await _json_body()
         if (
             invalid := self._validate_fields(
-                body, {"action", "id", "name", "description", "strategy_hint", "states"}
+                body, {"action", "id", "name", "description", "strategy_hint", "states", "group_profile"}
             )
         ) is not None:
             return invalid
@@ -1387,3 +1395,129 @@ class ConsoleWebAPI:
         except Exception as exc:
             logger.error("[ChatDynamics] series_search failed code=CD_SERIES_SEARCH type=%s", type(exc).__name__)
             return _json_err("series search unavailable", 503)
+
+    async def dry_run_post(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
+        if (limited := self._rate_limit("dry_run", 40)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (
+            invalid := self._validate_fields(
+                body, {"session_key", "umo", "msg_id", "text", "author_name", "wake_kind", "draft_overrides"}
+            )
+        ) is not None:
+            return invalid
+        try:
+            from .dry_run import simulate_decision_dry_run
+
+            result = simulate_decision_dry_run(self.plugin, body)
+            return _json_ok(result)
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] dry_run failed code=CD_DRY_RUN type=%s", type(exc).__name__)
+            return _json_err("dry run simulation failed", 503)
+
+    async def group_profiles_get(self):
+        if (denied := await self._require_admin(check_csrf=False)) is not None:
+            return denied
+        if (limited := self._rate_limit("group_profiles_get", 60)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        session_key = (_query_param("session_key") or _query_param("umo") or "").strip()
+        if len(session_key) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key too long", 400)
+        try:
+            from .group_profiles import resolve_effective_group_profile
+
+            store = getattr(self.plugin, "group_profiles_store", None)
+            all_profiles = store.all_profiles() if store is not None else dict(getattr(self.plugin, "_group_profiles", {}) or {})
+            payload: dict[str, Any] = {
+                "profiles": all_profiles,
+                "defaults": resolve_effective_group_profile(self.plugin, "")["defaults"],
+            }
+            if session_key:
+                payload["selected"] = resolve_effective_group_profile(self.plugin, session_key)
+                payload["session_key"] = session_key
+            return _json_ok(payload)
+        except Exception as exc:
+            logger.error("[ChatDynamics] group_profiles get failed code=CD_GROUP_PROFILES type=%s", type(exc).__name__)
+            return _json_err("group profiles unavailable", 503)
+
+    async def group_profile_post(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
+        if (limited := self._rate_limit("group_profile_write", 30)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (
+            invalid := self._validate_fields(
+                body, {"session_key", "umo", "group_id", "overrides", "profile", "reset"}
+            )
+        ) is not None:
+            return invalid
+        session_key = str(body.get("session_key") or body.get("umo") or body.get("group_id") or "").strip()
+        if not session_key:
+            return _json_err("session_key or umo is required", 400)
+        if len(session_key) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key too long", 400)
+        reset = bool(body.get("reset", False))
+        overrides = {} if reset else (body.get("overrides") if "overrides" in body else body.get("profile") or {})
+        try:
+            setter = getattr(self.plugin, "set_group_profile", None)
+            if not callable(setter):
+                return _json_err("group profile storage unavailable", 503)
+            saved = setter(session_key, overrides)
+            if inspect.isawaitable(saved):
+                saved = await saved
+            from .group_profiles import resolve_effective_group_profile
+
+            resolved = resolve_effective_group_profile(self.plugin, session_key)
+            return _json_ok({"session_key": session_key, "saved": saved, "resolved": resolved})
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] group_profile post failed code=CD_GROUP_PROFILE type=%s", type(exc).__name__)
+            return _json_err("group profile save failed", 503)
+
+    async def shadow_go_live_post(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
+        if (limited := self._rate_limit("shadow_go_live", 20)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (invalid := self._validate_fields(body, {"confirm", "session_key", "umo"})) is not None:
+            return invalid
+        if body.get("confirm") is not True:
+            return _json_err("confirm must be true", 400)
+        session_key = str(body.get("session_key") or body.get("umo") or "").strip()
+        if len(session_key) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key too long", 400)
+        try:
+            if session_key:
+                setter = getattr(self.plugin, "set_group_profile", None)
+                if not callable(setter):
+                    return _json_err("group profile storage unavailable", 503)
+                store = getattr(self.plugin, "group_profiles_store", None)
+                existing = store.get(session_key) if store is not None else {}
+                next_overrides = {**existing, "shadow_mode": False}
+                next_overrides.pop("updated_at", None)
+                saved = setter(session_key, next_overrides)
+                if inspect.isawaitable(saved):
+                    saved = await saved
+                return _json_ok({"scope": "group", "session_key": session_key, "shadow_mode": False, "profile": saved})
+            panel = await self.plugin.save_config_values({"shadow_mode": False})
+            return _json_ok({"scope": "global", "shadow_mode": False, "effective": panel.get("effective", {})})
+        except ValueError as exc:
+            return _json_err(str(exc), 400)
+        except Exception as exc:
+            logger.error("[ChatDynamics] shadow_go_live failed code=CD_SHADOW_GOLIVE type=%s", type(exc).__name__)
+            return _json_err("go-live transition failed", 503)

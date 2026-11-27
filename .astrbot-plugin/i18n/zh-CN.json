@@ -27,7 +27,7 @@
     },
     "learning": {
       "title": "决策模型",
-      "desc": "Jev 连接、调用、耗时与历史样本只读导出。"
+      "desc": "查看 Jev 或普通 LLM 决策连接、调用次数、耗时与历史样本只读导出。"
     },
     "app": {
       "title": "群间 · Chat Dynamics",

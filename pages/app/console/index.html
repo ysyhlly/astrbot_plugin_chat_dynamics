@@ -243,6 +243,50 @@
                 </div>
                 <p class="ops-note" id="opsNote" role="status" aria-live="polite"></p>
               </section>
+
+              <section class="ops group-profile-panel" id="groupProfilePanel" aria-labelledby="groupProfileTitle">
+                <div class="ops-heading">
+                  <div>
+                    <p class="eyebrow">PER-GROUP OVERRIDE PROFILE</p>
+                    <h3 id="groupProfileTitle" data-series-text="本群独立调度画像">本群独立调度画像</h3>
+                  </div>
+                  <p id="groupProfileState" data-series-text="留空项自动继承全局默认设置。">留空项自动继承全局默认设置。</p>
+                </div>
+                <div class="ops-controls">
+                  <div class="field">
+                    <label for="gpPresence" data-series-text="分寸旋钮">分寸旋钮</label>
+                    <select id="gpPresence" disabled>
+                      <option value="">继承全局</option>
+                      <option value="ghost">隐身 (ghost)</option>
+                      <option value="sensible">懂事 (sensible)</option>
+                      <option value="lively">活跃 (lively)</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="gpThreshold" data-series-text="开口门槛 (%)">开口门槛 (%)</label>
+                    <input id="gpThreshold" type="number" min="0" max="100" step="1" placeholder="继承全局" disabled />
+                  </div>
+                  <div class="field">
+                    <label for="gpShadow" data-series-text="观察模式">观察模式</label>
+                    <select id="gpShadow" disabled>
+                      <option value="">继承全局</option>
+                      <option value="false">正常发送</option>
+                      <option value="true">仅观察试跑</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="gpRhythm" data-series-text="自然回复节奏">自然回复节奏</label>
+                    <select id="gpRhythm" disabled>
+                      <option value="">继承全局</option>
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                  </div>
+                  <button type="button" class="button button-primary" id="btnSaveGroupProfile" disabled data-series-text="保存本群画像">保存本群画像</button>
+                  <button type="button" class="button button-quiet" id="btnResetGroupProfile" disabled data-series-text="恢复继承全局">恢复继承全局</button>
+                </div>
+                <p class="ops-note" id="groupProfileNote" role="status" aria-live="polite"></p>
+              </section>
             </div>
           </div>
         </section>
@@ -490,8 +534,22 @@
                 <button type="button" class="button button-primary" id="btnPreset" disabled data-series-text="应用">应用</button>
               </div>
             </div>
+            <p class="ops-note" id="presetDiffPreview" role="status" aria-live="polite"></p>
             <p class="ops-note" id="presetNote" role="status" aria-live="polite"></p>
             <p class="config-migrate-note" data-series-text="完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。">完整参数编辑请打开插件页「插件参数配置」。社交、作息、记忆和媒体开关统一在配置页维护。</p>
+          </article>
+
+          <article class="policy-card shadow-health-card hidden" id="shadowHealthCard" aria-labelledby="shadowHealthTitle">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">SHADOW CHECKUP</p>
+                <h2 id="shadowHealthTitle" data-series-text="观察模式试跑体检卡">观察模式试跑体检卡</h2>
+              </div>
+              <button type="button" class="button button-primary" id="btnShadowGoLive" data-series-text="一键灰度转正">一键灰度转正</button>
+            </div>
+            <p class="ops-note" id="shadowHealthSummary">—</p>
+            <ol id="shadowBorderlineList"></ol>
+            <p class="ops-note" id="shadowGoLiveNote" role="status" aria-live="polite"></p>
           </article>
 
           <p class="ops-note metric-note" id="metricState" role="status" aria-live="polite"></p>

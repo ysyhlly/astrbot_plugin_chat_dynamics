@@ -210,6 +210,72 @@ def companion_snapshot(plugin: Any) -> Dict[str, Any]:
     return data
 
 
+def _shadow_health_summary(plugin: Any) -> Dict[str, Any]:
+    """Summarize _shadow_decisions for the Console shadow-mode checkup card."""
+    rows = [r for r in getattr(plugin, "_shadow_decisions", ()) if isinstance(r, dict)]
+    total = len(rows)
+    threshold = float(getattr(getattr(plugin, "_runtime_config", None), "reply_probability_threshold", 70.0) or 70.0) / 100.0
+    speak_actions = {"reply", "acknowledge", "clarify", "speak", "intervene"}
+    speak_rows = [r for r in rows if str(r.get("action") or "").lower() in speak_actions]
+    speak_count = len(speak_rows)
+    quiet_count = max(0, total - speak_count)
+
+    timestamps = [
+        float(r["timestamp"])
+        for r in rows
+        if isinstance(r.get("timestamp"), (int, float)) and math.isfinite(float(r["timestamp"]))
+    ]
+    if len(timestamps) >= 2:
+        span_hours = max((max(timestamps) - min(timestamps)) / 3600.0, 1.0 / 6.0)
+        estimated_per_hour = round(speak_count / span_hours, 2)
+    elif speak_count > 0:
+        estimated_per_hour = float(speak_count)
+    else:
+        estimated_per_hour = 0.0
+
+    explicit_reasons = {"at_mandatory", "direct_address", "addressed_question", "private_direct"}
+    proactive_count = sum(
+        1
+        for r in speak_rows
+        if str(r.get("reason") or r.get("reason_code") or "").lower() not in explicit_reasons
+        and not bool(r.get("explicit"))
+    )
+    proactive_share = round(proactive_count / speak_count, 3) if speak_count > 0 else 0.0
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for idx, r in enumerate(rows):
+        prob_raw = r.get("join_probability", r.get("probability", r.get("confidence")))
+        prob = float(prob_raw) if isinstance(prob_raw, (int, float)) and math.isfinite(float(prob_raw)) else None
+        dist = abs(prob - threshold) if prob is not None else 0.5 + (len(rows) - idx) * 1e-4
+        scored.append(
+            (
+                dist,
+                {
+                    "session_key": str(r.get("session_key") or ""),
+                    "action": str(r.get("action") or "ignore"),
+                    "reason": str(r.get("reason") or r.get("reason_code") or ""),
+                    "state": str(r.get("state") or ""),
+                    "probability": round(prob, 3) if prob is not None else None,
+                    "margin": round(prob - threshold, 3) if prob is not None else None,
+                    "timestamp": r.get("timestamp"),
+                },
+            )
+        )
+    scored.sort(key=lambda pair: pair[0])
+    borderline_top5 = [item for _, item in scored[:5]]
+    return {
+        "shadow_mode": bool(getattr(plugin, "shadow_mode", False)),
+        "total_samples": total,
+        "speak_count": speak_count,
+        "quiet_count": quiet_count,
+        "estimated_per_hour": estimated_per_hour,
+        "proactive_share": proactive_share,
+        "threshold": round(threshold, 3),
+        "borderline_top5": borderline_top5,
+        "ready_for_go_live": bool(getattr(plugin, "shadow_mode", False)) and total >= 5,
+    }
+
+
 def snapshot_overview(plugin: Any) -> Dict[str, Any]:
     if hasattr(plugin, "_sync_runtime_from_config"):
         plugin._sync_runtime_from_config()
@@ -320,6 +386,7 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
         "active_tasks": active_tasks,
         "metrics": metrics,
         "shadow_decisions": list(getattr(plugin, "_shadow_decisions", ())),
+        "shadow_health": _shadow_health_summary(plugin),
         "config_warnings": sorted(getattr(plugin, "_config_warnings_seen", ())),
         "sessions": sessions,
         "presence_knob": str(getattr(plugin, "presence_knob", "sensible") or "sensible"),
@@ -694,7 +761,13 @@ def _replay_message_limit(plugin: Any) -> int:
     return max(80, min(500, _attr_int(getattr(plugin, "_runtime_config", None), "replay_message_limit", 500)))
 
 
-def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str) -> List[Dict[str, Any]]:
+def replay_topic_blocks(
+    plugin: Any,
+    events: List[Dict[str, Any]],
+    selected: str,
+    *,
+    show_content_override: bool | None = None,
+) -> List[Dict[str, Any]]:
     """Group retained conversation nodes by session and routed topic.
 
     Legacy decisions have no message identity. Associate only when the preceding
@@ -703,7 +776,11 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     groups: Dict[tuple, Dict[str, Any]] = {}
     session_nodes: Dict[str, list] = {}
     message_limit = _replay_message_limit(plugin)
-    show_content = bool(getattr(plugin, "console_show_message_content", False))
+    show_content = (
+        bool(show_content_override)
+        if show_content_override is not None
+        else bool(getattr(plugin, "console_show_message_content", False))
+    )
     show_titles = bool(getattr(plugin, "replay_show_topic_titles", True))
     clock = getattr(plugin, "time_service", None)
     # DAG nodes use monotonic time; social/rhythm decisions use wall time.
@@ -807,8 +884,13 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
     return sorted(groups.values(), key=lambda group: group["start_ts"])
 
 
-def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, Any]:
-    """Color-block timeline of why the bot spoke or stayed quiet. No plaintext."""
+def scene_replay_snapshot(
+    plugin: Any,
+    *,
+    session_key: str = "",
+    show_content_override: bool | None = None,
+) -> Dict[str, Any]:
+    """Color-block timeline of why the bot spoke or stayed quiet. No plaintext by default."""
     selected = (session_key or "").strip()
     gate = getattr(plugin, "decision_gate", None)
     manners = getattr(gate, "manners", None) if gate is not None else None
@@ -888,7 +970,14 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         for sid, dag in getattr(plugin, "dags", {}).items() if not selected or sid == selected
         for node in sorted(dag.nodes.values(), key=lambda node: node.timestamp)[-message_limit:]
     ]
-    topic_blocks = replay_topic_blocks(plugin, ordered[-64:], selected)
+    effective_show_content = (
+        bool(show_content_override)
+        if show_content_override is not None
+        else bool(getattr(plugin, "console_show_message_content", False))
+    )
+    topic_blocks = replay_topic_blocks(
+        plugin, ordered[-64:], selected, show_content_override=show_content_override
+    )
     show_titles = bool(getattr(plugin, "replay_show_topic_titles", True))
     return {
         "session_key": selected,
@@ -901,15 +990,16 @@ def scene_replay_snapshot(plugin: Any, *, session_key: str = "") -> Dict[str, An
         "unassigned_message_count": sum(not _replay_node_topic(node) for node in retained_nodes),
         "archived_topics": [
             {"session_id": sid, "topic_id": topic.topic_id,
-             "topic_title": _truncate(getattr(topic, "title", "") or (topic.summary if getattr(plugin, "console_show_message_content", False) else ""), 36) if show_titles and (getattr(topic, "title", "") or getattr(plugin, "console_show_message_content", False)) else "历史话题"}
+             "topic_title": _truncate(getattr(topic, "title", "") or (topic.summary if effective_show_content else ""), 36) if show_titles and (getattr(topic, "title", "") or effective_show_content) else "历史话题"}
             for sid, runtime in getattr(plugin, "_sessions", {}).items() if not selected or sid == selected
             for topic in getattr(getattr(getattr(runtime, "routing_state", None), "archive", None), "entries", {}).values()
         ],
-        "topic_content_redacted": not bool(getattr(plugin, "console_show_message_content", False)),
+        "topic_content_redacted": not effective_show_content,
         "topic_titles_redacted": not show_titles,
+        "temporary_reveal": bool(show_content_override is True and not getattr(plugin, "console_show_message_content", False)),
         "speak_count": speak,
         "silent_count": silent,
         "sessions": sessions,
         "empty": not bool(ordered or topic_blocks),
-        "content_redacted": True,
+        "content_redacted": not bool(show_content_override is True),
     }

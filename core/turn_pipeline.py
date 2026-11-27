@@ -966,6 +966,11 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
         }
         if poke_ctx is not None and "poke_context" in inspect.signature(snapshot_turn).parameters:
             snapshot_kwargs["poke_context"] = poke_ctx
+        effective_shadow = (
+            host.is_session_shadow_mode(session_id, group_id=runtime.group_id)
+            if callable(getattr(host, "is_session_shadow_mode", None))
+            else bool(host.shadow_mode)
+        )
         return snapshot_turn(
             runtime,
             result,
@@ -973,7 +978,7 @@ def _finish_turn_locked(host, turn: _PreparedTurn) -> Any:
             parsed_events,
             explicit,
             observations,
-            host.shadow_mode,
+            effective_shadow,
             **snapshot_kwargs,
         )
 

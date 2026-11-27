@@ -16,23 +16,55 @@ from .systemone.native import is_decision_provider
 _PRESETS = {
     "observe": {
         "shadow_mode": True,
-    },
-    "balanced": {
-        "pipeline_mode": PIPELINE_FILTER,
-        "shadow_mode": False,
+        "presence_knob": "sensible",
+        "reply_probability_threshold": 70.0,
         "debounce_base_cooldown": 0.25,
         "debounce_extended_cooldown": 1.0,
         "debounce_max_cap": 4.0,
         "deep_cooling_minutes": 15.0,
     },
-    "active": {
+    "quiet": {
         "pipeline_mode": PIPELINE_FILTER,
         "shadow_mode": False,
+        "presence_knob": "ghost",
+        "reply_probability_threshold": 80.0,
+        "debounce_base_cooldown": 0.25,
+        "debounce_extended_cooldown": 1.2,
+        "debounce_max_cap": 5.0,
+        "deep_cooling_minutes": 20.0,
+    },
+    "sensible": {
+        "pipeline_mode": PIPELINE_FILTER,
+        "shadow_mode": False,
+        "presence_knob": "sensible",
+        "reply_probability_threshold": 70.0,
+        "debounce_base_cooldown": 0.25,
+        "debounce_extended_cooldown": 1.0,
+        "debounce_max_cap": 4.0,
+        "deep_cooling_minutes": 15.0,
+    },
+    "lively": {
+        "pipeline_mode": PIPELINE_FILTER,
+        "shadow_mode": False,
+        "presence_knob": "lively",
+        "reply_probability_threshold": 55.0,
         "debounce_base_cooldown": 0.15,
         "debounce_extended_cooldown": 0.75,
         "debounce_max_cap": 3.0,
         "deep_cooling_minutes": 10.0,
     },
+}
+
+_PRESET_ALIASES: dict[str, str] = {
+    "balanced": "sensible",
+    "active": "lively",
+}
+
+_PRESET_META: dict[str, dict[str, str]] = {
+    "observe": {"label": "先观察试跑", "badge": "只看不发", "desc": "开启观察模式，只记录判断结果、不实际发送回复。"},
+    "quiet": {"label": "安静克制", "badge": "少插话", "desc": "平时多旁听少打扰，点名或高把握时再接话，冷却间隔更长。"},
+    "sensible": {"label": "懂事自然", "badge": "推荐", "desc": "读懂场合再接话，兼顾自然互动与社交分寸。"},
+    "lively": {"label": "活跃爱聊", "badge": "更主动", "desc": "更积极参与群聊与接梗，防抖聚合更灵敏，冷却时间更短。"},
 }
 
 
@@ -51,21 +83,39 @@ class ConfigPanel:
         self.host = host
 
     def preset_catalog(self) -> dict[str, Any]:
+        effective = self.get_effective_config()
         current = {}
         for name, values in _PRESETS.items():
+            meta = _PRESET_META.get(name, {})
+            changes = {
+                key: value
+                for key, value in values.items()
+                if self.host.config.get(key) != value
+            }
+            diff = [
+                {
+                    "key": key,
+                    "before": effective.get(key, self.host.config.get(key)),
+                    "after": value,
+                }
+                for key, value in values.items()
+                if effective.get(key, self.host.config.get(key)) != value
+            ]
             current[name] = {
+                "label": meta.get("label", name),
+                "badge": meta.get("badge", ""),
+                "desc": meta.get("desc", ""),
                 "values": dict(values),
-                "changes": {
-                    key: value
-                    for key, value in values.items()
-                    if self.host.config.get(key) != value
-                },
+                "changes": changes,
+                "diff": diff,
             }
         return {
             "presets": current,
             "current": {
                 "shadow_mode": self.host.shadow_mode,
                 "pipeline_mode": self.host.pipeline_mode,
+                "presence_knob": effective.get("presence_knob", "sensible"),
+                "reply_probability_threshold": effective.get("reply_probability_threshold", 70.0),
             },
         }
 
@@ -582,9 +632,10 @@ class ConfigPanel:
 
 
     async def _apply_preset_locked(self, name: str) -> dict[str, Any]:
-        if name not in _PRESETS:
+        canonical = name if name in _PRESETS else _PRESET_ALIASES.get(name, "")
+        if not canonical or canonical not in _PRESETS:
             raise KeyError(name)
-        values = _PRESETS[name]
+        values = _PRESETS[canonical]
         changed: dict[str, Any] = {}
         missing = object()
         original: dict[str, Any] = {}

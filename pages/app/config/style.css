@@ -162,7 +162,7 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
   .app.plugin-shell { padding: 0 16px 40px; }
   .topbar { padding: 16px 0 24px; flex-wrap: wrap; gap: 12px; }
   .brand-copy h1 { font-size: 28px; }
-  .action-bar { position: static; flex-wrap: wrap; padding: 14px; }
+  .action-bar { position: sticky; bottom: 0; top: auto; z-index: 25; flex-wrap: wrap; padding: 12px 14px; box-shadow: 0 -6px 20px rgb(0 0 0 / .12); }
   .action-buttons { width: 100%; flex-wrap: wrap; }
   .action-buttons .button { flex: 1; }
   .config-overview { padding: 20px; }
@@ -217,7 +217,7 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 .config-key { font-size:11px; }
 .config-hint,.config-effective { font-size:13px; line-height:1.65; }
 @media(max-width:760px) {
- .action-bar { position:static; }
+ .action-bar { position:sticky; bottom:0; top:auto; z-index:25; }
  .config-overview { padding:16px; }
  .overview-heading { display:block; }
  .overview-step,.overview-step:first-child,.overview-step:last-child { padding:12px 0; }

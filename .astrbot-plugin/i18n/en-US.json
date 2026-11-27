@@ -26,8 +26,8 @@
       "desc": "Color-block timeline of why the bot spoke or stayed quiet; no plaintext by default."
     },
     "learning": {
-      "title": "Decision model",
-      "desc": "Native Jev status and read-only history export."
+      "title": "Decision Model",
+      "desc": "Inspect Jev or standard LLM decision status, calls, latency, and read-only history export."
     },
     "app": {
       "title": "Chat Dynamics",

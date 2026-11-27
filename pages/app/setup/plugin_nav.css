@@ -14,3 +14,15 @@
   font: inherit;
   cursor: pointer;
 }
+.plugin-nav-more { position: relative; }
+.plugin-nav-more-summary { list-style: none; cursor: pointer; }
+.plugin-nav-more-summary::-webkit-details-marker { display: none; }
+.plugin-nav-more-summary::after { content: " ▾"; opacity: .7; font-size: 11px; }
+.plugin-nav-more[open] > .plugin-nav-more-summary::after { content: " ▴"; }
+.plugin-nav-more-menu {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 4px; padding: 6px;
+  border: 1px solid var(--ds-border, var(--line));
+  border-radius: 10px;
+  background: var(--ds-surface, var(--surface));
+}

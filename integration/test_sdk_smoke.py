@@ -277,6 +277,10 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
         "series_search",
         "series_telemetry",
         "series_templates",
+        "dry_run",
+        "group_profiles",
+        "group_profile",
+        "shadow_go_live",
         "narrative",
         "integrations",
     }

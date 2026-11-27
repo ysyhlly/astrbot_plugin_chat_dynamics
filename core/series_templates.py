@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .group_profiles import sanitize_group_profile
 from .series_hub import CORE_SERIES_PLUGINS
 
 _CORE_PLUGIN_IDS: tuple[str, ...] = tuple(pid for pid, _label, _mark, _page in CORE_SERIES_PLUGINS)
@@ -40,6 +41,12 @@ BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
         "readonly": True,
         "strategy_hint": "全模块协同，适合核心陪伴群",
         "states": _full_states(set(_CORE_PLUGIN_IDS)),
+        "group_profile": {
+            "presence_knob": "sensible",
+            "reply_probability_threshold": 70.0,
+            "shadow_mode": False,
+            "natural_reply_rhythm_enabled": True,
+        },
         "updated_at": "",
     },
     {
@@ -56,6 +63,11 @@ BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
                 "astrbot_plugin_visual_media",
             }
         ),
+        "group_profile": {
+            "presence_knob": "ghost",
+            "reply_probability_threshold": 80.0,
+            "shadow_mode": False,
+        },
         "updated_at": "",
     },
     {
@@ -72,6 +84,10 @@ BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
                 "astrbot_plugin_group_chronicle",
             }
         ),
+        "group_profile": {
+            "presence_knob": "ghost",
+            "shadow_mode": True,
+        },
         "updated_at": "",
     },
     {
@@ -82,6 +98,7 @@ BUILTIN_TEMPLATES: tuple[dict[str, Any], ...] = (
         "readonly": True,
         "strategy_hint": "最小化部署，仅由主控接管对话",
         "states": _full_states({"astrbot_plugin_chat_dynamics"}),
+        "group_profile": {},
         "updated_at": "",
     },
 )
@@ -90,6 +107,11 @@ BUILTIN_TEMPLATE_IDS: frozenset[str] = frozenset(t["id"] for t in BUILTIN_TEMPLA
 
 
 def _clone_template(item: dict[str, Any]) -> dict[str, Any]:
+    raw_gp = item.get("group_profile")
+    try:
+        gp = sanitize_group_profile(raw_gp) if isinstance(raw_gp, dict) and raw_gp else {}
+    except ValueError:
+        gp = {}
     return {
         "id": str(item["id"]),
         "name": str(item["name"]),
@@ -98,6 +120,7 @@ def _clone_template(item: dict[str, Any]) -> dict[str, Any]:
         "readonly": bool(item.get("readonly", False)),
         "strategy_hint": str(item.get("strategy_hint") or ""),
         "states": {pid: bool(item.get("states", {}).get(pid, False)) for pid in _CORE_PLUGIN_IDS},
+        "group_profile": gp,
         "updated_at": str(item.get("updated_at") or ""),
     }
 
@@ -151,6 +174,10 @@ class SeriesTemplateStore:
                 states = validate_template_states(entry.get("states"))
             except ValueError:
                 continue
+            try:
+                group_profile = sanitize_group_profile(entry.get("group_profile"))
+            except ValueError:
+                group_profile = {}
             loaded[tid] = {
                 "id": tid,
                 "name": name,
@@ -159,6 +186,7 @@ class SeriesTemplateStore:
                 "readonly": False,
                 "strategy_hint": str(entry.get("strategy_hint") or "").strip()[:_MAX_HINT_LEN],
                 "states": states,
+                "group_profile": group_profile,
                 "updated_at": str(entry.get("updated_at") or "").strip()[:64],
             }
             if len(loaded) >= _MAX_CUSTOM_TEMPLATES:
@@ -259,6 +287,7 @@ class SeriesTemplateStore:
         strategy_hint = raw_hint.strip()[:_MAX_HINT_LEN]
 
         states = validate_template_states(payload.get("states"))
+        group_profile = sanitize_group_profile(payload.get("group_profile"))
 
         with self._lock:
             if tid not in self._custom and len(self._custom) >= _MAX_CUSTOM_TEMPLATES:
@@ -271,6 +300,7 @@ class SeriesTemplateStore:
                 "readonly": False,
                 "strategy_hint": strategy_hint,
                 "states": states,
+                "group_profile": group_profile,
                 "updated_at": _now_iso(),
             }
             self._custom[tid] = record

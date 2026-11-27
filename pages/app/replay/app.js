@@ -44,7 +44,22 @@ const els = {
   inspectorSilenceTags: document.getElementById("inspectorSilenceTags"),
   inspectorWaterfall: document.getElementById("inspectorWaterfall"),
   btnOpenSceneModal: document.getElementById("btnOpenSceneModal"),
+  replayRedactionBanner: document.getElementById("replayRedactionBanner"),
+  replayRedactionTitle: document.getElementById("replayRedactionTitle"),
+  replayRedactionDesc: document.getElementById("replayRedactionDesc"),
+  btnToggleTemporaryReveal: document.getElementById("btnToggleTemporaryReveal"),
+  dryRunText: document.getElementById("dryRunText"),
+  dryRunWake: document.getElementById("dryRunWake"),
+  dryRunPresence: document.getElementById("dryRunPresence"),
+  dryRunThreshold: document.getElementById("dryRunThreshold"),
+  dryRunBackend: document.getElementById("dryRunBackend"),
+  dryRunShadow: document.getElementById("dryRunShadow"),
+  btnRunDryRun: document.getElementById("btnRunDryRun"),
+  dryRunStatus: document.getElementById("dryRunStatus"),
+  dryRunResult: document.getElementById("dryRunResult"),
 };
+
+let temporaryRevealContent = false;
 
 const SHARED_SCOPE_KEY = "dynamics_active_umo";
 function readSharedScope() {
@@ -435,7 +450,9 @@ async function refresh({ automatic = false } = {}) {
   const revision = ++refreshRevision;
   pendingRefreshes += 1;
   try {
-    const params = selectedUmo ? { umo: selectedUmo } : {};
+    const params = {};
+    if (selectedUmo) params.umo = selectedUmo;
+    if (temporaryRevealContent) params.show_content = "1";
     const data = await apiGet("replay", params);
     if (revision !== refreshRevision) return;
     if (automatic && (els.detailDialog.open || dirtyAnnotationCount())) return;
@@ -449,6 +466,7 @@ async function refresh({ automatic = false } = {}) {
       storageSet(UMO_KEY, selectedUmo);
       writeSharedScope(selectedUmo);
     }
+    updateRedactionBanner(data);
     renderRail(data, true);
   } catch (err) {
     if (revision !== refreshRevision) return;
@@ -486,6 +504,71 @@ window.addEventListener("dynamics-scopechange", async event => {
   storageSet(UMO_KEY, next);
   void refresh();
 });
+
+function updateRedactionBanner(data) {
+  if (!els.replayRedactionBanner) return;
+  const redacted = Boolean(data?.topic_content_redacted);
+  const revealedTemp = Boolean(data?.temporary_reveal) || temporaryRevealContent;
+  els.replayRedactionBanner.classList.toggle("hidden", !redacted && !revealedTemp);
+  if (revealedTemp) {
+    if (els.replayRedactionTitle) els.replayRedactionTitle.textContent = "已临时解密查看本次回放原文";
+    if (els.replayRedactionDesc) els.replayRedactionDesc.textContent = "仅当前管理员会话可见，刷新页面或点击右侧按钮即可恢复默认脱敏状态。";
+    if (els.btnToggleTemporaryReveal) els.btnToggleTemporaryReveal.textContent = "恢复脱敏视图";
+  } else {
+    if (els.replayRedactionTitle) els.replayRedactionTitle.textContent = "当前处于隐私脱敏模式";
+    if (els.replayRedactionDesc) els.replayRedactionDesc.textContent = "默认不展示群友原文与真实账号 ID。如需排障，管理员可临时解密查看本次会话回放（仅作用于当前页面，不改全局配置）。";
+    if (els.btnToggleTemporaryReveal) els.btnToggleTemporaryReveal.textContent = "管理员临时解密查看";
+  }
+}
+
+async function runDryRunSimulation() {
+  if (!els.btnRunDryRun || !els.dryRunResult) return;
+  const text = String(els.dryRunText?.value || "").trim();
+  if (!text) {
+    if (els.dryRunStatus) els.dryRunStatus.textContent = "请先输入一条要试跑的模拟消息文本。";
+    return;
+  }
+  const overrides = {};
+  if (els.dryRunPresence?.value) overrides.presence_knob = els.dryRunPresence.value;
+  if (els.dryRunThreshold?.value !== "" && els.dryRunThreshold?.value != null) {
+    const n = Number(els.dryRunThreshold.value);
+    if (Number.isFinite(n)) overrides.reply_probability_threshold = n;
+  }
+  if (els.dryRunBackend?.value) overrides.decision_backend = els.dryRunBackend.value;
+  if (els.dryRunShadow?.value === "true") overrides.shadow_mode = true;
+  if (els.dryRunShadow?.value === "false") overrides.shadow_mode = false;
+
+  els.btnRunDryRun.disabled = true;
+  if (els.dryRunStatus) els.dryRunStatus.textContent = "正在干跑对比…";
+  try {
+    const res = await apiPost("dry_run", {
+      session_key: selectedUmo || "",
+      text,
+      wake_kind: els.dryRunWake?.value || "ambient",
+      draft_overrides: overrides,
+    });
+    const base = res.baseline || {};
+    const draft = res.draft || {};
+    const diffs = Array.isArray(res.param_diffs) ? res.param_diffs : [];
+    const renderSide = (title, side) => `
+      <div class="dry-run-col">
+        <strong>${escapeHtml(title)}</strong>
+        <p class="ops-note">结论：<b>${escapeHtml(side.effective_delivery || side.action || "—")}</b>（动作 ${escapeHtml(side.action || "—")}）</p>
+        <p class="ops-note">原因：${escapeHtml(side.reason_code || "—")} · 概率 ${side.join_probability != null ? Math.round(side.join_probability * 100) + "%" : "—"} / 门槛 ${Math.round((side.join_threshold || 0) * 100)}%</p>
+        <p class="ops-note">分寸：${escapeHtml(side.presence_label || side.presence_knob || "—")} · 后端：${escapeHtml(side.decision_backend || "—")}</p>
+      </div>`;
+    els.dryRunResult.innerHTML =
+      renderSide("线上原判", base) +
+      renderSide("草稿新判", draft) +
+      `<p class="ops-note">${res.outcome_changed ? "⚠️ 判定结果已变化" : "✅ 判定结果一致"}${diffs.length ? " · 参数差异：" + escapeHtml(diffs.map(d => `${d.key}: ${d.baseline} → ${d.draft}`).join(" / ")) : ""}</p>`;
+    els.dryRunResult.classList.remove("hidden");
+    if (els.dryRunStatus) els.dryRunStatus.textContent = "干跑对比完成（未写入配置、未发送消息）。";
+  } catch (err) {
+    if (els.dryRunStatus) els.dryRunStatus.textContent = friendlyError(err, "干跑对比失败，请稍后重试。");
+  } finally {
+    els.btnRunDryRun.disabled = false;
+  }
+}
 
 async function boot() {
   renderNav("replay");
@@ -603,6 +686,19 @@ async function boot() {
     event.returnValue = "";
   });
   els.btnRefresh.addEventListener("click", () => void refresh());
+  if (els.btnToggleTemporaryReveal) {
+    els.btnToggleTemporaryReveal.addEventListener("click", async () => {
+      if (!temporaryRevealContent) {
+        const ok = await window.DynamicsUI.confirm(msg("临时解密查看仅对当前管理员页面生效，不会修改全局脱敏设置。确认继续？"));
+        if (!ok) return;
+      }
+      temporaryRevealContent = !temporaryRevealContent;
+      void refresh();
+    });
+  }
+  if (els.btnRunDryRun) {
+    els.btnRunDryRun.addEventListener("click", () => void runDryRunSimulation());
+  }
   await refresh();
   const refreshTimer = setInterval(() => void refresh({ automatic: true }), 5000);
   window.addEventListener("pagehide", () => clearInterval(refreshTimer), { once: true });

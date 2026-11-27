@@ -55,6 +55,7 @@ from .reply_failure import ModelReplyFailure, unavailable_reply
 from . import member_boundary
 from .context_completion import complete_context
 from .early_reply import final_fragments
+from .group_profiles import resolve_effective_group_profile
 from .native_decision import selected_decision_client
 from .integrations import dynamics_horizons
 from .integrations import dynamics_learning
@@ -1107,10 +1108,15 @@ class PersonaEngine:
             if callable(getattr(p, "is_runtime_scope_enabled", None))
             else p.is_group_takeover_enabled(runtime.group_id)
         )
+        effective_shadow = (
+            p.is_session_shadow_mode(runtime.session_key, group_id=runtime.group_id)
+            if callable(getattr(p, "is_session_shadow_mode", None))
+            else bool(p.shadow_mode)
+        )
         valid = (
             not p._shutting_down
             and p._persona_mode()
-            and p.shadow_mode == item.shadow
+            and effective_shadow == item.shadow
             and scope_enabled
             and runtime.epoch == turn.epoch
             and runtime.user_revisions.get(turn.author, 0) == turn.revision
@@ -1500,13 +1506,18 @@ class PersonaEngine:
                     merged_game_cs = {**char_state, "active_game": game_slot}
                     if len(json.dumps(merged_game_cs, ensure_ascii=False, separators=(",", ":"))) <= 2600:
                         char_state = merged_game_cs
+            group_eff = resolve_effective_group_profile(
+                p,
+                getattr(runtime, "umo", "") or turn.session_key,
+                group_id=getattr(runtime, "group_id", "") if runtime is not None else "",
+            )["effective"]
             bundle_character = item.narrative_bundle.wire()["character"] if item.narrative_bundle else None
             bounded_state = build_state(
                 turn,
                 max_chars=state_limit,
                 previous_state=state,
                 observations=observations,
-                presence=p._runtime_config.presence_knob,
+                presence=group_eff["presence_knob"],
                 persona_prompt=(
                     bundle_character["core_prompt"]
                     if bundle_character is not None
@@ -1701,7 +1712,7 @@ class PersonaEngine:
         base_join_floor = (
             learning["threshold"]
             if learning["threshold"] is not None
-            else getattr(p._runtime_config, "reply_probability_threshold", 70.0)
+            else group_eff["reply_probability_threshold"]
         ) / 100.0
         if game_ctx and game_ctx.get("active") and not turn.mandatory_reply and not turn.soft_wake and not item.private_direct:
             base_join_floor = min(0.95, base_join_floor + 0.12)
@@ -2002,9 +2013,17 @@ class PersonaEngine:
                 finally:
                     deferred_media.finish()
                     try:
+                        quote_gen_failed = (
+                            item.context.wake_kind == "quote"
+                            and any(
+                                outcomes.read_outcome(node).get("final_outcome") == "generation_failed"
+                                for node in item.outcome_nodes
+                                if node is not None
+                            )
+                        )
                         if (
                             not item_cancelled
-                            and (item.context.mandatory_reply or item.private_direct)
+                            and (item.context.mandatory_reply or item.private_direct or quote_gen_failed)
                             and await self.valid_async(runtime, item)
                         ):
                             await asyncio.wait_for(self._ensure_mandatory_reply(runtime, item), timeout=10.0)
@@ -2086,10 +2105,15 @@ class PersonaEngine:
             ),
             runtime.model_diagnostic.get("reason_code", "empty_reply"),
         )
+        is_quote_fallback = (
+            turn.wake_kind == "quote" and not turn.mandatory_reply and not item.private_direct
+        )
         if item.private_direct and not turn.mandatory_reply:
             # Private turns have no @ to acknowledge; a generic receipt is the
             # honest visible ending when generation failed.
             text = "收到你的消息了，但这次暂时没能生成完整回复。"
+        elif is_quote_fallback:
+            text = unavailable_reply(failure)
         else:
             text = unavailable_reply(failure)
         target = turn.messages[-1].message_id
@@ -2117,7 +2141,11 @@ class PersonaEngine:
             return
         p._metric("send_succeeded")
         fallback_reason = (
-            "private_reply_fallback" if (item.private_direct and not turn.mandatory_reply) else "at_reply_fallback"
+            "private_reply_fallback"
+            if (item.private_direct and not turn.mandatory_reply)
+            else "quote_reply_fallback"
+            if is_quote_fallback
+            else "at_reply_fallback"
         )
         fallback_choice = None
         for node in nodes:
@@ -2131,7 +2159,13 @@ class PersonaEngine:
             fallback_reason,
             failure_reason=failure,
             action="acknowledge",
-            wake_kind="private" if item.private_direct and not turn.mandatory_reply else "at",
+            wake_kind=(
+                "private"
+                if item.private_direct and not turn.mandatory_reply
+                else "quote"
+                if is_quote_fallback
+                else "at"
+            ),
             reply_required=True,
             **({"reply_choice": fallback_choice} if fallback_choice else {}),
         )
@@ -2190,7 +2224,14 @@ class PersonaEngine:
             )
             item = replace(item, narrative_bundle=bundle)
         interaction_state = runtime.interaction_state
-        rhythm_ctrl = getattr(p, "natural_rhythm", None)
+        group_profile_eff = resolve_effective_group_profile(
+            p, runtime.umo or runtime.session_key, group_id=runtime.group_id
+        )["effective"]
+        rhythm_ctrl = (
+            getattr(p, "natural_rhythm", None)
+            if group_profile_eff.get("natural_reply_rhythm_enabled", True)
+            else None
+        )
         rhythm_urgent_breakthrough = False
         if rhythm_ctrl is not None and not item.shadow and not item.observations.get("rhythm_catchup"):
             avail_now = "available"
@@ -2552,7 +2593,7 @@ class PersonaEngine:
                 )
             )
             opening = not addressed and not continuation
-            opening_limit = participation_policy(p._runtime_config.presence_knob)[
+            opening_limit = participation_policy(group_profile_eff["presence_knob"])[
                 "ambient_openings_per_minute"
             ]
             if opening and opening_limit > 0 and len(runtime.ambient_openings) >= opening_limit:

@@ -41,6 +41,7 @@ from .core.arbiter import ArbitrationResult, InterventionArbiter
 from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, parse_runtime_config
 from .core.daily_rhythm import ASLEEP_STATES, STATE_AWAKE, STATE_WINDING_DOWN
 from .core.data_paths import resolve_data_root
+from .core.group_profiles import GroupProfileStore, resolve_effective_group_profile
 from .core.provider_budget import attach_context_telemetry
 from .core.series_privacy import SeriesPrivacyRegistry
 from .core.series_telemetry import SeriesTelemetryStore
@@ -518,6 +519,8 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.series_telemetry = SeriesTelemetryStore(data_root / "series-telemetry.sqlite3")
         self.series_templates = SeriesTemplateStore(data_root / "series-templates.json")
         self.series_privacy = SeriesPrivacyRegistry(data_root / "series-privacy-muted.json")
+        self.group_profiles_store = GroupProfileStore(data_root / "group-profiles.json")
+        self._group_profiles: dict[str, dict[str, Any]] = self.group_profiles_store.all_profiles()
         attach_context_telemetry(self.context, self.series_telemetry)
         self.media_archive = MediaArchive(data_root / "attachments")
         self.integrations = IntegrationRegistry(
@@ -4267,9 +4270,11 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         runtime = self._sessions.get(session_key)
         if parsed.group_id:
             if not self.is_group_takeover_enabled(parsed.group_id):
+                await self._reply_text(event, "当前群聊尚未开启对话主控接管，没有需要停止的待发回复。")
                 return
         elif (runtime is None or runtime.scope_kind != "private"
               or not self.is_runtime_scope_enabled(runtime)):
+            await self._reply_text(event, "当前私聊会话没有进行中的对话主控回复。")
             return
         # A stop command is deliberately a no-op for an unknown UMO.  In
         # particular, this command must never create a runtime for a group
@@ -4277,14 +4282,25 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         if (runtime is None
                 or (parsed.group_id and runtime.group_id != str(parsed.group_id))
                 or (not parsed.group_id and runtime.scope_kind != "private")):
+            await self._reply_text(event, "当前没有你尚未发出的待发回复。")
             return
         user_id = str(parsed.sender_id or "")
         if not user_id:
             return
 
+        had_pending = False
         async with runtime.state_lock:
             if self._sessions.get(session_key) is not runtime:
                 return
+            had_pending = bool(
+                self.persona_engine.has_in_flight_reply_generation(runtime, user_id)
+                or self.persona_engine.has_pending_explicit_request(runtime, user_id)
+                or self.debounce.get_pending_count(session_key, user_id=user_id) > 0
+                or any(
+                    getattr(getattr(it, "context", None), "author", "") == user_id
+                    for it in getattr(runtime, "model_queue", ())
+                )
+            )
             self.persona_engine.cancel_member(runtime, user_id)
             if callable(getattr(runtime, "clear_reply_followup_state", None)):
                 runtime.clear_reply_followup_state(user_id)
@@ -4306,13 +4322,99 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             )
             if pending is not None and str(pending_owner or "") == user_id:
                 runtime.latest_pending = None
+                had_pending = True
             runtime.invalidate_followups_for_user(user_id)
             rhythm_ctrl = getattr(self, "natural_rhythm", None)
             if rhythm_ctrl is not None:
                 rhythm_ctrl.on_member_stopped(session_key, user_id)
             runtime.touch(self.time_service.time())
 
-        await self._reply_owned_text(runtime, event, "已停止你尚未发送的回复内容。")
+        reply_msg = (
+            "已停止你尚未发送的回复内容。"
+            if had_pending
+            else "已确认：当前没有待发给你的回复，也已重置你的待发队列。"
+        )
+        await self._reply_owned_text(runtime, event, reply_msg)
+
+    @filter.command("群间")
+    async def cmd_qunjian(self, event: AstrMessageEvent, subcommand: str = "") -> None:
+        """Group-facing /群间 ecosystem discovery card and admin /群间 自检 health report."""
+        self._mark_command_event(event)
+        from .core.series_guide import build_group_ecosystem_card, build_series_self_check_report
+
+        sub = str(subcommand or "").strip().lower()
+        is_admin = False
+        if hasattr(event, "is_admin"):
+            try:
+                is_admin = bool(event.is_admin())
+            except Exception:
+                is_admin = False
+
+        if sub in {"自检", "health", "check", "diag"}:
+            if not is_admin:
+                await self._reply_text(event, "仅管理员可使用 `/群间 自检`。")
+                return
+            report = build_series_self_check_report(self)
+            await self._reply_text(event, report)
+            return
+
+        parsed = parse_group_event(event)
+        card = build_group_ecosystem_card(
+            self,
+            umo=parsed.unified_msg_origin or "",
+            group_id=parsed.group_id or "",
+            is_admin=is_admin,
+        )
+        await self._reply_text(event, card)
+
+    @filter.command("群间帮助")
+    async def cmd_qunjian_help(self, event: AstrMessageEvent) -> None:
+        """Alias for /群间 ecosystem discovery card."""
+        await self.cmd_qunjian(event, subcommand="")
+
+    def _format_why_report(self, session_id: str, limit: int = 3) -> str:
+        """Format the latest N decision traces, latencies, and guard reasons for /dynamics why."""
+        from .core.outcome_recorder import read_outcome
+
+        dag = self.dags.get(session_id)
+        if dag is None or not dag.nodes:
+            return "【排障透镜 /dynamics why】\n本群暂无近期消息与决策记录。"
+        bot_id = str(getattr(self._sessions.get(session_id), "bot_id", "") or "")
+        nodes = [
+            n for n in sorted(dag.nodes.values(), key=lambda x: x.timestamp, reverse=True)
+            if not bot_id or str(n.user_id) != bot_id
+        ][:limit]
+        if not nodes:
+            return "【排障透镜 /dynamics why】\n本群暂无成员发言的决策记录。"
+
+        lines = [f"🔍 【排障透镜 · 最近 {len(nodes)} 条决策】"]
+        for idx, node in enumerate(nodes, 1):
+            meta = node.metadata if isinstance(node.metadata, dict) else {}
+            outcome = read_outcome(node)
+            trace = meta.get("decision_trace") if isinstance(meta.get("decision_trace"), dict) else {}
+            persona_stage = (trace.get("decision_stages") or {}).get("persona") or {}
+            judgement = (trace.get("decision_stages") or {}).get("judgement") or {}
+            final_state = str(outcome.get("final_outcome") or persona_stage.get("action") or "recorded")
+            reason = str(
+                outcome.get("suppression_reason")
+                or persona_stage.get("reason_code")
+                or trace.get("decision_branch")
+                or "—"
+            )
+            action_choice = str((judgement.get("action") or {}).get("choice") or persona_stage.get("action") or "—")
+            recalled_tag = " [已撤回]" if meta.get("recalled") else ""
+            lat = meta.get("turn_latency") if isinstance(meta.get("turn_latency"), dict) else {}
+            lat_bits: list[str] = []
+            if isinstance(lat.get("first_send_seconds"), (int, float)):
+                lat_bits.append(f"首句 {int(float(lat['first_send_seconds']) * 1000)}ms")
+            for sk, sv in list((lat.get("stages") or {}).items())[:3]:
+                if isinstance(sv, (int, float)):
+                    lat_bits.append(f"{sk} {int(float(sv) * 1000)}ms")
+            lat_str = f" · 耗时({', '.join(lat_bits)})" if lat_bits else ""
+            lines.append(
+                f"{idx}. [{node.msg_id[:12]}]{recalled_tag} 结论={final_state} | 动作={action_choice} | 护栏/原因={reason}{lat_str}"
+            )
+        return "\n".join(lines)
 
     @filter.command("dynamics")
     @filter.permission_type(getattr(getattr(filter, "PermissionType", None), "ADMIN", "ADMIN"))
@@ -4341,21 +4443,27 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         raw_key = parsed_event.unified_msg_origin or group_id
         session_id = self._resolve_session_key(raw_key) or raw_key
         now = self.time_service.time()
+        act = str(action or "status").strip().lower()
 
-        if action == "status":
+        if act == "status":
             telemetrics = self.vibe_analyzer.get_telemetrics(session_id, current_time=now)
             mode = self.vibe_analyzer.peek_mode(session_id, current_time=now)
             cooling = self.arbiter.is_in_deep_cooling(session_id, current_time=now)
             dag = self.dags.get(session_id)
             node_count = len(dag.nodes) if dag is not None else 0
-            takeover = "是" if self.is_group_takeover_enabled(group_id) else "否"
+            enabled_here = self.is_group_takeover_enabled(group_id)
+            takeover = "是" if enabled_here else "否"
             decision = self.arbiter.last_decision(session_id)
             gate = decision.reason if decision is not None else "尚无仲裁"
+            prof = self.get_effective_group_profile(session_id, group_id=group_id)
+            eff_p = prof["effective"]
+            profile_tag = "（含本群独立覆写）" if prof["has_overrides"] else "（继承全局）"
             report = (
                 f"【群聊动态状态监控】\n"
                 f"• 管线: {self.pipeline_mode}\n"
                 f"• 当前氛围: {mode.value}\n"
                 f"• 本群已生效: {takeover}\n"
+                f"• 调度画像{profile_tag}: 分寸={eff_p['presence_knob']} | 门槛={eff_p['reply_probability_threshold']}% | 观察模式={'开' if eff_p['shadow_mode'] else '关'}\n"
                 f"• 最近门闩: {gate}\n"
                 f"• 消息速率: {telemetrics.mpm} MPM\n"
                 f"• 平均字符数: {telemetrics.average_chars} 字/条\n"
@@ -4370,11 +4478,61 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 f"• 深度冷却中: {'是' if cooling else '否'}\n"
                 f"• 活跃DAG节点: {node_count} 个"
             )
+            if not enabled_here:
+                report += "\n\n💡 本群当前未开启接管：发送 `/dynamics on` 可立即启用本群对话主控，或在控制台「快速引导 / 群总控矩阵」中开启。"
             await self._reply_text(event, report)
-        elif action == "uncool":
+        elif act == "why":
+            try:
+                limit = int(param) if str(param or "").strip() else 3
+            except ValueError:
+                limit = 3
+            limit = max(1, min(limit, 5))
+            await self._reply_text(event, self._format_why_report(session_id, limit=limit))
+        elif act in {"on", "off"}:
+            desired = act == "on"
+            res = await self.set_series_scope_enabled(raw_key, desired)
+            if res.get("ok"):
+                msg = (
+                    "已为本群开启对话主控接管。"
+                    if desired
+                    else "已为本群暂停对话主控接管。"
+                )
+            else:
+                msg = f"切换本群接管状态失败：{res.get('summary') or res.get('reason') or '请稍后重试'}"
+            await self._reply_text(event, msg)
+        elif act == "presence":
+            clean_p = str(param or "").strip().lower()
+            aliases = {"隐身": "ghost", "安静": "ghost", "懂事": "sensible", "自然": "sensible", "活跃": "lively"}
+            clean_p = aliases.get(clean_p, clean_p)
+            if not clean_p:
+                prof = self.get_effective_group_profile(session_id, group_id=group_id)
+                eff_p = prof["effective"]
+                src = "本群独立覆写" if "presence_knob" in prof["overrides"] else "全局默认"
+                await self._reply_text(
+                    event,
+                    f"当前本群分寸旋钮：{eff_p['presence_knob']}（{src}）。\n"
+                    f"用法：/dynamics presence ghost|sensible|lively|reset",
+                )
+                return
+            if clean_p in {"reset", "default", "全局"}:
+                existing = self.group_profiles_store.get(session_id, group_id=group_id)
+                existing.pop("presence_knob", None)
+                existing.pop("updated_at", None)
+                self.set_group_profile(session_id, existing)
+                await self._reply_text(event, "已清除本群的分寸旋钮独立覆写，恢复继承全局设置。")
+                return
+            if clean_p not in {"ghost", "sensible", "lively"}:
+                await self._reply_text(event, "分寸旋钮仅支持：ghost（隐身）| sensible（懂事）| lively（活跃）| reset（恢复全局）")
+                return
+            existing = self.group_profiles_store.get(session_id, group_id=group_id)
+            existing.pop("updated_at", None)
+            existing["presence_knob"] = clean_p
+            self.set_group_profile(session_id, existing)
+            await self._reply_text(event, f"已将本群独立分寸旋钮设为 {clean_p}（不影响其他群）。")
+        elif act == "uncool":
             await self._uncool_session_async(session_id)
             await self._reply_text(event, "已立即解除本群的深度冷却期（已保留对话图谱）。")
-        elif action == "cool":
+        elif act == "cool":
             try:
                 minutes = float(param) if param else 15.0
                 if not math.isfinite(minutes) or (minutes != 0.0 and not 1.0 <= minutes <= 180.0):
@@ -4400,11 +4558,39 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             )
             await self._cool_session_async(session_id, minutes)
             await self._reply_text(event, f"已手动为本群开启 {minutes} 分钟深度冷却期。")
-        elif action == "reset":
+        elif act == "reset":
             await self._reset_session_state_async(session_id)
             await self._reply_text(event, "已重置本群的对话图谱与上下文状态。")
         else:
-            await self._reply_text(event, "用法: /dynamics status | cool [分钟|0] | uncool | reset")
+            await self._reply_text(
+                event,
+                "【/dynamics 管理员指令帮助】\n"
+                "• /dynamics status — 查看本群氛围、冷却与调度画像\n"
+                "• /dynamics why [1-5] — 查看最近 3~5 条决策结论、耗时与护栏\n"
+                "• /dynamics on | off — 开启或暂停本群对话主控接管\n"
+                "• /dynamics presence [ghost|sensible|lively|reset] — 查看或设置本群独立分寸旋钮\n"
+                "• /dynamics cool [分钟|0] | uncool — 开启或解除深度冷却\n"
+                "• /dynamics reset — 重置本群图谱与上下文状态",
+            )
+
+    def get_effective_group_profile(self, session_or_umo: str = "", *, group_id: str = "") -> dict[str, Any]:
+        """Return effective scheduling profile (global defaults merged with per-group overrides)."""
+        return resolve_effective_group_profile(self, session_or_umo, group_id=group_id)
+
+    def is_session_shadow_mode(self, session_or_umo: str = "", *, group_id: str = "") -> bool:
+        """Return whether shadow_mode is active for the given session (respecting per-group override)."""
+        return bool(self.get_effective_group_profile(session_or_umo, group_id=group_id)["effective"]["shadow_mode"])
+
+    def set_group_profile(self, session_or_umo: str, overrides: dict[str, Any] | None) -> dict[str, Any]:
+        """Persist per-group scheduling overrides and sync shared config snapshot."""
+        store = getattr(self, "group_profiles_store", None)
+        if store is None:
+            data_root = getattr(self, "_data_root", None)
+            store = GroupProfileStore((data_root / "group-profiles.json") if data_root else None)
+            self.group_profiles_store = store
+        saved = store.set(session_or_umo, overrides)
+        self._group_profiles = store.all_profiles()
+        return saved
 
     def get_series_shared_config(self) -> dict[str, Any]:
         """Return a synchronous, read-only, secret-free summary of active series defaults."""

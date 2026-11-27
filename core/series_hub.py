@@ -981,6 +981,7 @@ async def batch_toggle_series_matrix(
         return 400, {"message": "provide exactly one of states or template_id"}
 
     resolved_template_id = ""
+    template_group_profile: dict[str, Any] = {}
     target_states: dict[str, bool] = {}
     if has_template:
         from .series_templates import SeriesTemplateStore
@@ -995,6 +996,8 @@ async def batch_toggle_series_matrix(
         target_states = {
             pid: bool(val) for pid, val in (tpl.get("states") or {}).items()
         }
+        if isinstance(tpl.get("group_profile"), dict) and tpl["group_profile"]:
+            template_group_profile = dict(tpl["group_profile"])
     else:
         if not isinstance(states, dict) or not states:
             return 400, {"message": "states must be a non-empty object"}
@@ -1142,6 +1145,19 @@ async def batch_toggle_series_matrix(
     ]
     await asyncio.gather(*(_apply_one(pid, target_states[pid]) for pid in ordered_pids))
 
+    applied_group_profile: dict[str, Any] | None = None
+    if template_group_profile:
+        setter = getattr(plugin, "set_group_profile", None)
+        if callable(setter):
+            try:
+                res = setter(clean_umo, template_group_profile)
+                if inspect.isawaitable(res):
+                    res = await res
+                if isinstance(res, dict):
+                    applied_group_profile = res
+            except Exception:
+                pass
+
     series_panels.invalidate_presence_cache()
     invalidate_series_matrix_cache(plugin)
     refreshed = await build_series_matrix(plugin, scope=clean_umo, force_refresh=True)
@@ -1156,6 +1172,7 @@ async def batch_toggle_series_matrix(
         "failed": failed,
         "matrix_version": refreshed["version"],
         "row": new_row,
+        **({"group_profile_applied": applied_group_profile} if applied_group_profile is not None else {}),
     }
 
 

@@ -58,6 +58,14 @@
         </div>
       </header><section id="dynamics-series-panel" aria-label="互通插件状态" data-series-aria-label="互通插件状态"><p class="sp-feedback" role="status" data-series-text="正在读取互通插件…">正在读取互通插件…</p></section>
 
+      <section class="wire-card replay-redaction-banner hidden" id="replayRedactionBanner" role="status" aria-live="polite">
+        <div>
+          <strong id="replayRedactionTitle" data-series-text="当前处于隐私脱敏模式">当前处于隐私脱敏模式</strong>
+          <p class="ops-note" id="replayRedactionDesc" data-series-text="默认不展示群友原文与真实账号 ID。如需排障，管理员可临时解密查看本次会话回放（仅作用于当前页面，不改全局配置）。">默认不展示群友原文与真实账号 ID。如需排障，管理员可临时解密查看本次会话回放（仅作用于当前页面，不改全局配置）。</p>
+        </div>
+        <button type="button" class="button button-quiet" id="btnToggleTemporaryReveal" data-series-text="管理员临时解密查看">管理员临时解密查看</button>
+      </section>
+
       <section class="replay-summary" aria-label="回放摘要" data-series-aria-label="回放摘要">
         <div><span data-series-text="已形成主题">已形成主题</span><strong id="summaryTopics">—</strong><small data-series-text="当前回放范围">当前回放范围</small></div>
         <div><span data-series-text="关联消息">关联消息</span><strong id="summaryMessages">—</strong><small data-series-text="主题内保留的消息">主题内保留的消息</small></div>
@@ -96,6 +104,27 @@
               <ul class="archive-topics" id="archivedTopicList"></ul>
             </details>
           </section>
+
+          <section class="wire-card dry-run-sandbox" id="dryRunSandbox" aria-labelledby="dryRunTitle">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">DRY-RUN SIMULATOR</p>
+                <h2 id="dryRunTitle" data-series-text="干跑决策沙盒（线上原判 vs 草稿新判）">干跑决策沙盒（线上原判 vs 草稿新判）</h2>
+              </div>
+              <button type="button" class="button button-primary" id="btnRunDryRun" data-series-text="试跑对比">试跑对比</button>
+            </div>
+            <p class="ops-note" data-series-text="不修改线上配置、不实际发送消息；用未保存草稿参数原地对比单条历史或模拟消息的参与决策。">不修改线上配置、不实际发送消息；用未保存草稿参数原地对比单条历史或模拟消息的参与决策。</p>
+            <div class="dry-run-grid">
+              <label><span data-series-text="模拟消息文本">模拟消息文本</span><input id="dryRunText" type="text" placeholder="例如：今晚大家准备玩什么？" /></label>
+              <label><span data-series-text="唤醒方式">唤醒方式</span><select id="dryRunWake"><option value="ambient">普通群聊</option><option value="at">@ 机器人</option><option value="quote">引用机器人</option><option value="name">叫昵称</option><option value="private">私聊</option></select></label>
+              <label><span data-series-text="草稿分寸旋钮">草稿分寸旋钮</span><select id="dryRunPresence"><option value="">保持线上</option><option value="ghost">隐身 (ghost)</option><option value="sensible">懂事 (sensible)</option><option value="lively">活跃 (lively)</option></select></label>
+              <label><span data-series-text="草稿开口门槛 (%)">草稿开口门槛 (%)</span><input id="dryRunThreshold" type="number" min="0" max="100" step="1" placeholder="例如 65" /></label>
+              <label><span data-series-text="草稿决策后端">草稿决策后端</span><select id="dryRunBackend"><option value="">保持线上</option><option value="jev">Jev</option><option value="llm">LLM</option></select></label>
+              <label><span data-series-text="草稿观察模式">草稿观察模式</span><select id="dryRunShadow"><option value="">保持线上</option><option value="false">正常发送</option><option value="true">仅观察不发送</option></select></label>
+            </div>
+            <p class="ops-note" id="dryRunStatus" role="status" aria-live="polite"></p>
+            <div class="dry-run-compare hidden" id="dryRunResult"></div>
+          </section>
         </div>
 
         <aside class="wire-card replay-inspector" id="replayInspector" aria-labelledby="inspectorTitle">
@@ -123,8 +152,8 @@
         <p class="one-liner" id="blockDetail" data-series-text="点时间轨上的色块。">点时间轨上的色块。</p>
         <p class="ops-note" id="blockMeta"></p>
         <ol class="scene-events" id="blockEvents" aria-label="场景中的逐次判断" aria-live="polite" data-series-aria-label="场景中的逐次判断"></ol>
-        <section class="annotation-section" aria-labelledby="annotationTitle">
-          <h3 id="annotationTitle" data-series-text="话题与收件人纠错">话题与收件人纠错</h3>
+        <details class="annotation-section" id="annotationDetails">
+          <summary id="annotationTitle" data-series-text="话题与收件人离线纠错标注（展开）">话题与收件人离线纠错标注（展开）</summary>
           <p class="ops-note" data-series-text="标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。">标注用于离线评估，不修改实时话题。每条消息保留最后一次标注，每个会话最多保留 2000 条。</p>
           <div id="annotationMessages"></div>
           <p id="annotationStatus" role="status" aria-live="polite"></p>
@@ -132,7 +161,7 @@
           <div class="ops-actions">
             <button type="button" class="button" id="btnExportAnnotations" data-series-text="导出标注 JSON">导出标注 JSON</button>
           </div>
-        </section>
+        </details>
         <button type="button" class="button" id="btnOpenParticipation" data-series-text="在控制台调整参与设置">在控制台调整参与设置</button>
         <p class="ops-note" id="tonightNote" role="status" aria-live="polite"></p>
       </dialog>
