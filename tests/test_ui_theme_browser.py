@@ -161,6 +161,8 @@ def test_theme_survives_reload_navigation_and_new_context_without_storage(browse
         assert account["ui"] == "night"
         page.reload()
         page.wait_for_function("document.documentElement.dataset.uiTheme === 'night'")
+        if page.locator("#pluginNavMore").count():
+            page.locator("#pluginNavMore > summary").click()
         page.locator('[data-nav-page="learning"]').click()
         page.wait_for_url("**/learning/index.html?**")
         assert "asset_token=fresh" in page.url and "ui=night" in page.url

@@ -569,6 +569,7 @@ async def test_series_shared_config_contract_is_secret_free_and_matches_runtime(
             "rhythm_timezone",
             "quiet_hours",
             "ui_language",
+            "resource_profile",
         }
         assert shared["takeover_all_groups"] is False
         assert shared["takeover_groups"] == ["g1", "g2"]

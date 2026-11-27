@@ -12,6 +12,7 @@ async def test_replay_500_messages_and_live_limit_preserve_stored_nodes():
 
     plugin = _plugin()
     try:
+        plugin._registry.max_nodes = 500
         now = plugin.time_service.time()
         runtime = plugin._get_or_create_runtime("room-a", group_id="a", umo="room-a")
         other = plugin._get_or_create_runtime("room-b", group_id="b", umo="room-b")

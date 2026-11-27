@@ -46,6 +46,7 @@ def open_editor(context, page_server):
     page = context.new_page()
     page.goto(f"{page_server}/replay/index.html")
     page.locator('.replay-block').click()
+    page.locator('#annotationTitle').click()
     page.wait_for_function("document.querySelector('#annotationMetrics').textContent.includes('已标注')")
     return page
 

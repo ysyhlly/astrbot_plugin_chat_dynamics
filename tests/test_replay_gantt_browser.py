@@ -58,6 +58,7 @@ def test_new_topics_and_completed_titles_appear_without_manual_refresh(browser, 
         assert '正在归纳标题' not in page.locator('.gantt-label').inner_text()
         page.locator('.replay-block').click()
         assert page.locator('#detailTitle').inner_text() == '显卡风扇散热'
+        page.locator('#annotationTitle').click()
         assert '消息内容已隐藏' in page.locator('#annotationMessages').inner_text()
         page.wait_for_function("document.querySelector('#annotationMetrics').textContent.includes('已标注 0 条')")
         assert page.locator('#annotationStatus').inner_text() == ''
@@ -114,6 +115,7 @@ def test_automatic_refresh_does_not_close_details_or_discard_annotations(browser
         page.evaluate('window.__holdReplay = true; window.__refreshReplay()')
         page.wait_for_function("typeof window.__releaseReplay === 'function'")
         page.locator('.replay-block').click()
+        page.locator('#annotationTitle').click()
         page.locator('[data-target]').select_option('NEW')
         page.evaluate('window.__releaseReplay()')
         assert page.locator('#detailDialog').is_visible()
@@ -263,6 +265,7 @@ def test_replay_500_message_detail_on_mobile(browser, page_server):
         assert page.locator('#summaryMessages').inner_text() == '500'
         assert '当前回看 500 条' in page.locator('#trackHint').inner_text()
         page.locator('.replay-block').click()
+        page.locator('#annotationTitle').click()
         assert page.locator('.annotation-row').count() == 500
         last = page.locator('.annotation-row').last
         last.scroll_into_view_if_needed()

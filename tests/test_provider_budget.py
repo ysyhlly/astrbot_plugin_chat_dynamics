@@ -44,7 +44,9 @@ async def test_shared_adapters_queue_timeout_and_provider_selection():
     assert first.configured_provider("title") == "v"
     assert second.configured_provider("title") == "p"
     assert first.configured_provider("vibe") == "v"
-    tasks = [asyncio.create_task(second.generate(prompt="x", umo="u", system_prompt="", purpose="title")) for _ in range(3)]
+    bg_cap = first.provider_budget.live_snapshot()["background_capacity"]
+    assert bg_cap >= 1
+    tasks = [asyncio.create_task(second.generate(prompt="x", umo="u", system_prompt="", purpose="title")) for _ in range(bg_cap)]
     await asyncio.sleep(.01)
     with pytest.raises(LLMUnavailable, match="timed out"):
         await second.generate(prompt="x", umo="u", system_prompt="", purpose="title", timeout=.02)
@@ -52,9 +54,9 @@ async def test_shared_adapters_queue_timeout_and_provider_selection():
     release.set()
     await asyncio.gather(*tasks)
     stats = first.provider_budget.diagnostics()["stages"]["title"]
-    assert stats["generation"]["calls"] == 3
-    assert stats["queue"]["calls"] == 4
-    assert stats["lookup"]["calls"] == 4
+    assert stats["generation"]["calls"] == bg_cap
+    assert stats["queue"]["calls"] == bg_cap + 1
+    assert stats["lookup"]["calls"] == bg_cap + 1
 
 
 @pytest.mark.asyncio

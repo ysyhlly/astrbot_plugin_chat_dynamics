@@ -322,7 +322,7 @@ async def test_fixed_role_and_reply_protocol_precede_varying_turn_inputs(
     prefix = os.path.commonprefix((system_text(first.body), system_text(second.body)))
     assert prefix.startswith(CORE)
     assert GROUP_RULES in prefix
-    assert "[回应方式协议 / 本轮回应方式]" in prefix and "[本轮统一视觉表达]" in prefix
+    assert "[回应方式协议]" in prefix and "[本轮统一视觉表达]" in prefix
     assert "Host safety instruction." in prefix
     assert HOST_PERSONA not in prefix and "编号为 2" not in prefix
     first_user = json.dumps(first.body["contents"], ensure_ascii=False)
@@ -409,7 +409,8 @@ async def test_private_silence_and_internal_permissions(monkeypatch, tmp_path):
         and not private.result.chains
         and not private.result.text
     )
-    assert "私聊只在内部保留旁白" in system_text(private.body)
+    assert "[不回时的展示范围]" in system_text(private.body)
+    assert "其余场景选 silent 保持完全静默" in system_text(private.body)
     assert GROUP_RULES not in system_text(private.body)
     serialized_internal = json.dumps(internal.body, ensure_ascii=False)
     assert "private-only" not in serialized_internal
