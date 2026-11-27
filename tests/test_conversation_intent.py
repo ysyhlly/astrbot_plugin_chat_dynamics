@@ -109,11 +109,11 @@ async def test_same_jev_call_carries_intent_humor_and_new_contribution(jev_plugi
         assert len(p.jev.calls) == 1
         assert set(INTENT_CRITERIA) <= set(p.jev.calls[0]["questions"])
         if action == "reply":
-            result = bridge.requests[-1][0]["interaction_understanding"]
-            assert result["speaker_id"] == event.get_sender_id()
-            assert result["communication_intent"]["choice"] == "sharing"
-            assert result["expression_mode"]["choice"] == "meme"
-            assert result["turn_update"]["choice"] == "adds_detail"
+            result = bridge.requests[-1][0]["turn_signals"]
+            assert result["intent"] == "sharing"
+            assert result["expression"] == "meme"
+            assert result["update"] == "adds_detail"
+            assert "interaction_understanding" not in bridge.requests[-1][0]
         else:
             assert not bridge.requests and not event.replies_sent
     finally:
@@ -149,10 +149,10 @@ async def test_context_recheck_replaces_earlier_interpretation(jev_plugin):
         await flush(p, event)
         await drain(p)
         assert len(calls) == 2 and len(bridge.requests) == 1
-        result = bridge.requests[-1][0]["interaction_understanding"]
-        assert result["communication_intent"]["choice"] == "banter"
-        assert result["expression_mode"]["choice"] == "callback"
-        assert result["turn_update"]["choice"] == "continues_joke"
+        result = bridge.requests[-1][0]["turn_signals"]
+        assert result["intent"] == "banter"
+        assert result["expression"] == "callback"
+        assert result["update"] == "continues_joke"
     finally:
         await p.terminate()
 
@@ -174,7 +174,7 @@ async def test_invalid_optional_estimates_do_not_block_a_valid_reply(jev_plugin)
         runtime = p._sessions[event.unified_msg_origin]
         json.dumps(runtime.jev_decision, allow_nan=False)
         assert runtime.jev_decision["interaction_frame"]["answers"] == {}
-        result = bridge.requests[-1][0]["interaction_understanding"]
-        assert all(result[key]["choice"] == "unclear" for key in INTENT_CRITERIA)
+        assert "turn_signals" not in bridge.requests[-1][0]
+        assert "interaction_understanding" not in bridge.requests[-1][0]
     finally:
         await p.terminate()

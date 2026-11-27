@@ -7,7 +7,9 @@ hashed n-gram embedding if a neural vector is not ready yet.
 
 from __future__ import annotations
 
+import array
 import asyncio
+import hashlib
 import inspect
 from astrbot.api import logger
 import math
@@ -99,7 +101,7 @@ class EmbeddingAdapter:
         # entry lifetime, not the key space.
         self.cache_ttl = max(0.0, float(cache_ttl))
         self._clock = clock or time.monotonic
-        self._cache: OrderedDict[str, Tuple[float, ...]] = OrderedDict()
+        self._cache: OrderedDict[str, array.array] = OrderedDict()
         self._stamps: dict[str, float] = {}
         self._inflight: dict[str, asyncio.Task] = {}
         self._pending_tasks: set[asyncio.Task] = set()
@@ -158,6 +160,13 @@ class EmbeddingAdapter:
     def cache_len(self) -> int:
         return len(self._cache)
 
+    @staticmethod
+    def _cache_key(text: str) -> str:
+        key = (text or "").strip()
+        if len(key) > 128:
+            return "sha256:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return key
+
     def _drop(self, key: str) -> None:
         self._cache.pop(key, None)
         self._stamps.pop(key, None)
@@ -168,8 +177,8 @@ class EmbeddingAdapter:
         stamp = self._stamps.get(key)
         return stamp is None or (self._clock() - stamp) > self.cache_ttl
 
-    def cached(self, text: str) -> Optional[Tuple[float, ...]]:
-        key = (text or "").strip()
+    def _cached_array(self, text: str) -> Optional[array.array]:
+        key = self._cache_key(text)
         if not key:
             return None
         vec = self._cache.get(key)
@@ -184,20 +193,27 @@ class EmbeddingAdapter:
         self._cache.move_to_end(key)
         return vec
 
+    def cached(self, text: str) -> Optional[Tuple[float, ...]]:
+        vec = self._cached_array(text)
+        if vec is None:
+            return None
+        return tuple(vec)
+
     def remember(self, text: str, vector: Sequence[float]) -> Tuple[float, ...]:
-        key = (text or "").strip()
+        key = self._cache_key(text)
         normed = _normalize_vec(vector)
         if not any(normed):
             # Directionless vectors are not cached; see _directed().
             return ()
+        compact = array.array("f", normed)
         if not key:
-            return normed
-        self._cache[key] = normed
+            return tuple(compact)
+        self._cache[key] = compact
         self._cache.move_to_end(key)
         self._stamps[key] = self._clock()
         while len(self._cache) > self.cache_size:
             self._drop(self._cache.popitem(last=False)[0])
-        return normed
+        return tuple(compact)
 
     async def warm(self, texts: Sequence[str]) -> int:
         """Make a known corpus fully cached before a deterministic replay.
@@ -215,7 +231,7 @@ class EmbeddingAdapter:
                 await self.embed(key)
             except Exception as exc:  # a replay must survive one bad provider call
                 logger.warning("[Embedding] warm failed: %s", type(exc).__name__)
-        cached = sum(1 for key in wanted if self._cache.get(key) is not None)
+        cached = sum(1 for key in wanted if self._cache.get(self._cache_key(key)) is not None)
         self._stats["warms"] += 1
         return cached
 
@@ -225,8 +241,8 @@ class EmbeddingAdapter:
         if not self.enabled:
             self.last_backend = "hashed"
             return base
-        left_vec = self.cached(left_text)
-        right_vec = self.cached(right_text)
+        left_vec = self._cached_array(left_text)
+        right_vec = self._cached_array(right_text)
         if left_vec is None or right_vec is None or len(left_vec) != len(right_vec):
             self.last_backend = "hashed"
             return base
@@ -255,16 +271,17 @@ class EmbeddingAdapter:
 
     async def embed(self, text: str) -> Optional[Tuple[float, ...]]:
         """Fetch a neural vector, or None to keep using the hashed fallback."""
-        key = (text or "").strip()
-        if not key or not self.enabled:
+        raw_text = (text or "").strip()
+        if not raw_text or not self.enabled:
             return None
-        cached = self.cached(key)
+        cached = self.cached(raw_text)
         if cached is not None:
             self._stats["cache_hits"] += 1
             self.last_backend = "neural"
             self.last_error = ""
             return cached
-        inflight = self._inflight.get(key)
+        cache_key = self._cache_key(raw_text)
+        inflight = self._inflight.get(cache_key)
         if (inflight is not None and not inflight.done()
                 and getattr(inflight, "_embedding_generation", None) == self._generation):
             self._stats["singleflight_joins"] += 1
@@ -277,21 +294,21 @@ class EmbeddingAdapter:
         if sum(not task.done() for task in self._pending_tasks) >= self.max_inflight:
             self._stats["capacity_fallbacks"] += 1
             return None
-        task = asyncio.create_task(self._embed_uncached(key, self._generation))
+        task = asyncio.create_task(self._embed_uncached(raw_text, self._generation))
         task._embedding_generation = self._generation
-        self._inflight[key] = task
+        self._inflight[cache_key] = task
         self._pending_tasks.add(task)
         def release(completed: asyncio.Task) -> None:
             self._pending_tasks.discard(completed)
-            if self._inflight.get(key) is completed:
-                self._inflight.pop(key, None)
+            if self._inflight.get(cache_key) is completed:
+                self._inflight.pop(cache_key, None)
 
         task.add_done_callback(release)
         try:
             return await self._wait_embedding(task)
         finally:
-            if self._inflight.get(key) is task and task.done():
-                self._inflight.pop(key, None)
+            if self._inflight.get(cache_key) is task and task.done():
+                self._inflight.pop(cache_key, None)
 
     async def _wait_embedding(self, task: asyncio.Task) -> Optional[Tuple[float, ...]]:
         # Waiting on the set separates shared-task cancellation from cancellation

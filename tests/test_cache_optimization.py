@@ -17,7 +17,6 @@ from astrbot_plugin_chat_dynamics.core.character_view import (
     history_view,
 )
 from astrbot_plugin_chat_dynamics.core.config import parse_runtime_config
-from astrbot_plugin_chat_dynamics.core.context_retrieval import CONTEXT_INSTRUCTIONS
 from astrbot_plugin_chat_dynamics.core.jev_decision import build_questions, build_state
 from astrbot_plugin_chat_dynamics.core.llm_decision import LLMDecisionClient, split_decision_payload
 from astrbot_plugin_chat_dynamics.core.media_reply_policy import media_reply_instructions
@@ -98,9 +97,12 @@ def _make_evidence_history(round_count: int, *, repeated_user_text: bool = False
 # ---- CD-1: Static REPLY_INSTRUCTIONS & media_reply_policy dedup ----
 
 
-def test_reply_instructions_omits_main_vision_hint_and_includes_context_policy():
+def test_reply_instructions_omits_main_vision_hint_and_stays_compact_chinese():
     assert vision.MAIN_VISION_HINT not in REPLY_INSTRUCTIONS
-    assert CONTEXT_INSTRUCTIONS in REPLY_INSTRUCTIONS
+    assert "事实与回执真实性" in REPLY_INSTRUCTIONS
+    assert "发言者与对象边界" in REPLY_INSTRUCTIONS
+    assert "篇幅与气泡分段" in REPLY_INSTRUCTIONS
+    assert len(REPLY_INSTRUCTIONS) < 600
 
 
 def test_media_reply_instructions_concise_with_static_flag_and_full_fallback():
@@ -453,12 +455,12 @@ def test_reply_prompt_compact_json_strips_empty_and_deduplicates():
     assert '": ' not in serialized
     data = json.loads(serialized)
     assert "context_policy" not in data["conversation"]
-    assert "length" not in data["attention_plan"]
+    assert "attention_plan" not in data
     assert "length_hint" not in data.get("delivery_constraints", {})
     assert data["delivery_constraints"] == {"rhythm_state": "awake"}
     assert "character_state" not in data
-    # Empty optional TurnDecision record fields stripped; core fields preserved.
-    assert set(data["response_plan"]) == {"action", "state", "target_message_ids", "response_goal", "length", "reason_code"}
+    # Slim response_plan carries only load-bearing routing/style signals (no response_goal or trace metadata).
+    assert set(data["response_plan"]) == {"action", "state", "target_message_ids", "length", "reason_code"}
     assert data["conversation"]["background"] == []
     assert data["conversation"]["truncated"] is False
 
@@ -706,7 +708,6 @@ def test_phase2_rhythm2_config_pacer_recall_and_reply_prompt_preserved():
     from astrbot_plugin_chat_dynamics.core.natural_rhythm import NaturalRhythmController
     from astrbot_plugin_chat_dynamics.core.pacer import PacingShaper
     from astrbot_plugin_chat_dynamics.core.session_runtime import SessionRuntime
-    from astrbot_plugin_chat_dynamics.core.turn_decision import REPLY_INSTRUCTIONS
     from astrbot_plugin_chat_dynamics.core.vibe_analyzer import GroupChatMode
 
     cfg, warnings = parse_runtime_config({})
@@ -758,16 +759,14 @@ def test_phase2_rhythm2_config_pacer_recall_and_reply_prompt_preserved():
     status = ctrl.status()
     assert status["enabled"] is False
 
-    # reply_prompt sets rhythm_mode in attention_plan while static rules live in REPLY_INSTRUCTIONS
+    # reply_prompt keeps rhythm_mode solely in delivery_constraints without duplicating attention_plan
     turn = TurnContext("s", "u1", "回来看一下", (MessageSnapshot("m1", "u1", "回来看一下"),), (), 0, 0, 0, True)
     decision = TurnDecision("reply", "casual", ("m1",), "回应", "brief", "rhythm_catchup")
     for mode in ("catchup", "afterthought"):
         raw = reply_prompt(turn, decision, delivery_constraints={"rhythm_mode": mode})
         data = json.loads(raw)
-        assert data["attention_plan"]["rhythm_mode"] == mode
+        assert "attention_plan" not in data
         assert data["delivery_constraints"]["rhythm_mode"] == mode
-        assert "guidance" not in data["attention_plan"]
-    assert "catchup" in REPLY_INSTRUCTIONS and "afterthought" in REPLY_INSTRUCTIONS
 
 
 def test_phase2_boundary_authorization_unconditionally_static():

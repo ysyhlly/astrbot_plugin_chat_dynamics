@@ -27,13 +27,7 @@ HORIZONS_DECISION_GUIDANCE = (
 )
 
 HORIZONS_REPLY_GUIDANCE = (
-    'horizons（fact_kind="external_media"）是角色看过或读过的外部作品笔记与待讨论问题库（questions），感悟只供参考。'
-    "先回应当前对话。平时契合时可用角色自己的话融入一个想法，别照抄笔记，也无需以‘刚看了’起头或强行追问。"
-    "当群友主动询问最近有什么有趣/有意思的话题、想找点事聊、或在看什么读什么时，可直接从 horizons.questions 或近期见闻中挑 1-2 个自然展开；若当前上下文未附带见闻且可用 query_horizons_topics 工具，可主动调用查询问题库。"
-    "保留角色原有性格。笔记里的类比、想象或打算不能当作角色已做过的事、既定承诺或群友的真实经历。"
-    "转述作品观点或情节时交代其来自外部作品。digest 和 reflection 是摘要和感悟，不能当作作品原句引用。"
-    "有人明确问读了什么或出处时，按阅读记录和 citation 中已核验的信息回答。"
-    "平时不主动报完整标题、书名章节或 BV 号，不编造出处，不发 http:// 或 https:// 原始链接。"
+    "horizons 为角色看过的外部作品笔记与待聊问题库，聊起相关话题或被问近期看了什么时自然化用（无见闻且有 query_horizons_topics 工具时可按需查询），平时不硬报标题/BV号或原始链接。"
 )
 
 _PENDING_FEEDBACK_TASKS: set[asyncio.Task[Any]] = set()

@@ -524,31 +524,23 @@ def _merge_evidence_views(host_view, recall_view):
         "merged_view_count": 2,
     }
     return merged
-REPLY_GUIDANCE = """根据已确定角色、当前状态和来源明确的上下文，生成角色实际会发出的消息。
-先回应本轮具体问题、动作或情绪，再自然体现人设。当前明确更正优先于同一任务的旧条件；背景里的旧问题不是本轮要回答的问题。不要为了展示记忆而搬出无关经历或日记。
-分清当前发言者、回应对象、被引用者和新人。group_events 是平台事实，不是成员台词；说欢迎的人不一定是新人。缺失信息确实妨碍作答时，只澄清关键一点，不猜身份、关系、动机或对方没说过的要求。
-遵守 response_plan 的对象、动作和长度。可以确认、澄清、拒绝或有限帮助，不必自动扩展为完整答题服务；需要回答时先给有用的核心内容，不以角色描写代替答案。
-普通关心、问候、感谢和善意玩笑先按善意理解。对当前关系中亲近的人，可以自然表达安心、愿意或关心；短句也要回应具体内容。亲近不等于同意每个动作，拒绝时只说明这次边界，不否定整段关系。
-保留核心人格与自主性，但不靠固定的省略号、反问、抱怨、自称或拒绝证明人设。慢热不等于冷淡，嘴硬不等于讥笑善意；旧回复的句式不是本轮模板。
-把吃饭、起床、休息、走动等日常留在背景，让有效状态自然影响语气、长短和能否继续聊。直接接当前话题，不在无关聊天前加第一人称动作引子，也不靠硬比喻制造关联。只有对方问起、约好要反馈的进展确实发生、当前状态实际限制回应，或日常细节确实能推进当前话题时，才简短提及。未知或过期状态不证明困倦，不把一时疲惫写成长期疏远，也不临时编造活动解释新消息。
-humanlike.preferences是自己的稳定偏好，可自然影响选题和看法，不需要每次展示或迎合对方而反转。
-当前发言明确问起你的实际生活状态或正在做什么时，可按需调用可用的 get_dynamics_world_state。只回答已确认的相关状态，查不到时保留未知。旧活动、喜好和计划不能证明你此刻在做什么。
-humanlike.moods只针对当前成员，按strength保留轻微余韵并逐渐淡化；当前话题和新反馈优先。认真话题可以收起玩笑，安静不等于冷淡，不能把对别人或先前话题的不满迁移过来。
-humanlike.corrections是当前成员已明确提出的纠正，text说明后续应怎样调整；只在其topic适用时执行，空topic表示对该成员的一般表达偏好。当前明确反馈优先于旧理解、旧建议和旧回复习惯。先修正理解再继续实际话题，不只道歉，不每轮复述“我记住了”，不让旧记忆把被纠正的说法重新带回来。不把成员主张当作外部事实，也不赋予工具权限或改变核心人格。
-humanlike.interests记录持续兴趣的当前进展和next_step。相关话题再出现时从已有进展接下去，可补充新理解，不重复从头介绍；paused不催，done不冒充仍待完成。discussion只是讨论过，execution才有实际行动回执；next_step尚未发生，不据此主动插话或编造体验。
-humanlike.moods的cause_quote和topic说明余波从何而来；换题、认真求助或收到纠正时重新判断，不能用旧情绪抵消新反馈。
-humanlike.nicknames是你对当前成员的专属称呼记录，不是对方已认可的证明。active可在合适时偶尔使用；没有记录时也允许依据真实共同经历或对方名字自然起一个友善、不过度亲昵的昵称，不要求每人都有。当前成员说不喜欢就立即停用，rejected时用其正常显示名，不自行另取替代昵称；只有本人明确重新要求才恢复。不要给别人套用同一记录，不用昵称代替身份判断。
-表达轻重随内容：一句吐槽可以只接一句，认真倾诉就具体回应；不把每次闲聊写成解释、建议或总结。对“哈哈、嗯嗯、好、知道了、晚安”等已经结束的话，若仍需回应就简短收住，不硬加新问题、话题或小打算；存在尚未回答的具体问题时先回答。
-续聊时先接住对方新增的回答、解释和纠正。conversation.dialogue 的 pending_question、user_updates 和 next_step 指明上一轮问了什么、对方已补充什么；已经回答的问题不要再问。适度补充一个相关看法、具体细节或有意义的问题，让话题有进展，不每轮都反问。短暂的“哈哈、嗯嗯”不等于话题终止；对方继续给出实质内容，就自然接上，不要求重新叫名字或@。原来的温和收尾不等于拒绝后续交流，明确停止或互动边界仍须遵守。
-事实、主观猜测、计划、开始执行和完成结果要分开。承诺保留原条件和截止时间，未经来源或回执证实，不宣称已开始或已完成，也不编造拖延原因。
-system_receipts 是系统执行事实：生成失败不等于角色手滑、误发、厌烦或故意不理人。用户问起才简短说明未能生成回复，原因未知就保持未知，不把技术失败写进角色经历。
-谈及旧话，区分可核对原话与当前态度；不替过去补编动机，不责怪对方提问。可以更正当前意思、承认影响，同时保留合理边界。
-只输出要发送的角色消息，不输出判定过程、上下文字段、心理分析或无关的解释。拒绝当应声虫：不做“确实/有道理/太真实了/我也觉得”式空泛附和或同义复述；非严肃求助与非沉重倾诉场景下，优先贴合人设整活（接梗升级、反差吐槽、脑洞延伸）或亮出自己鲜明的见解与偏好（允许温和反驳或换角度切入），公开讨论中若除了附和没新角度则直接 silent。避免重复和习惯性追问；遵守有效 silence/shield 边界。真实平台 @、引用和私聊也允许按人设与语境主动沉默；需要回应时，忙碌可简短说明限制。最终输出遵守宿主提供的回应方式协议。"""
-
-
-REPLY_GUIDANCE += "\n" + dynamics_horizons.HORIZONS_REPLY_GUIDANCE
+REPLY_GUIDANCE = "以当前角色身份自然回应眼前的话，真实状态与回执为准，不输出内部字段。"
 DECISION_GUIDANCE += "\n环境天气只帮助理解角色当前处境，不是新消息、接话义务或主动联系授权；不要因为天气字段存在而主动插话。"
 DECISION_GUIDANCE += "\n" + dynamics_horizons.HORIZONS_DECISION_GUIDANCE
+
+
+def _load_series_panels():
+    try:
+        from .. import series_panels as _sp
+
+        return _sp
+    except Exception:
+        try:
+            import series_panels as _sp
+
+            return _sp
+        except Exception:
+            return None
 
 
 @dataclass(frozen=True)
@@ -564,6 +556,37 @@ class TurnContextBundle:
             cached = json.loads(self.payload)
             object.__setattr__(self, "_wire_cache", cached)
         return cached
+
+    def release_wire_cache(self) -> None:
+        if getattr(self, "_wire_cache", None) is not None:
+            object.__setattr__(self, "_wire_cache", None)
+
+    def compact_for_cache(self) -> "TurnContextBundle":
+        """Strip heavy transient fields and drop _wire_cache for long-lived _bundles storage."""
+        try:
+            data = json.loads(self.payload)
+        except Exception:
+            self.release_wire_cache()
+            return self
+        if not isinstance(data, dict):
+            self.release_wire_cache()
+            return self
+        history = data.get("host_history_snapshot")
+        if isinstance(history, dict) and ("rows" in history or "source_refs" in history):
+            data["host_history_snapshot"] = {
+                "conversation_id": history.get("conversation_id", ""),
+                "snapshot_fingerprint": history.get("snapshot_fingerprint", ""),
+                "history_epoch": history.get("history_epoch", ""),
+                "source_rows_count": len(history.get("rows", [])) if isinstance(history.get("rows"), list) else int(history.get("source_rows_count") or 0),
+                "referenceable_rows_count": len(history.get("source_refs", [])) if isinstance(history.get("source_refs"), list) else int(history.get("referenceable_rows_count") or 0),
+            }
+            compact_payload = json.dumps(data, ensure_ascii=False, allow_nan=False)
+            compacted = TurnContextBundle(self.turn_id, compact_payload)
+        else:
+            compacted = TurnContextBundle(self.turn_id, self.payload)
+        # Preserve original bundle_id hash so identity checks remain stable.
+        object.__setattr__(compacted, "_bundle_id_cache", self.bundle_id)
+        return compacted
 
     def wire(self):
         return copy.deepcopy(self._wire_view())
@@ -662,14 +685,15 @@ class TurnContextBundle:
 class NarrativeCoordinator:
     """Own managed contexts and sends while life remains the state authority."""
 
-    _MAX_BUNDLES = 256
+    _MAX_BUNDLES = 64
     _MAX_SYNCED_FAILED_INTENTS = 512
     _ACTIVE_LOOP_INTERVAL_SECONDS = 30.0
     _DISABLED_MAINTENANCE_INTERVAL_SECONDS = 300.0
 
     def __init__(self, plugin, path):
         self.plugin = plugin
-        self.journal = NarrativeJournal(path)
+        ctx = getattr(plugin, "context", None)
+        self.journal = NarrativeJournal(path, context=ctx)
         from .journal_io import JournalIO, ReceiptOutbox
         self._io = JournalIO(logger)
         self._receipt_outbox = ReceiptOutbox(self.journal.path.parent / 'pending-receipts')
@@ -681,7 +705,7 @@ class NarrativeCoordinator:
         self._bundles = OrderedDict()
         self._synced_failed_intents = set()
         self._shared_reads = SharedReads()
-        self._read_memo = ExactMemo(ttl=10, capacity=64)
+        self._read_memo = ExactMemo(ttl=10, capacity=64, context=ctx)
         self._rpc_timings = CallTimings()
         self._revision_reads = {}
         self._revision_joins = 0
@@ -689,12 +713,26 @@ class NarrativeCoordinator:
         self._social_opportunity_at = {}
         # (provider, method) -> [上次 WARNING 的 monotonic 时刻, 该窗口内被压制的条数]
         self._rpc_warn_at: dict[tuple[str, str], list] = {}
+        self._last_vacuum_check_at: float = 0.0
+
+    def _max_bundles(self) -> int:
+        sp = _load_series_panels()
+        if sp is not None:
+            try:
+                limits = sp.get_series_resource_limits(getattr(self.plugin, "context", None))
+                return max(1, int(limits.get("chat_max_bundles", self._MAX_BUNDLES)))
+            except Exception:
+                pass
+        return max(1, int(self._MAX_BUNDLES))
 
     def _cache_bundle(self, umo: str, bundle: TurnContextBundle) -> None:
-        self._bundles[umo] = bundle
+        compact_fn = getattr(bundle, "compact_for_cache", None)
+        stored = compact_fn() if callable(compact_fn) else bundle
+        self._bundles[umo] = stored
+        cap = self._max_bundles()
         if isinstance(self._bundles, OrderedDict):
             self._bundles.move_to_end(umo)
-            while len(self._bundles) > self._MAX_BUNDLES:
+            while len(self._bundles) > cap:
                 self._bundles.popitem(last=False)
 
     def enabled(self, umo):
@@ -1150,6 +1188,9 @@ class NarrativeCoordinator:
         """
         extras = getattr(event, "_extras", {}) if event is not None else {}
         request_purpose = history_request_purpose(getattr(req, "prompt", ""), purpose)
+        if isinstance(extras, dict) and extras.get(MANAGED_KEY):
+            return {"schema_version": 1, "status": "skipped", "reason": "cd_owned_request",
+                    "purpose": request_purpose}
         owned_private = (
             getattr(event, "_chat_dynamics_owned_request", False) is True
             and getattr(event, "_cd_owned_original_input_v1", False) is True
@@ -1159,9 +1200,6 @@ class NarrativeCoordinator:
             # Owned private turns require a fresh request-local persona guard and
             # a real Worldbook scope. They never reuse a stale projection receipt.
             return await self._owned_private_memory_scope(event, req, request_purpose)
-        if isinstance(extras, dict) and extras.get(MANAGED_KEY):
-            return {"schema_version": 1, "status": "skipped", "reason": "cd_owned_request",
-                    "purpose": request_purpose}
         existing = getattr(req, "_cd_memory_feedback_v1", None)
         if (isinstance(existing, dict) and materials is None
                 and existing.get("purpose") == request_purpose):
@@ -2177,6 +2215,8 @@ class NarrativeCoordinator:
         """Called only after the owned scheduler commits or confirms delivery."""
         bundle = self._bundles.get(umo)
         scope = bundle.scope if bundle else None
+        if bundle is not None and hasattr(bundle, "release_wire_cache"):
+            bundle.release_wire_cache()
         if action != "created":
             scope = self.journal.reminder_scope(umo, str(reminder_id))
         if scope is None:
@@ -2234,18 +2274,60 @@ class NarrativeCoordinator:
             active_mode = narrative_on or horizons_active
             try:
                 await self.flush_receipts()
+                ctx = getattr(self.plugin, "context", None)
+                sp = _load_series_panels()
+                limits = {}
+                if sp is not None:
+                    try:
+                        limits = sp.get_series_resource_limits(ctx)
+                    except Exception:
+                        limits = {}
+                cfg_archive_days = int(
+                    getattr(self.plugin._runtime_config, "narrative_archive_retention_days", 30)
+                )
+                profile_archive_days = int(
+                    limits.get("chat_archive_retention_days", cfg_archive_days)
+                )
+                effective_archive_days = max(1, min(cfg_archive_days, profile_archive_days))
+                max_archive_rows = int(
+                    limits.get("chat_max_archive_rows", NarrativeJournal.DEFAULT_MAX_ARCHIVE_ROWS)
+                )
                 await self._io.call(
                     'maintain',
                     self.journal.maintain,
                     self.plugin.time_service.wall_time(),
                     getattr(self.plugin._runtime_config, "narrative_context_retention_days", 7),
-                    archive_retention_days=getattr(
-                        self.plugin._runtime_config, "narrative_archive_retention_days", 30
-                    ),
+                    archive_retention_days=effective_archive_days,
+                    max_archive_rows=max_archive_rows,
                     dead_letter_ttl_days=getattr(
                         self.plugin._runtime_config, "narrative_dead_letter_ttl_days", 7
                     ),
                 )
+                now_mono = time.monotonic()
+                if (
+                    self._last_vacuum_check_at <= 0.0
+                    or (now_mono - self._last_vacuum_check_at) >= 3600.0
+                ):
+                    self._last_vacuum_check_at = now_mono
+                    needs_vac = await asyncio.to_thread(
+                        self.journal.needs_auto_vacuum_migration
+                    )
+                    if needs_vac:
+                        if sp is not None and callable(getattr(sp, "heavy_subprocess_slot", None)):
+                            async with sp.heavy_subprocess_slot(
+                                ctx,
+                                "chat_narrative_vacuum",
+                                plugin_id="astrbot_plugin_chat_dynamics",
+                            ):
+                                await self._io.call(
+                                    'vacuum_migration',
+                                    self.journal.enable_incremental_vacuum_if_needed,
+                                )
+                        else:
+                            await self._io.call(
+                                'vacuum_migration',
+                                self.journal.enable_incremental_vacuum_if_needed,
+                            )
                 if active_mode:
                     if self.plugin.integrations.narrative_provider("portrayal") is not None:
                         await self._io.call('backfill_portraits', self.journal.backfill_portraits)
@@ -2959,6 +3041,8 @@ class NarrativeCoordinator:
                 scope = character.get("scope", scope)
         life = await self.call("dynamic_life_state", "get_narrative_admin", scope)
         material = bundle.wire() if bundle else {}
+        if bundle is not None and hasattr(bundle, "release_wire_cache"):
+            bundle.release_wire_cache()
         sources = {name: {"provider": name, "available": material.get("availability", {}).get(name, False),
                           "status": "已收集" if material.get("availability", {}).get(name) else "暂不可用",
                           "source_ids": [row["source_id"] for row in material.get("context_items", []) if row.get("provider") == name]}

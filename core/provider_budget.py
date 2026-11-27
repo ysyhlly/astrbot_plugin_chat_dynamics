@@ -178,6 +178,56 @@ class ProviderBudget:
         self._budget_cache: tuple[float, bool, bool] = (0.0, False, False)
         self._budget_refresh_task: asyncio.Task | None = None
         self._budget_cache_ttl: float = 5.0
+        self._context_ref: weakref.ref[Any] | None = None
+        self._explicit_limits: bool = False
+
+    def attach_context(self, context: Any) -> None:
+        if context is None:
+            return
+        try:
+            self._context_ref = weakref.ref(context)
+        except TypeError:
+            self._context_ref = None
+
+    @staticmethod
+    def _load_series_panels():
+        try:
+            from .. import series_panels as _sp
+
+            return _sp
+        except ImportError:
+            try:
+                import series_panels as _sp
+
+                return _sp
+            except ImportError:
+                return None
+
+    def _memory_watermark(self) -> dict[str, Any] | None:
+        _sp = self._load_series_panels()
+        if _sp is None:
+            return None
+        try:
+            ctx = self._context_ref() if self._context_ref is not None else None
+            return _sp.get_series_memory_watermark(ctx)
+        except Exception:
+            return None
+
+    def _effective_profile_caps(self) -> tuple[int, int, int]:
+        if self._explicit_limits:
+            return self.capacity, self.background_capacity, self.max_queue
+        _sp = self._load_series_panels()
+        if _sp is None:
+            return self.capacity, self.background_capacity, self.max_queue
+        try:
+            ctx = self._context_ref() if self._context_ref is not None else None
+            limits = _sp.get_series_resource_limits(ctx)
+            cap = min(self.capacity, max(2, int(limits.get("provider_capacity", self.capacity))))
+            bg = min(self.background_capacity, max(1, int(limits.get("provider_bg_capacity", self.background_capacity))))
+            mq = min(self.max_queue, max(8, int(limits.get("provider_max_queue", self.max_queue))))
+            return cap, bg, mq
+        except Exception:
+            return self.capacity, self.background_capacity, self.max_queue
 
     def configure_limits(
         self,
@@ -457,15 +507,18 @@ class ProviderBudget:
                     "reason": reason,
                 }
         soft_exceeded, hard_exceeded = self._daily_budget_state()
+        eff_cap, eff_bg, eff_mq = self._effective_profile_caps()
+        wm = self._memory_watermark()
         return {
-            "capacity": self.capacity,
-            "background_capacity": self.background_capacity,
-            "max_queue": self.max_queue,
+            "capacity": eff_cap,
+            "background_capacity": eff_bg,
+            "max_queue": eff_mq,
             "active": sum(v[0] for v in self.active.values()),
             "queued": sum(queued_by_provider.values()),
             "by_provider": by_provider,
             "by_plugin": by_plugin,
             "circuit_breakers": breakers,
+            "memory_watermark": wm or {},
             "budget_guard": {
                 "soft_exceeded": soft_exceeded,
                 "hard_exceeded": hard_exceeded,
@@ -479,7 +532,8 @@ class ProviderBudget:
     def _dispatch(self) -> None:
         now = time.monotonic()
         soft_exceeded, _hard_exceeded = self._daily_budget_state()
-        eff_bg_cap = 1 if soft_exceeded else self.background_capacity
+        eff_cap, base_bg_cap, _eff_mq = self._effective_profile_caps()
+        eff_bg_cap = 1 if soft_exceeded else base_bg_cap
 
         def rank(item: tuple[str, str, str, float, asyncio.Future[bool]]) -> tuple[int, float]:
             _, purpose, _, started, _ = item
@@ -494,7 +548,7 @@ class ProviderBudget:
                 continue
             total, background = self.active.get(provider, (0, 0))
             low = purpose not in _PRIORITY_PURPOSES
-            if total >= self.capacity or (low and background >= eff_bg_cap):
+            if total >= eff_cap or (low and background >= eff_bg_cap):
                 continue
             if item in self.waiters:
                 self.waiters.remove(item)
@@ -517,6 +571,15 @@ class ProviderBudget:
         is_background = clean_purpose not in _PRIORITY_PURPOSES
         owns_half_open_probe = False
         if is_background:
+            wm = self._memory_watermark()
+            if isinstance(wm, dict) and wm.get("state") == "hard":
+                raise ProviderBudgetBusyError(
+                    f"Process memory RSS ({wm.get('rss_mb')} MiB) exceeded hard watermark for background tasks",
+                    provider=clean_provider,
+                    purpose=clean_purpose,
+                    reason="memory_pressure",
+                    retry_after=60.0,
+                )
             _soft, hard = await self._daily_budget_state_async()
             if hard:
                 raise ProviderBudgetBusyError(
@@ -713,6 +776,7 @@ def context_budget(context: Any) -> ProviderBudget:
     telemetry = getattr(context, "_chat_dynamics_series_telemetry", None)
     if telemetry is not None and budget.telemetry is None:
         budget.attach_telemetry(telemetry)
+    budget.attach_context(context)
     return budget
 
 

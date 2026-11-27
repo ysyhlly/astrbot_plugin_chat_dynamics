@@ -1298,8 +1298,8 @@ function renderStyleCards() {
         const before = state.initialDraft[key];
         const after = card.values[key];
         if (!valuesEqual(key, before, after)) {
-          const label = FIELD_LABELS[key] || key;
-          diffs.push(`${label}: ${formatSettingValue(key, before)} → ${formatSettingValue(key, after)}`);
+          const label = KEY_LABELS[key] || key;
+          diffs.push(`${label}: ${formatDiffValue(key, before)} → ${formatDiffValue(key, after)}`);
         }
       }
       const diffEl = document.createElement("p");
@@ -2175,8 +2175,10 @@ async function boot() {
   try {
     await readyBridge();
     setLink(els, true, tr("已连接"));
+    if (els.linkLabel) setText(els.linkLabel, "已连接");
   } catch {
     setLink(els, false, tr("连接超时"));
+    if (els.linkLabel) setText(els.linkLabel, "连接超时");
   }
 
   try {

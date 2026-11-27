@@ -82,7 +82,9 @@ def test_continuation_keeps_an_explicit_clarify_action_with_ready_context(confid
     assert (result.action, result.length, result.reason_code) == (action, length, "jev_dialogue_continue")
     payload = json.loads(reply_prompt(context, result))
     assert payload["response_plan"]["target_message_ids"] == ["current"]
-    assert payload["attention_plan"]["mode"] == ("clarify" if action == "clarify" else "conversational")
+    assert payload["response_plan"]["action"] == action
+    assert "attention_plan" not in payload
+    assert "response_goal" not in payload["response_plan"]
     if action == "clarify":
         assert "中性的澄清" in result.response_goal
         assert "先直接回答" not in result.response_goal

@@ -19,7 +19,8 @@ from .arbiter import ArbitrationResult
 from .vibe_analyzer import GroupChatMode
 
 VERSION = 1
-MAX_SESSIONS = 1000
+_DEFAULT_MAX_SESSIONS = 256
+MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
 
 # The host version the learning layer records, resolved from the same file the
 # plugin loader reads. Not a literal: a literal drifts from metadata.yaml on the
@@ -44,12 +45,50 @@ def host_version() -> str:
         return ''
     match = _VERSION_PATTERN.search(text)
     return (match.group(1).strip()[:64] if match else '')
-MAX_NODES = 500
+_DEFAULT_MAX_NODES = 500
+MAX_NODES = _DEFAULT_MAX_NODES
 # Per-session limits alone still allow a very large snapshot (sessions x nodes x
 # 16k strings). The host copies the whole value on write, and the export runs
 # synchronously on the event loop, so the payload gets a total budget too: the
 # oldest sessions are dropped rather than blocking the loop with a huge build.
-MAX_TOTAL_BYTES = 4 * 1024 * 1024
+_DEFAULT_MAX_TOTAL_BYTES = 3 * 1024 * 1024
+MAX_TOTAL_BYTES = _DEFAULT_MAX_TOTAL_BYTES
+
+
+def _effective_persist_limits(plugin) -> tuple[int, int, int]:
+    """Return (max_total_bytes, max_sessions, max_nodes) honoring both profile limits and test monkeypatches."""
+    ctx = getattr(plugin, "context", None)
+    try:
+        from .. import series_panels as _sp
+    except Exception:
+        try:
+            import series_panels as _sp
+        except Exception:
+            _sp = None
+    limits = {}
+    if _sp is not None:
+        try:
+            limits = _sp.get_series_resource_limits(ctx)
+        except Exception:
+            limits = {}
+    eff_bytes = (
+        int(MAX_TOTAL_BYTES)
+        if MAX_TOTAL_BYTES != _DEFAULT_MAX_TOTAL_BYTES
+        else int(limits.get("chat_persist_max_bytes", _DEFAULT_MAX_TOTAL_BYTES))
+    )
+    eff_sessions = (
+        int(MAX_SESSIONS)
+        if MAX_SESSIONS != _DEFAULT_MAX_SESSIONS
+        else int(limits.get("chat_max_sessions", _DEFAULT_MAX_SESSIONS))
+    )
+    registry_nodes = int(getattr(getattr(plugin, "_registry", None), "max_nodes", 0) or 0)
+    if MAX_NODES != _DEFAULT_MAX_NODES:
+        eff_nodes = int(MAX_NODES)
+    elif ctx is not None:
+        eff_nodes = int(limits.get("chat_dag_max_nodes", 350))
+    else:
+        eff_nodes = registry_nodes or _DEFAULT_MAX_NODES
+    return max(100, eff_bytes), max(1, eff_sessions), max(16, eff_nodes)
 RUNTIME_FIELDS = ('scope_kind', 'last_activity', 'last_model_send', 'last_interlocutor',
                   'last_length_hint', 'last_delay_scale', 'last_rhythm_action',
                   'vibe_message_count', 'turn_sequence', 'model_diagnostic', 'topic_stop_revisions',
@@ -202,15 +241,16 @@ def export_runtime_state(plugin) -> dict:
               'metrics': _json(dict(plugin._metrics)),
               'shadow_decisions': [_json({k: v for k, v in row.items() if k in SHADOW_FIELDS})
                                    for row in list(plugin._shadow_decisions)[-50:]]}
+    max_total_bytes, max_sessions, max_nodes = _effective_persist_limits(plugin)
     extras.update(dropped_nodes=0, dropped_sessions=0, truncated=False)
     # Reserve counter growth and include the sessions key and list separators.
-    budget = max(0, MAX_TOTAL_BYTES - _encoded_size({**extras, 'sessions': []}) - 128)
+    budget = max(0, max_total_bytes - _encoded_size({**extras, 'sessions': []}) - 128)
     # Newest first, so running out of budget drops the least recently active
     # sessions; the list is reversed back to chronological order below because
     # restore() reads the end of it.
     runtimes = sorted(list(plugin._registry.runtimes.values()), key=lambda r: r.last_activity, reverse=True)
-    extras['dropped_sessions'] = max(0, len(runtimes) - MAX_SESSIONS)
-    for runtime in runtimes[:MAX_SESSIONS]:
+    extras['dropped_sessions'] = max(0, len(runtimes) - max_sessions)
+    for runtime in runtimes[:max_sessions]:
         item = _fields(runtime, RUNTIME_FIELDS)
         item.update(session_key=runtime.session_key, group_id=runtime.group_id,
                     umo=runtime.umo, bot_id=runtime.bot_id)
@@ -218,7 +258,7 @@ def export_runtime_state(plugin) -> dict:
         item['group_events'] = export_group_events(runtime, plugin.time_service.time())
         item['nodes'] = []
         if runtime.dag:
-            for node in list(runtime.dag.get_recent_nodes(MAX_NODES)):
+            for node in list(runtime.dag.get_recent_nodes(max_nodes)):
                 saved = _fields(node, NODE_FIELDS)
                 saved['metadata'] = _json({k: v for k, v in list(node.metadata.items()) if k in META_FIELDS})
                 item['nodes'].append(saved)
@@ -284,9 +324,9 @@ def export_runtime_state(plugin) -> dict:
     result = {**extras, 'sessions': sessions}
     # Fixed diagnostics alone can exceed the limit. Drop optional global data
     # before returning, and refuse an impossible envelope rather than overshoot.
-    if _encoded_size(result) > MAX_TOTAL_BYTES:
+    if _encoded_size(result) > max_total_bytes:
         result.update(metrics={}, shadow_decisions=[], truncated=True)
-    if _encoded_size(result) > MAX_TOTAL_BYTES:
+    if _encoded_size(result) > max_total_bytes:
         raise ValueError('runtime snapshot budget is smaller than its envelope')
     return result
 

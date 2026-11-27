@@ -6,9 +6,31 @@ from collections import OrderedDict, Counter, deque
 from .shared_reads import SharedReads
 
 
+def _default_exact_memo_max_bytes(context=None) -> int:
+    try:
+        from .. import series_panels as _sp
+    except Exception:
+        try:
+            import series_panels as _sp
+        except Exception:
+            _sp = None
+    if _sp is not None:
+        try:
+            limits = _sp.get_series_resource_limits(context)
+            return max(64 * 1024, int(limits.get("chat_exact_memo_max_bytes", 3 * 1024 * 1024)))
+        except Exception:
+            pass
+    return 3 * 1024 * 1024
+
+
 class ExactMemo:
-    def __init__(self, *, ttl=30.0, capacity=128, max_bytes=4 * 1024 * 1024, clock=time.monotonic):
-        self.ttl, self.capacity, self.max_bytes, self.clock = ttl, capacity, max_bytes, clock
+    def __init__(self, *, ttl=30.0, capacity=128, max_bytes=None, clock=time.monotonic, context=None):
+        resolved_max_bytes = (
+            _default_exact_memo_max_bytes(context)
+            if max_bytes is None
+            else int(max_bytes)
+        )
+        self.ttl, self.capacity, self.max_bytes, self.clock = ttl, capacity, resolved_max_bytes, clock
         self.entries = OrderedDict()
         self.bytes = 0
         self.shared = SharedReads()

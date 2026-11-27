@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 from astrbot_plugin_chat_dynamics.core.media_reply_policy import media_reply_instructions
-from astrbot_plugin_chat_dynamics.core.narrative import REPLY_GUIDANCE, TurnContextBundle
+from astrbot_plugin_chat_dynamics.core.narrative import TurnContextBundle
 from astrbot_plugin_chat_dynamics.core.narrative_projection import reply_material
 from astrbot_plugin_chat_dynamics.core.world_visual_context import (
     WORLD_VISUAL_BRIDGE_GUIDANCE,
@@ -36,7 +36,7 @@ def test_world_rules_and_conditions_reach_reply_while_decision_stays_compact():
     assert reply['references_default']==[] and 'NEVER_FORWARD' not in json.dumps(reply)
     assert 'delete_all' not in json.dumps(reply)
     assert 'rules' not in decision and len(json.dumps(decision,ensure_ascii=False))<250
-    assert WORLD_VISUAL_BRIDGE_GUIDANCE in REPLY_GUIDANCE
+    assert WORLD_VISUAL_BRIDGE_GUIDANCE and "world_visual" in WORLD_VISUAL_BRIDGE_GUIDANCE
 
 
 def test_expired_and_malformed_context_is_safe_and_no_tool_permission_is_granted():

@@ -16,10 +16,11 @@ import re
 import copy
 import asyncio
 from dataclasses import dataclass, field, replace
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, List, Optional
 
 from .member_identity import display_name
+from .outbound_ledger import owned_outbound_send
 
 
 
@@ -1026,7 +1027,8 @@ async def send_onebot_chain(
                 )
             method = getattr(bot, method_name)
             try:
-                response = await method(*args, **kwargs)
+                with owned_outbound_send():
+                    response = await method(*args, **kwargs)
             except Exception as exc:
                 if parts:
                     raise _attach_onebot_receipt(
@@ -1052,13 +1054,14 @@ async def send_onebot_chain(
 
     transport = _RecordingTransport()
     if not segmented:
-        await AiocqhttpMessageEvent.send_message(
-            transport,
-            message_chain,
-            event=raw_event,
-            is_group=is_group,
-            session_id=session_id,
-        )
+        with owned_outbound_send():
+            await AiocqhttpMessageEvent.send_message(
+                transport,
+                message_chain,
+                event=raw_event,
+                is_group=is_group,
+                session_id=session_id,
+            )
         return raw_responses[0] if len(raw_responses) == 1 else (raw_responses or None)
 
     chain_cls = type(message_chain) if callable(type(message_chain)) else MessageChain
@@ -1067,13 +1070,14 @@ async def send_onebot_chain(
         current_index = idx
         dispatched_current = False
         sub_chain = chain_cls(chain=[seg]) if hasattr(message_chain, "chain") else MessageChain([seg])
-        await AiocqhttpMessageEvent.send_message(
-            transport,
-            sub_chain,
-            event=raw_event,
-            is_group=is_group,
-            session_id=session_id,
-        )
+        with owned_outbound_send():
+            await AiocqhttpMessageEvent.send_message(
+                transport,
+                sub_chain,
+                event=raw_event,
+                is_group=is_group,
+                session_id=session_id,
+            )
         if dispatched_current and idx < last_index and _comp_type_name(seg).lower() not in {"node", "nodes", "file"}:
             await _aiocq_mod.asyncio.sleep(0.5)
     return {"_onebot_dispatch_receipt": True, "parts": parts}
@@ -1139,9 +1143,10 @@ async def send_plain(
                 payload["group_id"] = group_id
             if before_dispatch is not None and not await before_dispatch():
                 return SendResult(False, error="native_memory_source_invalidated")
-            result = call_action("send_poke", **payload)
-            if inspect.isawaitable(result):
-                result = await result
+            with owned_outbound_send():
+                result = call_action("send_poke", **payload)
+                if inspect.isawaitable(result):
+                    result = await result
         elif (
             onebot
             and event is not None
@@ -1153,36 +1158,42 @@ async def send_plain(
             group_id = str(_safe_call(event, "get_group_id", "") or "")
             sender_id = str(_safe_call(event, "get_sender_id", "") or "")
             is_group = bool(group_id)
-            result = await send_onebot_chain(
-                event.bot,
-                chain,
-                raw_event=raw_event,
-                is_group=is_group,
-                session_id=(group_id if is_group else sender_id) or None,
-                before_dispatch=before_dispatch,
-            )
-            try:
-                from astrbot.core.platform.astr_message_event import AstrMessageEvent
-                await AstrMessageEvent.send(event, chain)
-            except Exception:
-                pass
+            with owned_outbound_send():
+                result = await send_onebot_chain(
+                    event.bot,
+                    chain,
+                    raw_event=raw_event,
+                    is_group=is_group,
+                    session_id=(group_id if is_group else sender_id) or None,
+                    before_dispatch=before_dispatch,
+                )
+                try:
+                    from astrbot.core.platform.astr_message_event import AstrMessageEvent
+                    await AstrMessageEvent.send(event, chain)
+                except Exception:
+                    pass
         elif event is not None and hasattr(event, "send"):
             if before_dispatch is not None and onebot and getattr(event, "_supports_before_dispatch", False) is True:
-                result = event.send(chain, _before_dispatch=before_dispatch)
+                with owned_outbound_send():
+                    result = event.send(chain, _before_dispatch=before_dispatch)
+                    if inspect.isawaitable(result):
+                        result = await result
             else:
                 if before_dispatch is not None and not await before_dispatch():
                     return SendResult(False, error="native_memory_source_invalidated")
-                result = event.send(chain)
-            if inspect.isawaitable(result):
-                result = await result
+                with owned_outbound_send():
+                    result = event.send(chain)
+                    if inspect.isawaitable(result):
+                        result = await result
         elif context is not None and hasattr(context, "send_message"):
             umo = getattr(event, "unified_msg_origin", None) if event is not None else None
             target = umo or session_id
             if before_dispatch is not None and not await before_dispatch():
                 return SendResult(False, error="native_memory_source_invalidated")
-            result = context.send_message(target, chain)
-            if inspect.isawaitable(result):
-                result = await result
+            with owned_outbound_send():
+                result = context.send_message(target, chain)
+                if inspect.isawaitable(result):
+                    result = await result
         else:
             logger.info(
                 "[ChatDynamics] No send API available; dropping fragment for session %s",
@@ -1344,3 +1355,49 @@ async def try_send_typing_status(
         except Exception:
             continue
     return False
+
+
+def format_delivered_action_marker(
+    kind: str,
+    *,
+    target_label: str = "",
+    detail: str = "",
+) -> str:
+    """Format a concise semantic action marker for assistant history persistence."""
+    normalized = str(kind or "").strip().lower()
+    clean_target = _sanitize_poke_action_text(target_label)
+    clean_detail = _sanitize_poke_action_text(detail)
+    if normalized == "poke":
+        if clean_target:
+            return f"[动作: 戳了 {clean_target}]"
+        return "[动作: 戳了对方]"
+    if normalized in {"meme", "sticker", "emoji"}:
+        if clean_detail:
+            return f"[动作: 发了一张表情（{clean_detail}）]"
+        return "[动作: 发了一张表情]"
+    if normalized == "image":
+        if clean_detail:
+            return f"[动作: 发了一张图片（{clean_detail}）]"
+        return "[动作: 发了一张图片]"
+    if normalized in {"voice", "record", "audio"}:
+        return "[动作: 发了一条语音]"
+    if clean_detail:
+        return f"[动作: {clean_detail}]"
+    return f"[动作: {normalized}]" if normalized else ""
+
+
+def format_delivered_action_summary(
+    verbal_text: str = "",
+    *,
+    actions: Iterable[str] = (),
+) -> str:
+    """Combine delivered action markers and spoken text cleanly for committed history."""
+    parts: List[str] = []
+    for item in actions or ():
+        text = str(item or "").strip()
+        if text:
+            parts.append(text)
+    spoken = str(verbal_text or "").strip()
+    if spoken:
+        parts.append(spoken)
+    return "\n".join(parts)

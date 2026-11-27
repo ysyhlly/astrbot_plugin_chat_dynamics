@@ -116,13 +116,14 @@ async def test_custom_prompts_apply_to_next_turn_and_empty_restores_defaults(jev
         assert bridge.requests[-1][0]["reply_guidance"] == custom["reply_prompt"]
         assert bridge.requests[-1][1] == bridge.persona
         panel = await p.save_config_values({key: "" for key in custom})
-        assert all(panel["effective"][key] == value for key, value in PROMPT_DEFAULTS.items())
+        assert panel["effective"]["decision_prompt"] == PROMPT_DEFAULTS["decision_prompt"]
+        assert panel["effective"]["reply_prompt"] == ""
         assert not set(custom).intersection(panel["mismatches"])
         event = MockEvent("你好", message_id="default", components=[At("bot_42")])
         await p.on_group_message(event)
         await flush(p, event)
         await drain(p)
-        assert bridge.requests[-1][0]["reply_guidance"] == PROMPT_DEFAULTS["reply_prompt"]
+        assert "reply_guidance" not in bridge.requests[-1][0]
     finally:
         await p.terminate()
 

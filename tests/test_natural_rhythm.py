@@ -930,3 +930,689 @@ async def test_catchup_media_released_on_recall_stop_reset_persona_switch_evicti
     assert not _path_exists(dir_shutdown)
 
 
+class _StubVibeAnalyzer:
+    def __init__(self, mode: GroupChatMode | None, mpm: float, chill_fade_enter_mpm: float = 3.0) -> None:
+        self._mode = mode
+        self._mpm = mpm
+        self.chill_fade_enter_mpm = chill_fade_enter_mpm
+
+    def peek_mode(self, _session_id: str, current_time: float | None = None) -> GroupChatMode | None:
+        return self._mode
+
+    def get_telemetrics(self, _session_id: str, current_time: float | None = None) -> Any:
+        return SimpleNamespace(mpm=self._mpm)
+
+
+@pytest.mark.asyncio
+async def test_lively_group_never_enters_micro_distract():
+    """Lively group (FAST_BANTER or mpm > 3.0) must never enter micro_distract even with probability=1.0."""
+    clock = VirtualClock(initial_time=90_000.0)
+    plugin = _FakePlugin(clock, {"rhythm_distract_probability": 1.0})
+    rt = plugin.make_session("aiocqhttp:GroupMessage:g_lively", group_id="g_lively")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(1))
+    plugin.natural_rhythm = ctrl
+
+    # Case 1: FAST_BANTER mode (even if mpm happens to be low due to hysteresis)
+    plugin.vibe_analyzer = _StubVibeAnalyzer(mode=GroupChatMode.FAST_BANTER, mpm=2.5)
+    n1 = _add_msg(rt, clock, "ml_1", "u1", "@安安 快来看看这个", mentions=["bot_anan"], is_wake=True)
+    d1 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="ml_1",
+        user_id="u1",
+        text=n1.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n1,
+    )
+    assert d1.defer is False
+    assert d1.away_kind == "none"
+
+    # Case 2: CHILL_FADE mode but mpm > 3.0
+    plugin.vibe_analyzer = _StubVibeAnalyzer(mode=GroupChatMode.CHILL_FADE, mpm=4.2)
+    n2 = _add_msg(rt, clock, "ml_2", "u2", "@安安 晚上打游戏吗", mentions=["bot_anan"], is_wake=True)
+    d2 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="ml_2",
+        user_id="u2",
+        text=n2.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n2,
+    )
+    assert d2.defer is False
+    assert d2.away_kind == "none"
+
+    # Case 3: SERIOUS_INQUIRY mode with low mpm
+    plugin.vibe_analyzer = _StubVibeAnalyzer(mode=GroupChatMode.SERIOUS_INQUIRY, mpm=2.0)
+    n3 = _add_msg(rt, clock, "ml_3", "u3", "@安安 帮我分析一下这个问题", mentions=["bot_anan"], is_wake=True)
+    d3 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="ml_3",
+        user_id="u3",
+        text=n3.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n3,
+    )
+    assert d3.defer is False
+    assert d3.away_kind == "none"
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_group_recent_bot_speech_blocks_micro_distract():
+    """Group where bot spoke < 90s ago must never enter micro_distract, even for a different user."""
+    clock = VirtualClock(initial_time=95_000.0)
+    plugin = _FakePlugin(clock, {"rhythm_distract_probability": 1.0})
+    plugin.vibe_analyzer = _StubVibeAnalyzer(mode=GroupChatMode.CHILL_FADE, mpm=1.0)
+    rt = plugin.make_session("aiocqhttp:GroupMessage:g_recent", group_id="g_recent")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(2))
+    plugin.natural_rhythm = ctrl
+
+    # Bot just spoke to u1.
+    rt.last_interlocutor = "u1"
+    ctrl.on_turn_delivered(
+        rt,
+        anchor_bot_msg_id="bot_r1",
+        trigger_msg_id="u_r1",
+        target_user_id="u1",
+        anchor_topic_id="t1",
+        delivered_text="刚说完一句",
+        persona_fingerprint="p_anan",
+        private_direct=False,
+        all_fragments_delivered=True,
+    )
+
+    # 30s later (inside 45s window, different user u2 -> no 0.15 mid-chat fallback)
+    await clock.advance(30.0)
+    n1 = _add_msg(rt, clock, "mr_1", "u2", "@安安 你也在啊", mentions=["bot_anan"], is_wake=True)
+    d1 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="mr_1",
+        user_id="u2",
+        text=n1.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n1,
+    )
+    assert d1.defer is False
+    assert d1.away_kind == "none"
+
+    # 89s total since bot spoke (< 90s threshold) -> still never distracts.
+    await clock.advance(59.0)
+    n2 = _add_msg(rt, clock, "mr_2", "u3", "@安安 顺便问一下", mentions=["bot_anan"], is_wake=True)
+    d2 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="mr_2",
+        user_id="u3",
+        text=n2.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n2,
+    )
+    assert d2.defer is False
+    assert d2.away_kind == "none"
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_cold_group_allows_micro_distract_and_70s_rapid_ping_breaks_through():
+    """Cold group (CHILL_FADE, mpm <= 3.0, bot idle >= 90s) can micro_distract,
+    and a follow-up @/quote 70s later breaks through within the 90s RAPID_PING_WINDOW."""
+    clock = VirtualClock(initial_time=100_000.0)
+    plugin = _FakePlugin(
+        clock,
+        {
+            "rhythm_distract_probability": 1.0,
+            "rhythm_distract_min_seconds": 180.0,
+            "rhythm_distract_max_seconds": 180.0,
+        },
+    )
+    plugin.vibe_analyzer = _StubVibeAnalyzer(mode=GroupChatMode.CHILL_FADE, mpm=3.0)
+    rt = plugin.make_session("aiocqhttp:GroupMessage:g_cold", group_id="g_cold")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(3))
+    plugin.natural_rhythm = ctrl
+
+    # Bot spoke 90s ago -> meets COLD_GROUP_MIN_BOT_IDLE_SECONDS boundary.
+    ctrl.on_turn_delivered(
+        rt,
+        anchor_bot_msg_id="bot_c0",
+        trigger_msg_id="u_c0",
+        target_user_id="u1",
+        anchor_topic_id="t0",
+        delivered_text="嗯好",
+        persona_fingerprint="p_anan",
+        private_direct=False,
+        all_fragments_delivered=True,
+    )
+    await clock.advance(90.0)
+
+    # First @ ping in cold group -> enters micro_distract.
+    n1 = _add_msg(rt, clock, "mc_1", "u1", "@安安 在不在呀", mentions=["bot_anan"], is_wake=True)
+    ctrl.on_user_message_observed(rt, msg_id="mc_1", user_id="u1", text=n1.text, directed=True)
+    d1 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="mc_1",
+        user_id="u1",
+        text=n1.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n1,
+    )
+    assert d1.defer is True
+    assert d1.away_kind == "micro_distract"
+
+    # Follow-up @ ping 70s later (inside widened 90s RAPID_PING_WINDOW, still within 180s distract) -> breaks through!
+    await clock.advance(70.0)
+    n2 = _add_msg(rt, clock, "mc_2", "u1", "@安安 怎么不理我呀", mentions=["bot_anan"], is_wake=True)
+    ctrl.on_user_message_observed(rt, msg_id="mc_2", user_id="u1", text=n2.text, directed=True)
+    d2 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="mc_2",
+        user_id="u1",
+        text=n2.text,
+        wake_kind="at",
+        directed=True,
+        availability="available",
+        persona_fingerprint="p_anan",
+        node=n2,
+    )
+    assert d2.defer is False
+    assert d2.urgent_breakthrough is True
+    assert d2.reason_code == "rhythm_urgent_breakthrough"
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_probe_world_availability_resolves_concrete_scope_without_bundle():
+    """Cold/private sessions with bundle=None must resolve concrete 5-field scope and never trigger NarrativeValidationError."""
+    clock = VirtualClock(initial_time=110_000.0)
+    plugin = _FakePlugin(clock)
+    rt = plugin.make_session("aiocqhttp:FriendMessage:u_cold", scope_kind="private", group_id="")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(9))
+    plugin.natural_rhythm = ctrl
+
+    captured_scopes: List[Dict[str, Any]] = []
+
+    class _StrictNarrative:
+        def __init__(self, *, worldbook_result: Any = None, bundles: Dict[str, Any] | None = None) -> None:
+            self._bundles = bundles or {}
+            self._worldbook_result = worldbook_result
+
+        def enabled(self, _umo: str) -> bool:
+            return True
+
+        async def call(self, provider: str, method: str, *args: Any, timeout: float = 3.0) -> Any:
+            if provider == "worldbook" and method == "get_character_context":
+                return self._worldbook_result
+            if provider == "dynamic_life_state" and method == "get_snapshot":
+                scope = args[0]
+                if not isinstance(scope, dict) or scope.get("schema_version") != 1:
+                    raise ValueError("unsupported_scope_schema")
+                if not str(scope.get("persona_id") or "").strip() or not str(scope.get("instance_id") or "").strip():
+                    raise ValueError("a_concrete_persona_is_required")
+                captured_scopes.append(dict(scope))
+                return {"schema_version": 1, "managed": True, "stale": False, "availability": "asleep"}
+            return None
+
+    # 1) Cold session (bundle=None) resolves concrete scope via worldbook.get_character_context.
+    plugin.narrative = _StrictNarrative(
+        worldbook_result={
+            "schema_version": 1,
+            "available": True,
+            "scope": {
+                "platform": "aiocqhttp",
+                "umo": rt.umo,
+                "persona_id": "anan_v2",
+                "instance_id": "inst_anan_1",
+            },
+        }
+    )
+    avail = await ctrl._probe_world_availability(rt)
+    assert avail == "asleep"
+    assert len(captured_scopes) == 1
+    assert captured_scopes[0] == {
+        "schema_version": 1,
+        "platform": "aiocqhttp",
+        "umo": rt.umo,
+        "persona_id": "anan_v2",
+        "instance_id": "inst_anan_1",
+    }
+
+    # 2) Worldbook unavailable, fallback to host persona_manager resolves concrete scope.
+    captured_scopes.clear()
+    plugin.narrative = _StrictNarrative(worldbook_result=None)
+
+    async def _get_cid(_umo: str) -> str:
+        return "cid_1"
+
+    async def _get_conv(_umo: str, _cid: str) -> Any:
+        return SimpleNamespace(persona_id="anan_host")
+
+    async def _resolve_persona(**_kw: Any) -> tuple:
+        return ("anan_host", {"name": "anan_host"}, None, None)
+
+    plugin.context = SimpleNamespace(
+        conversation_manager=SimpleNamespace(get_curr_conversation_id=_get_cid, get_conversation=_get_conv),
+        persona_manager=SimpleNamespace(resolve_selected_persona=_resolve_persona),
+        get_config=lambda **_kw: {"provider_settings": {}},
+    )
+    avail_host = await ctrl._probe_world_availability(rt)
+    assert avail_host == "asleep"
+    assert captured_scopes == [
+        {
+            "schema_version": 1,
+            "platform": "aiocqhttp",
+            "umo": rt.umo,
+            "persona_id": "anan_host",
+            "instance_id": "anan_host",
+        }
+    ]
+
+    # 3) No concrete persona resolvable -> returns "unmanaged" cleanly without calling get_snapshot.
+    captured_scopes.clear()
+    plugin.context = None
+    plugin.narrative = _StrictNarrative(worldbook_result=None)
+    avail_none = await ctrl._probe_world_availability(rt)
+    assert avail_none == "unmanaged"
+    assert captured_scopes == []
+
+    # 4) Bundle present with 4-field scope -> normalized to include schema_version=1.
+    captured_scopes.clear()
+    bundle = SimpleNamespace(
+        scope={
+            "platform": "aiocqhttp",
+            "umo": rt.umo,
+            "persona_id": "anan_bundle",
+            "instance_id": "anan_bundle",
+        },
+        snapshot={"availability": "available", "stale": False},
+    )
+    plugin.narrative = _StrictNarrative(worldbook_result=None, bundles={rt.umo: bundle})
+    avail_bundle = await ctrl._probe_world_availability(rt)
+    assert avail_bundle == "asleep"
+    assert captured_scopes[0]["schema_version"] == 1
+    assert captured_scopes[0]["persona_id"] == "anan_bundle"
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_sleep_private_repeated_messages_wake_up_merge_and_no_duplicate_catchup():
+    """Private chat during world_asleep: <3 msgs defer; 3rd msg within 90s wakes, merges prior pending msgs, and prevents duplicate catch-up."""
+    clock = VirtualClock(initial_time=120_000.0)
+    plugin = _FakePlugin(clock)
+    rt = plugin.make_session("aiocqhttp:FriendMessage:u_sleep1", scope_kind="private", group_id="")
+
+    catchup_sent: List[Any] = []
+
+    async def fake_catchup(_rt, item):
+        catchup_sent.append(item)
+        return {"status": "sent", "message_id": f"cu_{item.primary_msg_id}"}
+
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(12), catchup_executor=fake_catchup)
+    plugin.natural_rhythm = ctrl
+
+    ev1 = SimpleNamespace(tag="ev1")
+    ev2 = SimpleNamespace(tag="ev2")
+
+    n1 = _add_msg(rt, clock, "sm1", "u_sleep1", "安安?")
+    d1 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="sm1",
+        user_id="u_sleep1",
+        text=n1.text,
+        private_direct=True,
+        directed=True,
+        availability="asleep",
+        persona_fingerprint="p_anan",
+        node=n1,
+        live_event=ev1,
+    )
+    assert d1.defer is True
+    assert d1.reason_code == "rhythm_deferred_asleep"
+    assert d1.woken_from_sleep is False
+    assert d1.sleep_wake_note == ""
+
+    await clock.advance(20.0)
+    n2 = _add_msg(rt, clock, "sm2", "u_sleep1", "还醒着么")
+    d2 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="sm2",
+        user_id="u_sleep1",
+        text=n2.text,
+        private_direct=True,
+        directed=True,
+        availability="asleep",
+        persona_fingerprint="p_anan",
+        node=n2,
+        live_event=ev2,
+    )
+    assert d2.defer is True
+    assert d2.reason_code == "rhythm_deferred_asleep"
+
+    # 3rd message within 90s -> breaks through & merges sm1, sm2 chronologically!
+    await clock.advance(20.0)
+    n3 = _add_msg(rt, clock, "sm3", "u_sleep1", "喵喵喵")
+    d3 = ctrl.evaluate_ingress_pacing(
+        rt,
+        msg_id="sm3",
+        user_id="u_sleep1",
+        text=n3.text,
+        private_direct=True,
+        directed=True,
+        availability="asleep",
+        persona_fingerprint="p_anan",
+        node=n3,
+    )
+    assert d3.defer is False
+    assert d3.away_kind == "world_asleep"
+    assert d3.reason_code == "rhythm_sleep_wake_breakthrough"
+    assert d3.woken_from_sleep is True
+    assert d3.temp_awake_active is True
+    assert "睡觉" in d3.sleep_wake_note and "吵醒" in d3.sleep_wake_note
+    assert d3.merged_pending_ids == ("sm1", "sm2")
+    assert d3.merged_pending_texts == ("安安?", "还醒着么")
+    assert len(d3.merged_pending_events) == 2
+    assert [getattr(e, "tag", "") for e in d3.merged_pending_events] == ["ev1", "ev2"]
+
+    # Later when morning comes and availability turns available, catch-up MUST NOT re-send sm1/sm2/sm3.
+    await clock.advance(1800.0)
+    ctrl.on_availability_changed(rt, "available")
+    sent = await ctrl.run_catchup(rt)
+    assert sent == 0
+    assert catchup_sent == []
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_sleep_private_90s_window_expiry_and_poke_wakeup():
+    """Single poke defers; 2 pokes within 90s wake & merge prior messages; pings outside 90s do not accumulate."""
+    clock = VirtualClock(initial_time=130_000.0)
+    plugin = _FakePlugin(clock)
+    rt = plugin.make_session("aiocqhttp:FriendMessage:u_poke", scope_kind="private", group_id="")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(13))
+    plugin.natural_rhythm = ctrl
+
+    # 1) Messages spread > 90s apart do not reach threshold of 3 within 90s.
+    m1 = _add_msg(rt, clock, "sp1", "u_poke", "安安在吗")
+    assert ctrl.evaluate_ingress_pacing(
+        rt, msg_id="sp1", user_id="u_poke", text=m1.text, private_direct=True, directed=True, availability="asleep", node=m1
+    ).defer is True
+
+    await clock.advance(60.0)
+    m2 = _add_msg(rt, clock, "sp2", "u_poke", "睡了吗")
+    assert ctrl.evaluate_ingress_pacing(
+        rt, msg_id="sp2", user_id="u_poke", text=m2.text, private_direct=True, directed=True, availability="asleep", node=m2
+    ).defer is True
+
+    await clock.advance(40.0)  # sp1 is now 100s old (>90s) -> only 2 msgs in window -> still defers!
+    m3 = _add_msg(rt, clock, "sp3", "u_poke", "好吧晚安")
+    d3 = ctrl.evaluate_ingress_pacing(
+        rt, msg_id="sp3", user_id="u_poke", text=m3.text, private_direct=True, directed=True, availability="asleep", node=m3
+    )
+    assert d3.defer is True
+
+    # 2) Separate private session: single poke defers, 2nd poke within 90s wakes & merges prior text + first poke.
+    rt2 = plugin.make_session("aiocqhttp:FriendMessage:u_poke2", scope_kind="private", group_id="")
+    t1 = _add_msg(rt2, clock, "pk_t1", "u_poke2", "安安?")
+    assert ctrl.evaluate_ingress_pacing(
+        rt2, msg_id="pk_t1", user_id="u_poke2", text=t1.text, private_direct=True, directed=True, availability="asleep", node=t1
+    ).defer is True
+
+    await clock.advance(10.0)
+    p1 = _add_msg(rt2, clock, "pk_1", "u_poke2", "[戳了你一下]")
+    p1.metadata["has_poke"] = True
+    dp1 = ctrl.evaluate_ingress_pacing(
+        rt2, msg_id="pk_1", user_id="u_poke2", text=p1.text, private_direct=True, directed=True, availability="asleep", node=p1
+    )
+    assert dp1.defer is True
+    assert dp1.reason_code == "rhythm_deferred_asleep"
+
+    await clock.advance(15.0)
+    p2 = _add_msg(rt2, clock, "pk_2", "u_poke2", "[戳了你一下]")
+    dp2 = ctrl.evaluate_ingress_pacing(
+        rt2,
+        msg_id="pk_2",
+        user_id="u_poke2",
+        text=p2.text,
+        private_direct=True,
+        directed=True,
+        availability="asleep",
+        node=p2,
+        is_poke=True,
+    )
+    assert dp2.defer is False
+    assert dp2.woken_from_sleep is True
+    assert dp2.temp_awake_active is True
+    assert dp2.merged_pending_ids == ("pk_t1", "pk_1")
+    assert dp2.merged_pending_texts == ("安安?", "[戳了你一下]")
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_sleep_group_requires_directed_pings_or_pokes_at_bot_and_isolates_users():
+    """Group sleep wake-up ignores undirected chatter and peer pokes, tracks per-user directed @/pokes-at-bot, and merges only that user's pending items."""
+    clock = VirtualClock(initial_time=140_000.0)
+    plugin = _FakePlugin(clock)
+    rt = plugin.make_session("aiocqhttp:GroupMessage:g_sleep", group_id="g_sleep")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(14))
+    plugin.natural_rhythm = ctrl
+
+    # 1) Undirected group messages (even 4 from same user) NEVER wake bot during asleep.
+    for idx in range(4):
+        n = _add_msg(rt, clock, f"ug_{idx}", "u_chat", f"夜聊消息 {idx}")
+        dec = ctrl.evaluate_ingress_pacing(
+            rt, msg_id=n.msg_id, user_id="u_chat", text=n.text, directed=False, private_direct=False, availability="asleep", node=n
+        )
+        assert dec.defer is True
+        await clock.advance(5.0)
+
+    # 2) Peer pokes (A pokes B, wake_kind="poke_peer") NEVER wake bot.
+    for idx in range(3):
+        n = _add_msg(rt, clock, f"pp_{idx}", "u_peer", "戳了别人一下")
+        n.metadata["has_poke"] = True
+        n.metadata["poke_at_bot"] = False
+        dec = ctrl.evaluate_ingress_pacing(
+            rt,
+            msg_id=n.msg_id,
+            user_id="u_peer",
+            text=n.text,
+            wake_kind="poke_peer",
+            directed=False,
+            private_direct=False,
+            availability="asleep",
+            node=n,
+        )
+        assert dec.defer is True
+        await clock.advance(5.0)
+
+    # 3) Per-user isolation: u_a sends 2 @bot, u_b sends 2 @bot -> neither reaches 3 yet.
+    for uid in ("u_a", "u_b"):
+        for idx in (1, 2):
+            n = _add_msg(rt, clock, f"{uid}_{idx}", uid, f"@安安 叫你第{idx}次", mentions=["bot_anan"], is_wake=True)
+            dec = ctrl.evaluate_ingress_pacing(
+                rt, msg_id=n.msg_id, user_id=uid, text=n.text, wake_kind="at", directed=True, private_direct=False, availability="asleep", node=n
+            )
+            assert dec.defer is True
+            await clock.advance(5.0)
+
+    # u_a sends 3rd @bot within 90s -> WAKES UP and merges ONLY u_a's pending items (u_b remains pending!).
+    na3 = _add_msg(rt, clock, "u_a_3", "u_a", "@安安 快醒醒呀", mentions=["bot_anan"], is_wake=True)
+    da3 = ctrl.evaluate_ingress_pacing(
+        rt, msg_id="u_a_3", user_id="u_a", text=na3.text, wake_kind="at", directed=True, private_direct=False, availability="asleep", node=na3
+    )
+    assert da3.defer is False
+    assert da3.woken_from_sleep is True
+    assert da3.merged_pending_ids == ("u_a_1", "u_a_2")
+    assert da3.merged_pending_texts == ("@安安 叫你第1次", "@安安 叫你第2次")
+    remaining_ids = {c.msg_id for c in ctrl._book(rt.session_key).pending_items if c.status == "pending"}
+    assert "u_b_1" in remaining_ids and "u_b_2" in remaining_ids
+    assert "u_a_1" not in remaining_ids and "u_a_2" not in remaining_ids
+
+    # 4) Group poke-at-bot: 1st defers, 2nd within 90s wakes.
+    rt2 = plugin.make_session("aiocqhttp:GroupMessage:g_sleep_poke", group_id="g_sleep_poke")
+    gp1 = _add_msg(rt2, clock, "gp1", "u_gp", "[戳了你一下]", is_wake=True)
+    gp1.metadata["has_poke"] = True
+    gp1.metadata["poke_at_bot"] = True
+    assert ctrl.evaluate_ingress_pacing(
+        rt2, msg_id="gp1", user_id="u_gp", text=gp1.text, wake_kind="poke", directed=True, private_direct=False, availability="asleep", node=gp1
+    ).defer is True
+
+    await clock.advance(15.0)
+    gp2 = _add_msg(rt2, clock, "gp2", "u_gp", "[戳了你一下]", is_wake=True)
+    gp2.metadata["has_poke"] = True
+    gp2.metadata["poke_at_bot"] = True
+    dgp2 = ctrl.evaluate_ingress_pacing(
+        rt2, msg_id="gp2", user_id="u_gp", text=gp2.text, wake_kind="poke", directed=True, private_direct=False, availability="asleep", node=gp2
+    )
+    assert dgp2.defer is False
+    assert dgp2.woken_from_sleep is True
+    assert dgp2.merged_pending_ids == ("gp1",)
+    await ctrl.stop()
+
+
+@pytest.mark.asyncio
+async def test_sleep_temp_awake_window_refresh_expiry_isolation_and_note():
+    """Temporary awake window is per-session (12 min), refreshes on messages/replies, emits sleep_wake_note, and falls back to asleep after 12m idle."""
+    clock = VirtualClock(initial_time=150_000.0)
+    plugin = _FakePlugin(clock)
+    rt1 = plugin.make_session("aiocqhttp:FriendMessage:u_ta1", scope_kind="private", group_id="")
+    rt2 = plugin.make_session("aiocqhttp:FriendMessage:u_ta2", scope_kind="private", group_id="")
+    ctrl = NaturalRhythmController(plugin, rng=random.Random(15))
+    plugin.natural_rhythm = ctrl
+
+    # Wake rt1 via urgent text during asleep.
+    u1 = _add_msg(rt1, clock, "ta_m1", "u_ta1", "急事！快看一下这个")
+    d1 = ctrl.evaluate_ingress_pacing(
+        rt1, msg_id="ta_m1", user_id="u_ta1", text=u1.text, private_direct=True, directed=True, availability="asleep", node=u1
+    )
+    assert d1.defer is False
+    assert d1.urgent_breakthrough is True
+    assert d1.woken_from_sleep is True
+    assert d1.temp_awake_active is True
+    assert d1.sleep_wake_note != ""
+    assert ctrl.is_temp_awake(rt1) is True
+    assert ctrl.get_sleep_wake_note(rt1) != ""
+
+    # Per-session isolation: rt2 MUST stay asleep (no global dynamics_world mutation).
+    assert ctrl.is_temp_awake(rt2) is False
+    assert ctrl.get_sleep_wake_note(rt2) == ""
+    other_n = _add_msg(rt2, clock, "ta_other", "u_ta2", "睡了吗")
+    d_other = ctrl.evaluate_ingress_pacing(
+        rt2, msg_id="ta_other", user_id="u_ta2", text=other_n.text, private_direct=True, directed=True, availability="asleep", node=other_n
+    )
+    assert d_other.defer is True
+    assert d_other.reason_code == "rhythm_deferred_asleep"
+
+    # 6 minutes later -> normal single message in rt1 passes through & refreshes 12m window.
+    await clock.advance(360.0)
+    u2 = _add_msg(rt1, clock, "ta_m2", "u_ta1", "那明天早上再说吧")
+    d2 = ctrl.evaluate_ingress_pacing(
+        rt1, msg_id="ta_m2", user_id="u_ta1", text=u2.text, private_direct=True, directed=True, availability="asleep", node=u2
+    )
+    assert d2.defer is False
+    assert d2.woken_from_sleep is False
+    assert d2.temp_awake_active is True
+    assert d2.reason_code == "rhythm_sleep_temp_awake"
+    assert "睡觉" in d2.sleep_wake_note
+
+    # Bot reply 5s later refreshes window again via on_turn_delivered.
+    await clock.advance(5.0)
+    ctrl.on_turn_delivered(
+        rt1,
+        anchor_bot_msg_id="bot_ta1",
+        trigger_msg_id="ta_m2",
+        target_user_id="u_ta1",
+        anchor_topic_id="",
+        delivered_text="唔...好，明天再看",
+        persona_fingerprint="p_anan",
+        private_direct=True,
+        all_fragments_delivered=True,
+    )
+
+    # 10 minutes after reply (< 12 min) -> still temp-awake!
+    await clock.advance(600.0)
+    assert ctrl.is_temp_awake(rt1) is True
+    assert ctrl.get_sleep_wake_note(rt1) != ""
+    assert ctrl.get_sleep_wake_note(rt1, availability="available") == ""
+
+    # 2 minutes + 5 seconds later (> 12 min idle since last message/reply) -> naturally falls back to asleep!
+    await clock.advance(125.0)
+    assert ctrl.is_temp_awake(rt1) is False
+    assert ctrl.get_sleep_wake_note(rt1) == ""
+    u3 = _add_msg(rt1, clock, "ta_m3", "u_ta1", "顺便一提")
+    d3 = ctrl.evaluate_ingress_pacing(
+        rt1, msg_id="ta_m3", user_id="u_ta1", text=u3.text, private_direct=True, directed=True, availability="asleep", node=u3
+    )
+    assert d3.defer is True
+    assert d3.reason_code == "rhythm_deferred_asleep"
+    assert d3.temp_awake_active is False
+    assert d3.sleep_wake_note == ""
+
+    # Group chat: undirected ambient chatter during temp-awake passes through without resetting the 12-min timer.
+    rt_grp = plugin.make_session("aiocqhttp:GroupMessage:g_ta_guard", group_id="g_ta_guard")
+    gw = _add_msg(rt_grp, clock, "gta_wake", "u_g1", "@安安 急事！快看一下", mentions=["bot_anan"], is_wake=True)
+    dgw = ctrl.evaluate_ingress_pacing(
+        rt_grp,
+        msg_id="gta_wake",
+        user_id="u_g1",
+        text=gw.text,
+        wake_kind="at",
+        directed=True,
+        private_direct=False,
+        availability="asleep",
+        node=gw,
+    )
+    assert dgw.defer is False and dgw.woken_from_sleep is True
+    initial_deadline = ctrl._book(rt_grp.session_key).temp_awake_until_mono
+
+    await clock.advance(360.0)
+    g_amb = _add_msg(rt_grp, clock, "gta_amb", "u_other", "大家还在熬夜聊天啊")
+    d_amb = ctrl.evaluate_ingress_pacing(
+        rt_grp,
+        msg_id="gta_amb",
+        user_id="u_other",
+        text=g_amb.text,
+        directed=False,
+        private_direct=False,
+        availability="asleep",
+        node=g_amb,
+    )
+    assert d_amb.defer is False and d_amb.temp_awake_active is True
+    # Timer MUST NOT have been extended by undirected ambient chatter!
+    assert ctrl._book(rt_grp.session_key).temp_awake_until_mono == initial_deadline
+
+    # Advance remaining 6 min + 1s (total 12m01s since wake) -> expired and falls back to asleep!
+    await clock.advance(361.0)
+    assert ctrl.is_temp_awake(rt_grp) is False
+    g_after = _add_msg(rt_grp, clock, "gta_after", "u_g1", "@安安 还在吗", mentions=["bot_anan"], is_wake=True)
+    d_after = ctrl.evaluate_ingress_pacing(
+        rt_grp,
+        msg_id="gta_after",
+        user_id="u_g1",
+        text=g_after.text,
+        wake_kind="at",
+        directed=True,
+        private_direct=False,
+        availability="asleep",
+        node=g_after,
+    )
+    assert d_after.defer is True
+    assert d_after.reason_code == "rhythm_deferred_asleep"
+    await ctrl.stop()
+
+
+
+

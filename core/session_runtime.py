@@ -254,6 +254,7 @@ class SessionRuntime:
     # Requests waiting for admission already belong to their owner's revision.
     model_waiting: Dict[object, Any] = field(default_factory=dict, repr=False)
     active_model_turn: Any = None
+    preempted_model_turns: Set[int] = field(default_factory=set, repr=False)
     # Each cancellable call has a member owner; the group worker stays alive on stop.
     owned_turn_tasks: Dict[asyncio.Task, str] = field(default_factory=dict, repr=False)
     reply_generation_tasks: Set[asyncio.Task] = field(default_factory=set, repr=False)
@@ -305,12 +306,58 @@ class SessionRuntime:
             self.model_queue.popleft()
             self.model_admission.release()
 
-    def cancel_owned_turns(self, user_id: str | None = None, *, pre_reply_only: bool = False) -> None:
+    def enqueue_model_turn(self, item: Any, *, is_priority_fn: Any = None) -> None:
+        """Append non-priority turns; insert priority turns ahead of ambient turns in FIFO order."""
+        if not callable(is_priority_fn) or not is_priority_fn(item) or not self.model_queue:
+            self.model_queue.append(item)
+            return
+        items = list(self.model_queue)
+        insert_at = 0
+        for idx, existing in enumerate(items):
+            if is_priority_fn(existing):
+                insert_at = idx + 1
+            else:
+                break
+        items.insert(insert_at, item)
+        self.model_queue.clear()
+        self.model_queue.extend(items)
+
+    def evict_oldest_non_priority(self, is_priority_fn: Any) -> Any:
+        """Remove and return the oldest non-priority queued turn, releasing its admission permit."""
+        if not self.model_queue or not callable(is_priority_fn):
+            return None
+        items = list(self.model_queue)
+        for idx, existing in enumerate(items):
+            if not is_priority_fn(existing):
+                evicted = items.pop(idx)
+                self.model_queue.clear()
+                self.model_queue.extend(items)
+                self.model_admission.release()
+                return evicted
+        return None
+
+    def mark_turn_preempted(self, item: Any) -> None:
+        if item is not None:
+            self.preempted_model_turns.add(id(item))
+
+    def consume_turn_preempted(self, item: Any) -> bool:
+        if item is None:
+            return False
+        token = id(item)
+        if token in self.preempted_model_turns:
+            self.preempted_model_turns.discard(token)
+            return True
+        return False
+
+    def cancel_owned_turns(self, user_id: str | None = None, *, pre_reply_only: bool = False) -> int:
+        cancelled = 0
         for task, owner in tuple(self.owned_turn_tasks.items()):
             if pre_reply_only and task in self.reply_generation_tasks:
                 continue
             if (user_id is None or owner == user_id) and not task.done():
                 task.cancel()
+                cancelled += 1
+        return cancelled
 
     @staticmethod
     def _model_turn_owner(item: Any) -> str:
@@ -580,6 +627,7 @@ class SessionRuntime:
         self.topic_stop_revisions.clear()
         self.routing_state.clear()
         self.clear_model_queue()
+        self.preempted_model_turns.clear()
         self.reply_generation_tasks.clear()
         self.reply_generation_owners.clear()
         self.reply_first_sentence_sent.clear()
@@ -628,6 +676,7 @@ class SessionRuntime:
     def invalidate(self) -> int:
         self.recent_images.clear()
         self.clear_model_queue()
+        self.preempted_model_turns.clear()
         self.epoch += 1
         self.revision += 1
         self.latest_pending = None
@@ -638,6 +687,31 @@ class SessionRuntime:
         return self.epoch
 
 
+def _resolve_session_registry_limits(context: Any = None) -> tuple[int, int]:
+    if context is None:
+        import os
+
+        if not os.environ.get("ASTRBOT_RESOURCE_PROFILE", "").strip():
+            return 500, 1000
+    try:
+        from .. import series_panels as _sp
+    except Exception:
+        try:
+            import series_panels as _sp
+        except Exception:
+            _sp = None
+    if _sp is not None:
+        try:
+            limits = _sp.get_series_resource_limits(context)
+            return (
+                max(16, int(limits.get("chat_dag_max_nodes", 350))),
+                max(1, int(limits.get("chat_max_sessions", 256))),
+            )
+        except Exception:
+            pass
+    return 350, 256
+
+
 class SessionRegistry:
     """UMO-keyed store for live SessionRuntime objects."""
 
@@ -645,16 +719,18 @@ class SessionRegistry:
         self,
         time_service: Any,
         *,
-        max_nodes: int = 500,
+        max_nodes: Optional[int] = None,
         ttl_seconds: float = 3600.0,
         semantic_match_fn: Any = None,
-        max_sessions: int = 1000,
+        max_sessions: Optional[int] = None,
+        context: Any = None,
     ) -> None:
         self.time_service = time_service
-        self.max_nodes = max_nodes
+        default_nodes, default_sessions = _resolve_session_registry_limits(context)
+        self.max_nodes = default_nodes if max_nodes is None else int(max_nodes)
         self.ttl_seconds = ttl_seconds
         self.semantic_match_fn = semantic_match_fn or semantic_match
-        self.max_sessions = max(1, int(max_sessions))
+        self.max_sessions = max(1, default_sessions if max_sessions is None else int(max_sessions))
         self.runtimes: Dict[str, SessionRuntime] = {}
         self.group_keys: Dict[str, Set[str]] = {}
         self.dags: Dict[str, ConversationDAG] = {}

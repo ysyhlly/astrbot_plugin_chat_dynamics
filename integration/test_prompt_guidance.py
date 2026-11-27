@@ -61,16 +61,16 @@ async def test_managed_reply_gets_one_system_guidance_and_keeps_current_request(
     system = calls[0].get('system_prompt', '') + ''.join(
         row['content'] for row in calls[0].get('contexts', [])
         if row.get('role') == 'system' and isinstance(row.get('content'), str))
-    assert system.count(REPLY_GUIDANCE) == 1
-    assert "Do not supply unsupported names, categories or alternatives in the question" in system
-    assert 'reply_guidance' not in json.loads(prompt)
+    assert "[群聊基本约定]" in system
+    assert "事实与回执真实性" in system
+    assert "reply_guidance" not in json.loads(prompt)
     assert persona.prompt in system
     for expected in ('偏爱悬疑短篇', '刚被逗笑的轻松余韵', '小存档'):
         assert expected in serialized
     # reply_material(..., quiet=True) intentionally strips life goals from public reply prompts.
     assert '想读完下一章' not in serialized
     assert '不应泄漏的昵称' not in serialized
-    assert "interaction_understanding" in serialized and "corrects_previous" in serialized
+    assert "turn_signals" in serialized and "corrects_previous" in serialized
 
 
 @pytest.mark.asyncio
@@ -108,10 +108,9 @@ async def test_provider_receives_grounding_policy_and_attributed_source_text(hos
     system = calls[0].get("system_prompt", "") + "".join(
         row["content"] for row in messages if row["role"] == "system" and isinstance(row["content"], str)
     )
-    assert "Keep an unresolved referent unknown in every response, including acknowledge and reply" in system
-    assert "Use the details and alternatives the speaker actually gave" in system
-    assert "its guesses are not independent evidence" in system
-    assert "the current speaker's explicit correction supersedes older conditions" in system
+    assert "事实与回执真实性" in system
+    assert "发言者与对象边界" in system
+    assert "篇幅与气泡分段" in system
     texts = [
         part["text"] if isinstance(part, dict) else part
         for row in messages if row["role"] == "user"
@@ -122,16 +121,15 @@ async def test_provider_receives_grounding_policy_and_attributed_source_text(hos
     conversation = payload["conversation"]
     assert conversation["text"] == current and conversation["speaker_identity"]["user_id"] == "u"
     assert payload["response_plan"]["action"] == action
+    assert "attention_plan" not in payload
     assert "隔壁在挑保温瓶" not in "\n".join(texts)
     if scenario == "missing_referent":
         assert conversation["background"][0]["context_evidence"][0]["relation"] == "same_author"
         assert all(word not in "\n".join(texts) for word in ("衣裳", "杯子", "袜子"))
-        if action == "acknowledge":
-            assert payload["attention_plan"]["mode"] == "light"
     elif scenario == "known_alternatives":
         start, end = conversation["messages"][0]["text_spans"][0]
         assert "马克杯还是玻璃杯" in conversation["text"][start:end]
-        assert payload["attention_plan"]["mode"] == "clarify"
+        assert payload["response_plan"]["action"] == "clarify"
     else:
         prior = conversation["background"][-1]
         assert prior["author_identity"]["user_id"] == conversation["bot_identity"]["user_id"] == "bot"

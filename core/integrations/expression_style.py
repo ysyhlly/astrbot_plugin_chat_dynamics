@@ -72,7 +72,7 @@ def prepare(prompt, runtime, item):
         if not getattr(capture, 'expression_prepared', False):
             capture.expression_prepared = True
             packet = validate(source.get_expression_style_context(**capture.scope,
-                scene=labels(payload.get('interaction_understanding', {})), action=payload['response_plan']['action'], query=capture.query), capture.scope)
+                scene=labels(payload.get('turn_signals') or payload.get('interaction_understanding') or {}), action=payload['response_plan']['action'], query=capture.query), capture.scope)
             trace = {k: capture.scope[k] for k in ('scope', 'persona', 'member')}
             trace['turn_id'] = capture.base['turn_id']
             capture.expression_packet = {**packet, 'trace': trace, 'corrections': corrections(capture.query)}

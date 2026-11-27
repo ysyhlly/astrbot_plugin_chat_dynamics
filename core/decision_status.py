@@ -27,6 +27,17 @@ def history_page(path: Path, *, cursor=0, limit=500, session_key="", show_conten
     try:
         db.execute("PRAGMA busy_timeout=2000")
         db.execute("PRAGMA query_only=ON")
+        try:
+            from .. import series_panels as _series_panels
+
+            _series_panels.apply_series_sqlite_pragmas(db, readonly=True)
+        except Exception:
+            try:
+                import series_panels as _series_panels
+
+                _series_panels.apply_series_sqlite_pragmas(db, readonly=True)
+            except Exception:
+                pass
         deadline = time.monotonic() + 2
         db.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
         where, args = "rowid > ?", [cursor]

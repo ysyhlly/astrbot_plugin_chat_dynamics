@@ -178,6 +178,7 @@ class RuntimeConfig:
     vision_provider: str = ""
     rerank_provider: str = ""
     private_shared_group_sources: tuple[str, ...] = ()
+    resource_profile: str = "auto"
 
 
 def _get(raw: Any, key: str, default: Any) -> Any:
@@ -290,10 +291,13 @@ def _presence_knob(value: Any, warnings: List[str]) -> str:
 
 
 def _prompt(raw: Any, key: str, default: str, warnings: List[str]) -> str:
+    has_key = isinstance(raw, dict) and key in raw
     value = _get(raw, key, default)
     if not isinstance(value, str):
         warnings.append(f"{key} must be text; using default")
         return default
+    if key == "reply_prompt" and has_key and not value.strip():
+        return ""
     value = resolve_prompt_default(key, value)
     if len(value) > MAX_PROMPT_CHARS:
         warnings.append(f"{key} exceeds {MAX_PROMPT_CHARS} characters; truncating")
@@ -557,5 +561,11 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         vision_provider=str(_get(raw, "vision_provider", "") or "").strip(),
         rerank_provider=str(_get(raw, "rerank_provider", "") or "").strip(),
         private_shared_group_sources=tuple(_strings(_get(raw, "private_shared_group_sources", []))),
+        resource_profile=(
+            rp
+            if (rp := str(_get(raw, "resource_profile", "auto") or "auto").strip().lower())
+            in ("auto", "standard", "low_memory", "low_memory_aggressive")
+            else "auto"
+        ),
     )
     return config, tuple(warnings)

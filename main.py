@@ -82,7 +82,12 @@ from .core.persona_engine import (
     PersonaEngine,
     delivery_fragments,
 )
-from .core.poke import PokeReplyPolicy, PokeTracker, next_poke_streak
+from .core.outbound_ledger import (
+    OneBotOutboundObserver,
+    OutboundLedger,
+    owned_outbound_send,
+)
+from .core.poke import PokeReplyPolicy, PokeTracker, consume_self_poke_echo, next_poke_streak
 from .core.context_retrieval import select_background, clip_text
 from .core.platform_bridge import (
     SendResult,
@@ -240,8 +245,10 @@ def _looks_like_reasoning_provider(context: Any, provider_id: str) -> bool:
 
 _SESSION_IDLE_SECONDS = 3600.0
 _SESSION_SWEEP_INTERVAL = 300.0
-_PERSIST_INTERVAL_SECONDS = 30.0
-_MAX_SESSIONS = 1000
+_DEFAULT_PERSIST_INTERVAL_SECONDS = 60.0
+_PERSIST_INTERVAL_SECONDS = _DEFAULT_PERSIST_INTERVAL_SECONDS
+_DEFAULT_MAX_SESSIONS = 256
+_MAX_SESSIONS = _DEFAULT_MAX_SESSIONS
 _MAX_TURN_FRAGMENTS = 32
 _KV_COOLING = "cooling_until"
 _KV_RUNTIME = "panel_runtime_v1"
@@ -364,6 +371,7 @@ _METRIC_NAMES = (
     "cooling_cleared",
     "followup_merged_regeneration",
     "slow_turn_ack_sent",
+    "poke_self_echo_suppressed",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -457,7 +465,25 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self._apply_runtime_config(runtime_config, log_warnings=warnings)
 
         self._time_service: TimeService = SystemClock()
-        self._registry = SessionRegistry(self._time_service, max_sessions=_MAX_SESSIONS)
+        resource_limits: dict[str, Any] = {}
+        try:
+            from . import series_panels as _series_panels
+
+            resource_limits = _series_panels.get_series_resource_limits(context)
+        except Exception:
+            resource_limits = {}
+        effective_max_sessions = (
+            _MAX_SESSIONS
+            if _MAX_SESSIONS != _DEFAULT_MAX_SESSIONS
+            else int(resource_limits.get("chat_max_sessions", _DEFAULT_MAX_SESSIONS))
+        )
+        effective_max_nodes = int(resource_limits.get("chat_dag_max_nodes", 350))
+        self._registry = SessionRegistry(
+            self._time_service,
+            max_nodes=effective_max_nodes,
+            max_sessions=effective_max_sessions,
+            context=context,
+        )
         self._sessions = self._registry.runtimes
         self.dags = self._registry.dags
         self._group_keys = self._registry.group_keys
@@ -551,6 +577,9 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.decision_gate = DynamicsDecisionGate(wall_now=lambda: self.time_service.wall_time())
         self.poke_policy = PokeReplyPolicy()
         self.poke_tracker = PokeTracker()
+        self.outbound_ledger = OutboundLedger(clock=self.time_service.time)
+        self._outbound_observer = OneBotOutboundObserver(self.outbound_ledger)
+        self._pre_recorded_poke_counts: dict[tuple[str, str], int] = {}
         self._poke_streaks: dict[tuple[str, str], tuple[int, float]] = {}
         self._poke_replied_ids: set[tuple[str, str]] = set()
         self.style_shaper = StyleShaper(
@@ -629,6 +658,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             self._runtime_config = replace(runtime_config, decision_mode="legacy")
             logger.warning("[ChatDynamics] Persona unavailable; using legacy mode: %s", self._persona_fallback)
         self._native_request_bridge = install_native_builder_bridge(self)
+        self._ensure_outbound_observer()
         # Re-check after installing signature-preserving native wrappers so
         # the public overview reflects the live builder, not the pre-install cache.
         self.persona_engine.bridge.check()
@@ -1171,7 +1201,11 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         extras = getattr(event, "_extras", {})
         nonverbal_send = extras.get("_chat_dynamics_nonverbal_send_v1") if isinstance(extras, dict) else None
         narrative = getattr(self, "narrative", None)
-        if runtime.scope_kind == "private" and not extras.get("_narrative_internal_v1"):
+        if (
+            runtime.scope_kind == "private"
+            and not (isinstance(extras, dict) and extras.get("_narrative_internal_v1"))
+            and not (isinstance(extras, dict) and extras.get("_narrative_managed_v1"))
+        ):
             narrative = None
         attempt = None
         result = None
@@ -1235,23 +1269,53 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                         attempt = await begin(event, text)
                     else:
                         attempt = await asyncio.to_thread(begin, event, text)
-                if guarded_send_effect is not None:
-                    result = await guarded_send_effect(event, before_dispatch=before_dispatch)
-                    if result.error == "native_memory_source_invalidated":
-                        result = replace(result, error=dispatch_error)
-                elif send_effect is None and (managed or native_source_validator is not None or callable(media_check)):
-                    result = await send_plain(
-                        event, self.context, runtime.umo, text, reply_to_id=reply_to_id,
-                        before_dispatch=before_dispatch)
-                    if result.error == "native_memory_source_invalidated":
-                        result = replace(result, error=dispatch_error)
-                elif not await before_dispatch():
-                    result = SendResult(False, error=dispatch_error)
-                elif send_effect is not None:
-                    result = await send_effect(event)
-                else:
-                    result = await send_plain(
-                        event, self.context, runtime.umo, text, reply_to_id=reply_to_id)
+                pre_poke_target = self._extract_poke_target_from_fragment(text)
+                pre_poke_token = ""
+                if pre_poke_target:
+                    ledger = getattr(self, "outbound_ledger", None)
+                    if ledger is not None:
+                        pre_poke_token = ledger.record_bot_poke_sent(
+                            runtime.session_key,
+                            pre_poke_target,
+                            str(runtime.bot_id or ""),
+                            self.time_service.time(),
+                            scope=str(getattr(runtime, "scope_kind", "") or ""),
+                        )
+                        if pre_poke_token:
+                            pre_key = (runtime.session_key, pre_poke_target)
+                            self._pre_recorded_poke_counts[pre_key] = (
+                                self._pre_recorded_poke_counts.get(pre_key, 0) + 1
+                            )
+                try:
+                    with owned_outbound_send():
+                        if guarded_send_effect is not None:
+                            result = await guarded_send_effect(event, before_dispatch=before_dispatch)
+                            if result.error == "native_memory_source_invalidated":
+                                result = replace(result, error=dispatch_error)
+                        elif send_effect is None and (managed or native_source_validator is not None or callable(media_check)):
+                            result = await send_plain(
+                                event, self.context, runtime.umo, text, reply_to_id=reply_to_id,
+                                before_dispatch=before_dispatch)
+                            if result.error == "native_memory_source_invalidated":
+                                result = replace(result, error=dispatch_error)
+                        elif not await before_dispatch():
+                            result = SendResult(False, error=dispatch_error)
+                        elif send_effect is not None:
+                            result = await send_effect(event)
+                        else:
+                            result = await send_plain(
+                                event, self.context, runtime.umo, text, reply_to_id=reply_to_id)
+                finally:
+                    if pre_poke_token and (result is None or not result.success):
+                        ledger = getattr(self, "outbound_ledger", None)
+                        if ledger is not None:
+                            ledger.cancel_bot_poke_sent(pre_poke_token)
+                        pre_key = (runtime.session_key, pre_poke_target)
+                        rem = self._pre_recorded_poke_counts.get(pre_key, 0) - 1
+                        if rem > 0:
+                            self._pre_recorded_poke_counts[pre_key] = rem
+                        else:
+                            self._pre_recorded_poke_counts.pop(pre_key, None)
             if result.error == "boundary_policy_cancelled":
                 try:
                     event._chat_dynamics_boundary_failed_closed = True
@@ -1616,6 +1680,100 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
     def _looks_like_strong_address(self, parsed: Any, runtime: SessionRuntime) -> bool:
         return self._wake_kind(parsed, runtime) != "none"
 
+    @staticmethod
+    def _extract_poke_target_from_fragment(fragment: Any) -> str:
+        """Return target user_id when ``fragment`` is a single-component Poke MessageChain."""
+        components = getattr(fragment, "chain", None)
+        if not isinstance(components, (list, tuple)) or len(components) != 1:
+            return ""
+        comp = components[0]
+        if type(comp).__name__.lower() != "poke":
+            return ""
+        getter = getattr(comp, "target_id", None)
+        if callable(getter):
+            try:
+                value = getter()
+                if value not in (None, "", "None", 0, "0"):
+                    return str(value)
+            except Exception:
+                pass
+        for attr in ("qq", "user_id", "id"):
+            value = getattr(comp, attr, None)
+            if value not in (None, "", "None", 0, "0"):
+                return str(value)
+        return ""
+
+    def _ensure_outbound_observer(self, event: Any = None) -> None:
+        """Best-effort idempotent installation of the OneBot outbound observer."""
+        observer = getattr(self, "_outbound_observer", None)
+        if observer is None:
+            return
+        try:
+            if getattr(observer, "wrapped_count", 0) == 0:
+                observer.install_from_context(getattr(self, "context", None))
+            if event is not None:
+                observer.install_from_event(event)
+        except Exception as exc:
+            logger.debug(
+                "[ChatDynamics] Outbound observer install skipped type=%s",
+                type(exc).__name__,
+            )
+
+    def _register_outbound_session(
+        self,
+        session_key: str,
+        *,
+        scope: str,
+        target_id: str = "",
+        parsed: Any = None,
+    ) -> None:
+        ledger = getattr(self, "outbound_ledger", None)
+        if ledger is None or not session_key:
+            return
+        plat_id = session_key.split(":", 1)[0].strip() if ":" in session_key else ""
+        if not plat_id and parsed is not None:
+            plat_id = str(getattr(parsed, "platform", "") or "").strip()
+        try:
+            ledger.register_session(
+                session_key,
+                scope=scope,
+                target_id=target_id,
+                platform_id=plat_id,
+            )
+        except Exception:
+            pass
+
+    def _intercept_self_poke_echo(
+        self,
+        event: Any,
+        parsed: Any,
+        *,
+        session_key: str,
+        bot_id: str,
+        scope: str,
+        shadow_mode: bool = False,
+    ) -> bool:
+        """Suppress bot-initiated poke echoes before debounce/DAG/LLM and backfill action_text."""
+        if not getattr(parsed, "has_poke", False):
+            return False
+        ledger = getattr(self, "outbound_ledger", None)
+        plat_id = session_key.split(":", 1)[0].strip() if ":" in session_key else ""
+        matched = consume_self_poke_echo(
+            ledger,
+            session_key,
+            parsed,
+            bot_id=bot_id,
+            now=self.time_service.time(),
+            scope=scope,
+            platform_id=plat_id,
+        )
+        if not matched:
+            return False
+        self._metric("poke_self_echo_suppressed")
+        if not shadow_mode:
+            self._claim_poke_event(event)
+        return True
+
     def record_bot_poke(
         self,
         session_id: str,
@@ -1624,17 +1782,38 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         target_id: str,
         now: float | None = None,
     ) -> None:
-        """Record an outgoing bot poke in the sliding-window signal tracker."""
-        tracker = getattr(self, "poke_tracker", None)
-        if tracker is None:
-            return
+        """Record an outgoing bot poke in both the poke tracker and outbound ledger."""
         ts = float(self.time_service.time() if now is None else now)
-        tracker.record_bot_poke(
-            session_id,
-            bot_id=str(bot_id or ""),
-            target_id=str(target_id or ""),
-            now=ts,
-        )
+        eff_bot = str(bot_id or "")
+        eff_target = str(target_id or "")
+        tracker = getattr(self, "poke_tracker", None)
+        if tracker is not None:
+            tracker.record_bot_poke(
+                session_id,
+                bot_id=eff_bot,
+                target_id=eff_target,
+                now=ts,
+            )
+        ledger = getattr(self, "outbound_ledger", None)
+        if ledger is not None and eff_target:
+            pre_counts = getattr(self, "_pre_recorded_poke_counts", None)
+            pre_key = (str(session_id or ""), eff_target)
+            if isinstance(pre_counts, dict) and pre_counts.get(pre_key, 0) > 0:
+                rem = pre_counts[pre_key] - 1
+                if rem > 0:
+                    pre_counts[pre_key] = rem
+                else:
+                    pre_counts.pop(pre_key, None)
+            else:
+                rt = self._sessions.get(session_id)
+                scope = str(getattr(rt, "scope_kind", "") or "")
+                ledger.record_bot_poke_sent(
+                    session_id,
+                    eff_target,
+                    eff_bot,
+                    ts,
+                    scope=scope,
+                )
 
     def _reset_session_state(
         self,
@@ -1654,6 +1833,15 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             tracker.clear_session(key)
             if key != session_id:
                 tracker.clear_session(session_id)
+        ledger = getattr(self, "outbound_ledger", None)
+        if ledger is not None:
+            ledger.clear_session(key)
+            if key != session_id:
+                ledger.clear_session(session_id)
+        pre_counts = getattr(self, "_pre_recorded_poke_counts", None)
+        if isinstance(pre_counts, dict):
+            for pre_key in [item for item in pre_counts if item[0] in {key, session_id}]:
+                pre_counts.pop(pre_key, None)
 
     def _is_fast_path_turn(self, parsed: Any, runtime: SessionRuntime) -> bool:
         """Complete, explicitly addressed turns skip debounce and keep the native pipeline."""
@@ -1855,10 +2043,24 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
 
 
 
+    def _effective_persist_interval_seconds(self) -> float:
+        if _PERSIST_INTERVAL_SECONDS != _DEFAULT_PERSIST_INTERVAL_SECONDS:
+            return float(_PERSIST_INTERVAL_SECONDS)
+        try:
+            from . import series_panels as _series_panels
+
+            limits = _series_panels.get_series_resource_limits(getattr(self, "context", None))
+            return max(1.0, float(limits.get("chat_persist_interval_s", _DEFAULT_PERSIST_INTERVAL_SECONDS)))
+        except Exception:
+            return float(_DEFAULT_PERSIST_INTERVAL_SECONDS)
+
     async def _panel_persistence_loop(self) -> None:
         while not self._shutting_down:
             try:
-                await asyncio.wait_for(self._runtime_persist_stop.wait(), timeout=_PERSIST_INTERVAL_SECONDS)
+                await asyncio.wait_for(
+                    self._runtime_persist_stop.wait(),
+                    timeout=self._effective_persist_interval_seconds(),
+                )
                 break
             except asyncio.TimeoutError:
                 await self._save_panel_runtime(force=False)
@@ -2004,6 +2206,12 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             except Exception as exc:
                 logger.info("[ChatDynamics] Native request bridge restore failed type=%s", type(exc).__name__)
             self._native_request_bridge = None
+        observer = getattr(self, "_outbound_observer", None)
+        if observer is not None:
+            try:
+                observer.uninstall()
+            except Exception as exc:
+                logger.info("[ChatDynamics] Outbound observer restore failed type=%s", type(exc).__name__)
     def _release_session_state(self) -> None:
         """Forget every session-scoped object owned by this plugin instance."""
         for session_id in set(self._sessions) | set(self.arbiter.cooling_export()):
@@ -2017,6 +2225,12 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         tracker = getattr(self, "poke_tracker", None)
         if tracker is not None:
             tracker.clear()
+        ledger = getattr(self, "outbound_ledger", None)
+        if ledger is not None:
+            ledger.clear()
+        pre_counts = getattr(self, "_pre_recorded_poke_counts", None)
+        if isinstance(pre_counts, dict):
+            pre_counts.clear()
 
     async def _shutdown_work(self) -> None:
         """Stop background work and release hosts before the final snapshot."""
@@ -2173,6 +2387,26 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             return
         if not self.is_group_takeover_enabled(parsed.group_id):
             return
+        self._ensure_outbound_observer(event)
+        early_session_key = self._event_session_key(parsed)
+        self._register_outbound_session(
+            early_session_key,
+            scope="group",
+            target_id=parsed.group_id,
+            parsed=parsed,
+        )
+        if getattr(parsed, "has_poke", False):
+            existing_rt = self._sessions.get(early_session_key)
+            echo_bot_id = str(getattr(existing_rt, "bot_id", "") or parsed.self_id or "")
+            if self._intercept_self_poke_echo(
+                event,
+                parsed,
+                session_key=early_session_key,
+                bot_id=echo_bot_id,
+                scope="group",
+                shadow_mode=bool(self.shadow_mode),
+            ):
+                return
         narrative = getattr(self, 'narrative', None)
         if narrative is not None:
             await narrative.note_member_activity(event, parsed)
@@ -2467,7 +2701,11 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 if self._is_filter_mode() and not self.shadow_mode:
                     self._suppress_native_llm(event)
                 pending_ingest = True
-                wake_immediate = self._wake_kind(parsed, runtime) == "at"
+                wake_kind_now = self._wake_kind(parsed, runtime)
+                wake_immediate = (
+                    wake_kind_now == "at"
+                    or (wake_kind_now == "quote" and not addressed_elsewhere and not other_recipients)
+                )
                 suppress_supersede = not addressed_elsewhere and not is_peer_poke_only
         if is_fast_path:
             await self._flush_single_event(
@@ -2535,6 +2773,29 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         session_key = str(parsed.unified_msg_origin or "").strip()
         if not session_key or not parsed.sender_id:
             return
+        self._ensure_outbound_observer(event)
+        existing_rt = self._sessions.get(session_key)
+        echo_bot_id = str(getattr(existing_rt, "bot_id", "") or parsed.self_id or "")
+        if getattr(parsed, "has_poke", False):
+            if self._intercept_self_poke_echo(
+                event,
+                parsed,
+                session_key=session_key,
+                bot_id=echo_bot_id,
+                scope="private",
+            ):
+                return
+        dm_target_id = (
+            parsed.sender_id
+            if parsed.sender_id and parsed.sender_id != echo_bot_id and parsed.sender_id.lower() != "unknown"
+            else ""
+        )
+        self._register_outbound_session(
+            session_key,
+            scope="private",
+            target_id=dm_target_id,
+            parsed=parsed,
+        )
         # OneBot can emit blank notifications. They must not claim the native
         # path, consume message IDs or invalidate an in-flight persona turn.
         bounded_text = self._bounded_text(parsed.text)
@@ -4858,6 +5119,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 "local_hour": local_hour,
             },
             "ui_language": ui_language,
+            "resource_profile": str(getattr(cfg, "resource_profile", "auto") or "auto").strip().lower(),
         }
 
     def get_series_privacy_muted(self, umo: str, member_id: str, scope: str = "") -> dict[str, Any]:

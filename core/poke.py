@@ -362,3 +362,39 @@ def drop_poke_streaks(store: dict[tuple[str, str], tuple[int, float]], session_i
     sid = str(session_id or "")
     for key in [item for item in store if item[0] == sid]:
         store.pop(key, None)
+
+
+def consume_self_poke_echo(
+    outbound_ledger: Any,
+    session_key: str,
+    parsed: Any,
+    *,
+    bot_id: str = "",
+    now: float | None = None,
+    scope: str = "",
+    platform_id: str = "",
+) -> bool:
+    """Detect and consume a bot-initiated poke echo, backfilling action_text if present."""
+    if not getattr(parsed, "has_poke", False):
+        return False
+    sender_id = str(getattr(parsed, "sender_id", "") or "").strip()
+    target_id = str(getattr(parsed, "poke_target_id", "") or "").strip()
+    eff_bot_id = str(bot_id or getattr(parsed, "self_id", "") or "").strip()
+    action_text = str(getattr(parsed, "poke_action_text", "") or "").strip()
+    if outbound_ledger is None:
+        return bool(sender_id and eff_bot_id and sender_id == eff_bot_id)
+    matcher = getattr(outbound_ledger, "match_and_consume_self_poke_echo", None)
+    if not callable(matcher):
+        return bool(sender_id and eff_bot_id and sender_id == eff_bot_id)
+    return bool(
+        matcher(
+            session_key,
+            sender_id=sender_id,
+            target_id=target_id,
+            bot_id=eff_bot_id,
+            now=now,
+            action_text=action_text,
+            scope=scope,
+            platform_id=platform_id,
+        )
+    )

@@ -32,15 +32,11 @@ def test_decision_and_presence_policies_discourage_hollow_echoing():
     assert "own take" in lively or "playful riff" in lively
 
 
-def test_reply_guidance_and_instructions_encourage_banter_and_own_opinion():
-    assert "应声虫" in REPLY_GUIDANCE
-    assert "整活" in REPLY_GUIDANCE
-    assert "见解" in REPLY_GUIDANCE
-    assert "silent" in REPLY_GUIDANCE
-
-    assert "空泛附和" in REPLY_INSTRUCTIONS
-    assert "应声虫" in REPLY_INSTRUCTIONS
-    assert "distinct personal take" in REPLY_INSTRUCTIONS
+def test_reply_guidance_and_instructions_stay_concise_and_allow_silence():
+    assert len(REPLY_GUIDANCE) < 120
+    assert "silent" in REPLY_INSTRUCTIONS
+    assert "客套附和" in DEFAULT_REPLY_PROMPT
+    assert len(REPLY_INSTRUCTIONS) < 600
 
 
 def test_previous_default_prompts_auto_upgrade_while_custom_preserved():

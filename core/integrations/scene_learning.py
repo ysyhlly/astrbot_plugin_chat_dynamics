@@ -44,12 +44,24 @@ def clarification_input(host, capture, runtime, item, conversation):
                           if r.get('_scene_input') != 'current' and r.get('author_uid') in authors and isinstance(r.get('text'), str)]
 
 
+_SIGNAL_ALIASES = {
+    "communication_intent": "intent",
+    "expression_mode": "expression",
+    "turn_update": "update",
+}
+
+
 def labels(raw):
     result = {}
     for key, choices in INTENT_CRITERIA.items():
         if key == "speaker_stance":
             continue  # This turn's evaluation of a person is not reusable group style.
-        item = raw.get(key, {}) if isinstance(raw, dict) else {}
+        item = {}
+        if isinstance(raw, dict):
+            if key in raw:
+                item = raw.get(key, {})
+            elif _SIGNAL_ALIASES.get(key) in raw:
+                item = raw.get(_SIGNAL_ALIASES[key], "")
         if isinstance(item, dict):
             confidence = item.get('confidence')
             item = item.get('choice') if type(confidence) in (int, float) and (.8 if key == 'expression_mode' else .7) <= confidence <= 1 else 'unclear'
@@ -118,7 +130,7 @@ async def prepare(prompt, runtime, item):
             return bridge.augment_reply(prompt, runtime, item)
         if not getattr(capture, 'scene_prepared', False):
             capture.scene_prepared = True  # Retries never make another disambiguation call.
-            understanding = payload.get('interaction_understanding', {})
+            understanding = payload.get('turn_signals') or payload.get('interaction_understanding') or {}
             scene = labels(understanding)
             trace = {k: capture.scope[k] for k in ('scope', 'persona', 'member')}
             trace['turn_id'] = capture.base['turn_id']

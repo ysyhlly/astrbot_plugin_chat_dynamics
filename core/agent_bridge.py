@@ -868,14 +868,20 @@ class AstrBotAgentBridge:
                 planning = json.loads(event.message_obj.message[0].text)
             except (ValueError, TypeError, AttributeError, IndexError):
                 planning = {}
+            signals = planning.get("turn_signals", {}) if isinstance(planning, dict) else {}
             understanding = planning.get("interaction_understanding", {}) if isinstance(planning, dict) else {}
-            intent = understanding.get("communication_intent", {}) if isinstance(understanding, dict) else {}
+            intent_choice = (
+                signals.get("intent")
+                if isinstance(signals, dict) and isinstance(signals.get("intent"), str)
+                else (
+                    understanding.get("communication_intent", {}).get("choice")
+                    if isinstance(understanding, dict) and isinstance(understanding.get("communication_intent"), dict)
+                    else ""
+                )
+            )
             plan = planning.get("response_plan", {}) if isinstance(planning, dict) else {}
             social_action = isinstance(plan, dict) and plan.get("action") in {"acknowledge", "close"}
-            if social_action or (
-                isinstance(intent, dict)
-                and intent.get("choice") in {"sharing", "venting", "support", "banter", "affection"}
-            ):
+            if social_action or intent_choice in {"sharing", "venting", "support", "banter", "affection"}:
                 values["tool_schema_mode"] = "skills_like"
         return MainAgentBuildConfig(**values)
 
@@ -898,6 +904,7 @@ class AstrBotAgentBridge:
         on_stage=None,
         on_output_ready=None,
         on_partial_text=None,
+        turn_notes: tuple[str, ...] = (),
     ) -> AgentOutput:
         narrative = getattr(self, "narrative", None) if narrative_override is NARRATIVE_UNSET else narrative_override
         from astrbot.core.astr_main_agent import build_main_agent
@@ -913,6 +920,10 @@ class AstrBotAgentBridge:
         from .private_original_input import build_original_input_resolver, is_private_message_event
 
         private_owned = is_private_message_event(event)
+        event_extras_src = getattr(event, "_extras", None)
+        event_managed = bool(
+            isinstance(event_extras_src, dict) and event_extras_src.get("_narrative_managed_v1")
+        )
         # Copy the host event; building an agent must not mutate an event still used by other plugins.
         agent_event = copy.copy(event)
         hook_trace = None
@@ -967,7 +978,7 @@ class AstrBotAgentBridge:
                 delattr(agent_event, attr)
             except AttributeError:
                 pass
-        if private_owned:
+        if private_owned and not event_managed:
             resolver = build_original_input_resolver(
                 clone_event=agent_event,
                 trigger_event=event,
@@ -1101,6 +1112,7 @@ class AstrBotAgentBridge:
             )
             req._cd_local_recall_only_v1 = (
                 private_owned
+                and not event_managed
                 and plain_input
                 and not media_understand
                 and not execution_log
@@ -1136,7 +1148,7 @@ class AstrBotAgentBridge:
                 req.system_prompt = kept_system
                 if dynamic_tail:
                     volatile_system_notes.append(dynamic_tail)
-            if private_owned:
+            if private_owned and not event_managed:
                 from .reply_adaptation import private_packet
 
                 learning_packet = private_packet(boundary_host, agent_event, persona, learning_packet)
@@ -1289,6 +1301,11 @@ class AstrBotAgentBridge:
                         )
                     ).mark_as_temp()
                 )
+            if turn_notes:
+                for raw_note in turn_notes:
+                    clean_note = str(raw_note or "").strip()
+                    if clean_note:
+                        req.extra_user_content_parts.append(TextPart(text=clean_note).mark_as_temp())
             base_history = str(req.conversation.history)
             attachment_parts = [
                 part.model_dump()
@@ -1388,14 +1405,14 @@ class AstrBotAgentBridge:
             if managed:
                 from .character_view import HistoryViewProvider
 
+                scope = managed.get("scope", {})
+                character = managed.get("character", {})
                 try:
                     from astrbot.api.star import StarTools
 
                     from .data_paths import PLUGIN_NAME
                     from .tone_capture import ToneCaptureSession, known_provider_id, known_provider_metadata
 
-                    scope = managed.get("scope", {})
-                    character = managed.get("character", {})
                     data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
 
                     def capture_for(provider):

@@ -16,19 +16,8 @@ import time
 from . import member_boundary
 from .integrations import dynamics_horizons, dynamics_learning
 
-GUIDANCE = (
-    """conversation_adaptation把当前成员资料、有来源的共同对话线索和本轮回复节奏放在一起。
-先接住本轮具体内容，再酌情使用相关资料；资料不存在或暂不可用时保持未知，不为了表现熟悉而编造经历。
-member_profile只描述对方，不能改写你的性格、身份、价值观或自身喜恶；以原角色卡和已有稳定设定为准。表达样例用于理解语境，不照抄成固定口头禅，也不机械模仿错字或标点。
-shared_context只索引已经提供的证据：成员自述仍是自述，群里说过不等于专门对你说过，计划/意图不等于执行完成；旧Bot回复不是本轮口吻模板。具体共同经历缺乏证据时不说“我们曾经”。
-遵守既定response_plan与rhythm；优先回应新补充和纠正，不再询问已回答的问题。轻回应自然收住，认真倾诉留空间，闲聊无需每轮总结或反问。当前明确反馈优先于旧习惯，停止和成员边界仍是最终约束。
-不向群友展示学习、审批、证据字段或内部判断过程；只输出角色实际会发的回复。
-"""
-    + dynamics_horizons.HORIZONS_REPLY_GUIDANCE
-)
-SCENE_GUIDANCE = """scene_patterns是已审查的同群接话方法，不是角色的新性格。先确认当前语境满足conditions且不触及avoid，
-再借鉴method接住当前具体内容；examples是去身份的加工示例，不是原话、你的经历或可直接复制的台词。
-最多借鉴一个方法，不强行玩梗。认真求助、当前纠正和明确边界优先于模式。"""
+GUIDANCE = ""
+SCENE_GUIDANCE = "scene_patterns 为同群表达参考，仅在贴合当前语境时借鉴，不照搬台词。"
 
 PROFILE_CATEGORIES = {"style", "typing_habit", "preference", "expression_example"}
 SCOPE_KEYS = ("platform", "umo", "persona_id", "instance_id")
@@ -103,7 +92,6 @@ def _shared_context(material, managed, payload, speaker):
         "memory_refs": [],
         "boundary_refs": [],
         "dialogue_ref": None,
-        "usage": "仅在本轮相关时引用下列位置的原证据；自述不是外部事实，未核实计划不是共同经历。",
     }
     conversation = payload.get("conversation", {})
     dialogue = conversation.get("dialogue", {}) if isinstance(conversation, dict) else {}
@@ -117,7 +105,6 @@ def _shared_context(material, managed, payload, speaker):
         result["dialogue_ref"] = {
             "path": "conversation.dialogue",
             "source_message_ids": list(dialogue["source_message_ids"])[:12],
-            "attribution": "当前成员与Bot已送达回复的连续对话，不用作固定口吻示范",
         }
     view = managed.get("evidence_view", {}) if isinstance(managed, dict) else {}
     if not isinstance(view, dict) or view.get("available") is not True or view.get("schema_version") != 1:
@@ -169,7 +156,6 @@ def _shared_context(material, managed, payload, speaker):
                 "slot": slot,
                 "kind": row.get("kind"),
                 "status": row.get("status"),
-                "attribution": "该成员在此会话中的有来源表达；是否直接对Bot说、内容是否外部事实仍按原证据判断",
             }
             if slot == "commitments_and_boundaries":
                 result["boundary_refs"].append(pointer)
@@ -193,7 +179,6 @@ def _shared_context(material, managed, payload, speaker):
 
 def _rhythm(payload, speaker):
     plan = payload.get("response_plan", {})
-    attention = payload.get("attention_plan", {})
     constraints = payload.get("delivery_constraints", {})
     conversation = payload.get("conversation", {})
     dialogue = conversation.get("dialogue", {}) if isinstance(conversation, dict) else {}
@@ -206,7 +191,6 @@ def _rhythm(payload, speaker):
     return {
         "action": value(plan, "action"),
         "length": value(plan, "length"),
-        "mode": value(attention, "mode"),
         "rhythm_state": value(constraints, "rhythm_state"),
         "rhythm_action": value(constraints, "rhythm_action"),
         "continuation_kind": value(dialogue, "continuation_kind"),
@@ -219,7 +203,6 @@ def _rhythm(payload, speaker):
         "fragment_count": len(conversation.get("messages", []))
         if isinstance(conversation.get("messages"), list)
         else 0,
-        "authority": "沿用已决定的对象、时机、动作和长度；这些资料不增加接话或主动联系权限。",
     }
 
 
@@ -460,7 +443,6 @@ def compose(material, managed, payload, packet, host, event, persona):
         "status": "ready" if profiles else "no_approved_profile_in_context",
         "source_status": projection_status,
         "items": profiles,
-        "usage": "仅已批准且有效的成员资料；用来理解和调整交流方式，不改写Bot自身性格，不机械模仿。",
     }
     result.setdefault("source_scope", scope)
     result.setdefault("speaker_id", speaker)
@@ -491,13 +473,6 @@ def compose(material, managed, payload, packet, host, event, persona):
         "shared_context": _shared_context(result, managed, payload, speaker),
         "rhythm": _rhythm(payload, speaker),
         "current_corrections_path": "snapshot.humanlike.corrections" if corrections else None,
-        "priority": [
-            "成员边界与既定角色约束",
-            "本轮明确要求和纠正",
-            "本轮问题与既定节奏",
-            "相关的已审查成员资料与有来源的过往",
-        ],
-        "usage": "先回应眼前的人和事，资料相关时自然使用；不为了展示熟悉而逐条复述，不把群友喜恶变成自己的喜恶。",
     }
     offered = packet.get("items", []) if isinstance(packet, dict) else []
     used = {row["source_id"] for row in profiles}

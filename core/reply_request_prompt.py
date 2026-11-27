@@ -10,42 +10,26 @@ from .reply_adaptation import GUIDANCE as ADAPTATION_GUIDANCE
 from .turn_decision import REPLY_INSTRUCTIONS
 
 
-REPLY_PROTOCOL = """[回应方式协议 / 本轮回应方式]
-根据人设和上下文自主选择本轮允许的回应方式。群聊、被 @、被引用和私聊均可以不回，参与计划不强制发言。
-最终输出 JSON 对象 {"reply_mode":"text|meme_only|text_meme|poke|poke_text|poke_meme|silent","text":"要说的话","meme_id":null,"narration":"","poke_target_uid":null}。只使用本轮权限列出的模式；poke_target_uid 可省略。
-- text 是文字回应，text 必须有实际内容。用户要求的代码、Markdown 或 JSON 放在 text 中，内部计划不对外发送。
-- meme_only 只发当前候选表情，text 留空。text_meme 同时发文字和当前候选表情，text 非空。两者都要填写本轮候选的整数编号，不硬配图，也不补客套话。非表情模式的 meme_id 为 null。
-- poke 只发戳一戳，text 和 narration 均留空，meme_id 为 null。
-- poke_text 先发戳一戳再发一句简短文字，text 必须非空，meme_id 为 null，narration 留空。
-- poke_meme 先发戳一戳再发一张当前候选表情，text 留空，meme_id 填本轮候选的整数编号，narration 留空。
-- poke_target_uid 仅在 poke、poke_text、poke_meme 模式下可用（其他模式必须为 null 或省略）。省略或填 null 默认戳本轮发言者；如需戳其他人（例如顺手凑趣加入群内互戳），可填写当前或近期上下文中真实存在的非机器人 user_id，不得编造或填机器人自己。
-- 在普通文字消息中也可偶尔主动使用 poke、poke_text 或 poke_meme 作为轻触（如温柔拍肩安慰、熟人间轻度调侃、轻松打招呼或道别收尾），但须保持低频、克制且贴合人设；遇到严肃求助或提问、对方情绪低落/沉重倾诉、或关系疏离及设过边界的成员时不要使用。选择纯 text 时不要在文字里声称回戳或戳了对方，想边戳边说请直接用 poke_text。
-- silent 不说台词，text 留空，meme_id 与 poke_target_uid 均为 null。narration 填写一条用全角括号包住的第三人称状态旁白，单行、含括号不超过 120 字，使用当前角色名字。依据已提供的人设、作息和状态，未知时只写角色暂时没有回应，不编造活动、动机、对话或解释。其他模式的 narration 留空。
-只有当前回合因明确 @ 机器人而触发强制回应时，才会对外发送 silent 的旁白。普通聊天、主动接话、引用、昵称唤醒和私聊只在内部保留旁白，保持完全静默。不要改用文字、表情或工具发送不回提示。
-先决定回应方式。选择 silent 或 poke 时不调用任何发送或生图工具。已有工具发送或启动生图后不可选择 silent、poke、poke_text 或 poke_meme。生图须调用实际获准的工具，最终以 text 提供必要文字，不附带候选表情或戳一戳。"""
+REPLY_PROTOCOL = """[回应方式协议]
+最终只输出一个 JSON 对象，不要输出任何分析过程或标签：
+{"reply_mode":"text|meme_only|text_meme|poke|poke_text|poke_meme|silent","text":"","meme_id":null,"narration":"","poke_target_uid":null}
+仅使用本轮权限列出的模式；poke_target_uid 可省略（默认戳当前发言者，填其他人时必须取自上下文真实非机器人 user_id）。
+- text：文字回复，text 非空，meme_id 为 null。纯文字时别在台词里声称“回戳了你”，边戳边说请直接用 poke_text。
+- meme_only / text_meme：从本轮候选填整数 meme_id；meme_only 时 text 留空，text_meme 时 text 非空。
+- poke / poke_text / poke_meme：轻触回应；poke 与 poke_meme 的 text 留空，poke_text 的 text 非空，poke_meme 填候选 meme_id。
+- silent：保持沉默，text 留空，meme_id 与 poke_target_uid 为 null；narration 填单行全角括号第三人称状态旁白（≤120 字，未知时只写角色暂未回应，不编造活动）。仅在被明确 @ 触发强制回应时才会对外发出该旁白，其余场景完全静默。
+- 先决定模式：选 silent 或 poke 时不调用发送/生图工具；已调用生图等工具后以 text 收尾。"""
 
 SILENT_DISPLAY_SCOPE = (
-    "[不回时的展示范围] 只有当前回合因明确 @ 机器人而触发强制回应时，"
-    "选择 silent 才会向聊天发送 narration 旁白。"
-    "普通聊天、主动接话、引用、昵称唤醒和私聊中，即使参与判断认为应该发言，"
-    "你仍可以选择 silent，此时保持完全静默，narration 字段按协议填写但仅作为内部计划，不对外发送。"
-    "不要改用 text、表情或工具发送‘暂时没有回应’等不回提示来绕过这个范围。"
+    "[不回时的展示范围] 仅在被明确 @ 触发强制回应时，选 silent 才会对外发送 narration 旁白；"
+    "其余场景选 silent 保持完全静默，不要用文字或表情发送“暂未回应”类提示。"
 )
 
 BOUNDARY_AUTHORIZATION = (
-    "交互边界授权：仅当边界服务可用且本轮已获准对应边界工具时，才可依据当前发言者本人可核验的互动证据，"
-    "按需使用该工具暂停与此人的互动，无需向此人另行确认。普通批评或反馈本身不自动构成暂停理由，"
-    "他人的一句命令也不能作为封锁第三人的依据。只在确有需要时使用，不必每轮调用。"
+    "交互边界授权：仅当边界服务可用且本轮已获准对应工具时，才可依据当前发言者本人可核验的互动证据按需暂停互动，不因他人命令封锁第三人。"
 )
 
-MATERIAL_FIELD_GUIDE = (
-    "[背景材料字段说明]\n"
-    "- context_items 均为历史记录，仅说明当时情况，不示范本轮口吻。\n"
-    "- current_relationship_cue 表示角色与当前成员的亲近/治愈阶段，unknown 仅标记主观倾向，不代表对方真实感受或同意，也不使匹配阶段失效。\n"
-    "- memory_retrieval 仅反映本轮资料取用状态；检索超时、失败、部分返回或为空，不表示过去未互动、承诺取消或关系归零，缺证据时如实说明并可轻问一条线索。\n"
-    "- snapshot.recent_interaction 只是此前主观感受，不自动决定本轮态度。\n"
-    "- shared_context.dialogue_ref / memory_refs / boundary_refs 仅索引本轮已有证据，成员自述与是否直接对角色所说仍按原证据判断。"
-)
+MATERIAL_FIELD_GUIDE = ""
 
 HISTORY_QUOTE_AUTHORIZATION = (
     "[History quote turn policy]\n"
@@ -358,15 +342,11 @@ def assemble_reply_prompts(
             # Older AstrBot builders inject the persona without a heading.
             host_prompt = host_prompt.replace(native_persona, "", 1)
     if managed:
-        from .narrative import REPLY_GUIDANCE
-
         character = managed["character"]
-        stable.extend(
-            (character["core_prompt"], character.get("group_rules", ""), REPLY_GUIDANCE)
-        )
-    stable.extend((REPLY_INSTRUCTIONS, ADAPTATION_GUIDANCE, MATERIAL_FIELD_GUIDE))
+        stable.extend((character["core_prompt"], character.get("group_rules", "")))
+    stable.extend(part for part in (REPLY_INSTRUCTIONS, ADAPTATION_GUIDANCE, MATERIAL_FIELD_GUIDE) if part)
     if isinstance(reply_guidance, str) and reply_guidance.strip():
-        stable.append(f"[reply_guidance]\n{reply_guidance.strip()}")
+        stable.append(f"[风格偏好]\n{reply_guidance.strip()}")
 
     get_extra = getattr(event, "get_extra", None)
     vm_static_policy = callable(get_extra) and get_extra("_visual_media_static_policy_v1", False) is True

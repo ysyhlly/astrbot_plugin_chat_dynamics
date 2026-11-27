@@ -26,6 +26,7 @@ from astrbot.api import logger
 from .deferred_media import preserve_event_media, release_event_media
 from .platform_bridge import iter_message_components
 from .time_service import TimeService
+from .vibe_analyzer import GroupChatMode
 
 
 AwayKind = Literal["none", "micro_distract", "world_busy", "world_asleep"]
@@ -52,12 +53,26 @@ _PURE_FILLER_RE = re.compile(
     re.IGNORECASE,
 )
 _SILENT_MARKERS = frozenset({"", "NONE", "SKIP", "SILENT", "NO_AFTERTHOUGHT", "[SILENT]", "[无补充]", "无需补充"})
+_POKE_TEXT_MARKERS = frozenset({"[poke]", "[戳一戳]", "[戳了你一下]", "戳了你一下", "戳一戳"})
+
+SLEEP_WAKE_NOTE_JUST_WOKEN = (
+    "【当前作息提醒】你的日程此刻本来排在睡觉，刚被对方连发消息/戳一戳吵醒"
+    "（暂时醒着聊几句，聊完还会回去睡），请按刚被吵醒、带着困意的真实状态回应，"
+    "不要说自己本来就醒着。"
+)
+SLEEP_WAKE_NOTE_TEMP_AWAKE = (
+    "【当前作息提醒】你的日程此刻本来排在睡觉，刚才被吵醒现在暂时醒着陪对方聊几句"
+    "（聊完还会回去睡），请保持带着困意、随时可能回去继续睡的真实状态回应，"
+    "不要说自己本来就醒着。"
+)
 
 REASON_ZH: Dict[str, str] = {
     "rhythm_deferred_busy": "生活状态忙碌·稍后回看",
     "rhythm_deferred_asleep": "生活状态睡眠·醒来回看",
     "rhythm_deferred_distract": "短暂分心没看手机·稍后回看",
     "rhythm_urgent_breakthrough": "紧急/催促·立即破防回应",
+    "rhythm_sleep_wake_breakthrough": "睡眠期间被吵醒·暂时醒来回应",
+    "rhythm_sleep_temp_awake": "刚被吵醒·暂时清醒窗口内回应",
     "rhythm_catchup_sent": "暂离回来·按序补回旧话",
     "rhythm_catchup_skipped_resolved": "回看跳过·旧话已解决或过时",
     "rhythm_catchup_skipped_expired": "回看跳过·超出回看时间窗",
@@ -164,6 +179,8 @@ class CatchupCandidate:
     persona_fingerprint: str = ""
     attempt_id: str = ""
     status: AttemptStatus = "pending"
+    # In-memory text snapshot (never persisted) for sleep wake-up merge fallback
+    text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -256,6 +273,12 @@ class IngressPacingDecision:
     reason_zh: str = ""
     wake_at_wall: float = 0.0
     urgent_breakthrough: bool = False
+    woken_from_sleep: bool = False
+    temp_awake_active: bool = False
+    sleep_wake_note: str = ""
+    merged_pending_ids: Tuple[str, ...] = ()
+    merged_pending_texts: Tuple[str, ...] = ()
+    merged_pending_events: Tuple[Any, ...] = ()
 
 
 @dataclass
@@ -279,6 +302,13 @@ class SessionRhythmBook:
     delivery_ledger: Dict[str, AttemptStatus] = field(default_factory=dict)
     # author_id -> deque of recent directed ping mono timestamps for rapid-ping breakthrough
     recent_pings: Dict[str, Deque[float]] = field(default_factory=dict)
+    # Per-session sleep wake-up tracking (in-memory only, never mutates global dynamics_world)
+    # author_id -> deque of (mono_ts, msg_id) within SLEEP_WAKE_WINDOW
+    sleep_recent_pings: Dict[str, Deque[Tuple[float, str]]] = field(default_factory=dict)
+    sleep_recent_pokes: Dict[str, Deque[Tuple[float, str]]] = field(default_factory=dict)
+    temp_awake_until_mono: float = 0.0
+    temp_awake_until_wall: float = 0.0
+    temp_awake_reason: str = ""
     # in-memory only
     afterthought: Optional[AfterthoughtSlot] = None
     catching_up: bool = False
@@ -293,10 +323,20 @@ class NaturalRhythmController:
 
     MAX_LEDGER_ENTRIES = 128
     MAX_PENDING_ITEMS = 48
+    MAX_RECENT_PING_USERS = 256
+    RECENT_PING_STALE_SECONDS = 3600.0
     DISTRACT_COOLDOWN_SECONDS = 600.0
     SAME_INTERLOCUTOR_STAY_WINDOW = 45.0
-    RAPID_PING_WINDOW = 60.0
+    COLD_GROUP_MAX_MPM = 3.0
+    COLD_GROUP_MIN_BOT_IDLE_SECONDS = 90.0
+    RAPID_PING_WINDOW = 90.0
     RAPID_PING_COUNT = 2
+    SLEEP_WAKE_WINDOW = 90.0
+    SLEEP_WAKE_MESSAGE_THRESHOLD = 3
+    SLEEP_WAKE_POKE_THRESHOLD = 2
+    SLEEP_TEMP_AWAKE_SECONDS = 720.0
+    SLEEP_MERGE_MAX_ITEMS = 8
+    SLEEP_MERGE_MAX_AGE_SECONDS = 1800.0
     OUTREACH_COLLISION_WINDOW = 300.0
 
     def __init__(
@@ -712,6 +752,8 @@ class NaturalRhythmController:
         if book is None:
             return
         avail = str(availability or "").lower()
+        if avail == "available":
+            self._clear_sleep_wake_state(book)
         if avail == "available" and book.away_kind in {"world_busy", "world_asleep"}:
             book.away_kind = "none"
             now_mono = self.time_service.time()
@@ -748,6 +790,7 @@ class NaturalRhythmController:
             pings.append(now_mono)
             while pings and now_mono - pings[0] > self.RAPID_PING_WINDOW:
                 pings.popleft()
+            self._prune_recent_pings(book, now_mono)
 
         slot = book.afterthought
         if slot is None or slot.cancelled:
@@ -778,12 +821,334 @@ class NaturalRhythmController:
             )
             book.afterthought = None
 
+    def _prune_recent_pings(self, book: SessionRhythmBook, now_mono: float) -> None:
+        if not book.recent_pings:
+            return
+        stale_cutoff = self.RECENT_PING_STALE_SECONDS
+        stale_users = [
+            user_key
+            for user_key, timestamps in book.recent_pings.items()
+            if not timestamps or (now_mono - timestamps[-1]) > stale_cutoff
+        ]
+        for user_key in stale_users:
+            book.recent_pings.pop(user_key, None)
+        overflow = len(book.recent_pings) - self.MAX_RECENT_PING_USERS
+        if overflow > 0:
+            oldest_users = sorted(
+                book.recent_pings.items(),
+                key=lambda item: item[1][-1] if item[1] else float("-inf"),
+            )[:overflow]
+            for user_key, _ in oldest_users:
+                book.recent_pings.pop(user_key, None)
+
     def _is_rapid_ping(self, book: SessionRhythmBook, user_id: str, now_mono: float) -> bool:
         pings = book.recent_pings.get(str(user_id or ""))
         if not pings:
             return False
         recent = [ts for ts in pings if 0.0 <= now_mono - ts <= self.RAPID_PING_WINDOW]
         return len(recent) >= self.RAPID_PING_COUNT
+
+    def _is_group_cold_for_distract(self, runtime: Any, idle_since_bot: float) -> bool:
+        """Allow micro-distraction in private chats or truly cold group chats only."""
+        if getattr(runtime, "scope_kind", "group") == "private":
+            return True
+        if idle_since_bot < self.COLD_GROUP_MIN_BOT_IDLE_SECONDS:
+            return False
+        vibe = getattr(self.plugin, "vibe_analyzer", None)
+        if vibe is not None:
+            now_mono = self.time_service.time()
+            peek_fn = getattr(vibe, "peek_mode", None)
+            if callable(peek_fn):
+                try:
+                    mode = peek_fn(runtime.session_key, current_time=now_mono)
+                except TypeError:
+                    try:
+                        mode = peek_fn(runtime.session_key)
+                    except Exception:
+                        mode = None
+                except Exception:
+                    mode = None
+                if mode is not None and mode != GroupChatMode.CHILL_FADE:
+                    return False
+            tele_fn = getattr(vibe, "get_telemetrics", None)
+            if callable(tele_fn):
+                try:
+                    tele = tele_fn(runtime.session_key, current_time=now_mono)
+                except TypeError:
+                    try:
+                        tele = tele_fn(runtime.session_key)
+                    except Exception:
+                        tele = None
+                except Exception:
+                    tele = None
+                if tele is not None:
+                    mpm = float(getattr(tele, "mpm", 0.0) or 0.0)
+                    cfg = self._cfg()
+                    chill_enter = float(
+                        getattr(cfg, "chill_fade_enter_mpm", None)
+                        or getattr(vibe, "chill_fade_enter_mpm", None)
+                        or self.COLD_GROUP_MAX_MPM
+                    )
+                    if mpm > chill_enter:
+                        return False
+        return True
+
+    @staticmethod
+    def _clear_sleep_wake_state(book: SessionRhythmBook) -> None:
+        book.temp_awake_until_mono = 0.0
+        book.temp_awake_until_wall = 0.0
+        book.temp_awake_reason = ""
+        book.sleep_recent_pings.clear()
+        book.sleep_recent_pokes.clear()
+
+    @staticmethod
+    def _build_sleep_wake_note(*, just_woken: bool) -> str:
+        return SLEEP_WAKE_NOTE_JUST_WOKEN if just_woken else SLEEP_WAKE_NOTE_TEMP_AWAKE
+
+    def is_temp_awake(self, runtime: Any, *, now_mono: Optional[float] = None) -> bool:
+        """Return True if this session is currently in a per-session temporary awake window."""
+        if runtime is None:
+            return False
+        book = self._books.get(str(getattr(runtime, "session_key", "") or ""))
+        if book is None or book.temp_awake_until_mono <= 0.0:
+            return False
+        now = self.time_service.time() if now_mono is None else float(now_mono)
+        return now < book.temp_awake_until_mono
+
+    def get_sleep_wake_note(self, runtime: Any, *, availability: Optional[str] = None) -> str:
+        """Return a concise Chinese prompt reminder if this session is temporarily awake during sleep."""
+        if runtime is None:
+            return ""
+        if availability is not None:
+            avail = str(availability or "").strip().lower()
+            if avail and avail != "asleep":
+                return ""
+        book = self._books.get(str(getattr(runtime, "session_key", "") or ""))
+        if book is None or book.temp_awake_until_mono <= 0.0:
+            return ""
+        now_mono = self.time_service.time()
+        if now_mono >= book.temp_awake_until_mono:
+            return ""
+        return self._build_sleep_wake_note(just_woken=False)
+
+    @staticmethod
+    def _event_has_poke_component(event: Any) -> bool:
+        if event is None:
+            return False
+        try:
+            for comp in iter_message_components(event):
+                name = type(comp).__name__.lower()
+                if name == "poke" or str(getattr(comp, "type", "") or "").lower() == "poke":
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _detect_sleep_poke_counts(
+        self,
+        *,
+        text: str,
+        wake_kind: str,
+        directed: bool,
+        private_direct: bool,
+        node: Any,
+        live_event: Any,
+        live_events: Sequence[Any],
+        is_poke: Optional[bool],
+        poke_count: Optional[int],
+        message_count: Optional[int],
+    ) -> Tuple[bool, bool, int, int]:
+        """Determine (eligible_for_sleep_wake, is_poke_at_bot, eff_msg_count, eff_poke_count)."""
+        wk = str(wake_kind or "none").strip().lower()
+        meta = getattr(node, "metadata", None) if node is not None else None
+        meta_dict = meta if isinstance(meta, dict) else {}
+        clean_text = (text or "").strip().lower()
+
+        if wk == "poke_peer" and not private_direct:
+            return False, False, 0, 0
+
+        raw_events = tuple(ev for ev in live_events if ev is not None)
+        if not raw_events and live_event is not None:
+            raw_events = (live_event,)
+        event_poke_hits = sum(1 for ev in raw_events if self._event_has_poke_component(ev))
+
+        if is_poke is False:
+            is_poke_at_bot = False
+        elif private_direct:
+            is_poke_at_bot = bool(
+                is_poke is True
+                or wk == "poke"
+                or meta_dict.get("has_poke") is True
+                or meta_dict.get("poke_at_bot") is True
+                or event_poke_hits > 0
+                or clean_text in _POKE_TEXT_MARKERS
+            )
+        else:
+            # Group chat: MUST be explicitly directed at bot (poke_at_bot / wake_kind == "poke" / directed + is_poke).
+            meta_poke_at_bot = meta_dict.get("poke_at_bot")
+            if meta_poke_at_bot is False:
+                is_poke_at_bot = False
+            else:
+                is_poke_at_bot = bool(
+                    wk == "poke"
+                    or meta_poke_at_bot is True
+                    or (directed and (is_poke is True or meta_dict.get("has_poke") is True or event_poke_hits > 0))
+                )
+
+        eligible = bool(private_direct or directed or is_poke_at_bot)
+        if not eligible:
+            return False, False, 0, 0
+
+        if message_count is not None:
+            eff_msg_count = max(1, int(message_count))
+        elif len(raw_events) > 1:
+            eff_msg_count = len(raw_events)
+        else:
+            eff_msg_count = 1
+
+        if not is_poke_at_bot:
+            eff_poke_count = 0
+        elif poke_count is not None:
+            eff_poke_count = max(1, int(poke_count))
+        elif event_poke_hits > 0:
+            eff_poke_count = event_poke_hits
+        else:
+            eff_poke_count = 1
+
+        return True, is_poke_at_bot, eff_msg_count, eff_poke_count
+
+    def _prune_sleep_activity(self, book: SessionRhythmBook, now_mono: float) -> None:
+        cutoff = self.SLEEP_WAKE_WINDOW
+        for store in (book.sleep_recent_pings, book.sleep_recent_pokes):
+            if not store:
+                continue
+            empty_users: List[str] = []
+            for user_key, entries in store.items():
+                while entries and (now_mono - entries[0][0]) > cutoff:
+                    entries.popleft()
+                if not entries:
+                    empty_users.append(user_key)
+            for user_key in empty_users:
+                store.pop(user_key, None)
+            overflow = len(store) - self.MAX_RECENT_PING_USERS
+            if overflow > 0:
+                oldest_users = sorted(
+                    store.items(),
+                    key=lambda item: item[1][-1][0] if item[1] else float("-inf"),
+                )[:overflow]
+                for user_key, _ in oldest_users:
+                    store.pop(user_key, None)
+
+    def _record_sleep_activity(
+        self,
+        book: SessionRhythmBook,
+        user_id: str,
+        msg_id: str,
+        now_mono: float,
+        *,
+        msg_count: int,
+        poke_count: int,
+    ) -> Tuple[int, int]:
+        """Record directed sleep-period pings/pokes and return (pings_in_window, pokes_in_window)."""
+        uid = str(user_id or "")
+        mid = str(msg_id or "")
+        if not uid:
+            return 0, 0
+        window = self.SLEEP_WAKE_WINDOW
+
+        pings = book.sleep_recent_pings.setdefault(uid, deque(maxlen=16))
+        while pings and (now_mono - pings[0][0]) > window:
+            pings.popleft()
+        if msg_count > 0:
+            already = bool(mid and any(existing_mid == mid for _ts, existing_mid in pings))
+            if not already:
+                for i in range(msg_count):
+                    pings.append((now_mono, mid if i == 0 else f"{mid}#{i}"))
+
+        pokes = book.sleep_recent_pokes.setdefault(uid, deque(maxlen=16))
+        while pokes and (now_mono - pokes[0][0]) > window:
+            pokes.popleft()
+        if poke_count > 0:
+            already_poke = bool(mid and any(existing_mid == mid for _ts, existing_mid in pokes))
+            if not already_poke:
+                for i in range(poke_count):
+                    pokes.append((now_mono, mid if i == 0 else f"{mid}#p{i}"))
+
+        ping_total = sum(1 for ts, _ in pings if 0.0 <= now_mono - ts <= window)
+        poke_total = sum(1 for ts, _ in pokes if 0.0 <= now_mono - ts <= window)
+        self._prune_sleep_activity(book, now_mono)
+        return ping_total, poke_total
+
+    def _consume_pending_for_sleep_wake(
+        self,
+        runtime: Any,
+        book: SessionRhythmBook,
+        *,
+        user_id: str,
+        current_msg_id: str,
+        now_wall: float,
+        persona_fingerprint: str,
+    ) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[Any, ...]]:
+        """Collect & mark consumed recent pending deferred items from the same user on sleep wake-up."""
+        uid = str(user_id or "")
+        if not uid or not book.pending_items:
+            return (), (), ()
+        dag = getattr(runtime, "dag", None)
+        recalled_set = set(getattr(runtime, "recalled_id_set", ()) or ())
+        max_age = min(self._lookback_seconds(directed=True), self.SLEEP_MERGE_MAX_AGE_SECONDS)
+
+        matched: List[CatchupCandidate] = []
+        for cand in book.pending_items:
+            if cand.status != "pending" or cand.msg_id == current_msg_id:
+                continue
+            if cand.author_id != uid:
+                continue
+            if book.delivery_ledger.get(cand.msg_id) in {"sent", "uncertain", "skipped"}:
+                continue
+            if persona_fingerprint and cand.persona_fingerprint and cand.persona_fingerprint != persona_fingerprint:
+                continue
+            if cand.msg_id in recalled_set:
+                cand.status = "skipped"
+                self._record_ledger(book, cand.msg_id, "skipped")
+                self._release_live_events(book, cand.msg_id)
+                continue
+            node = dag.get_node(cand.msg_id) if dag is not None else None
+            if node is not None and getattr(node, "metadata", {}).get("recalled") is True:
+                cand.status = "skipped"
+                self._record_ledger(book, cand.msg_id, "skipped")
+                self._release_live_events(book, cand.msg_id)
+                continue
+            if cand.wall_ts > 0 and (now_wall - cand.wall_ts) > max_age:
+                continue
+            matched.append(cand)
+
+        if not matched:
+            return (), (), ()
+        matched.sort(key=lambda c: (c.wall_ts, c.mono_ts))
+        if len(matched) > self.SLEEP_MERGE_MAX_ITEMS:
+            matched = matched[-self.SLEEP_MERGE_MAX_ITEMS :]
+
+        merged_ids: List[str] = []
+        merged_texts: List[str] = []
+        merged_events: List[Any] = []
+        for cand in matched:
+            cand.status = "sent"
+            self._record_ledger(book, cand.msg_id, "sent")
+            merged_ids.append(cand.msg_id)
+            node = dag.get_node(cand.msg_id) if dag is not None else None
+            node_text = str(getattr(node, "text", "") or "").strip() if node is not None else ""
+            if not node_text:
+                node_text = (cand.text or "").strip()
+            if not node_text and cand.wake_kind == "poke":
+                node_text = "[戳了你一下]"
+            if node_text:
+                merged_texts.append(node_text)
+            evs = book.live_events.pop(cand.msg_id, ())
+            if evs:
+                merged_events.extend(evs if isinstance(evs, (tuple, list)) else (evs,))
+
+        book.pending_items = [c for c in book.pending_items if c.status == "pending"]
+        return tuple(merged_ids), tuple(merged_texts), tuple(merged_events)
 
     def evaluate_ingress_pacing(
         self,
@@ -801,6 +1166,9 @@ class NaturalRhythmController:
         node: Any = None,
         live_event: Any = None,
         live_events: Sequence[Any] = (),
+        is_poke: Optional[bool] = None,
+        poke_count: Optional[int] = None,
+        message_count: Optional[int] = None,
     ) -> IngressPacingDecision:
         """Decide whether an incoming turn runs immediately or defers to catch-up."""
         if not self.catchup_enabled() or runtime is None:
@@ -817,6 +1185,7 @@ class NaturalRhythmController:
             book.pending_items.clear()
             self._release_live_events(book)
             book.away_kind = "none"
+            self._clear_sleep_wake_state(book)
             if book.afterthought is not None:
                 book.afterthought.cancelled = True
                 book.afterthought = None
@@ -824,6 +1193,9 @@ class NaturalRhythmController:
             book.persona_fingerprint = persona_fingerprint
 
         avail = str(availability or "available").lower()
+        if avail != "asleep" and (book.temp_awake_until_mono > 0.0 or book.sleep_recent_pings or book.sleep_recent_pokes):
+            self._clear_sleep_wake_state(book)
+
         # Expire finished micro-distraction if its timer already passed.
         if book.away_kind == "micro_distract" and book.wake_at_mono and now_mono >= book.wake_at_mono:
             book.away_kind = "none"
@@ -854,10 +1226,18 @@ class NaturalRhythmController:
                 book.last_distract_end_wall <= 0
                 or (now_wall - book.last_distract_end_wall) >= self.DISTRACT_COOLDOWN_SECONDS
             )
-            # Stay present during active back-and-forth with the same person.
-            if not same_interlocutor and cooldown_ok and not book.catching_up:
+            # Stay present during active back-and-forth or lively/recent group chats.
+            if (
+                not same_interlocutor
+                and cooldown_ok
+                and not book.catching_up
+                and self._is_group_cold_for_distract(runtime, idle_since_bot)
+            ):
                 prob = self._distract_probability()
-                if idle_since_bot < self.SAME_INTERLOCUTOR_STAY_WINDOW:
+                if (
+                    getattr(runtime, "scope_kind", "group") == "private"
+                    and idle_since_bot < self.SAME_INTERLOCUTOR_STAY_WINDOW
+                ):
                     prob *= 0.15  # Very low chance of brief mid-chat walk-away
                 if self._rng.random() < prob:
                     low, high = self._distract_range()
@@ -884,34 +1264,142 @@ class NaturalRhythmController:
                 book.wake_at_mono = now_mono + check_after
                 book.wake_at_wall = now_wall + check_after
 
-        # Urgent / decision-waiting / rapid-ping breakthrough check.
         urgent = is_urgent_text(text)
-        rapid_ping = (directed or private_direct) and self._is_rapid_ping(book, user_id, now_mono)
-        # During asleep, only explicit urgent text directed at the bot breaks through.
-        breakthrough = (urgent and (directed or private_direct)) if away_kind == "world_asleep" else (
-            urgent or rapid_ping
-        )
-        if breakthrough:
-            if away_kind == "micro_distract":
-                book.away_kind = "none"
-                book.last_distract_end_wall = now_wall
-            # Mark handled by the immediate live path so later catch-up never duplicates it.
-            self._record_ledger(book, msg_id, "sent")
-            self._record_replay(
-                book,
-                action="speak",
-                reason_code="rhythm_urgent_breakthrough",
+
+        # Sleep-period temporary awake window & wake-up breakthrough handling.
+        if away_kind == "world_asleep":
+            # 1) Already inside this session's temporary awake window -> pass through;
+            # only refresh the 12-min window on private/directed messages (or actual replies
+            # via on_turn_delivered) so undirected group night chatter cannot keep the bot awake forever.
+            if book.temp_awake_until_mono > now_mono:
+                if private_direct or directed:
+                    book.temp_awake_until_mono = now_mono + self.SLEEP_TEMP_AWAKE_SECONDS
+                    book.temp_awake_until_wall = now_wall + self.SLEEP_TEMP_AWAKE_SECONDS
+                self._record_ledger(book, msg_id, "sent")
+                self._record_replay(
+                    book,
+                    action="speak",
+                    reason_code="rhythm_sleep_temp_awake",
+                    node=node,
+                    detail={"temp_awake_until_wall": book.temp_awake_until_wall},
+                )
+                self._sync_runtime_state(runtime, book)
+                return IngressPacingDecision(
+                    defer=False,
+                    away_kind="world_asleep",
+                    reason_code="rhythm_sleep_temp_awake",
+                    reason_zh=REASON_ZH["rhythm_sleep_temp_awake"],
+                    urgent_breakthrough=bool(urgent and (directed or private_direct)),
+                    woken_from_sleep=False,
+                    temp_awake_active=True,
+                    sleep_wake_note=self._build_sleep_wake_note(just_woken=False),
+                )
+            elif book.temp_awake_until_mono > 0.0:
+                # Expired temporary awake window -> naturally return to sleep state.
+                book.temp_awake_until_mono = 0.0
+                book.temp_awake_until_wall = 0.0
+                book.temp_awake_reason = ""
+
+            # 2) Track directed sleep pings & pokes BEFORE checking wake-up (including turns that defer).
+            eligible_for_wake, is_poke_at_bot, eff_msg_count, eff_poke_count = self._detect_sleep_poke_counts(
+                text=text,
+                wake_kind=wake_kind,
+                directed=directed,
+                private_direct=private_direct,
                 node=node,
-                detail={"away_kind": away_kind, "urgent": urgent, "rapid_ping": rapid_ping},
+                live_event=live_event,
+                live_events=live_events,
+                is_poke=is_poke,
+                poke_count=poke_count,
+                message_count=message_count,
             )
-            self._sync_runtime_state(runtime, book)
-            return IngressPacingDecision(
-                defer=False,
-                away_kind=away_kind,
-                reason_code="rhythm_urgent_breakthrough",
-                reason_zh=REASON_ZH["rhythm_urgent_breakthrough"],
-                urgent_breakthrough=True,
-            )
+            recent_sleep_pings = 0
+            recent_sleep_pokes = 0
+            if eligible_for_wake:
+                recent_sleep_pings, recent_sleep_pokes = self._record_sleep_activity(
+                    book,
+                    user_id,
+                    msg_id,
+                    now_mono,
+                    msg_count=eff_msg_count,
+                    poke_count=eff_poke_count,
+                )
+
+            urgent_wake = bool(urgent and eligible_for_wake)
+            poke_wake = bool(eligible_for_wake and recent_sleep_pokes >= self.SLEEP_WAKE_POKE_THRESHOLD)
+            ping_wake = bool(eligible_for_wake and recent_sleep_pings >= self.SLEEP_WAKE_MESSAGE_THRESHOLD)
+            if urgent_wake or poke_wake or ping_wake:
+                trigger_kind = "urgent" if urgent_wake else ("repeated_pokes" if poke_wake else "repeated_pings")
+                book.temp_awake_until_mono = now_mono + self.SLEEP_TEMP_AWAKE_SECONDS
+                book.temp_awake_until_wall = now_wall + self.SLEEP_TEMP_AWAKE_SECONDS
+                book.temp_awake_reason = trigger_kind
+                uid_key = str(user_id or "")
+                book.sleep_recent_pings.pop(uid_key, None)
+                book.sleep_recent_pokes.pop(uid_key, None)
+
+                merged_ids, merged_texts, merged_events = self._consume_pending_for_sleep_wake(
+                    runtime,
+                    book,
+                    user_id=uid_key,
+                    current_msg_id=msg_id,
+                    now_wall=now_wall,
+                    persona_fingerprint=book.persona_fingerprint,
+                )
+                self._record_ledger(book, msg_id, "sent")
+                reason_code = "rhythm_urgent_breakthrough" if urgent_wake else "rhythm_sleep_wake_breakthrough"
+                self._record_replay(
+                    book,
+                    action="speak",
+                    reason_code=reason_code,
+                    node=node,
+                    detail={
+                        "away_kind": away_kind,
+                        "trigger": trigger_kind,
+                        "urgent": urgent_wake,
+                        "recent_pings": recent_sleep_pings,
+                        "recent_pokes": recent_sleep_pokes,
+                        "merged_pending_count": len(merged_ids),
+                        "temp_awake_until_wall": book.temp_awake_until_wall,
+                    },
+                )
+                self._sync_runtime_state(runtime, book)
+                return IngressPacingDecision(
+                    defer=False,
+                    away_kind="world_asleep",
+                    reason_code=reason_code,
+                    reason_zh=REASON_ZH[reason_code],
+                    urgent_breakthrough=urgent_wake,
+                    woken_from_sleep=True,
+                    temp_awake_active=True,
+                    sleep_wake_note=self._build_sleep_wake_note(just_woken=True),
+                    merged_pending_ids=merged_ids,
+                    merged_pending_texts=merged_texts,
+                    merged_pending_events=merged_events,
+                )
+        else:
+            # Urgent / decision-waiting / rapid-ping breakthrough check for busy / micro_distract.
+            rapid_ping = (directed or private_direct) and self._is_rapid_ping(book, user_id, now_mono)
+            if urgent or rapid_ping:
+                if away_kind == "micro_distract":
+                    book.away_kind = "none"
+                    book.last_distract_end_wall = now_wall
+                # Mark handled by the immediate live path so later catch-up never duplicates it.
+                self._record_ledger(book, msg_id, "sent")
+                self._record_replay(
+                    book,
+                    action="speak",
+                    reason_code="rhythm_urgent_breakthrough",
+                    node=node,
+                    detail={"away_kind": away_kind, "urgent": urgent, "rapid_ping": rapid_ping},
+                )
+                self._sync_runtime_state(runtime, book)
+                return IngressPacingDecision(
+                    defer=False,
+                    away_kind=away_kind,
+                    reason_code="rhythm_urgent_breakthrough",
+                    reason_zh=REASON_ZH["rhythm_urgent_breakthrough"],
+                    urgent_breakthrough=True,
+                )
 
         # Defer this message into the session's catch-up bookmark.
         reason_code = (
@@ -936,6 +1424,7 @@ class NaturalRhythmController:
                 persona_fingerprint=book.persona_fingerprint,
                 attempt_id=attempt_id,
                 status="pending",
+                text=str(text or ""),
             )
             book.pending_items.append(cand)
             if len(book.pending_items) > self.MAX_PENDING_ITEMS:
@@ -1304,6 +1793,7 @@ class NaturalRhythmController:
 
         book.catching_up = True
         book.away_kind = "none"
+        self._clear_sleep_wake_state(book)
         book.last_distract_end_wall = self.time_service.wall_time()
         expected_epoch = runtime.epoch
         expected_persona = book.persona_fingerprint
@@ -1386,7 +1876,192 @@ class NaturalRhythmController:
             book.catching_up = False
         return sent_count
 
-    async def _probe_world_availability(self, runtime: Any) -> str:
+    @staticmethod
+    def _platform_from_umo(umo: str) -> str:
+        clean = str(umo or "").strip()
+        if not clean:
+            return ""
+        if clean.count(":") >= 2:
+            return clean.rsplit(":", 2)[0]
+        return clean.split(":", 1)[0] if ":" in clean else ""
+
+    @classmethod
+    def _normalize_concrete_scope(
+        cls,
+        raw: Any,
+        *,
+        default_platform: str,
+        default_umo: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+        s_umo = str(raw.get("umo") or default_umo or "").strip()
+        s_platform = str(raw.get("platform") or default_platform or cls._platform_from_umo(s_umo)).strip()
+        s_persona = str(raw.get("persona_id") or "").strip()
+        if not s_umo or not s_persona or s_persona == "[%None]":
+            return None
+        s_instance = str(raw.get("instance_id") or s_persona).strip()
+        if not s_instance or s_instance == "[%None]":
+            return None
+        return {
+            "schema_version": 1,
+            "platform": s_platform,
+            "umo": s_umo,
+            "persona_id": s_persona,
+            "instance_id": s_instance,
+        }
+
+    @staticmethod
+    async def _call_narrative(
+        call_fn: Callable[..., Awaitable[Any]],
+        provider: str,
+        method: str,
+        *args: Any,
+        timeout: float = 3.0,
+    ) -> Any:
+        try:
+            return await call_fn(provider, method, *args, timeout=timeout)
+        except TypeError:
+            try:
+                return await call_fn(provider, method, *args)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    async def _resolve_host_persona_id(self, runtime: Any, umo: str, platform: str) -> str:
+        """Best-effort local lookup of the concrete AstrBot persona_id for a session."""
+        for attr in ("persona_id", "active_persona_id"):
+            val = str(getattr(runtime, attr, "") or "").strip()
+            if val and val != "[%None]":
+                return val
+
+        bridge = getattr(getattr(self.plugin, "persona_engine", None), "bridge", None)
+        context = getattr(self.plugin, "context", None) or getattr(bridge, "context", None)
+        if context is None or not umo:
+            return ""
+        try:
+            conv = None
+            mgr = getattr(context, "conversation_manager", None)
+            if mgr is not None:
+                get_cid = getattr(mgr, "get_curr_conversation_id", None)
+                cid = await get_cid(umo) if callable(get_cid) else None
+                get_conv = getattr(mgr, "get_conversation", None)
+                if cid and callable(get_conv):
+                    conv = await get_conv(umo, cid)
+            get_cfg = getattr(context, "get_config", None)
+            cfg_dict = (get_cfg(umo=umo) if callable(get_cfg) else None) or {}
+            settings = cfg_dict.get("provider_settings", {}) if isinstance(cfg_dict, dict) else {}
+            pm = getattr(context, "persona_manager", None)
+            resolver = getattr(pm, "resolve_selected_persona", None) if pm is not None else None
+            if callable(resolver):
+                resolved = await resolver(
+                    umo=umo,
+                    conversation_persona_id=getattr(conv, "persona_id", None),
+                    platform_name=platform,
+                    provider_settings=settings,
+                )
+                pid = str(resolved[0] if isinstance(resolved, (tuple, list)) and resolved else "" or "").strip()
+                if pid and pid != "[%None]":
+                    return pid
+                return ""
+            pid = getattr(conv, "persona_id", None) if conv is not None else None
+            if pid == "[%None]":
+                return ""
+            if not pid and isinstance(settings, dict):
+                pid = settings.get("default_personality")
+            pid_str = str(pid or "").strip()
+            return "" if (not pid_str or pid_str == "[%None]") else pid_str
+        except Exception:
+            return ""
+
+    async def _resolve_world_scope(
+        self,
+        runtime: Any,
+        call_fn: Optional[Callable[..., Awaitable[Any]]],
+        bundle: Any,
+        umo: str,
+        *,
+        persona_id: str = "",
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        """Resolve a concrete 5-field scope {schema_version, platform, umo, persona_id, instance_id}.
+
+        Returns (scope, is_unmanaged). Never returns a scope with empty persona_id/instance_id.
+        """
+        platform = self._platform_from_umo(umo)
+
+        # 1) Fast path: concrete scope from existing narrative bundle.
+        if bundle is not None:
+            cand = self._normalize_concrete_scope(
+                getattr(bundle, "scope", None), default_platform=platform, default_umo=umo
+            )
+            if cand is not None:
+                return cand, False
+            try:
+                snap = getattr(bundle, "snapshot", None)
+                if isinstance(snap, dict):
+                    cand = self._normalize_concrete_scope(
+                        snap.get("scope"), default_platform=platform, default_umo=umo
+                    )
+                    if cand is not None:
+                        return cand, False
+            except Exception:
+                pass
+
+        if not umo:
+            return None, True
+
+        # 2) Resolve local persona_id hint (explicit param -> runtime -> host persona manager).
+        hint_pid = str(persona_id or "").strip()
+        if hint_pid == "[%None]":
+            hint_pid = ""
+        if not hint_pid:
+            hint_pid = await self._resolve_host_persona_id(runtime, umo, platform)
+
+        # 3) Query worldbook.get_character_context (matches core/narrative.py) for authoritative scope.
+        if callable(call_fn):
+            probe_scope = {
+                "platform": platform,
+                "umo": umo,
+                "persona_id": hint_pid,
+                "instance_id": hint_pid,
+            }
+            character = await self._call_narrative(
+                call_fn, "worldbook", "get_character_context", probe_scope, None, timeout=3.0
+            )
+            if isinstance(character, dict):
+                if character.get("disabled") or character.get("available") is False:
+                    return None, True
+                raw_scope = character.get("scope")
+                if isinstance(raw_scope, dict):
+                    cand = self._normalize_concrete_scope(
+                        raw_scope, default_platform=platform, default_umo=umo
+                    )
+                    if cand is not None and cand["umo"] == umo:
+                        return cand, False
+                char_pid = str(character.get("persona_id") or "").strip()
+                char_iid = str(character.get("instance_id") or char_pid).strip()
+                cand = self._normalize_concrete_scope(
+                    {"platform": platform, "umo": umo, "persona_id": char_pid, "instance_id": char_iid},
+                    default_platform=platform,
+                    default_umo=umo,
+                )
+                if cand is not None:
+                    return cand, False
+
+        # 4) Fallback to concrete host persona_id hint if worldbook did not return a dict.
+        if hint_pid:
+            cand = self._normalize_concrete_scope(
+                {"platform": platform, "umo": umo, "persona_id": hint_pid, "instance_id": hint_pid},
+                default_platform=platform,
+                default_umo=umo,
+            )
+            if cand is not None:
+                return cand, False
+
+        return None, True
+
+    async def _probe_world_availability(self, runtime: Any, *, persona_id: str = "") -> str:
         """Query live availability from dynamic_life_state before falling back to cached bundles."""
         narrative = getattr(self.plugin, "narrative", None)
         if narrative is None:
@@ -1405,34 +2080,18 @@ class NaturalRhythmController:
             if isinstance(bundles, dict)
             else None
         )
-        # Prefer live dynamic_life_state.get_snapshot so idle groups never starve on a stale bundle cache.
+        # Prefer live dynamic_life_state.get_snapshot so idle groups/private chats never starve on stale cache.
         call_fn = getattr(narrative, "call", None)
         if callable(call_fn):
-            scope = None
-            if bundle is not None:
-                raw_scope = getattr(bundle, "scope", None)
-                if isinstance(raw_scope, dict) and raw_scope.get("umo"):
-                    scope = dict(raw_scope)
-                else:
-                    try:
-                        snap = getattr(bundle, "snapshot", None)
-                        if isinstance(snap, dict) and isinstance(snap.get("scope"), dict):
-                            scope = dict(snap["scope"])
-                    except Exception:
-                        pass
-            if scope is None and umo:
-                platform = umo.split(":", 1)[0] if ":" in umo else ""
-                scope = {"platform": platform, "umo": umo, "persona_id": "", "instance_id": ""}
+            scope, is_unmanaged = await self._resolve_world_scope(
+                runtime, call_fn, bundle, umo, persona_id=persona_id
+            )
+            if is_unmanaged and scope is None:
+                return "unmanaged"
             if scope is not None:
-                try:
-                    live_snap = await call_fn("dynamic_life_state", "get_snapshot", scope, timeout=3.0)
-                except TypeError:
-                    try:
-                        live_snap = await call_fn("dynamic_life_state", "get_snapshot", scope)
-                    except Exception:
-                        live_snap = None
-                except Exception:
-                    live_snap = None
+                live_snap = await self._call_narrative(
+                    call_fn, "dynamic_life_state", "get_snapshot", scope, timeout=3.0
+                )
                 if isinstance(live_snap, dict):
                     if live_snap.get("managed") is False:
                         return "unmanaged"
@@ -1514,6 +2173,10 @@ class NaturalRhythmController:
         book.last_bot_finish_mono = now_mono
         book.last_bot_finish_wall = now_wall
         book.read_watermark_wall = max(book.read_watermark_wall, now_wall)
+        if book.temp_awake_until_mono > now_mono:
+            # Refresh this session's temporary awake window on every delivered reply while awake.
+            book.temp_awake_until_mono = now_mono + self.SLEEP_TEMP_AWAKE_SECONDS
+            book.temp_awake_until_wall = now_wall + self.SLEEP_TEMP_AWAKE_SECONDS
         if trigger_msg_id and not delivery_uncertain and all_fragments_delivered:
             self._record_ledger(book, str(trigger_msg_id), "sent")
         elif trigger_msg_id and delivery_uncertain:
@@ -1739,6 +2402,7 @@ class NaturalRhythmController:
             "wake_at_wall": float(book.wake_at_wall),
             "last_distract_end_wall": float(book.last_distract_end_wall),
             "last_afterthought_wall": float(book.last_afterthought_wall),
+            "temp_awake_until_wall": float(book.temp_awake_until_wall),
             "pending_items": pending,
             "delivery_ledger": ledger,
         }
@@ -1757,6 +2421,12 @@ class NaturalRhythmController:
             book.wake_at_wall = float(data.get("wake_at_wall") or 0.0)
             book.last_distract_end_wall = float(data.get("last_distract_end_wall") or 0.0)
             book.last_afterthought_wall = float(data.get("last_afterthought_wall") or 0.0)
+            restored_temp_awake_wall = float(data.get("temp_awake_until_wall") or 0.0)
+            if restored_temp_awake_wall > now_wall:
+                book.temp_awake_until_wall = restored_temp_awake_wall
+                book.temp_awake_until_mono = now_mono + min(
+                    self.SLEEP_TEMP_AWAKE_SECONDS, restored_temp_awake_wall - now_wall
+                )
         except (TypeError, ValueError):
             pass
         away = str(data.get("away_kind") or "none")
@@ -1835,6 +2505,10 @@ class NaturalRhythmController:
                 "wake_at_wall": book.wake_at_wall,
                 "read_watermark_wall": book.read_watermark_wall,
                 "catching_up": book.catching_up,
+                "temp_awake_active": bool(
+                    book.temp_awake_until_mono > 0.0 and self.time_service.time() < book.temp_awake_until_mono
+                ),
+                "temp_awake_until_wall": book.temp_awake_until_wall,
             }
         return {
             "enabled": self.enabled(),

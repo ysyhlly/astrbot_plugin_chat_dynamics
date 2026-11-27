@@ -1062,8 +1062,8 @@ async def test_persona_engine_poke_text_ordered_delivery_cross_target_and_bookke
         # first_verbal_committed ran bookkeeping for the text fragment
         assert runtime.last_bot_node is not None
         assert runtime.last_interlocutor == "1001"
-        # History commit receives clean verbal text without "[戳一戳]" prefix
-        assert bridge.commits[-1] == "顺手戳你一下！"
+        # History commit records semantic poke action marker alongside delivered verbal text
+        assert bridge.commits[-1] == "[动作: 戳了 1002]\n顺手戳你一下！"
         choice = runtime.dag.get_node("pt-1").metadata["reply_choice"]
         assert choice["actual"] == "poke_text"
         assert choice["poke_target_uid"] == "1002"
@@ -1152,7 +1152,7 @@ async def test_persona_engine_poke_meme_and_post_poke_meme_unavailable_degradati
         assert choice["no_reply"] is False
         assert choice["intentional_nonverbal"] is True
         assert node.metadata["outcome"]["delivered"] is True
-        assert bridge.commits[-1] == "[戳一戳]"
+        assert bridge.commits[-1] == "[动作: 戳了对方]"
     finally:
         await p.terminate()
 

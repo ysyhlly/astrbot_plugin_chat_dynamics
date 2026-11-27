@@ -363,6 +363,7 @@ class SeriesTelemetryStore:
         self._pending_count = 0
         self._last_flush_monotonic = time.monotonic()
         self._last_prune_wall = 0.0
+        self._dirty_event = threading.Event()
         self._flush_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
 
@@ -393,12 +394,31 @@ class SeriesTelemetryStore:
             if image_unit_cost is not None:
                 self._image_unit_cost = max(0.0, float(image_unit_cost))
 
+    def _has_pending_locked(self) -> bool:
+        return bool(
+            self._pending_hourly
+            or self._pending_daily
+            or self._pending_errors
+            or self._pending_dims
+        )
+
     def _start_flush_worker(self) -> None:
         if self._conn is None or self._flush_thread is not None:
             return
 
         def _worker() -> None:
             while not self._closed:
+                with self._lock:
+                    if self._closed or self._conn is None:
+                        break
+                    has_pending = self._has_pending_locked()
+                    if not has_pending:
+                        self._dirty_event.clear()
+                if not has_pending:
+                    # Wait indefinitely while idle to avoid periodic wakeups.
+                    self._dirty_event.wait(timeout=None)
+                    if self._closed:
+                        break
                 self._flush_event.wait(timeout=max(0.25, self.flush_interval_seconds))
                 self._flush_event.clear()
                 if self._closed:
@@ -406,12 +426,7 @@ class SeriesTelemetryStore:
                 with self._lock:
                     if self._closed or self._conn is None:
                         break
-                    if (
-                        self._pending_hourly
-                        or self._pending_daily
-                        or self._pending_errors
-                        or self._pending_dims
-                    ):
+                    if self._has_pending_locked():
                         self._flush_locked()
 
         t = threading.Thread(
@@ -434,6 +449,17 @@ class SeriesTelemetryStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            from .. import series_panels as _series_panels
+
+            _series_panels.apply_series_sqlite_pragmas(conn)
+        except Exception:
+            try:
+                import series_panels as _series_panels
+
+                _series_panels.apply_series_sqlite_pragmas(conn)
+            except Exception:
+                pass
         for table in ("telemetry_hourly", "telemetry_daily"):
             conn.execute(
                 f"""
@@ -621,6 +647,7 @@ class SeriesTelemetryStore:
                 )
 
             self._pending_count += 1
+            self._dirty_event.set()
 
             mono = time.monotonic()
             should_flush = self._conn is not None and (
@@ -1255,6 +1282,7 @@ class SeriesTelemetryStore:
                 self._flush_locked()
             finally:
                 self._closed = True
+                self._dirty_event.set()
                 self._flush_event.set()
                 thread = self._flush_thread
                 self._flush_thread = None

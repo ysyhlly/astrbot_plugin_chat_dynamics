@@ -10,7 +10,7 @@ from astrbot_plugin_chat_dynamics.core.integrations import dynamics_horizons
 def test_horizons_guidance_mentions_topic_inquiry_and_query_tool():
     assert "有趣" in dynamics_horizons.HORIZONS_DECISION_GUIDANCE
     assert "query_horizons_topics" in dynamics_horizons.HORIZONS_REPLY_GUIDANCE
-    assert "horizons.questions" in dynamics_horizons.HORIZONS_REPLY_GUIDANCE
+    assert "待聊问题库" in dynamics_horizons.HORIZONS_REPLY_GUIDANCE
 
 
 def test_delivered_merges_horizons_tool_context_into_feedback_payload():

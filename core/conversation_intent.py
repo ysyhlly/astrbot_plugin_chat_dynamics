@@ -216,3 +216,31 @@ def reply_interaction(turn, frame, *, floor=0.7) -> dict:
         if value
     ]
     return result
+
+
+def compact_reply_signals(turn, frame, *, floor=0.7) -> dict:
+    """Distill validated turn semantics into minimal high-signal tags without rubric prose.
+
+    Omits unclear/default-literal values, confidence floats, and canned coaching strings.
+    Returns an empty dict on ordinary literal turns so no noise block is added to the prompt.
+    """
+    full = reply_interaction(turn, frame, floor=floor)
+    if not full:
+        return {}
+    signals: dict[str, Any] = {}
+    intent = full.get("communication_intent", {}).get("choice", "unclear")
+    if intent and intent != "unclear":
+        signals["intent"] = intent
+    expr = full.get("expression_mode", {}).get("choice", "unclear")
+    if expr and expr not in {"unclear", "literal"}:
+        signals["expression"] = expr
+    stance = full.get("speaker_stance", {}).get("choice", "unclear")
+    if stance and stance != "unclear":
+        signals["stance"] = stance
+    update = full.get("turn_update", {}).get("choice", "unclear")
+    if update and update != "unclear":
+        signals["update"] = update
+    reading = full.get("evaluative_reading")
+    if isinstance(reading, Mapping) and reading.get("choice") in {"sincere_praise", "ironic_praise"}:
+        signals["evaluative_reading"] = dict(reading)
+    return signals

@@ -15,6 +15,20 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def _load_series_panels():
+    try:
+        from .. import series_panels as _sp
+
+        return _sp
+    except Exception:
+        try:
+            import series_panels as _sp
+
+            return _sp
+        except Exception:
+            return None
+
+
 class NarrativeJournal:
     """Keep platform uncertainty separate from retryable plugin notifications."""
 
@@ -28,9 +42,10 @@ class NarrativeJournal:
     DEFAULT_WAL_PASSIVE_THRESHOLD_BYTES = 8 * 1024 * 1024
     DEFAULT_WAL_TRUNCATE_THRESHOLD_BYTES = 32 * 1024 * 1024
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, context=None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._context = context
         self._conn_lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._last_checkpoint_at: float = 0.0
@@ -90,19 +105,27 @@ class NarrativeJournal:
             db.execute("UPDATE attempts SET status='uncertain' WHERE status='sending'")
             db.execute("UPDATE intents SET status='uncertain' WHERE status='sending'")
 
+    def _apply_pragmas(self, db: sqlite3.Connection) -> None:
+        db.execute("PRAGMA busy_timeout=5000")
+        db.execute("PRAGMA synchronous=NORMAL")
+        sp = _load_series_panels()
+        if sp is not None:
+            try:
+                sp.apply_series_sqlite_pragmas(db, self._context)
+            except Exception:
+                pass
+
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=5000")
-        db.execute("PRAGMA synchronous=NORMAL")
+        self._apply_pragmas(db)
         return db
 
     def _shared_connection(self) -> sqlite3.Connection:
         if self._db is None:
             db = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
             db.row_factory = sqlite3.Row
-            db.execute("PRAGMA busy_timeout=5000")
-            db.execute("PRAGMA synchronous=NORMAL")
+            self._apply_pragmas(db)
             self._db = db
         return self._db
 
@@ -158,6 +181,7 @@ class NarrativeJournal:
                 CREATE INDEX IF NOT EXISTS attempt_scope_started ON attempts(umo,started_at);
                 CREATE INDEX IF NOT EXISTS attempt_status_ts ON attempts(status, COALESCE(finished_at, started_at));
                 CREATE INDEX IF NOT EXISTS intent_status_attempted ON intents(status, COALESCE(attempted_at, 0));
+                CREATE INDEX IF NOT EXISTS intent_scope_umo ON intents(json_extract(payload,'$.scope.umo'));
                 CREATE INDEX IF NOT EXISTS character_blob_refs_fp ON character_blob_refs(fingerprint);
             """)
 
@@ -693,7 +717,7 @@ class NarrativeJournal:
                         "SELECT value FROM maintenance WHERE name='blob_ref_backfill_cursor'"
                     ).fetchone()
                     ref_cursor = int(ref_cur_row[0]) if ref_cur_row else 0
-                    ref_batch = min(50, max(1, int(limit)))
+                    ref_batch = min(200, max(int(limit), 200))
                     arch_rows = db.execute(
                         "SELECT a.rowid AS seq, a.bundle_id, a.payload, b.captured_at "
                         "FROM context_archive AS a LEFT JOIN bundles AS b ON b.bundle_id=a.bundle_id "
@@ -990,14 +1014,90 @@ class NarrativeJournal:
                                  (intent["intent_id"], json.dumps(intent, ensure_ascii=False))).rowcount
         return bool(changed)
 
-    def intents(self, *, active_only: bool = False):
-        sql = (
-            "SELECT payload, status FROM intents WHERE status IN ('pending','sending','uncertain','failed')"
-            if active_only
-            else "SELECT payload, status FROM intents"
-        )
+    def needs_auto_vacuum_migration(self, *, min_freelist_pages: int = 4096) -> bool:
+        """Return True when legacy DB uses auto_vacuum!=2 with large freelist and >=2x free disk."""
+        try:
+            db_size = self.path.stat().st_size if self.path.exists() else 0
+        except OSError:
+            db_size = 0
+        try:
+            free_bytes = shutil.disk_usage(self.path.parent).free
+        except OSError:
+            return False
+        if free_bytes < max(db_size * 2, 1):
+            return False
         with self._tx() as db:
-            return [(json.loads(row["payload"]), row["status"]) for row in db.execute(sql)]
+            try:
+                av = int(db.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+                freelist = int(db.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+            except sqlite3.DatabaseError:
+                return False
+        return av != 2 and freelist > int(min_freelist_pages)
+
+    def enable_incremental_vacuum_if_needed(self, *, min_freelist_pages: int = 4096) -> dict:
+        """One-time safe VACUUM migration to auto_vacuum=INCREMENTAL when freelist & disk allow."""
+        try:
+            db_size = self.path.stat().st_size if self.path.exists() else 0
+        except OSError:
+            db_size = 0
+        try:
+            free_bytes = shutil.disk_usage(self.path.parent).free
+        except OSError:
+            return {"migrated": False, "reason": "disk_usage_unavailable"}
+        with self._conn_lock:
+            db = self._shared_connection()
+            try:
+                av = int(db.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+                freelist = int(db.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+            except sqlite3.DatabaseError as exc:
+                return {"migrated": False, "reason": f"pragma_error:{type(exc).__name__}"}
+            if av == 2:
+                return {"migrated": False, "reason": "already_incremental", "auto_vacuum": av}
+            if freelist <= int(min_freelist_pages):
+                return {
+                    "migrated": False,
+                    "reason": "freelist_below_threshold",
+                    "auto_vacuum": av,
+                    "freelist_pages": freelist,
+                }
+            if free_bytes < max(db_size * 2, 1):
+                return {
+                    "migrated": False,
+                    "reason": "insufficient_disk_space",
+                    "auto_vacuum": av,
+                    "freelist_pages": freelist,
+                    "free_bytes": free_bytes,
+                    "db_bytes": db_size,
+                }
+            try:
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                db.execute("VACUUM")
+                new_av = int(db.execute("PRAGMA auto_vacuum").fetchone()[0] or 0)
+                new_size = self.path.stat().st_size if self.path.exists() else 0
+            except sqlite3.DatabaseError as exc:
+                return {"migrated": False, "reason": f"vacuum_error:{type(exc).__name__}"}
+            return {
+                "migrated": new_av == 2,
+                "auto_vacuum": new_av,
+                "freelist_before": freelist,
+                "db_bytes_before": db_size,
+                "db_bytes_after": new_size,
+            }
+
+    def intents(self, *, active_only: bool = False, umo: str | None = None):
+        clauses = []
+        params = []
+        if active_only:
+            clauses.append("status IN ('pending','sending','uncertain','failed')")
+        if umo:
+            clauses.append("json_extract(payload,'$.scope.umo')=?")
+            params.append(umo)
+        sql = "SELECT payload, status FROM intents"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        with self._tx() as db:
+            return [(json.loads(row["payload"]), row["status"]) for row in db.execute(sql, params)]
 
     def intent_status(self, intent_id: str, status: str):
         with self._tx(write=True) as db:
@@ -1109,5 +1209,4 @@ class NarrativeJournal:
                 "SELECT bundle_id,turn_id,captured_at,length(payload) AS online_characters FROM bundles WHERE umo=? ORDER BY captured_at DESC LIMIT 10", (umo,))]
         return {"receipts": attempts, "pending_notifications": pending,
                 "contexts": contexts,
-                "intents": [dict(payload, delivery_status=status) for payload, status in self.intents()
-                            if payload.get("scope", {}).get("umo") == umo]}
+                "intents": [dict(payload, delivery_status=status) for payload, status in self.intents(umo=umo)]}

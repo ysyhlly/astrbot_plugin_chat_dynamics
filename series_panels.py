@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import gc
 import hmac
 import inspect
 import math
+import os
 import re
 import sys
 import threading
 import time
 import weakref
+from contextlib import asynccontextmanager
 from datetime import timedelta, timezone
 from importlib import import_module
 from pathlib import Path
@@ -161,6 +165,7 @@ _SHARED_STR_KEYS = (
     "persona_id",
     "rhythm_timezone",
     "ui_language",
+    "resource_profile",
 )
 _SUMMARY_TTL_SECONDS = 10.0
 _VALID_BADGE_TONES = frozenset({"accent", "warm", "info", "danger", "muted"})
@@ -1782,3 +1787,791 @@ def register_series_panels(owner, identity):
         panel.path, panel.status, ["GET"], "群间系列插件状态"
     )
     panel.workspace.register()
+
+
+# ---------------------------------------------------------------------------
+# Wave 0: Unified 2GB Resource Profile, Memory Watermark & Heavy Subprocess Gate
+# ---------------------------------------------------------------------------
+
+RESOURCE_PROFILES: tuple[str, ...] = (
+    "auto",
+    "standard",
+    "low_memory",
+    "low_memory_aggressive",
+)
+_EXPLICIT_RESOURCE_PROFILES = frozenset(
+    {"standard", "low_memory", "low_memory_aggressive"}
+)
+_RESOURCE_STATE_LOCK = threading.Lock()
+_HOST_MEMORY_MB_CACHE: int | None = None
+_WATERMARK_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+_WATERMARK_TTL_SECONDS = 3.0
+_HYSTERESIS_STATE: dict[int, dict[str, Any]] = {}
+_HYSTERESIS_HOLD_SECONDS = 1800.0
+_HYSTERESIS_STREAK_THRESHOLD = 3
+_LAST_MALLOC_TRIM_MONO = 0.0
+_MALLOC_TRIM_LOCK = threading.Lock()
+_DEFAULT_HEAVY_GATE: HeavySubprocessGate | None = None
+
+
+def _parse_positive_int(raw: str) -> int:
+    text = str(raw or "").strip().lower()
+    if not text or text == "max":
+        return 0
+    try:
+        val = int(text)
+    except ValueError:
+        return 0
+    if val <= 0 or val >= (1 << 50):
+        return 0
+    return val
+
+
+def detect_host_memory_mb(*, force_refresh: bool = False) -> int:
+    """Detect effective host/container memory ceiling in MiB (cached once per process)."""
+    global _HOST_MEMORY_MB_CACHE
+    override = os.environ.get("ASTRBOT_RESOURCE_MEMORY_MB", "").strip()
+    if override:
+        parsed = _parse_positive_int(override)
+        if parsed > 0:
+            return parsed
+    if not force_refresh and _HOST_MEMORY_MB_CACHE is not None:
+        return _HOST_MEMORY_MB_CACHE
+
+    candidates_mb: list[int] = []
+    # Linux cgroup v2 & v1 container limits
+    for cgroup_path in (
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ):
+        try:
+            if os.path.isfile(cgroup_path):
+                with open(cgroup_path, encoding="utf-8") as fh:
+                    raw_bytes = _parse_positive_int(fh.read())
+                if raw_bytes >= 64 * 1024 * 1024:
+                    candidates_mb.append(int(raw_bytes // (1024 * 1024)))
+        except OSError:
+            pass
+
+    # Linux /proc/meminfo MemTotal
+    try:
+        if os.path.isfile("/proc/meminfo"):
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            candidates_mb.append(int(int(parts[1]) // 1024))
+                        break
+    except OSError:
+        pass
+
+    # POSIX sysconf fallback
+    if not candidates_mb and hasattr(os, "sysconf"):
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            phys_pages = int(os.sysconf("SC_PHYS_PAGES"))
+            if page_size > 0 and phys_pages > 0:
+                candidates_mb.append(int((page_size * phys_pages) // (1024 * 1024)))
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    detected = min(candidates_mb) if candidates_mb else 0
+    _HOST_MEMORY_MB_CACHE = detected
+    return detected
+
+
+def apply_native_thread_caps(profile: str | None = None) -> dict[str, str]:
+    """Cap OpenMP/OpenBLAS/MKL worker thread pools before native libs initialize."""
+    eff = str(profile or "").strip().lower()
+    if eff not in _EXPLICIT_RESOURCE_PROFILES:
+        host_mb = detect_host_memory_mb()
+        eff = "low_memory" if (0 < host_mb <= 2560) else "standard"
+    target = "1" if eff != "standard" else "2"
+    applied: dict[str, str] = {}
+    for env_key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ.setdefault(env_key, target)
+        applied[env_key] = os.environ[env_key]
+    return applied
+
+
+def read_process_memory_mb() -> dict[str, float]:
+    """Read current process RSS/HWM in MiB without external dependencies."""
+    override = os.environ.get("ASTRBOT_TEST_RSS_MB", "").strip()
+    if override:
+        try:
+            val = max(0.0, float(override))
+            return {"rss_mb": round(val, 1), "hwm_mb": round(val, 1)}
+        except ValueError:
+            pass
+
+    rss_mb = 0.0
+    hwm_mb = 0.0
+    try:
+        if os.path.isfile("/proc/self/status"):
+            with open("/proc/self/status", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            rss_mb = int(parts[1]) / 1024.0
+                    elif line.startswith("VmHWM:"):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            hwm_mb = int(parts[1]) / 1024.0
+            if rss_mb > 0.0 or hwm_mb > 0.0:
+                return {"rss_mb": round(rss_mb, 1), "hwm_mb": round(max(hwm_mb, rss_mb), 1)}
+    except OSError:
+        pass
+
+    try:
+        import resource as _resource
+
+        maxrss = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss or 0.0)
+        if maxrss > 0.0:
+            # Linux reports KiB; macOS reports bytes.
+            mb = maxrss / (1024.0 * 1024.0) if sys.platform == "darwin" else maxrss / 1024.0
+            return {"rss_mb": round(mb, 1), "hwm_mb": round(mb, 1)}
+    except Exception:
+        pass
+    return {"rss_mb": 0.0, "hwm_mb": 0.0}
+
+
+def try_malloc_trim(*, min_interval_seconds: float = 30.0, force: bool = False) -> bool:
+    """Throttled gc.collect() + glibc malloc_trim(0) to return freed heap pages on Linux."""
+    global _LAST_MALLOC_TRIM_MONO
+    now = time.monotonic()
+    with _MALLOC_TRIM_LOCK:
+        if not force and (now - _LAST_MALLOC_TRIM_MONO) < max(0.0, float(min_interval_seconds)):
+            return False
+        _LAST_MALLOC_TRIM_MONO = now
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        trim_fn = getattr(libc, "malloc_trim", None)
+        if callable(trim_fn):
+            return bool(trim_fn(0))
+    except Exception:
+        pass
+    return False
+
+
+def _configured_resource_profile(context=None) -> tuple[str, int]:
+    shared = get_series_shared_config(context) if context is not None else {}
+    raw = str(shared.get("resource_profile") or "").strip().lower()
+    if raw not in RESOURCE_PROFILES:
+        env_raw = os.environ.get("ASTRBOT_RESOURCE_PROFILE", "").strip().lower()
+        raw = env_raw if env_raw in RESOURCE_PROFILES else "auto"
+    groups = shared.get("takeover_groups")
+    group_count = len(groups) if isinstance(groups, list) else 0
+    return raw, group_count
+
+
+def _watermark_thresholds(profile: str) -> tuple[float, float]:
+    if profile == "low_memory_aggressive":
+        return 560.0, 700.0
+    if profile == "low_memory":
+        return 680.0, 820.0
+    return 1800.0, 2400.0
+
+
+def get_series_resource_state(
+    context=None,
+    *,
+    active_groups: int | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Resolve effective resource profile (with auto hysteresis) and recommendations."""
+    configured, shared_groups = _configured_resource_profile(context)
+    groups_count = int(active_groups) if active_groups is not None else shared_groups
+    host_mb = detect_host_memory_mb(force_refresh=force_refresh)
+    mem = read_process_memory_mb()
+    rss_mb = float(mem["rss_mb"])
+    ctx_key = id(context) if context is not None else 0
+
+    if configured in _EXPLICIT_RESOURCE_PROFILES:
+        effective = configured
+        reason = "explicit"
+    elif host_mb <= 0 or host_mb > 2560:
+        effective = "standard"
+        reason = "host_memory_gt_2560mb" if host_mb > 2560 else "host_memory_unknown"
+    elif host_mb <= 1536:
+        effective = "low_memory_aggressive"
+        reason = "host_memory_le_1536mb"
+    else:
+        now = time.monotonic()
+        with _RESOURCE_STATE_LOCK:
+            st = _HYSTERESIS_STATE.setdefault(
+                ctx_key,
+                {
+                    "effective": "low_memory",
+                    "high_streak": 0,
+                    "low_streak": 0,
+                    "hold_until": 0.0,
+                    "reason": "host_memory_le_2560mb",
+                },
+            )
+            is_high = groups_count >= 4 or rss_mb >= 680.0
+            is_calm = groups_count < 4 and rss_mb < 580.0
+            if is_high:
+                st["high_streak"] = int(st.get("high_streak", 0)) + 1
+                st["low_streak"] = 0
+                if (
+                    groups_count >= 6
+                    or st["high_streak"] >= _HYSTERESIS_STREAK_THRESHOLD
+                ):
+                    st["effective"] = "low_memory_aggressive"
+                    st["hold_until"] = now + _HYSTERESIS_HOLD_SECONDS
+                    st["reason"] = (
+                        "auto_hysteresis_rss"
+                        if rss_mb >= 680.0
+                        else "auto_hysteresis_multi_group"
+                    )
+            elif st.get("effective") == "low_memory_aggressive" and is_calm:
+                st["high_streak"] = 0
+                if now >= float(st.get("hold_until", 0.0)):
+                    st["low_streak"] = int(st.get("low_streak", 0)) + 1
+                    if st["low_streak"] >= _HYSTERESIS_STREAK_THRESHOLD:
+                        st["effective"] = "low_memory"
+                        st["low_streak"] = 0
+                        st["reason"] = "auto_hysteresis_recovered"
+            else:
+                st["high_streak"] = 0
+                st["low_streak"] = 0
+            effective = str(st["effective"])
+            reason = str(st["reason"])
+
+    recommendations: list[dict[str, str]] = []
+    if effective == "low_memory_aggressive":
+        recommendations.append(
+            {
+                "code": "dynamics_memory_builtin_tokenizer",
+                "plugin_id": "astrbot_plugin_dynamics_memory",
+                "title": "建议将群间记忆分词器切换为 builtin（可省 ~55 MiB 常驻内存）",
+                "detail": "切换为不可逆索引变更，需在群间记忆面板确认并执行 /lmem rebuild-index。",
+            }
+        )
+        recommendations.append(
+            {
+                "code": "dynamics_memory_doc_atom_without_graph",
+                "plugin_id": "astrbot_plugin_dynamics_memory",
+                "title": "2G 多群激进模式建议保留 Doc+Atom 双向量、关闭重型 Graph 路",
+                "detail": "可大幅释放 10 万级图谱边/表与 4 条读连接线程，同时保持高召回精度。",
+            }
+        )
+
+    return {
+        "configured": configured,
+        "effective": effective,
+        "reason": reason,
+        "host_memory_mb": host_mb,
+        "rss_mb": rss_mb,
+        "hwm_mb": float(mem["hwm_mb"]),
+        "active_groups": groups_count,
+        "recommendations": recommendations,
+    }
+
+
+def resolve_series_resource_profile(
+    context=None, *, active_groups: int | None = None
+) -> str:
+    """Return effective resource profile: standard | low_memory | low_memory_aggressive."""
+    return str(
+        get_series_resource_state(context, active_groups=active_groups)["effective"]
+    )
+
+
+def get_series_memory_watermark(
+    context=None, *, force_refresh: bool = False
+) -> dict[str, Any]:
+    """Return cached process memory watermark (ok | soft | hard)."""
+    ctx_key = id(context) if context is not None else 0
+    now = time.monotonic()
+    if not force_refresh and not os.environ.get("ASTRBOT_TEST_RSS_MB"):
+        with _RESOURCE_STATE_LOCK:
+            cached = _WATERMARK_CACHE.get(ctx_key)
+            if cached is not None and cached[0] > now:
+                return dict(cached[1])
+
+    state = get_series_resource_state(context, force_refresh=force_refresh)
+    profile = str(state["effective"])
+    soft_mb, hard_mb = _watermark_thresholds(profile)
+    rss_mb = float(state["rss_mb"])
+    if rss_mb >= hard_mb:
+        level = "hard"
+    elif rss_mb >= soft_mb:
+        level = "soft"
+    else:
+        level = "ok"
+    payload = {
+        "profile": profile,
+        "rss_mb": rss_mb,
+        "hwm_mb": float(state["hwm_mb"]),
+        "host_mb": int(state["host_memory_mb"]),
+        "soft_mb": soft_mb,
+        "hard_mb": hard_mb,
+        "state": level,
+    }
+    with _RESOURCE_STATE_LOCK:
+        if len(_WATERMARK_CACHE) > 32:
+            _WATERMARK_CACHE.clear()
+        _WATERMARK_CACHE[ctx_key] = (now + _WATERMARK_TTL_SECONDS, payload)
+    return dict(payload)
+
+
+_PROFILE_LIMITS: dict[str, dict[str, Any]] = {
+    "standard": {
+        "profile": "standard",
+        "native_threads": 2,
+        "heavy_subprocess_concurrency": 2,
+        "sqlite_cache_kb": 2000,
+        "sqlite_ro_cache_kb": 1000,
+        "sqlite_temp_store": "FILE",
+        "sqlite_mmap_size": 0,
+        "sqlite_journal_limit_bytes": 16 * 1024 * 1024,
+        "memory_read_pool_size": 2,
+        "memory_executor_workers": 2,
+        "memory_max_sessions": 60,
+        "memory_search_cache_size": 32,
+        "memory_rerank_candidates_local": 40,
+        "memory_rerank_candidates_cloud": 20,
+        "memory_rerank_cache_size": 128,
+        "memory_faiss_debounce_s": 10.0,
+        "memory_graph_max_nodes": 3000,
+        "memory_graph_max_edges": 12000,
+        "visual_lru_scale": 0.5,
+        "visual_gif_cache_max_size": 20,
+        "visual_gif_cache_max_bytes": 8 * 1024 * 1024,
+        "visual_gif_max_frames": 24,
+        "visual_gif_max_dim": 720,
+        "visual_sticker_max_dim": 2048,
+        "visual_sticker_subprocess": False,
+        "visual_embedding_query_cache": 128,
+        "visual_max_image_bytes": 20 * 1024 * 1024,
+        "learning_social_max_groups": 32,
+        "learning_social_top_limit": 1000,
+        "learning_social_refresh_s": 60.0,
+        "learning_expression_sample_limit": 4000,
+        "learning_relation_max_recent": 80,
+        "learning_events_retention_days": 7,
+        "learning_profile_retention_days": 30,
+        "learning_audit_retention_days": 90,
+        "learning_directed_retention_days": 60,
+        "chat_max_sessions": 256,
+        "chat_dag_max_nodes": 350,
+        "chat_max_bundles": 64,
+        "chat_search_workers": 4,
+        "chat_persist_interval_s": 60.0,
+        "chat_persist_max_bytes": 3 * 1024 * 1024,
+        "chat_max_archive_rows": 15000,
+        "chat_archive_retention_days": 14,
+        "chat_exact_memo_max_bytes": 3 * 1024 * 1024,
+        "world_postcard_idle_timeout_s": 180.0,
+        "world_prefer_3d": True,
+        "world_loop_idle_s": 60.0,
+        "world_snapshot_workers": 2,
+        "world_retention_days": 60,
+        "world_vacuum_pages": 512,
+        "horizons_ffmpeg_threads": 2,
+        "horizons_checkpoint_max": 4,
+        "horizons_ebook_cache_max": 6,
+        "horizons_ebook_max_mb": 20,
+        "horizons_prefer_videoshot": False,
+        "horizons_maintenance_interval_s": 60.0,
+        "chronicle_pool_size": 4,
+        "chronicle_playwright_fallback": True,
+        "games_steam_notify_image": True,
+        "games_steam_poll_s": 60,
+        "games_steam_achievement_cache": 64,
+        "provider_capacity": 4,
+        "provider_bg_capacity": 2,
+        "provider_max_queue": 128,
+        "memory_soft_mb": 1800.0,
+        "memory_hard_mb": 2400.0,
+    },
+    "low_memory": {
+        "profile": "low_memory",
+        "native_threads": 1,
+        "heavy_subprocess_concurrency": 1,
+        "sqlite_cache_kb": 1024,
+        "sqlite_ro_cache_kb": 512,
+        "sqlite_temp_store": "FILE",
+        "sqlite_mmap_size": 0,
+        "sqlite_journal_limit_bytes": 8 * 1024 * 1024,
+        "memory_read_pool_size": 2,
+        "memory_executor_workers": 2,
+        "memory_max_sessions": 30,
+        "memory_search_cache_size": 32,
+        "memory_rerank_candidates_local": 20,
+        "memory_rerank_candidates_cloud": 20,
+        "memory_rerank_cache_size": 48,
+        "memory_faiss_debounce_s": 20.0,
+        "memory_graph_max_nodes": 1500,
+        "memory_graph_max_edges": 5000,
+        "visual_lru_scale": 0.125,
+        "visual_gif_cache_max_size": 10,
+        "visual_gif_cache_max_bytes": 4 * 1024 * 1024,
+        "visual_gif_max_frames": 16,
+        "visual_gif_max_dim": 512,
+        "visual_sticker_max_dim": 1600,
+        "visual_sticker_subprocess": False,
+        "visual_embedding_query_cache": 64,
+        "visual_max_image_bytes": 16 * 1024 * 1024,
+        "learning_social_max_groups": 16,
+        "learning_social_top_limit": 500,
+        "learning_social_refresh_s": 120.0,
+        "learning_expression_sample_limit": 2000,
+        "learning_relation_max_recent": 50,
+        "learning_events_retention_days": 5,
+        "learning_profile_retention_days": 14,
+        "learning_audit_retention_days": 30,
+        "learning_directed_retention_days": 30,
+        "chat_max_sessions": 128,
+        "chat_dag_max_nodes": 200,
+        "chat_max_bundles": 32,
+        "chat_search_workers": 2,
+        "chat_persist_interval_s": 120.0,
+        "chat_persist_max_bytes": 1536 * 1024,
+        "chat_max_archive_rows": 5000,
+        "chat_archive_retention_days": 7,
+        "chat_exact_memo_max_bytes": 1536 * 1024,
+        "world_postcard_idle_timeout_s": 0.0,
+        "world_prefer_3d": True,
+        "world_loop_idle_s": 180.0,
+        "world_snapshot_workers": 1,
+        "world_retention_days": 30,
+        "world_vacuum_pages": 512,
+        "horizons_ffmpeg_threads": 1,
+        "horizons_checkpoint_max": 2,
+        "horizons_ebook_cache_max": 3,
+        "horizons_ebook_max_mb": 12,
+        "horizons_prefer_videoshot": False,
+        "horizons_maintenance_interval_s": 60.0,
+        "chronicle_pool_size": 2,
+        "chronicle_playwright_fallback": True,
+        "games_steam_notify_image": True,
+        "games_steam_poll_s": 60,
+        "games_steam_achievement_cache": 32,
+        "provider_capacity": 3,
+        "provider_bg_capacity": 1,
+        "provider_max_queue": 48,
+        "memory_soft_mb": 680.0,
+        "memory_hard_mb": 820.0,
+    },
+    "low_memory_aggressive": {
+        "profile": "low_memory_aggressive",
+        "native_threads": 1,
+        "heavy_subprocess_concurrency": 1,
+        "sqlite_cache_kb": 512,
+        "sqlite_ro_cache_kb": 256,
+        "sqlite_temp_store": "FILE",
+        "sqlite_mmap_size": 0,
+        "sqlite_journal_limit_bytes": 4 * 1024 * 1024,
+        "memory_read_pool_size": 1,
+        "memory_executor_workers": 1,
+        "memory_max_sessions": 16,
+        "memory_search_cache_size": 16,
+        "memory_rerank_candidates_local": 15,
+        "memory_rerank_candidates_cloud": 15,
+        "memory_rerank_cache_size": 24,
+        "memory_faiss_debounce_s": 30.0,
+        "memory_graph_max_nodes": 800,
+        "memory_graph_max_edges": 2500,
+        "visual_lru_scale": 0.0625,
+        "visual_gif_cache_max_size": 6,
+        "visual_gif_cache_max_bytes": 2 * 1024 * 1024,
+        "visual_gif_max_frames": 12,
+        "visual_gif_max_dim": 420,
+        "visual_sticker_max_dim": 1280,
+        "visual_sticker_subprocess": True,
+        "visual_embedding_query_cache": 32,
+        "visual_max_image_bytes": 8 * 1024 * 1024,
+        "learning_social_max_groups": 4,
+        "learning_social_top_limit": 200,
+        "learning_social_refresh_s": 600.0,
+        "learning_expression_sample_limit": 1000,
+        "learning_relation_max_recent": 25,
+        "learning_events_retention_days": 2,
+        "learning_profile_retention_days": 7,
+        "learning_audit_retention_days": 14,
+        "learning_directed_retention_days": 14,
+        "chat_max_sessions": 48,
+        "chat_dag_max_nodes": 120,
+        "chat_max_bundles": 8,
+        "chat_search_workers": 1,
+        "chat_persist_interval_s": 180.0,
+        "chat_persist_max_bytes": 768 * 1024,
+        "chat_max_archive_rows": 500,
+        "chat_archive_retention_days": 2,
+        "chat_exact_memo_max_bytes": 512 * 1024,
+        "world_postcard_idle_timeout_s": 0.0,
+        "world_prefer_3d": False,
+        "world_loop_idle_s": 300.0,
+        "world_snapshot_workers": 1,
+        "world_retention_days": 14,
+        "world_vacuum_pages": 1024,
+        "horizons_ffmpeg_threads": 1,
+        "horizons_checkpoint_max": 1,
+        "horizons_ebook_cache_max": 1,
+        "horizons_ebook_max_mb": 5,
+        "horizons_prefer_videoshot": True,
+        "horizons_maintenance_interval_s": 120.0,
+        "chronicle_pool_size": 1,
+        "chronicle_playwright_fallback": False,
+        "games_steam_notify_image": False,
+        "games_steam_poll_s": 120,
+        "games_steam_achievement_cache": 16,
+        "provider_capacity": 2,
+        "provider_bg_capacity": 1,
+        "provider_max_queue": 24,
+        "memory_soft_mb": 560.0,
+        "memory_hard_mb": 700.0,
+    },
+}
+
+
+def get_series_resource_limits(
+    context=None, *, profile: str | None = None
+) -> dict[str, Any]:
+    """Return standardized resource limit dictionary for the effective profile."""
+    eff = (
+        str(profile).strip().lower()
+        if profile and str(profile).strip().lower() in _PROFILE_LIMITS
+        else resolve_series_resource_profile(context)
+    )
+    return dict(_PROFILE_LIMITS.get(eff, _PROFILE_LIMITS["standard"]))
+
+
+def apply_series_sqlite_pragmas(
+    conn: Any,
+    context=None,
+    *,
+    readonly: bool = False,
+    journal_limit_bytes: int | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Apply safe 2GB-friendly SQLite memory/WAL PRAGMAs on a synchronous connection."""
+    limits = get_series_resource_limits(context, profile=profile)
+    cache_kb = int(
+        limits["sqlite_ro_cache_kb"] if readonly else limits["sqlite_cache_kb"]
+    )
+    jlimit = (
+        int(journal_limit_bytes)
+        if journal_limit_bytes is not None
+        else int(limits["sqlite_journal_limit_bytes"])
+    )
+    stmts = [
+        f"PRAGMA cache_size = -{max(128, cache_kb)}",
+        f"PRAGMA temp_store = {limits['sqlite_temp_store']}",
+        f"PRAGMA mmap_size = {int(limits['sqlite_mmap_size'])}",
+    ]
+    if not readonly and jlimit > 0:
+        stmts.append(f"PRAGMA journal_size_limit = {jlimit}")
+    for sql in stmts:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+    return limits
+
+
+async def apply_series_aiosqlite_pragmas(
+    conn: Any,
+    context=None,
+    *,
+    readonly: bool = False,
+    journal_limit_bytes: int | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Apply safe 2GB-friendly SQLite memory/WAL PRAGMAs on an aiosqlite connection."""
+    limits = get_series_resource_limits(context, profile=profile)
+    cache_kb = int(
+        limits["sqlite_ro_cache_kb"] if readonly else limits["sqlite_cache_kb"]
+    )
+    jlimit = (
+        int(journal_limit_bytes)
+        if journal_limit_bytes is not None
+        else int(limits["sqlite_journal_limit_bytes"])
+    )
+    stmts = [
+        f"PRAGMA cache_size = -{max(128, cache_kb)}",
+        f"PRAGMA temp_store = {limits['sqlite_temp_store']}",
+        f"PRAGMA mmap_size = {int(limits['sqlite_mmap_size'])}",
+    ]
+    if not readonly and jlimit > 0:
+        stmts.append(f"PRAGMA journal_size_limit = {jlimit}")
+    for sql in stmts:
+        try:
+            cur = await conn.execute(sql)
+            close_fn = getattr(cur, "close", None)
+            if callable(close_fn):
+                res = close_fn()
+                if inspect.isawaitable(res):
+                    await res
+        except Exception:
+            pass
+    return limits
+
+
+class HeavySubprocessGate:
+    """Cross-plugin semaphore serializing Chromium, FFmpeg, VACUUM, and heavy image jobs."""
+
+    def __init__(self, context=None) -> None:
+        self._context_ref = None
+        if context is not None:
+            try:
+                self._context_ref = weakref.ref(context)
+            except TypeError:
+                self._context_ref = None
+        self._lock = threading.Lock()
+        self._waiters: list[tuple[asyncio.Future[bool], dict[str, Any]]] = []
+        self._active: list[dict[str, Any]] = []
+        self._total_acquired = 0
+
+    def _capacity(self) -> int:
+        ctx = self._context_ref() if self._context_ref is not None else None
+        limits = get_series_resource_limits(ctx)
+        return max(1, int(limits.get("heavy_subprocess_concurrency", 1)))
+
+    def _dispatch_locked(self) -> None:
+        cap = self._capacity()
+        while self._waiters and len(self._active) < cap:
+            fut, entry = self._waiters.pop(0)
+            if fut.done():
+                continue
+            entry["started_at"] = time.monotonic()
+            self._active.append(entry)
+            self._total_acquired += 1
+            fut.set_result(True)
+
+    @asynccontextmanager
+    async def slot(
+        self,
+        purpose: str,
+        *,
+        plugin_id: str = "",
+        timeout: float | None = None,
+    ):
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[bool] | None = None
+        entry: dict[str, Any] = {
+            "purpose": str(purpose or "heavy"),
+            "plugin_id": str(plugin_id or ""),
+            "started_at": time.monotonic(),
+        }
+        with self._lock:
+            cap = self._capacity()
+            if len(self._active) < cap and not self._waiters:
+                self._active.append(entry)
+                self._total_acquired += 1
+            else:
+                fut = loop.create_future()
+                self._waiters.append((fut, entry))
+        if fut is not None:
+            try:
+                if timeout is not None:
+                    await asyncio.wait_for(fut, timeout=max(0.05, float(timeout)))
+                else:
+                    await fut
+            except BaseException:
+                with self._lock:
+                    self._waiters = [w for w in self._waiters if w[0] is not fut]
+                    if entry in self._active:
+                        self._active.remove(entry)
+                        self._dispatch_locked()
+                raise
+        try:
+            yield entry
+        finally:
+            with self._lock:
+                if entry in self._active:
+                    self._active.remove(entry)
+                self._dispatch_locked()
+            ctx = self._context_ref() if self._context_ref is not None else None
+            if resolve_series_resource_profile(ctx) != "standard":
+                try_malloc_trim(min_interval_seconds=15.0)
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            active = [
+                {
+                    "purpose": item["purpose"],
+                    "plugin_id": item["plugin_id"],
+                    "elapsed_s": round(max(0.0, now - float(item["started_at"])), 1),
+                }
+                for item in self._active
+            ]
+            queued = sum(1 for f, _e in self._waiters if not f.done())
+            total = self._total_acquired
+        return {
+            "capacity": self._capacity(),
+            "active_count": len(active),
+            "queued_count": queued,
+            "total_acquired": total,
+            "active": active,
+        }
+
+
+def get_heavy_subprocess_gate(context=None) -> HeavySubprocessGate:
+    """Return the shared HeavySubprocessGate bound to context (or module fallback)."""
+    global _DEFAULT_HEAVY_GATE
+    ctx = context
+    if ctx is None and _LAST_CONTEXT_REF is not None:
+        ctx = _LAST_CONTEXT_REF()
+    if ctx is not None:
+        existing = getattr(ctx, "_chat_dynamics_heavy_subprocess_gate", None)
+        if existing is not None and callable(getattr(existing, "slot", None)):
+            return existing
+        gate = HeavySubprocessGate(ctx)
+        try:
+            setattr(ctx, "_chat_dynamics_heavy_subprocess_gate", gate)
+            return gate
+        except Exception:
+            pass
+    if _DEFAULT_HEAVY_GATE is None:
+        _DEFAULT_HEAVY_GATE = HeavySubprocessGate(None)
+    return _DEFAULT_HEAVY_GATE
+
+
+@asynccontextmanager
+async def heavy_subprocess_slot(
+    context,
+    purpose: str,
+    *,
+    plugin_id: str = "",
+    timeout: float | None = None,
+):
+    """Acquire the shared cross-series heavy subprocess gate (Chromium/FFmpeg/VACUUM/etc.)."""
+    gate = get_heavy_subprocess_gate(context)
+    async with gate.slot(purpose, plugin_id=plugin_id, timeout=timeout) as entry:
+        yield entry
+
+
+def get_heavy_subprocess_snapshot(context=None) -> dict[str, Any]:
+    """Return live diagnostics for the cross-series heavy subprocess gate."""
+    gate = get_heavy_subprocess_gate(context)
+    snap_fn = getattr(gate, "snapshot", None)
+    if callable(snap_fn):
+        try:
+            return snap_fn()
+        except Exception:
+            pass
+    return {"capacity": 1, "active_count": 0, "queued_count": 0, "total_acquired": 0, "active": []}
+
+
+try:
+    apply_native_thread_caps()
+except Exception:
+    pass

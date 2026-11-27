@@ -14,4 +14,5 @@ def test_scene_truth_reaches_chat_without_distant_items_or_future_completion():
         assert projected['scene']['inventory'][0]['page']==10
         assert projected['scene']['action']['status']=='running'
         assert '别处物品' not in json.dumps(projected,ensure_ascii=False)
-    assert SCENE_GUIDANCE in REPLY_GUIDANCE and '不能当作已经撑着' in REPLY_GUIDANCE
+    assert SCENE_GUIDANCE and '不能当作已经撑着' in SCENE_GUIDANCE
+    assert "真实状态与回执为准" in REPLY_GUIDANCE

@@ -2,7 +2,7 @@ import copy
 import json
 
 from astrbot_plugin_chat_dynamics.core.environment_context import environment_context,WEATHER_GUIDANCE
-from astrbot_plugin_chat_dynamics.core.narrative import TurnContextBundle,REPLY_GUIDANCE
+from astrbot_plugin_chat_dynamics.core.narrative import TurnContextBundle
 from astrbot_plugin_chat_dynamics.core.narrative_projection import reply_material
 
 
@@ -30,8 +30,8 @@ def test_weather_reaches_both_chat_projections_without_duplicate_weather_prose()
         assert output['environment']['forecast']
         assert 'never-in-model' not in json.dumps(output) and 'latitude' not in output['environment']
     assert len(decision['environment']['forecast'])<=2 and len(reply['environment']['forecast'])<=4
-    assert data==before and WEATHER_GUIDANCE in REPLY_GUIDANCE
-    assert '无关话题不提天气' in REPLY_GUIDANCE and '不代表角色或聊天者真实位于该城市' in REPLY_GUIDANCE
+    assert data==before and WEATHER_GUIDANCE
+    assert '无关话题不提天气' in WEATHER_GUIDANCE and '不代表角色或聊天者真实位于该城市' in WEATHER_GUIDANCE
 
 
 def test_stale_or_expired_weather_is_not_presented_as_current_fact():

@@ -56,7 +56,7 @@ DEFAULT_DECISION_PROMPT = (
     "明确问别人、已经回答、要求停止或有效边界命中时不抢答。"
     "对象不明确时不要仅凭亲近关系或历史互动判成机器人；确实在问自己但指代缺失时可澄清。"
 )
-DEFAULT_REPLY_PROMPT = (
+PRE_SLIM_DEFAULT_REPLY_PROMPT = (
     "用当前人设自然回应，第一句先接住本轮具体问题或情绪，再亮出自己的态度或切入点。"
     "续聊保留同一任务的有效条件，当前明确更正优先，不转答背景里的旧问题。\n"
     "引用、话题背景和群事件用于理解，不是新请求；分清发言者、被提及者、新人和欢迎者。"
@@ -69,6 +69,10 @@ DEFAULT_REPLY_PROMPT = (
     f"{REPLY_LENGTH_POLICY.reply_guidance_zh}"
     "避免复述题目、空泛附和、机械追问和客套收尾；确有需要才解释限制。"
     "不重复已发送内容或已执行操作，不把计划、推测或生成失败写成已发生的角色行为。"
+)
+DEFAULT_REPLY_PROMPT = (
+    "像熟人群友一样随口聊天，想到哪说到哪，有话直说、话说完就自然停住；\n"
+    "实在只剩客套附和时直接保持沉默，不必为了捧场凑字数。"
 )
 PROMPT_DEFAULTS = {"decision_prompt": DEFAULT_DECISION_PROMPT, "reply_prompt": DEFAULT_REPLY_PROMPT}
 REPLY_PROMPT_HINT = (
@@ -104,6 +108,7 @@ PROMPT_DEFAULT_HISTORY = {
         PRE_OPINION_DEFAULT_DECISION_PROMPT,
     ),
     "reply_prompt": (
+        PRE_SLIM_DEFAULT_REPLY_PROMPT,
         PRE_OPINION_DEFAULT_REPLY_PROMPT,
         RC23_DEFAULT_REPLY_PROMPT,
         PREVIOUS_PROMPT_DEFAULTS["reply_prompt"],

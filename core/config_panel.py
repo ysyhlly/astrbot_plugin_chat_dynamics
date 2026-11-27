@@ -322,7 +322,7 @@ class ConfigPanel:
                 source = value.split(",") if isinstance(value, str) else value
                 value = sorted({str(item).strip() for item in source if str(item).strip()})
             elif key in PROMPT_DEFAULTS and isinstance(value, str):
-                value = resolve_prompt_default(key, value)
+                value = "" if key == "reply_prompt" and not value.strip() else resolve_prompt_default(key, value)
             if value != eff:
                 mismatches.append(key)
         return {

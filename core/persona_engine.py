@@ -50,7 +50,7 @@ from .systemone import window as decision_window
 from .pipeline_telemetry import PipelineTelemetry
 from .context_retrieval import clip_text, select_background, select_peer_continuation_candidate
 from .routing_contract import commit_topic_evidence
-from .narrative import DECISION_GUIDANCE, REPLY_GUIDANCE
+from .narrative import DECISION_GUIDANCE
 from .reply_failure import ModelReplyFailure, unavailable_reply
 from . import member_boundary
 from .context_completion import complete_context
@@ -126,6 +126,17 @@ class ModelTurn:
     @property
     def context_node_ids(self) -> frozenset[str] | None:
         return self.context.visible_node_ids
+
+
+def _is_priority_wake(item: ModelTurn | None) -> bool:
+    """True for explicit priority wakes (@, pure/bot quote, private direct)."""
+    if item is None:
+        return False
+    ctx = getattr(item, "context", None)
+    return bool(
+        getattr(item, "private_direct", False)
+        or (ctx is not None and (getattr(ctx, "mandatory_reply", False) or getattr(ctx, "wake_kind", "") == "quote"))
+    )
 
 
 def _node_metadata(node: Any) -> dict:
@@ -506,6 +517,286 @@ def _is_valid_poke_uid(value: Any, *, bot_id: str = "") -> bool:
     if not uid or uid in {"0", "all"} or (bot_id and uid == bot_id):
         return False
     return uid.isascii() and uid.isdigit()
+
+
+_HISTORY_MEDIA_COMPONENT_TYPES = frozenset({
+    "image", "sticker", "face", "emoji", "animatedemoji", "wechatemoji",
+})
+
+
+def _format_action_marker(kind: str, *, target_label: str = "", detail: str = "") -> str:
+    """Format a semantic action marker for assistant conversation history."""
+    from . import platform_bridge as _pb
+
+    helper = getattr(_pb, "format_delivered_action_marker", None)
+    if callable(helper):
+        try:
+            formatted = str(helper(kind, target_label=target_label, detail=detail) or "").strip()
+            if formatted:
+                return formatted
+        except Exception:
+            pass
+    clean_target = " ".join(str(target_label or "").split()).strip()[:40]
+    clean_detail = " ".join(str(detail or "").split()).strip()[:40]
+    if kind == "poke":
+        return f"[动作: 戳了 {clean_target}]" if clean_target else "[动作: 戳了对方]"
+    if kind == "meme":
+        return f"[动作: 发了一张表情（{clean_detail}）]" if clean_detail else "[动作: 发了一张表情]"
+    if kind == "image":
+        return f"[动作: 发了一张图片（{clean_detail}）]" if clean_detail else "[动作: 发了一张图片]"
+    return f"[动作: {kind}]"
+
+
+def _extract_fragment_media_detail(components: Sequence[Any]) -> str:
+    """Return a concise human-readable label for a delivered meme/image if present."""
+    for comp in components:
+        if _comp_type_name(comp).lower() not in _HISTORY_MEDIA_COMPONENT_TYPES:
+            continue
+        for attr in ("summary", "desc", "description", "alt", "label", "caption"):
+            raw = getattr(comp, attr, None)
+            if not isinstance(raw, str):
+                continue
+            text = " ".join(raw.split()).strip()
+            if not text or text.startswith(("http://", "https://", "base64://", "file://", "/", "\\")):
+                continue
+            if len(text) > 40:
+                text = text[:39].rstrip() + "…"
+            return text
+    return ""
+
+
+def _resolve_poke_target_label(
+    runtime: Any,
+    turn: TurnContext,
+    poke_target: str,
+) -> str:
+    uid = str(poke_target or "").strip()
+    if not uid:
+        return ""
+    for msg in (*turn.messages, *turn.background):
+        if msg.author == uid and msg.author_name:
+            return str(msg.author_name).strip()
+        if msg.poke_target_id == uid and msg.poke_target_name:
+            return str(msg.poke_target_name).strip()
+    names = _uid_names_from_dag(getattr(runtime, "dag", None))
+    return str(names.get(uid) or uid).strip()
+
+
+def _chain_visible_plain_text(fragment: Any) -> str:
+    """Extract only actual Plain/Text components without stringifying Image/media objects."""
+    if fragment is None:
+        return ""
+    if isinstance(fragment, str):
+        return fragment.strip()
+    comps = getattr(fragment, "chain", None)
+    if isinstance(comps, (list, tuple)):
+        parts: list[str] = []
+        for comp in comps:
+            if isinstance(comp, str):
+                parts.append(comp)
+            elif _comp_type_name(comp).lower() in {"plain", "text"}:
+                text = getattr(comp, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts).strip()
+    return chain_plain_text(fragment).strip()
+
+
+def _format_fragment_for_history(
+    fragment: Any,
+    delivered_text: str,
+    *,
+    is_poke: bool,
+    reply_mode: str,
+    poke_target: str,
+    turn: TurnContext,
+    runtime: Any,
+    private_direct: bool,
+) -> str:
+    """Build the semantic assistant-history representation of one delivered fragment."""
+    if is_poke:
+        is_third_party = bool(not private_direct and poke_target and poke_target != str(turn.author or ""))
+        target_label = _resolve_poke_target_label(runtime, turn, poke_target) if is_third_party else ""
+        return _format_action_marker("poke", target_label=target_label)
+    if not isinstance(fragment, str):
+        semantic_attr = getattr(fragment, "_cd_delivery_text_v1", None)
+        if isinstance(semantic_attr, str) and semantic_attr.strip():
+            return semantic_attr.strip()
+        comps = list(getattr(fragment, "chain", ()) or ())
+        has_image = any(_comp_type_name(comp).lower() in _HISTORY_MEDIA_COMPONENT_TYPES for comp in comps)
+        if has_image:
+            detail = _extract_fragment_media_detail(comps)
+            kind = "meme" if reply_mode in {"meme_only", "text_meme", "poke_meme"} else "image"
+            marker = _format_action_marker(kind, detail=detail)
+            plain_text = _chain_visible_plain_text(fragment)
+            return f"{plain_text}\n{marker}" if plain_text else marker
+    return str(delivered_text or "").strip()
+
+
+def _join_history_delivered(entries: Sequence[str]) -> str:
+    """Join action markers with single newlines while preserving double-newline text paragraphs."""
+    cleaned = [str(entry or "").strip() for entry in entries if str(entry or "").strip()]
+    if not cleaned:
+        return ""
+    out = cleaned[0]
+    for nxt in cleaned[1:]:
+        prev_is_action = out.rsplit("\n", 1)[-1].startswith(("[动作:", "[表情历史"))
+        nxt_is_action = nxt.startswith(("[动作:", "[表情历史"))
+        sep = "\n" if (prev_is_action or nxt_is_action) else "\n\n"
+        out = f"{out}{sep}{nxt}"
+    return out
+
+
+def _read_outbound_ledger_note(plugin: Any, runtime: Any, item: ModelTurn, event: Any) -> str:
+    """Read a bounded read-only note of recent external sends and backfilled poke actions."""
+    ledger = getattr(plugin, "outbound_ledger", None)
+    formatter = getattr(ledger, "format_recent_outbound_note", None)
+    if not callable(formatter):
+        return ""
+    session_key = str(getattr(runtime, "umo", "") or getattr(runtime, "session_key", "") or "")
+    if not session_key:
+        return ""
+    platform_id = str(_safe_call(event, "get_platform_name", "") or "")
+    target_id = str(item.context.author or "") if item.private_direct else str(getattr(runtime, "group_id", "") or "")
+    scope = "private" if item.private_direct else "group"
+    now = plugin.time_service.time() if getattr(plugin, "time_service", None) is not None else None
+    try:
+        note = formatter(
+            session_key,
+            now=now,
+            platform_id=platform_id,
+            target_id=target_id,
+            scope=scope,
+        )
+    except TypeError:
+        try:
+            note = formatter(session_key)
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+    return str(note or "").strip()
+
+
+def _merge_sleep_wakeup_pending(plugin: Any, runtime: Any, item: ModelTurn, pacing: Any) -> ModelTurn:
+    """Prepend earlier deferred messages consumed on sleep wake-up in chronological order."""
+    merged_ids = tuple(getattr(pacing, "merged_pending_ids", ()) or ())
+    merged_texts = tuple(getattr(pacing, "merged_pending_texts", ()) or ())
+    merged_events = tuple(getattr(pacing, "merged_pending_events", ()) or ())
+    count = max(len(merged_ids), len(merged_texts))
+    if count <= 0:
+        return item
+    turn = item.context
+    existing_ids = {str(m.message_id) for m in turn.messages}
+    uid_names = _uid_names_from_dag(getattr(runtime, "dag", None))
+    default_author_name = turn.messages[-1].author_name if turn.messages else ""
+    default_platform = turn.messages[-1].platform if turn.messages else ""
+    trigger_event = item.events[-1] if item.events else None
+    trigger_umo = getattr(trigger_event, "unified_msg_origin", None)
+
+    prepended_snapshots: list[MessageSnapshot] = []
+    prepended_texts: list[str] = []
+    prepended_nodes: list[Any] = []
+    prepended_plat_ids: set[str] = set()
+    merged_id_set: set[str] = set()
+    now_mono = plugin.time_service.time() if getattr(plugin, "time_service", None) is not None else time.monotonic()
+
+    for idx in range(count):
+        mid = str(merged_ids[idx] or "").strip() if idx < len(merged_ids) else ""
+        raw_text = str(merged_texts[idx] or "").strip() if idx < len(merged_texts) else ""
+        if mid and mid in existing_ids:
+            continue
+        node = _dag_node(runtime, mid) if mid else None
+        text = raw_text or str(getattr(node, "text", "") or "").strip()
+        if not text:
+            continue
+        if not mid:
+            next_id = getattr(plugin, "_next_outgoing_id", None)
+            mid = str(next_id()) if callable(next_id) else f"rhythm-wake-{idx}"
+        if mid in existing_ids or mid in merged_id_set:
+            continue
+        if node is None and getattr(runtime, "dag", None) is not None:
+            node = runtime.dag.add_message(
+                msg_id=mid,
+                user_id=str(turn.author or ""),
+                text=text,
+                timestamp=now_mono - max(1.0, float(count - idx)),
+                metadata={"platform_message_id": bool(idx < len(merged_ids) and merged_ids[idx])},
+            )
+        meta = _node_metadata(node)
+        poke_tid, poke_tname, poke_action = _node_poke_fields(node, uid_names) if node is not None else ("", "", "")
+        snap = MessageSnapshot(
+            message_id=mid,
+            author=str(getattr(node, "user_id", "") or turn.author),
+            text=text,
+            reply_to=str(getattr(node, "reply_to_id", "") or ""),
+            source_text=text,
+            timestamp=getattr(node, "timestamp", None),
+            author_name=str(meta.get("sender_name") or default_author_name),
+            platform=str(meta.get("platform") or default_platform),
+            poke_target_id=poke_tid,
+            poke_target_name=poke_tname,
+            poke_action_text=poke_action,
+        )
+        prepended_snapshots.append(snap)
+        prepended_texts.append(text)
+        merged_id_set.add(mid)
+        if meta.get("platform_message_id") is True:
+            prepended_plat_ids.add(mid)
+        if node is not None:
+            prepended_nodes.append(node)
+
+    if not prepended_snapshots:
+        return item
+
+    new_messages = (*prepended_snapshots, *turn.messages)
+    combined_text_parts = [*prepended_texts, str(turn.text or "").strip()]
+    new_text = "\n".join(part for part in combined_text_parts if part)
+    base_source = turn.source_text if turn.source_text is not None else turn.text
+    new_source_parts = [*prepended_texts, str(base_source or "").strip()]
+    new_source_text = "\n".join(part for part in new_source_parts if part)
+    new_bg = tuple(m for m in turn.background if m.message_id not in merged_id_set)
+    new_visible = (
+        frozenset((*turn.visible_node_ids, *merged_id_set))
+        if turn.visible_node_ids is not None
+        else None
+    )
+    new_turn = replace(
+        turn,
+        messages=new_messages,
+        text=new_text,
+        source_text=new_source_text,
+        background=new_bg,
+        visible_node_ids=new_visible,
+    )
+
+    existing_ev_ids = {id(ev) for ev in item.events}
+    prepended_events = [
+        ev
+        for ev in merged_events
+        if ev is not None
+        and id(ev) not in existing_ev_ids
+        and (trigger_umo is None or getattr(ev, "unified_msg_origin", None) == trigger_umo)
+    ]
+    # Keep item.events[-1] as the current trigger event.
+    new_events = (*prepended_events, *item.events) if prepended_events else item.events
+    new_outcome_nodes = (
+        (*prepended_nodes, *item.outcome_nodes)
+        if (item.outcome_nodes and len(prepended_nodes) == len(prepended_snapshots))
+        else item.outcome_nodes
+    )
+    new_plat_ids = item.platform_message_ids | prepended_plat_ids
+    return replace(
+        item,
+        context=new_turn,
+        events=new_events,
+        outcome_nodes=new_outcome_nodes,
+        platform_message_ids=new_plat_ids,
+        observations={
+            **item.observations,
+            "rhythm_sleep_wakeup_merged_ids": tuple(s.message_id for s in prepended_snapshots),
+        },
+    )
 
 
 def _collect_trusted_poke_targets(turn: TurnContext, bot_id: str) -> set[str]:
@@ -1027,7 +1318,23 @@ class PersonaEngine:
     def __init__(self, plugin):
         self.plugin = plugin
         self.bridge = AstrBotAgentBridge(plugin.context)
-        self.slots = asyncio.Semaphore(4)
+        slot_count = 4
+        try:
+            from .. import series_panels as _series_panels
+        except Exception:
+            try:
+                import series_panels as _series_panels
+            except Exception:
+                _series_panels = None
+        if _series_panels is not None:
+            try:
+                profile = _series_panels.resolve_series_resource_profile(
+                    getattr(plugin, "context", None)
+                )
+                slot_count = 4 if profile == "standard" else 2
+            except Exception:
+                slot_count = 4
+        self.slots = asyncio.Semaphore(slot_count)
         self._projection_cache = OrderedDict()
         self._projection_tasks = {}
         self.telemetry = PipelineTelemetry()
@@ -1234,6 +1541,44 @@ class PersonaEngine:
                 reason,
             )
 
+    def _try_gentle_preempt(self, runtime) -> bool:
+        """Yield an active ambient turn to a newly queued priority wake without breaking valid replies.
+
+        Caller holds ``runtime.state_lock``.
+        """
+        active = getattr(runtime, "active_model_turn", None)
+        if active is None or _is_priority_wake(active):
+            return False
+        owner = str(getattr(getattr(active, "context", None), "author", "") or "")
+        if not owner:
+            return False
+        owned_tasks = getattr(runtime, "owned_turn_tasks", {}) or {}
+        reply_tasks = getattr(runtime, "reply_generation_tasks", set()) or set()
+        has_reply_task = any(
+            task in reply_tasks and not task.done()
+            for task, task_owner in owned_tasks.items()
+            if task_owner == owner
+        )
+        in_reply = (
+            has_reply_task
+            or int(getattr(runtime, "reply_generation_owners", {}).get(owner, 0) or 0) > 0
+        )
+        if not in_reply:
+            # (a) Active ambient turn has not entered reply generation yet:
+            # cancel immediately so prepare/decision/media_listen yields.
+            runtime.cancel_owned_turns(owner, pre_reply_only=True)
+            runtime.mark_turn_preempted(active)
+            return True
+        # (b) Active ambient turn is in reply generation: only cancel if first
+        # sentence has not been sent AND the turn is already superseded/invalid.
+        first_sent = int(getattr(runtime, "reply_first_sentence_sent", {}).get(owner, 0) or 0)
+        if first_sent == 0 and not self.valid(runtime, active):
+            cancelled = runtime.cancel_owned_turns(owner, pre_reply_only=False)
+            if cancelled > 0:
+                runtime.mark_turn_preempted(active)
+                return True
+        return False
+
     async def submit(self, runtime, item: ModelTurn) -> None:
         item = replace(item, submitted_monotonic=time.monotonic())
         is_merged = getattr(runtime, "is_merged_followup", None)
@@ -1246,6 +1591,7 @@ class PersonaEngine:
             self.plugin.debounce.finish_result(item.debounce_result)
             return
         now = self.plugin.time_service.time()
+        priority = _is_priority_wake(item)
         addressed = (
             item.private_direct
             or turn_is_addressed(runtime, item.context, now)
@@ -1255,6 +1601,22 @@ class PersonaEngine:
             self.diagnostic(runtime, "overload_ambient")
             self.plugin.debounce.finish_result(item.debounce_result)
             return
+        if priority and runtime.model_admission.locked():
+            evicted = None
+            async with runtime.state_lock:
+                if runtime.model_admission.locked():
+                    evicted = runtime.evict_oldest_non_priority(_is_priority_wake)
+            if evicted is not None:
+                self.plugin.debounce.finish_result(evicted.debounce_result)
+                self.plugin.debounce.release_result_media(evicted.debounce_result)
+                if evicted.debounce_result is None:
+                    from .deferred_media import release_event_media
+
+                    for ev in getattr(evicted, "events", ()) or ():
+                        release_event_media(ev)
+                record_terminal_outcome(
+                    runtime, evicted, outcomes.mark_suppressed, "preempted_by_wake", stage="queue"
+                )
         fallback = runtime.model_admission.locked()
         if fallback and item.context.explicit:
             # An already queued wake keeps its own request identity. Chatter
@@ -1271,8 +1633,10 @@ class PersonaEngine:
             async with runtime.state_lock:
                 if not await self.valid_async(runtime, item):
                     return
-                runtime.model_queue.append(replace(item, fallback=fallback))
+                runtime.enqueue_model_turn(replace(item, fallback=fallback), is_priority_fn=_is_priority_wake)
                 queued = True
+                if priority:
+                    self._try_gentle_preempt(runtime)
                 if runtime.generation_task is None or runtime.generation_task.done():
                     runtime.generation_task = self.plugin._create_background_task(self.run(runtime))
         finally:
@@ -1884,7 +2248,14 @@ class PersonaEngine:
             kwargs["reply_timeout"] = timeout
             self.bridge.media_archive = self.plugin.media_archive
             private_direct = bool(kwargs.pop("private_direct", False))
-            kwargs["narrative_override"] = None if private_direct else getattr(self.plugin, "narrative", None)
+            narrative_coord = getattr(self.plugin, "narrative", None)
+            if private_direct and narrative_coord is not None:
+                extras = getattr(event, "_extras", None)
+                is_bound = isinstance(extras, dict) and bool(extras.get("_narrative_managed_v1"))
+                enabled_fn = getattr(narrative_coord, "enabled", None)
+                if not is_bound and not (callable(enabled_fn) and enabled_fn(event_group_id)):
+                    narrative_coord = None
+            kwargs["narrative_override"] = narrative_coord
             self._schedule_media_maintenance(event.unified_msg_origin, persona.conversation_id)
         call = self.plugin.llm.provider_budget.run(
             provider,
@@ -1962,7 +2333,16 @@ class PersonaEngine:
                 item_cancelled = False
                 deferred_media = DeferredReplyMedia(self, runtime, item)
                 try:
-                    if await self.valid_async(runtime, item):
+                    if runtime.consume_turn_preempted(item):
+                        item_cancelled = True
+                        record_terminal_outcome(
+                            runtime,
+                            item,
+                            outcomes.mark_suppressed,
+                            "preempted_by_wake",
+                            stage="generation",
+                        )
+                    elif await self.valid_async(runtime, item):
                         # Final watchdog covers bridge/provider lookup, native
                         # generation and delivery, not only the decision model.
                         timeout = p._runtime_config.tool_agent_timeout
@@ -1974,15 +2354,37 @@ class PersonaEngine:
                         )
                 except asyncio.CancelledError:
                     item_cancelled = True
-                    record_terminal_outcome(
-                        runtime,
-                        item,
-                        outcomes.mark_suppressed,
-                        "worker_cancelled" if task.cancelling() else "member_cancelled",
-                        stage="generation",
-                    )
+                    preempted = runtime.consume_turn_preempted(item)
                     if task.cancelling():
+                        record_terminal_outcome(
+                            runtime,
+                            item,
+                            outcomes.mark_suppressed,
+                            "worker_cancelled",
+                            stage="generation",
+                        )
                         raise
+                    if preempted:
+                        wrote = record_terminal_outcome(
+                            runtime,
+                            item,
+                            outcomes.mark_suppressed,
+                            "preempted_by_wake",
+                            stage="generation",
+                        )
+                        if not wrote and not item.shadow:
+                            for message, node in zip(item.context.messages, item.outcome_nodes):
+                                if node is not None and runtime.dag.get_node(message.message_id) is node:
+                                    if outcomes.read_outcome(node).get("final_outcome") != outcomes.VALUE_DELIVERED:
+                                        outcomes.mark_suppressed(node, "preempted_by_wake", stage="generation")
+                    else:
+                        record_terminal_outcome(
+                            runtime,
+                            item,
+                            outcomes.mark_suppressed,
+                            "member_cancelled",
+                            stage="generation",
+                        )
                 except asyncio.TimeoutError:
                     reason = "poke_reply_timeout" if item.context.wake_kind in {"poke", "poke_peer"} else "reply_timeout"
                     self._finish_generation_failure(runtime, item, reason)
@@ -2046,6 +2448,7 @@ class PersonaEngine:
 
                             for event in item.events:
                                 release_event_media(event)
+                        runtime.consume_turn_preempted(item)
                         if runtime.active_model_turn is item:
                             runtime.active_model_turn = None
                         runtime.model_admission.release()
@@ -2208,7 +2611,18 @@ class PersonaEngine:
             event._extras = {}
         event._extras["_cd_pipeline_turn_id_v1"] = self.telemetry.turn_id(turn)
         persona = await self.telemetry.run("persona_snapshot", turn, self.bridge.snapshot(event))
-        narrative = None if item.private_direct else getattr(p, "narrative", None)
+        raw_narrative = getattr(p, "narrative", None)
+        narrative = (
+            raw_narrative
+            if (
+                raw_narrative is not None
+                and (
+                    not item.private_direct
+                    or (callable(getattr(raw_narrative, "enabled", None)) and raw_narrative.enabled(runtime.umo))
+                )
+            )
+            else None
+        )
         bundle = (
             await self.telemetry.run(
                 "prepare_decision", turn, narrative.prepare(runtime, item, persona, lightweight=True)
@@ -2233,14 +2647,22 @@ class PersonaEngine:
             else None
         )
         rhythm_urgent_breakthrough = False
+        rhythm_woken_from_sleep = False
+        rhythm_temp_awake_active = False
+        rhythm_sleep_wake_note = ""
+        avail_now = "available"
+        if bundle is not None:
+            snap = bundle.snapshot
+            if not snap.get("stale"):
+                avail_now = str(snap.get("availability") or "available").lower()
         if rhythm_ctrl is not None and not item.shadow and not item.observations.get("rhythm_catchup"):
-            avail_now = "available"
-            if bundle is not None:
-                snap = bundle.snapshot
-                if not snap.get("stale"):
-                    avail_now = str(snap.get("availability") or "available").lower()
-            else:
-                avail_now = await rhythm_ctrl._probe_world_availability(runtime)
+            if bundle is None:
+                try:
+                    avail_now = await rhythm_ctrl._probe_world_availability(
+                        runtime, persona_id=str(getattr(persona, "persona_id", "") or "")
+                    )
+                except TypeError:
+                    avail_now = await rhythm_ctrl._probe_world_availability(runtime)
             if avail_now == "available":
                 rhythm_ctrl.on_availability_changed(runtime, avail_now)
             primary_mid = turn.messages[-1].message_id if turn.messages else ""
@@ -2261,7 +2683,10 @@ class PersonaEngine:
                 live_event=event,
                 live_events=item.events,
             )
-            rhythm_urgent_breakthrough = bool(pacing.urgent_breakthrough)
+            rhythm_urgent_breakthrough = bool(getattr(pacing, "urgent_breakthrough", False))
+            rhythm_woken_from_sleep = bool(getattr(pacing, "woken_from_sleep", False))
+            rhythm_temp_awake_active = bool(getattr(pacing, "temp_awake_active", False))
+            rhythm_sleep_wake_note = str(getattr(pacing, "sleep_wake_note", "") or "").strip()
             if pacing.defer:
                 p.debounce.finish_result(item.debounce_result)
                 record_outcome(runtime, item, outcomes.mark_suppressed, pacing.reason_code, stage="gate")
@@ -2273,123 +2698,131 @@ class PersonaEngine:
                     wake_at_wall=pacing.wake_at_wall,
                 )
                 return
+            merged_item = _merge_sleep_wakeup_pending(p, runtime, item, pacing)
+            if merged_item is not item:
+                item = merged_item
+                turn = item.context
+                decision_turn = turn
+                event = item.events[-1] if item.events else event
+            if not rhythm_sleep_wake_note:
+                get_note = getattr(rhythm_ctrl, "get_sleep_wake_note", None)
+                if callable(get_note):
+                    try:
+                        rhythm_sleep_wake_note = str(get_note(runtime, availability=avail_now) or "").strip()
+                    except TypeError:
+                        try:
+                            rhythm_sleep_wake_note = str(get_note(runtime) or "").strip()
+                        except Exception:
+                            rhythm_sleep_wake_note = ""
+                    except Exception:
+                        rhythm_sleep_wake_note = ""
         dynamics_learning.begin(p, runtime, item, judgement_persona)
         dynamics_horizons.begin(p, runtime, item, judgement_persona)
-        game_ctx = None
-        if not item.private_direct:
-            game_ctx = await group_ecosystem.read_game_context(
-                p, runtime.umo or runtime.session_key, query=str(turn.text or "")
-            )
-            if game_ctx.get("active"):
-                item = replace(item, observations={**item.observations, "active_game_context": game_ctx})
-        private_outreach_observer = None
-        private_outreach_scope = None
-        if item.private_direct:
-            target = turn.messages[-1].message_id if turn.messages else ""
-            decision = TurnDecision(
-                action="reply",
-                state=interaction_state,
-                target_message_ids=(target,) if target else (),
-                response_goal="直接回应这条私聊消息。",
-                length="normal",
-                reason_code="private_direct",
-            )
-            private_outreach_observer = getattr(p, "narrative", None)
-            if private_outreach_observer is not None and private_outreach_observer.outreach_allowed(runtime.umo):
-                private_outreach_scope = p._create_background_task(
-                    private_outreach_observer.observe_private_turn(runtime, item, persona)
-                )
-        else:
-            decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
-        if bundle is not None:
-            impact = runtime.jev_decision.get("impact", {})
-            impact = (
-                impact.get("choice", "none")
-                if isinstance(impact, dict) and impact.get("confidence", 0) >= p._runtime_config.jev_min_confidence
-                else "none"
-            )
-            semantic = reply_interaction(
-                turn, runtime.jev_decision.get("interaction_frame"), floor=p._runtime_config.jev_min_confidence
-            )
-            recipient = runtime.jev_decision.get("recipient", {})
-            if (
-                semantic.get("turn_update", {}).get("choice") == "corrects_previous"
-                and recipient.get("choice") == "bot"
-                and recipient.get("confidence", 0) >= p._runtime_config.jev_min_confidence
-                and decision.action != "ignore"
-            ):
-                # Attach classifier evidence to the routed copy, never rewrite
-                # the observed platform mention or quote on the original event.
-                payload = bundle.wire()
-                payload["feedback_speaker_id"] = turn.author
-                bundle = type(bundle)(bundle.turn_id, json.dumps(payload, ensure_ascii=False))
-                item = replace(item, narrative_bundle=bundle)
-                impact = "relationship"
-            await narrative.route_life_events_async(bundle, impact, decision_evidence={
-                **runtime.jev_decision,
-                "social_context_current": (
-                    runtime.epoch == turn.epoch
-                    and runtime.user_revisions.get(turn.author, 0) == turn.revision
-                    and not p._shutting_down and not item.shadow
-                ),
-                "social_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
-            }, event=item.events[-1] if item.events else None)
-            revised = await narrative.advance_important(item, bundle, impact)
-            if revised.payload != bundle.payload:
-                bundle = revised
-                item = replace(item, narrative_bundle=bundle)
-                decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
+        speculative_prepare_task: asyncio.Task | None = None
+        speculative_prepare_mutated = False
         if (
-            getattr(p._runtime_config, "context_completion_enabled", False)
+            narrative is not None
+            and bundle is not None
             and not item.private_direct
             and not item.shadow
-            and not (bundle and bundle.wire().get("internal"))
+            and (turn.mandatory_reply or turn.wake_kind == "quote")
         ):
-            need = runtime.jev_decision.get("context_need", {})
-            confidence = need.get("confidence", 0)
-            reason = runtime.jev_decision.get("reason", {}).get("choice")
-            mode = (
-                need.get("choice")
-                if (
-                    need.get("type") == "choice"
-                    and type(confidence) in (int, float)
-                    and p._runtime_config.jev_min_confidence <= confidence <= 1
-                )
-                else "ready"
+            speculative_prepare_task = asyncio.create_task(
+                narrative.prepare(runtime, item, persona)
             )
-            if (
-                mode in {"recent", "topic", "memory"}
-                and decision.reason_code not in _WAITING_REASONS
-                and reason not in {"other_recipient", "boundary_or_sensitive"}
-                and not item.observations.get("context_completion", {}).get("attempted")
-                and not any(set(m.mentioned_users) - {turn.bot_id} for m in turn.messages)
-            ):
+
+        async def _cancel_speculative_prepare() -> None:
+            nonlocal speculative_prepare_task
+            spec_task = speculative_prepare_task
+            speculative_prepare_task = None
+            if spec_task is not None:
+                if not spec_task.done():
+                    spec_task.cancel()
                 try:
-                    item = await complete_context(p, runtime, item, mode)
-                except member_boundary.BoundaryCancelled:
-                    record_outcome(
-                        runtime, item, outcomes.mark_suppressed, "context_completion_invalidated", stage="generation"
-                    )
-                    return
-                if not await self.valid_async(runtime, item):
-                    return
-                bundle, turn = item.narrative_bundle, item.context
-                decision_turn = turn
-                if bundle is not None:
-                    await narrative.bind_async(item.events, bundle)
-                dynamics_horizons.begin(p, runtime, item, judgement_persona)
-                info = item.observations["context_completion"]
-                p._metric("context_completion_attempted")
-                logger.info(
-                    "Context completion status=%s mode=%s added=%s elapsed_ms=%s",
-                    info["status"],
-                    mode,
-                    info["added_messages"],
-                    info["elapsed_ms"],
+                    await spec_task
+                except BaseException:
+                    pass
+
+        try:
+            game_ctx = None
+            if not item.private_direct:
+                game_ctx = await group_ecosystem.read_game_context(
+                    p, runtime.umo or runtime.session_key, query=str(turn.text or "")
                 )
+                if game_ctx.get("active"):
+                    item = replace(item, observations={**item.observations, "active_game_context": game_ctx})
+            private_outreach_observer = None
+            private_outreach_scope = None
+            if item.private_direct:
+                target = turn.messages[-1].message_id if turn.messages else ""
+                decision = TurnDecision(
+                    action="reply",
+                    state=interaction_state,
+                    target_message_ids=(target,) if target else (),
+                    response_goal="直接回应这条私聊消息。",
+                    length="normal",
+                    reason_code="private_direct",
+                )
+                # When narrative.prepare manages the private turn, route_life_events and
+                # begin_send/finish_send already own journal ingress/delivery events.
+                if bundle is None:
+                    private_outreach_observer = getattr(p, "narrative", None)
+                    if private_outreach_observer is not None and private_outreach_observer.outreach_allowed(runtime.umo):
+                        private_outreach_scope = p._create_background_task(
+                            private_outreach_observer.observe_private_turn(runtime, item, persona)
+                        )
+            else:
                 decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
+            if bundle is not None:
+                impact = runtime.jev_decision.get("impact", {})
+                impact = (
+                    impact.get("choice", "none")
+                    if isinstance(impact, dict) and impact.get("confidence", 0) >= p._runtime_config.jev_min_confidence
+                    else "none"
+                )
+                semantic = reply_interaction(
+                    turn, runtime.jev_decision.get("interaction_frame"), floor=p._runtime_config.jev_min_confidence
+                )
+                recipient = runtime.jev_decision.get("recipient", {})
+                if (
+                    semantic.get("turn_update", {}).get("choice") == "corrects_previous"
+                    and recipient.get("choice") == "bot"
+                    and recipient.get("confidence", 0) >= p._runtime_config.jev_min_confidence
+                    and decision.action != "ignore"
+                ):
+                    # Attach classifier evidence to the routed copy, never rewrite
+                    # the observed platform mention or quote on the original event.
+                    payload = bundle.wire()
+                    payload["feedback_speaker_id"] = turn.author
+                    bundle = type(bundle)(bundle.turn_id, json.dumps(payload, ensure_ascii=False))
+                    item = replace(item, narrative_bundle=bundle)
+                    impact = "relationship"
+                await narrative.route_life_events_async(bundle, impact, decision_evidence={
+                    **runtime.jev_decision,
+                    "social_context_current": (
+                        runtime.epoch == turn.epoch
+                        and runtime.user_revisions.get(turn.author, 0) == turn.revision
+                        and not p._shutting_down and not item.shadow
+                    ),
+                    "social_stop_revision": runtime.topic_stop_revisions.get(turn.author, 0),
+                }, event=item.events[-1] if item.events else None)
+                revised = await narrative.advance_important(item, bundle, impact)
+                if revised.payload != bundle.payload:
+                    bundle = revised
+                    item = replace(item, narrative_bundle=bundle)
+                    speculative_prepare_mutated = True
+                    await _cancel_speculative_prepare()
+                    if not item.private_direct:
+                        decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
+            if (
+                getattr(p._runtime_config, "context_completion_enabled", False)
+                and not item.private_direct
+                and not item.shadow
+                and not (bundle and bundle.wire().get("internal"))
+            ):
                 need = runtime.jev_decision.get("context_need", {})
                 confidence = need.get("confidence", 0)
+                reason = runtime.jev_decision.get("reason", {}).get("choice")
                 mode = (
                     need.get("choice")
                     if (
@@ -2397,68 +2830,125 @@ class PersonaEngine:
                         and type(confidence) in (int, float)
                         and p._runtime_config.jev_min_confidence <= confidence <= 1
                     )
-                    else "clarify"
+                    else "ready"
                 )
-                if decision.action != "ignore":
+                if (
+                    mode in {"recent", "topic", "memory"}
+                    and decision.reason_code not in _WAITING_REASONS
+                    and reason not in {"other_recipient", "boundary_or_sensitive"}
+                    and not item.observations.get("context_completion", {}).get("attempted")
+                    and not any(set(m.mentioned_users) - {turn.bot_id} for m in turn.messages)
+                ):
+                    speculative_prepare_mutated = True
+                    await _cancel_speculative_prepare()
+                    try:
+                        item = await complete_context(p, runtime, item, mode)
+                    except member_boundary.BoundaryCancelled:
+                        record_outcome(
+                            runtime, item, outcomes.mark_suppressed, "context_completion_invalidated", stage="generation"
+                        )
+                        return
+                    if not await self.valid_async(runtime, item):
+                        return
+                    bundle, turn = item.narrative_bundle, item.context
+                    decision_turn = turn
+                    if bundle is not None:
+                        await narrative.bind_async(item.events, bundle)
+                    dynamics_horizons.begin(p, runtime, item, judgement_persona)
+                    info = item.observations["context_completion"]
+                    p._metric("context_completion_attempted")
+                    logger.info(
+                        "Context completion status=%s mode=%s added=%s elapsed_ms=%s",
+                        info["status"],
+                        mode,
+                        info["added_messages"],
+                        info["elapsed_ms"],
+                    )
+                    decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
+                    need = runtime.jev_decision.get("context_need", {})
+                    confidence = need.get("confidence", 0)
+                    mode = (
+                        need.get("choice")
+                        if (
+                            need.get("type") == "choice"
+                            and type(confidence) in (int, float)
+                            and p._runtime_config.jev_min_confidence <= confidence <= 1
+                        )
+                        else "clarify"
+                    )
+                    if decision.action != "ignore":
+                        decision = replace(
+                            decision,
+                            response_goal=decision.response_goal
+                            + " 本轮自动补查已结束；依据已提供来源回应，不为同一缺口重复检索。没有找到不等于从未发生；仍缺关键信息就澄清。",
+                        )
+                reason = runtime.jev_decision.get("reason", {}).get("choice")
+                if (
+                    decision.action != "ignore"
+                    and reason not in {"other_recipient", "boundary_or_sensitive"}
+                    and (
+                        mode == "clarify"
+                        or (
+                            item.observations.get("context_completion", {}).get("attempted")
+                            and mode in {"recent", "topic", "memory"}
+                        )
+                    )
+                ):
                     decision = replace(
                         decision,
-                        response_goal=decision.response_goal
-                        + " 本轮自动补查已结束；依据已提供来源回应，不为同一缺口重复检索。没有找到不等于从未发生；仍缺关键信息就澄清。",
+                        action="clarify",
+                        length="brief",
+                        reason_code=_decision_prefix(p) + "context_clarify",
+                        response_goal="当前仍缺少作答所需的关键信息。只问一个具体、必要的澄清问题，不猜测缺失内容，不声称未检索到的事情从未发生。",
                     )
-            reason = runtime.jev_decision.get("reason", {}).get("choice")
-            if (
-                decision.action != "ignore"
-                and reason not in {"other_recipient", "boundary_or_sensitive"}
-                and (
-                    mode == "clarify"
-                    or (
-                        item.observations.get("context_completion", {}).get("attempted")
-                        and mode in {"recent", "topic", "memory"}
+            if bundle is not None and decision.action != "ignore" and decision.reason_code not in _WAITING_REASONS:
+                previous = bundle.wire()
+                if speculative_prepare_task is not None and not speculative_prepare_mutated:
+                    spec_task = speculative_prepare_task
+                    speculative_prepare_task = None
+                    full_bundle = await self.telemetry.run(
+                        "prepare_reply", turn, spec_task, none_is_unavailable=True
                     )
+                else:
+                    await _cancel_speculative_prepare()
+                    full_bundle = await self.telemetry.run(
+                        "prepare_reply", turn, narrative.prepare(runtime, item, persona), none_is_unavailable=True
+                    )
+                if full_bundle is None:
+                    self._finish_generation_failure(runtime, item, "narrative_prepare_unavailable", suppressed=True)
+                    return
+                bundle = full_bundle
+                item = replace(item, narrative_bundle=bundle)
+                material = bundle.wire()["character"]
+                judgement_persona = replace(
+                    persona, prompt=material["core_prompt"] + "\n" + material.get("group_rules", "")
                 )
-            ):
-                decision = replace(
-                    decision,
-                    action="clarify",
-                    length="brief",
-                    reason_code=_decision_prefix(p) + "context_clarify",
-                    response_goal="当前仍缺少作答所需的关键信息。只问一个具体、必要的澄清问题，不猜测缺失内容，不声称未检索到的事情从未发生。",
-                )
-        if bundle is not None and decision.action != "ignore" and decision.reason_code not in _WAITING_REASONS:
-            previous = bundle.wire()
-            full_bundle = await self.telemetry.run(
-                "prepare_reply", turn, narrative.prepare(runtime, item, persona), none_is_unavailable=True
-            )
-            if full_bundle is None:
-                self._finish_generation_failure(runtime, item, "narrative_prepare_unavailable", suppressed=True)
-                return
-            bundle = full_bundle
-            item = replace(item, narrative_bundle=bundle)
-            material = bundle.wire()["character"]
-            judgement_persona = replace(
-                persona, prompt=material["core_prompt"] + "\n" + material.get("group_rules", "")
-            )
-            dynamics_horizons.begin(p, runtime, item, judgement_persona)
-            prior_view = previous.get("evidence_view")
-            current_view = bundle.wire().get("evidence_view")
-            if (
-                previous["character"].get("fingerprint") != material.get("fingerprint")
-                or previous["snapshot"].get("revision") != bundle.snapshot.get("revision")
-                or previous["snapshot"].get("scope_revision") != bundle.snapshot.get("scope_revision")
-                or bundle.wire().get("availability", {}).get("supplement_context_status") == "conflicting"
-                or isinstance(prior_view, dict)
-                and isinstance(current_view, dict)
-                and prior_view.get("correction_revision") != current_view.get("correction_revision")
-            ):
-                decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
-            if isinstance(prior_view, dict) and current_view is None and decision.action != "ignore":
-                decision = replace(
-                    decision,
-                    action="clarify",
-                    length="brief",
-                    reason_code="narrative_context_unavailable",
-                    response_goal="当前缺少能核实的旧话题依据。结合本轮原句，只问一个具体、必要的澄清问题；不猜测，也不声称未找到的事情从未发生。",
-                )
+                dynamics_horizons.begin(p, runtime, item, judgement_persona)
+                prior_view = previous.get("evidence_view")
+                current_view = bundle.wire().get("evidence_view")
+                if (
+                    not item.private_direct
+                    and (
+                        previous["character"].get("fingerprint") != material.get("fingerprint")
+                        or previous["snapshot"].get("revision") != bundle.snapshot.get("revision")
+                        or previous["snapshot"].get("scope_revision") != bundle.snapshot.get("scope_revision")
+                        or bundle.wire().get("availability", {}).get("supplement_context_status") == "conflicting"
+                        or isinstance(prior_view, dict)
+                        and isinstance(current_view, dict)
+                        and prior_view.get("correction_revision") != current_view.get("correction_revision")
+                    )
+                ):
+                    decision = await self.decide(item, judgement_persona, interaction_state, runtime=runtime)
+                if isinstance(prior_view, dict) and current_view is None and decision.action != "ignore":
+                    decision = replace(
+                        decision,
+                        action="clarify",
+                        length="brief",
+                        reason_code="narrative_context_unavailable",
+                        response_goal="当前缺少能核实的旧话题依据。结合本轮原句，只问一个具体、必要的澄清问题；不猜测，也不声称未找到的事情从未发生。",
+                    )
+        finally:
+            await _cancel_speculative_prepare()
         proposed = decision
         async with runtime.state_lock:
             if not await self.valid_async(runtime, item):
@@ -2618,13 +3108,23 @@ class PersonaEngine:
                         rhythm_insomnia_enabled=False,
                     )
                     availability = bundle.snapshot.get("availability", "unknown")
-                    if availability == "asleep" and not sleep_wake_admitted:
+                    rhythm_sleep_awake = bool(
+                        rhythm_woken_from_sleep
+                        or rhythm_temp_awake_active
+                        or (
+                            rhythm_ctrl is not None
+                            and callable(getattr(rhythm_ctrl, "is_temp_awake", None))
+                            and rhythm_ctrl.is_temp_awake(runtime)
+                        )
+                    )
+                    if availability == "asleep" and not sleep_wake_admitted and not rhythm_sleep_awake:
                         decision = replace(decision, action="ignore", reason_code="narrative_asleep")
                     elif (
                         availability in {"asleep", "busy"}
                         and sleep_wake_admitted
                         and decision.action != "ignore"
                         and not (availability == "busy" and rhythm_urgent_breakthrough)
+                        and not (availability == "asleep" and rhythm_sleep_awake)
                     ):
                         decision = replace(
                             decision,
@@ -3049,14 +3549,14 @@ class PersonaEngine:
                                         "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
                                         **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
                                     },
-                                    reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
+                                    reply_guidance=p._runtime_config.reply_prompt,
                                     group_reminders=reminder_context,
                                     character_context=(
                                         {"horizons": h_slot}
                                         if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
                                         else None
                                     ),
-                                    include_reply_guidance=bundle is None,
+                                    include_reply_guidance=bool(str(p._runtime_config.reply_prompt or "").strip()),
                                 ), runtime, item),
                                 runtime,
                                 item,
@@ -3064,6 +3564,20 @@ class PersonaEngine:
                             game_context=game_ctx,
                             culture_context=culture_ctx,
                         )
+                        outbound_note = _read_outbound_ledger_note(p, runtime, item, event)
+                        turn_notes = tuple(
+                            note for note in (outbound_note, rhythm_sleep_wake_note) if note
+                        )
+                        generate_kwargs: dict[str, Any] = {
+                            "execution_log": runtime.tool_executions,
+                            "history_text": turn.history_text(),
+                            "media_understand": understand,
+                            "context_images": context_images,
+                            "private_direct": item.private_direct,
+                            "deferred_reply_media": deferred_media,
+                        }
+                        if turn_notes:
+                            generate_kwargs["turn_notes"] = turn_notes
                         output = await self.generate_ready(
                             runtime,
                             turn,
@@ -3072,12 +3586,7 @@ class PersonaEngine:
                             reply_prompt_json,
                             persona,
                             provider,
-                            execution_log=runtime.tool_executions,
-                            history_text=turn.history_text(),
-                            media_understand=understand,
-                            context_images=context_images,
-                            private_direct=item.private_direct,
-                            deferred_reply_media=deferred_media,
+                            **generate_kwargs,
                         )
                     except ModelReplyFailure as exc:
                         p._metric("native_agent_failed")
@@ -3296,6 +3805,7 @@ class PersonaEngine:
 
             delivered = []
             verbal_delivered = []
+            history_delivered = []
             delivered_message_ids = []
             poke_delivered_in_turn = False
             first_verbal_committed = False
@@ -3593,6 +4103,18 @@ class PersonaEngine:
                             p._metric("first_sentence_before_agent_finalize")
                     delivered_text = "[戳一戳]" if is_poke_fragment else sent.delivered_text(fragment)
                     delivered.append(delivered_text)
+                    history_entry = _format_fragment_for_history(
+                        fragment,
+                        delivered_text,
+                        is_poke=is_poke_fragment,
+                        reply_mode=reply_mode,
+                        poke_target=poke_target,
+                        turn=turn,
+                        runtime=runtime,
+                        private_direct=bool(item.private_direct),
+                    )
+                    if history_entry:
+                        history_delivered.append(history_entry)
                     if not first_sentence_marked:
                         first_sentence_marked = True
                         fs_map = getattr(runtime, "reply_first_sentence_sent", None)
@@ -3601,7 +4123,12 @@ class PersonaEngine:
                     if is_poke_fragment:
                         poke_delivered_in_turn = True
                     if not fragment_nonverbal:
-                        verbal_delivered.append(delivered_text)
+                        if isinstance(fragment, str):
+                            verbal_delivered.append(delivered_text)
+                        else:
+                            plain_only = _chain_visible_plain_text(fragment)
+                            if plain_only:
+                                verbal_delivered.append(plain_only)
                     for actual_id in _actual_send_message_ids(sent, fragment, delivered_text):
                         if actual_id not in delivered_message_ids:
                             delivered_message_ids.append(actual_id)
@@ -3735,7 +4262,7 @@ class PersonaEngine:
                             p._metric("llm_reply_failed")
                 # Reset/cool may cancel a tail; persist only already delivered text, never a draft.
                 if delivered:
-                    full_delivered_text = (
+                    full_delivered_text = _join_history_delivered(history_delivered) or (
                         "\n\n".join(verbal_delivered) if verbal_delivered else "\n\n".join(delivered)
                     )
                     committed = await self.bridge.commit(event, output, full_delivered_text)
@@ -3746,7 +4273,7 @@ class PersonaEngine:
                             p,
                             runtime,
                             item,
-                            full_delivered_text,
+                            "\n\n".join(verbal_delivered),
                             message_id=str(getattr(getattr(runtime, "last_bot_node", None), "msg_id", "") or ""),
                             message_ids=delivered_message_ids,
                         )

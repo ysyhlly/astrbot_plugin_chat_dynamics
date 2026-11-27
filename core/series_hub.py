@@ -42,7 +42,7 @@ _MAX_QUERY_LEN = 128
 _MAX_SCOPE_LEN = 256
 _MAX_SEARCH_LIMIT = 50
 _PER_PLUGIN_STATUS_TIMEOUT = 0.25
-_SEARCH_EXECUTOR_WORKERS = 8
+_SEARCH_EXECUTOR_WORKERS = 4
 _MATRIX_CACHE_TTL_SECONDS = 3.0
 _MATRIX_CACHE_MAX_ENTRIES = 64
 
@@ -115,13 +115,19 @@ def _mark_presence_sentinel() -> None:
         cache[_PRESENCE_SENTINEL_KEY] = (float("inf"), None)
 
 
-def _get_search_executor() -> concurrent.futures.ThreadPoolExecutor:
+def _get_search_executor(context: Any = None) -> concurrent.futures.ThreadPoolExecutor:
     global _SEARCH_EXECUTOR
     if _SEARCH_EXECUTOR is None:
         with _SEARCH_EXECUTOR_LOCK:
             if _SEARCH_EXECUTOR is None:
+                workers = _SEARCH_EXECUTOR_WORKERS
+                try:
+                    limits = series_panels.get_series_resource_limits(context)
+                    workers = max(1, int(limits.get("chat_search_workers", workers)))
+                except Exception:
+                    workers = max(1, int(_SEARCH_EXECUTOR_WORKERS))
                 _SEARCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=_SEARCH_EXECUTOR_WORKERS,
+                    max_workers=workers,
                     thread_name_prefix="cd-series-search",
                 )
                 atexit.register(_shutdown_search_executor)
@@ -1264,6 +1270,7 @@ async def _run_search_hook(
     *,
     loop: asyncio.AbstractEventLoop,
     guard_key: tuple[int, str] | None = None,
+    context: Any = None,
 ) -> Any:
     if inspect.iscoroutinefunction(hook):
         return await hook(query, scope, limit)
@@ -1284,7 +1291,7 @@ async def _run_search_hook(
 
     try:
         fut = loop.run_in_executor(
-            _get_search_executor(),
+            _get_search_executor(context),
             _run_guarded,
         )
     except Exception:
@@ -1365,6 +1372,7 @@ async def federated_series_search(
                     per_plugin_limit,
                     loop=loop,
                     guard_key=guard_key,
+                    context=context,
                 )
             )
             tasks[task] = (pid, page, guard_key)
@@ -1653,6 +1661,30 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
             }
         )
 
+    res_state = series_panels.get_series_resource_state(context)
+    mem_wm = series_panels.get_series_memory_watermark(context)
+    heavy_gate = series_panels.get_heavy_subprocess_snapshot(context)
+    if mem_wm.get("state") in ("soft", "hard"):
+        env_warnings.append(
+            {
+                "code": f"memory_watermark_{mem_wm['state']}",
+                "severity": "warn" if mem_wm["state"] == "soft" else "error",
+                "message": (
+                    f"进程内存已触及 {mem_wm['state']} 水位线："
+                    f"RSS {mem_wm.get('rss_mb', 0)} MiB / 警戒 {mem_wm.get('soft_mb', 0)} MiB"
+                    f"（当前档位：{res_state.get('effective', 'standard')}）"
+                ),
+            }
+        )
+    for rec in res_state.get("recommendations") or ():
+        env_warnings.append(
+            {
+                "code": str(rec.get("code") or "resource_recommendation"),
+                "severity": "info",
+                "message": f"{rec.get('title', '')}（{rec.get('detail', '')}）",
+            }
+        )
+
     actionable_warnings = [w for w in env_warnings if w.get("severity") != "info"]
     overall_status = "ok"
     if any(p["installed"] and (not p["ready"] or p["degraded"]) for p in plugins_out) or host_default["status"] == "error":
@@ -1671,7 +1703,13 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
             "shared_reply_provider": str(shared_cfg.get("reply_provider") or ""),
             "shared_decision_provider": str(shared_cfg.get("decision_provider") or ""),
             "shared_timezone": str(shared_cfg.get("rhythm_timezone") or ""),
+            "resource_profile": str(res_state.get("effective") or "standard"),
+            "rss_mb": float(mem_wm.get("rss_mb") or 0.0),
+            "memory_state": str(mem_wm.get("state") or "ok"),
         },
+        "resource_state": res_state,
+        "memory_watermark": mem_wm,
+        "heavy_subprocess_gate": heavy_gate,
         "host_default_provider": host_default,
         "series_panels_sync": panels_sync,
         "event_bus": event_bus_diagnostics(plugin),

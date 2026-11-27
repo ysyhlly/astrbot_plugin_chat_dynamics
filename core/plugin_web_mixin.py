@@ -326,7 +326,11 @@ class PluginWebAndAdminMixin:
             self._clear_native_context(session_id)
             self._registry.drop(session_id)
             self._last_bot_nodes.pop(session_id, None)
-            self._umo_by_session.pop(session_id, None)
+            umo = (
+                self._umo_by_session.pop(session_id, None)
+                or (getattr(runtime, "umo", None) if runtime is not None else None)
+                or session_id
+            )
             self._vibe_msg_counts.pop(session_id, None)
             self.vibe_analyzer.reset_session(session_id)
             self.arbiter.reset_session(session_id, keep_cooling=True)
@@ -334,6 +338,38 @@ class PluginWebAndAdminMixin:
                 self.decision_gate.reset_session(session_id, keep_cool=True)
             except Exception:
                 pass
+            rhythm_ctrl = getattr(self, "natural_rhythm", None)
+            if rhythm_ctrl is not None and callable(getattr(rhythm_ctrl, "reset_session", None)):
+                try:
+                    rhythm_ctrl.reset_session(session_id)
+                except Exception:
+                    pass
+            poke_streaks = getattr(self, "_poke_streaks", None)
+            if isinstance(poke_streaks, dict):
+                try:
+                    drop_poke_streaks(poke_streaks, session_id)
+                except Exception:
+                    pass
+            poke_replied = getattr(self, "_poke_replied_ids", None)
+            if isinstance(poke_replied, set) and poke_replied:
+                self._poke_replied_ids = {item for item in poke_replied if item[0] != session_id}
+            narrative = getattr(self, "narrative", None)
+            if narrative is not None:
+                social_at = getattr(narrative, "_social_opportunity_at", None)
+                if isinstance(social_at, dict):
+                    social_at.pop(umo, None)
+                    if umo != session_id:
+                        social_at.pop(session_id, None)
+                rpc_warn_at = getattr(narrative, "_rpc_warn_at", None)
+                if isinstance(rpc_warn_at, dict):
+                    rpc_warn_at.pop(umo, None)
+                    if umo != session_id:
+                        rpc_warn_at.pop(session_id, None)
+                bundles = getattr(narrative, "_bundles", None)
+                if isinstance(bundles, dict):
+                    bundles.pop(umo, None)
+                    if umo != session_id:
+                        bundles.pop(session_id, None)
 
     def _prune_idle_sessions_after_generation(self, now: float) -> None:
         last = getattr(self, "_last_idle_sweep_at", None)
