@@ -337,12 +337,16 @@ def chat_dynamics_scope_status(plugin: Any, umo: str) -> dict[str, Any]:
     else:
         summary = "暂停"
     return {
+        "umo": clean,
         "enabled": takeover_enabled,
         "supported": True,
+        "writable": True,
+        "mode": "all" if bool(getattr(plugin, "takeover_all", False)) else "allowlist",
         "excluded_by_core": excluded_by_core,
         "persona_id": _default_persona_id(plugin),
         "activity_today": activity,
         "summary": summary,
+        "detail": summary,
         "version": chat_dynamics_scope_version(plugin),
     }
 
@@ -364,7 +368,9 @@ async def chat_dynamics_set_scope_enabled(
     if expected_version is not None and str(expected_version) != current_version:
         return {
             "ok": False,
+            "umo": clean,
             "conflict": True,
+            "reason": "version_conflict",
             "version": current_version,
             "enabled": _takeover_state_for_umo(plugin, clean)[0],
             "summary": "配置版本已变化，请刷新后重试",
@@ -415,8 +421,10 @@ async def chat_dynamics_set_scope_enabled(
     excluded_now = _is_umo_excluded_by_core(plugin, clean)
     return {
         "ok": True,
+        "umo": clean,
         "enabled": actual_enabled,
         "version": new_version,
+        "reason": "",
         "summary": "开启" if actual_enabled else ("主控排除" if excluded_now else "暂停"),
     }
 
@@ -557,6 +565,8 @@ def _sanitize_scope_status(raw: Any, *, default_supported: bool = False) -> dict
     enabled_raw = raw.get("enabled")
     enabled = enabled_raw if isinstance(enabled_raw, bool) else None
     supported_raw = raw.get("supported")
+    if not isinstance(supported_raw, bool):
+        supported_raw = raw.get("writable")
     supported = supported_raw if isinstance(supported_raw, bool) else default_supported
     persona_id = str(raw.get("persona_id") or "").strip()[:128]
     act_raw = raw.get("activity_today")
@@ -566,7 +576,7 @@ def _sanitize_scope_status(raw: Any, *, default_supported: bool = False) -> dict
         activity_today = max(0, int(act_raw))
     else:
         activity_today = None
-    summary = str(raw.get("summary") or "").strip()[:80]
+    summary = str(raw.get("summary") or raw.get("detail") or "").strip()[:80]
     if not summary:
         summary = "开启" if enabled is True else "暂停" if enabled is False else "只读"
     ver_raw = raw.get("version")
@@ -919,18 +929,18 @@ async def toggle_series_matrix(
 
     if not isinstance(raw, dict):
         return 502, {"message": "目标插件返回了无效结果"}
-    if raw.get("conflict") is True:
+    if raw.get("conflict") is True or raw.get("reason") == "version_conflict":
         return 409, {
             "ok": False,
             "conflict": True,
-            "message": str(raw.get("summary") or "目标插件版本冲突，请刷新后重试"),
+            "message": str(raw.get("summary") or raw.get("detail") or "目标插件版本冲突，请刷新后重试"),
             "version": raw.get("version", cell_version),
             "matrix_version": current_matrix_version,
         }
     if raw.get("ok") is False:
         return 400, {
             "ok": False,
-            "message": str(raw.get("summary") or raw.get("message") or "切换未生效"),
+            "message": str(raw.get("summary") or raw.get("message") or raw.get("reason") or "切换未生效"),
         }
 
     series_panels.invalidate_presence_cache()
@@ -1094,12 +1104,12 @@ async def batch_toggle_series_matrix(
                 {"plugin_id": pid, "reason": "invalid_response", "message": "返回结果无效"}
             )
             return
-        if raw.get("conflict") is True:
+        if raw.get("conflict") is True or raw.get("reason") == "version_conflict":
             skipped.append(
                 {
                     "plugin_id": pid,
                     "reason": "conflict",
-                    "message": str(raw.get("summary") or "目标插件版本冲突"),
+                    "message": str(raw.get("summary") or raw.get("detail") or "目标插件版本冲突"),
                 }
             )
             return
@@ -1107,8 +1117,8 @@ async def batch_toggle_series_matrix(
             failed.append(
                 {
                     "plugin_id": pid,
-                    "reason": "rejected",
-                    "message": str(raw.get("summary") or raw.get("message") or "切换未生效"),
+                    "reason": str(raw.get("reason") or "rejected"),
+                    "message": str(raw.get("summary") or raw.get("message") or raw.get("reason") or "切换未生效"),
                 }
             )
             return
@@ -1433,6 +1443,74 @@ def _detect_stray_staging_dirs(plugin: Any) -> list[str]:
     return found[:16]
 
 
+def _lf_sha256(path: Any) -> str:
+    try:
+        raw = path.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.sha256(raw).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def _check_series_panels_hash_drift(plugin: Any, context: Any) -> dict[str, Any]:
+    """Compare LF-normalized SHA-256 of chat_dynamics/series_panels.py against companion copies."""
+    from pathlib import Path
+
+    canonical_path = Path(__file__).resolve().parents[1] / "series_panels.py"
+    canonical_hash = _lf_sha256(canonical_path)
+    plugins_root = Path(__file__).resolve().parents[2]
+    checked: list[dict[str, Any]] = []
+    drifted: list[dict[str, Any]] = []
+    missing: list[str] = []
+
+    if not canonical_hash:
+        return {
+            "canonical_sha256": "",
+            "in_sync": True,
+            "checked": [],
+            "drifted": [],
+            "missing": [],
+        }
+
+    for pid, label, _mark, _page in CORE_SERIES_PLUGINS:
+        if pid == CHAT_DYNAMICS_ID:
+            continue
+        owner = series_panels.find_plugin_owner(context, pid)
+        candidate_dirs: list[Path] = []
+        if owner is not None:
+            candidate_dirs.extend(series_panels._owner_plugin_dirs(owner))
+        sibling_dir = plugins_root / pid
+        if sibling_dir.is_dir() and sibling_dir not in candidate_dirs:
+            candidate_dirs.append(sibling_dir)
+        if not candidate_dirs:
+            continue
+
+        panel_file = next(
+            (d / "series_panels.py" for d in candidate_dirs if (d / "series_panels.py").is_file()),
+            None,
+        )
+        if panel_file is None:
+            missing.append(pid)
+            continue
+        peer_hash = _lf_sha256(panel_file)
+        entry = {
+            "plugin_id": pid,
+            "label": label,
+            "sha256": peer_hash,
+            "in_sync": bool(peer_hash and peer_hash == canonical_hash),
+        }
+        checked.append(entry)
+        if not entry["in_sync"]:
+            drifted.append(entry)
+
+    return {
+        "canonical_sha256": canonical_hash,
+        "in_sync": len(drifted) == 0,
+        "checked": checked,
+        "drifted": drifted,
+        "missing": missing,
+    }
+
+
 def build_series_health(plugin: Any) -> dict[str, Any]:
     """Aggregate read-only health, provider bindings, and environment diagnostics across all 8 plugins."""
     context = getattr(plugin, "context", None)
@@ -1445,6 +1523,7 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
     shared_cfg = series_panels.get_series_shared_config(context)
     host_default = _check_host_default_provider(context)
     stray_dirs = _detect_stray_staging_dirs(plugin)
+    panels_sync = _check_series_panels_hash_drift(plugin, context)
 
     plugins_out: list[dict[str, Any]] = []
     all_issues: list[dict[str, str]] = []
@@ -1526,6 +1605,24 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
                 "message": f"旧插件 {conflict.get('label') or conflict.get('id')} 仍启用，建议停用并交由 {conflict.get('owner')} 接管",
             }
         )
+    for overlap in pres.get("overlap_plugins") or ():
+        hint = str(overlap.get("hint") or "可和平共存，按需调整重复触发即可")
+        env_warnings.append(
+            {
+                "code": "plugin_feature_overlap",
+                "severity": "info",
+                "message": f"温和提醒：{overlap.get('label') or overlap.get('id')} 与 {overlap.get('owner')} 功能有部分重叠（{hint}）",
+            }
+        )
+    if not panels_sync.get("in_sync", True):
+        drifted_ids = [item["plugin_id"] for item in panels_sync.get("drifted") or ()]
+        env_warnings.append(
+            {
+                "code": "series_panels_hash_drift",
+                "severity": "warn",
+                "message": f"检测到 series_panels.py 副本漂移：{', '.join(drifted_ids)}（建议运行 sync_series_assets.py 同步）",
+            }
+        )
     for dname in stray_dirs:
         env_warnings.append(
             {
@@ -1535,10 +1632,11 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
             }
         )
 
+    actionable_warnings = [w for w in env_warnings if w.get("severity") != "info"]
     overall_status = "ok"
     if any(p["installed"] and (not p["ready"] or p["degraded"]) for p in plugins_out) or host_default["status"] == "error":
         overall_status = "degraded"
-    elif env_warnings:
+    elif actionable_warnings:
         overall_status = "warn"
 
     return {
@@ -1548,12 +1646,13 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
         "summary": {
             "installed_count": installed_count,
             "ready_count": ready_count,
-            "issue_count": len(all_issues) + len(env_warnings),
+            "issue_count": len(all_issues) + len(actionable_warnings),
             "shared_reply_provider": str(shared_cfg.get("reply_provider") or ""),
             "shared_decision_provider": str(shared_cfg.get("decision_provider") or ""),
             "shared_timezone": str(shared_cfg.get("rhythm_timezone") or ""),
         },
         "host_default_provider": host_default,
+        "series_panels_sync": panels_sync,
         "environment_warnings": env_warnings,
         "plugins": plugins_out,
         "issues": all_issues,

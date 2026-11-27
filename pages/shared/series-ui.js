@@ -303,6 +303,10 @@ function start(){
    sharedScope=ctx.scope;
    emitScope();
   }
+  if(typeof ctx?.persona==='string'&&ctx.persona!==sharedPersona){
+   sharedPersona=ctx.persona;
+   emitPersona();
+  }
  });}catch{}
 }
 
@@ -338,7 +342,9 @@ export function feedback(node,message,state='info'){
 }
 
 let sharedScope=(query.get('umo')??context.scope??'').trim();
+let sharedPersona=(query.get('persona')??context.persona??'').trim();
 const emitScope=()=>window.dispatchEvent(new CustomEvent('dynamics-scopechange',{detail:{umo:sharedScope}}));
+const emitPersona=()=>window.dispatchEvent(new CustomEvent('dynamics-personachange',{detail:{persona:sharedPersona}}));
 const emitSharedContext=()=>window.dispatchEvent(new CustomEvent('dynamics-navigation-contextchange'));
 function updateHostContext(options){
  context={...context,...options};
@@ -352,6 +358,17 @@ export function setSharedScope(umo,{syncUrl=false,emit=true}={}){
  updateHostContext({scope:clean});
  if(syncUrl){try{const u=new URL(location.href);if(clean)u.searchParams.set('umo',clean);else u.searchParams.delete('umo');history.replaceState(history.state,'',u);}catch{}}
  if(emit)emitScope();
+ emitSharedContext();
+ return clean;
+}
+
+export const getSharedPersona=()=>sharedPersona;
+export function setSharedPersona(persona,{syncUrl=false,emit=true}={}){
+ const clean=String(persona??'').trim();
+ sharedPersona=clean;
+ updateHostContext({persona:clean});
+ if(syncUrl){try{const u=new URL(location.href);if(clean)u.searchParams.set('persona',clean);else u.searchParams.delete('persona');history.replaceState(history.state,'',u);}catch{}}
+ if(emit)emitPersona();
  emitSharedContext();
  return clean;
 }
@@ -402,7 +419,7 @@ export const promptAction=(message,options)=>showDialog(message,options,true);
 
 window.DynamicsUI={
  tr,msg,setText,apply,getLanguage,setLanguage,loadLocaleMessages,feedback,
- getSharedScope,setSharedScope,formatScopeLabel,
+ getSharedScope,setSharedScope,getSharedPersona,setSharedPersona,formatScopeLabel,
  confirm:confirmAction,prompt:promptAction,
  icon,icons:SERIES_ICONS,createInfoPopover,createOverflowMenu,initShellMenus,
 };

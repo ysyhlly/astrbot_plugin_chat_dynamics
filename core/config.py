@@ -171,6 +171,11 @@ class RuntimeConfig:
     history_cache_low_rounds: int = 20
     force_refine_host_caption: bool = False
     isolate_volatile_system_tail: bool = True
+    pending_input_soft_timeout: float = 12.0
+    light_analysis_provider: str = ""
+    vision_provider: str = ""
+    rerank_provider: str = ""
+    private_shared_group_sources: tuple[str, ...] = ()
 
 
 def _get(raw: Any, key: str, default: Any) -> Any:
@@ -539,5 +544,12 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         history_cache_low_rounds=history_low,
         force_refine_host_caption=_bool(_get(raw, "force_refine_host_caption", False), False),
         isolate_volatile_system_tail=_bool(_get(raw, "isolate_volatile_system_tail", True), True),
+        pending_input_soft_timeout=_number(
+            raw, "pending_input_soft_timeout", 12.0, lambda value: 0 <= value <= 60, warnings
+        ),
+        light_analysis_provider=str(_get(raw, "light_analysis_provider", "") or "").strip(),
+        vision_provider=str(_get(raw, "vision_provider", "") or "").strip(),
+        rerank_provider=str(_get(raw, "rerank_provider", "") or "").strip(),
+        private_shared_group_sources=tuple(_strings(_get(raw, "private_shared_group_sources", []))),
     )
     return config, tuple(warnings)

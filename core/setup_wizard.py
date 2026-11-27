@@ -1159,3 +1159,105 @@ async def probe_setup_providers(
         "ok": overall_ok,
         "results": results,
     }
+
+
+_SETUP_COMPANION_IDS: tuple[str, ...] = (
+    "astrbot_plugin_dynamics_world",
+    "astrbot_plugin_dynamics_memory",
+    "astrbot_plugin_dynamics_learning",
+    "astrbot_plugin_dynamics_horizons",
+    "astrbot_plugin_dynamics_games",
+    "astrbot_plugin_visual_media",
+    "astrbot_plugin_group_chronicle",
+)
+
+
+async def activate_setup_companions(
+    plugin: Any,
+    *,
+    umos: list[str] | None = None,
+    plugin_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """One-click activation of companion runtimes and optional UMO scopes for Setup Wizard Step 4."""
+    from .. import series_panels
+    from .series_hub import invalidate_series_matrix_cache
+
+    context = getattr(plugin, "context", None)
+    clean_umos = [str(u or "").strip() for u in (umos or ()) if str(u or "").strip()]
+    targets = [
+        pid
+        for pid in (plugin_ids if plugin_ids else list(_SETUP_COMPANION_IDS))
+        if isinstance(pid, str) and pid.strip()
+    ]
+
+    activated: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for pid in targets:
+        owner = series_panels.find_plugin_owner(context, pid)
+        if owner is None:
+            skipped.append({"plugin_id": pid, "reason": "not_loaded"})
+            continue
+
+        entry: dict[str, Any] = {
+            "plugin_id": pid,
+            "runtime_activated": False,
+            "runtime_detail": "",
+            "scopes_enabled": [],
+            "scopes_failed": [],
+        }
+
+        act_fn = getattr(owner, "activate_series_runtime", None)
+        if callable(act_fn):
+            try:
+                res = act_fn()
+                if inspect.isawaitable(res):
+                    res = await asyncio.wait_for(res, timeout=5.0)
+                if isinstance(res, dict):
+                    entry["runtime_activated"] = bool(res.get("ok", True))
+                    entry["runtime_detail"] = str(res.get("detail") or res.get("message") or res.get("reason") or "ok")[:160]
+                else:
+                    entry["runtime_activated"] = True
+                    entry["runtime_detail"] = "ok"
+            except Exception as exc:
+                entry["runtime_detail"] = _sanitize_error_message(exc, "运行态激活失败")
+                failed.append({"plugin_id": pid, "stage": "runtime", "error": entry["runtime_detail"]})
+        else:
+            entry["runtime_detail"] = "no_runtime_latch"
+
+        scope_fn = getattr(owner, "set_series_scope_enabled", None)
+        if clean_umos and callable(scope_fn):
+            for umo in clean_umos:
+                try:
+                    res = scope_fn(umo, True)
+                    if inspect.isawaitable(res):
+                        res = await asyncio.wait_for(res, timeout=5.0)
+                    if isinstance(res, dict) and res.get("ok") is False:
+                        entry["scopes_failed"].append({"umo": umo, "reason": str(res.get("reason") or "failed")[:80]})
+                    else:
+                        entry["scopes_enabled"].append(umo)
+                except Exception as exc:
+                    entry["scopes_failed"].append({"umo": umo, "reason": _sanitize_error_message(exc, "范围切换失败")})
+
+        if entry["runtime_activated"] or entry["scopes_enabled"]:
+            activated.append(entry)
+        elif not any(f.get("plugin_id") == pid for f in failed):
+            skipped.append({"plugin_id": pid, "reason": entry["runtime_detail"] or "no_op"})
+
+    try:
+        series_panels.invalidate_presence_cache(context=context)
+    except Exception:
+        pass
+    try:
+        invalidate_series_matrix_cache(plugin)
+    except Exception:
+        pass
+
+    return {
+        "ok": len(failed) == 0,
+        "activated": activated,
+        "skipped": skipped,
+        "failed": failed,
+        "summary": f"已激活 {len(activated)} 个伙伴插件，跳过 {len(skipped)} 个，失败 {len(failed)} 个。",
+    }

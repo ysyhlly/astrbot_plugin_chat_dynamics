@@ -42,6 +42,7 @@ from .core.config import PIPELINE_EXCLUSIVE, PIPELINE_FILTER, RuntimeConfig, par
 from .core.daily_rhythm import ASLEEP_STATES, STATE_AWAKE, STATE_WINDING_DOWN
 from .core.data_paths import resolve_data_root
 from .core.provider_budget import attach_context_telemetry
+from .core.series_privacy import SeriesPrivacyRegistry
 from .core.series_telemetry import SeriesTelemetryStore
 from .core.series_templates import SeriesTemplateStore
 from .core.debounce import DebounceBuffer, DebounceItem, DebounceResult
@@ -359,6 +360,8 @@ _METRIC_NAMES = (
     "rhythm_afterthought_skipped",
     "rhythm_recall_cancelled",
     "rhythm_reload_dedup_skipped",
+    "cooling_cleared",
+    "followup_merged_regeneration",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -463,6 +466,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             extended_cooldown=runtime_config.debounce_extended_cooldown,
             max_cap=runtime_config.debounce_max_cap,
             pending_input_timeout=runtime_config.pending_input_timeout,
+            pending_input_soft_timeout=runtime_config.pending_input_soft_timeout,
             max_fragments=_MAX_TURN_FRAGMENTS,
             semantic=True,
             max_turn_chars=_MAX_TURN_CHARS,
@@ -513,6 +517,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self._data_root = data_root
         self.series_telemetry = SeriesTelemetryStore(data_root / "series-telemetry.sqlite3")
         self.series_templates = SeriesTemplateStore(data_root / "series-templates.json")
+        self.series_privacy = SeriesPrivacyRegistry(data_root / "series-privacy-muted.json")
         attach_context_telemetry(self.context, self.series_telemetry)
         self.media_archive = MediaArchive(data_root / "attachments")
         self.integrations = IntegrationRegistry(
@@ -810,6 +815,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.debounce.extended_cooldown = cfg.debounce_extended_cooldown
         self.debounce.max_cap = cfg.debounce_max_cap
         self.debounce.pending_input_timeout = cfg.pending_input_timeout
+        self.debounce.pending_input_soft_timeout = cfg.pending_input_soft_timeout
         self.arbiter.deep_cooling_duration = cfg.deep_cooling_minutes * 60.0
         self.arbiter.topic_weight = cfg.wts_topic_weight
         self.arbiter.professionalism_weight = cfg.wts_professionalism_weight
@@ -2123,6 +2129,23 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 rhythm_ctrl.on_message_recalled(runtime.session_key, recalled_id, runtime=runtime)
             else:
                 runtime.mark_recalled(recalled_id)
+            if getattr(runtime, "dag", None) is not None:
+                recalled_node = runtime.dag.get_node(recalled_id)
+                if recalled_node is not None and isinstance(getattr(recalled_node, "metadata", None), dict):
+                    recalled_node.metadata["recalled"] = True
+            pending_fu = getattr(runtime, "pending_reply_followups", None)
+            if isinstance(pending_fu, dict):
+                for uid, rows in list(pending_fu.items()):
+                    filtered = [r for r in rows if str(r.get("message_id") or "") != recalled_id]
+                    if filtered:
+                        pending_fu[uid] = filtered
+                    else:
+                        pending_fu.pop(uid, None)
+            if callable(getattr(runtime, "drop_recalled_model_turns", None)):
+                runtime.drop_recalled_model_turns(recalled_id)
+            remove_fn = getattr(self.debounce, "remove_message", None)
+            if callable(remove_fn):
+                await remove_fn(runtime.session_key, recalled_id)
 
     @filter.event_message_type(_GROUP_MESSAGE_TYPE, priority=_HOOK_PRIORITY)
     async def on_group_message(self, event: AstrMessageEvent) -> None:
@@ -2357,11 +2380,39 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 and is_poke_placeholder(parsed.text)
             )
             in_flight_reply = self.persona_engine.has_in_flight_reply_generation(runtime, parsed.sender_id)
-            if (
+            if in_flight_reply:
+                # Never bump user_revisions during active reply generation or delivery:
+                # - Before first sentence sent & under merge cap (<1): queue substantive
+                #   follow-up for a single smart merge regeneration.
+                # - After first sentence sent / cap reached / trivial / unrelated: let the
+                #   generated reply deliver cleanly without dropping it.
+                first_sent = int(getattr(runtime, "reply_first_sentence_sent", {}).get(parsed.sender_id, 0) or 0) > 0
+                merge_count = int(getattr(runtime, "reply_merge_counts", {}).get(parsed.sender_id, 0) or 0)
+                if (
+                    self._persona_mode()
+                    and not addressed_elsewhere
+                    and not is_peer_poke_only
+                    and not strong_address
+                    and not first_sent
+                    and merge_count < 1
+                    and not _is_trivial_followup(bounded_text, parsed)
+                ):
+                    fu_list = runtime.pending_reply_followups.setdefault(parsed.sender_id, [])
+                    if len(fu_list) < 4:
+                        fu_list.append(
+                            {
+                                "text": bounded_text,
+                                "message_id": str(getattr(parsed, "message_id", "") or ""),
+                                "timestamp": now,
+                                "event": event,
+                                "sender_name": str(getattr(parsed, "sender_name", "") or ""),
+                                "platform": str(getattr(parsed, "platform", "") or ""),
+                            }
+                        )
+            elif (
                 self._persona_mode()
                 and not addressed_elsewhere
                 and not is_peer_poke_only
-                and not (in_flight_reply and _is_trivial_followup(bounded_text, parsed))
                 and not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id, mandatory_only=True)
                 and (strong_address or not self.persona_engine.has_pending_explicit_request(runtime, parsed.sender_id))
             ):
@@ -2571,7 +2622,23 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                     self._metric("peer_bot_round_limit")
                     return
             in_flight_reply = self.persona_engine.has_in_flight_reply_generation(runtime, parsed.sender_id)
-            if not (in_flight_reply and _is_trivial_followup(bounded_text, parsed)):
+            if in_flight_reply:
+                first_sent = int(getattr(runtime, "reply_first_sentence_sent", {}).get(parsed.sender_id, 0) or 0) > 0
+                merge_count = int(getattr(runtime, "reply_merge_counts", {}).get(parsed.sender_id, 0) or 0)
+                if not first_sent and merge_count < 1 and not _is_trivial_followup(bounded_text, parsed):
+                    fu_list = runtime.pending_reply_followups.setdefault(parsed.sender_id, [])
+                    if len(fu_list) < 4:
+                        fu_list.append(
+                            {
+                                "text": bounded_text,
+                                "message_id": str(getattr(parsed, "message_id", "") or ""),
+                                "timestamp": now,
+                                "event": event,
+                                "sender_name": str(getattr(parsed, "sender_name", "") or ""),
+                                "platform": str(getattr(parsed, "platform", "") or ""),
+                            }
+                        )
+            else:
                 runtime.user_revisions[parsed.sender_id] = runtime.user_revisions.get(parsed.sender_id, 0) + 1
                 runtime.cancel_owned_turns(parsed.sender_id, pre_reply_only=True)
             if parsed.message_id:
@@ -4219,6 +4286,8 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             if self._sessions.get(session_key) is not runtime:
                 return
             self.persona_engine.cancel_member(runtime, user_id)
+            if callable(getattr(runtime, "clear_reply_followup_state", None)):
+                runtime.clear_reply_followup_state(user_id)
             runtime.user_revisions[user_id] = runtime.user_revisions.get(user_id, 0) + 1
             runtime.topic_stop_revisions[user_id] = runtime.topic_stop_revisions.get(user_id, 0) + 1
             for mid, (node, _) in list(runtime.topic_batch_pending.items()):
@@ -4302,13 +4371,20 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
                 f"• 活跃DAG节点: {node_count} 个"
             )
             await self._reply_text(event, report)
+        elif action == "uncool":
+            await self._uncool_session_async(session_id)
+            await self._reply_text(event, "已立即解除本群的深度冷却期（已保留对话图谱）。")
         elif action == "cool":
             try:
                 minutes = float(param) if param else 15.0
-                if not math.isfinite(minutes) or not 1.0 <= minutes <= 180.0:
+                if not math.isfinite(minutes) or (minutes != 0.0 and not 1.0 <= minutes <= 180.0):
                     raise ValueError
             except (TypeError, ValueError):
-                await self._reply_text(event, "冷却时间必须是 1 到 180 之间的分钟数。")
+                await self._reply_text(event, "冷却时间必须是 0（解除冷却）或 1 到 180 之间的分钟数。")
+                return
+            if minutes == 0.0:
+                await self._uncool_session_async(session_id)
+                await self._reply_text(event, "已立即解除本群的深度冷却期（已保留对话图谱）。")
                 return
             if session_id not in self._sessions and not self._ensure_runtime_capacity(session_id):
                 # Every eviction candidate is busy, so the runtime cannot be
@@ -4328,7 +4404,7 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             await self._reset_session_state_async(session_id)
             await self._reply_text(event, "已重置本群的对话图谱与上下文状态。")
         else:
-            await self._reply_text(event, "用法: /dynamics status | cool [分钟] | reset")
+            await self._reply_text(event, "用法: /dynamics status | cool [分钟|0] | uncool | reset")
 
     def get_series_shared_config(self) -> dict[str, Any]:
         """Return a synchronous, read-only, secret-free summary of active series defaults."""
@@ -4353,14 +4429,73 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         persona_id = ""
         ui_language = ""
         ctx = getattr(self, "context", None)
+
+        def _extract_persona_name(obj: Any) -> str:
+            if isinstance(obj, str):
+                return obj.strip()
+            if isinstance(obj, dict):
+                for key in ("persona_id", "name", "id"):
+                    val = obj.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+            for attr in ("persona_id", "name", "id"):
+                val = getattr(obj, attr, None)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+            return ""
+
+        pm = getattr(ctx, "persona_manager", None) if ctx is not None else None
+        if pm is not None:
+            try:
+                for attr in (
+                    "selected_default_persona_id",
+                    "default_persona_id",
+                    "selected_default_persona",
+                    "default_persona",
+                ):
+                    cand = _extract_persona_name(getattr(pm, attr, None))
+                    if cand:
+                        persona_id = cand
+                        break
+                if not persona_id:
+                    getter_v3 = getattr(pm, "get_default_persona_v3", None)
+                    if callable(getter_v3) and not inspect.iscoroutinefunction(getter_v3):
+                        res = getter_v3()
+                        if inspect.isawaitable(res):
+                            if inspect.iscoroutine(res):
+                                res.close()
+                        else:
+                            persona_id = _extract_persona_name(res)
+                if not persona_id:
+                    personas_v3 = getattr(pm, "personas_v3", None)
+                    if isinstance(personas_v3, (list, tuple)):
+                        for item in personas_v3:
+                            if isinstance(item, dict) and item.get("is_default"):
+                                persona_id = _extract_persona_name(item)
+                                if persona_id:
+                                    break
+            except Exception:
+                pass
+
         get_cfg = getattr(ctx, "get_config", None)
         if callable(get_cfg):
             try:
                 host_cfg = get_cfg() or {}
                 if isinstance(host_cfg, dict):
-                    provider_settings = host_cfg.get("provider_settings")
-                    if isinstance(provider_settings, dict):
-                        persona_id = str(provider_settings.get("default_personality") or "")
+                    if not persona_id:
+                        provider_settings = host_cfg.get("provider_settings")
+                        if isinstance(provider_settings, dict):
+                            persona_id = str(
+                                provider_settings.get("default_personality")
+                                or provider_settings.get("default_persona_id")
+                                or ""
+                            ).strip()
+                    if not persona_id:
+                        persona_id = str(
+                            host_cfg.get("default_persona_id")
+                            or host_cfg.get("default_personality")
+                            or ""
+                        ).strip()
                     ui_language = str(host_cfg.get("locale") or host_cfg.get("language") or "")
             except Exception:
                 pass
@@ -4429,12 +4564,45 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             in_quiet_hours = False
             quiet_reason = "awake"
 
+        light_analysis_provider = (
+            str(getattr(cfg, "light_analysis_provider", "") or "").strip()
+            or str(getattr(cfg, "vibe_provider_id", "") or "").strip()
+            or str(getattr(cfg, "topic_reranker_provider", "") or "").strip()
+            or str(getattr(cfg, "discussion_llm_provider", "") or "").strip()
+            or str(getattr(cfg, "decision_llm_provider", "") or "").strip()
+            or reply_provider
+        )
+        vision_provider = str(getattr(cfg, "vision_provider", "") or "").strip()
+        embedding_provider = str(getattr(cfg, "embedding_provider", "") or "").strip()
+        rerank_provider = (
+            str(getattr(cfg, "rerank_provider", "") or "").strip()
+            or str(getattr(cfg, "discussion_reranker_provider", "") or "").strip()
+        )
+        raw_private_sources = getattr(cfg, "private_shared_group_sources", ()) or ()
+        private_shared_group_sources = (
+            [str(x).strip() for x in raw_private_sources if str(x).strip()]
+            if raw_private_sources
+            else list(takeover_groups)
+        )
+        raw_profiles = getattr(self, "_group_profiles", None)
+        group_profiles = (
+            {str(k): dict(v) for k, v in raw_profiles.items() if isinstance(v, dict)}
+            if isinstance(raw_profiles, dict)
+            else {}
+        )
+
         return {
             "takeover_all_groups": takeover_all,
             "takeover_groups": takeover_groups,
             "exclude_groups": exclude_groups,
             "reply_provider": reply_provider,
             "decision_provider": decision_provider,
+            "light_analysis_provider": light_analysis_provider,
+            "vision_provider": vision_provider,
+            "embedding_provider": embedding_provider,
+            "rerank_provider": rerank_provider,
+            "private_shared_group_sources": private_shared_group_sources,
+            "group_profiles": group_profiles,
             "persona_id": persona_id,
             "bot_names": list(getattr(cfg, "bot_names", getattr(self, "bot_names", ())) or ()),
             "rhythm_timezone": rhythm_timezone,
@@ -4450,6 +4618,47 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
             },
             "ui_language": ui_language,
         }
+
+    def get_series_privacy_muted(self, umo: str, member_id: str, scope: str = "") -> dict[str, Any]:
+        """Read whether a member is privacy-muted in a group across series plugins."""
+        registry = getattr(self, "series_privacy", None)
+        if registry is None:
+            data_root = getattr(self, "_data_root", None)
+            registry = SeriesPrivacyRegistry((data_root / "series-privacy-muted.json") if data_root else None)
+            self.series_privacy = registry
+        return registry.get_muted(umo, member_id, scope)
+
+    async def set_series_privacy_muted(
+        self,
+        umo: str,
+        member_id: str,
+        muted: bool,
+        *,
+        scopes: list[str] | None = None,
+        actor: str = "",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Record or revoke a member's cross-plugin privacy mute with audit log."""
+        registry = getattr(self, "series_privacy", None)
+        if registry is None:
+            data_root = getattr(self, "_data_root", None)
+            registry = SeriesPrivacyRegistry((data_root / "series-privacy-muted.json") if data_root else None)
+            self.series_privacy = registry
+        return await asyncio.to_thread(
+            registry.set_muted,
+            umo,
+            member_id,
+            bool(muted),
+            scopes=scopes,
+            actor=actor,
+            reason=reason,
+        )
+
+    async def activate_series_runtime(self) -> dict[str, Any]:
+        """Ensure Chat Dynamics runtime is enabled (Setup Wizard contract)."""
+        if not bool(getattr(self, "enabled", True)):
+            await self.save_config_values({"enable": True})
+        return {"ok": True, "enabled": bool(getattr(self, "enabled", True)), "detail": "ready"}
 
     def get_series_summary(self) -> dict[str, Any]:
         """Synchronous, read-only badge/pulse summary for series_presence v2."""

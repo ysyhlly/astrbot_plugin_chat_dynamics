@@ -48,6 +48,7 @@ const els = {
   dagCount: document.getElementById("dagCount"),
   coolMinutes: document.getElementById("coolMinutes"),
   btnCool: document.getElementById("btnCool"),
+  btnUncool: document.getElementById("btnUncool"),
   btnReset: document.getElementById("btnReset"),
   btnRefresh: document.getElementById("btnRefresh"),
   opsPanel: document.getElementById("opsPanel"),
@@ -236,6 +237,7 @@ function updateManagementControls() {
   const busy = operationInFlight || (!quietRefresh && (refreshInFlight || detailLoading));
   const canManage = detailAvailable && !busy;
   els.btnCool.disabled = !canManage;
+  if (els.btnUncool) els.btnUncool.disabled = !canManage || !Boolean(lastDetail?.cooling);
   els.btnReset.disabled = !canManage;
   els.coolMinutes.disabled = !canManage;
   els.btnPreset.disabled = !overviewOnline || !presetsLoaded || Boolean(presetsLoadInFlight) || busy;
@@ -532,6 +534,7 @@ function renderOverviewUnavailable(message = "后端未响应") {
 
 function operationProgress(kind) {
   if (kind === "cool") return msg("正在开启深度冷却…");
+  if (kind === "uncool") return msg("正在解除深度冷却…");
   if (kind === "reset") return msg("正在重置会话状态…");
   return msg("正在应用预设…");
 }
@@ -540,6 +543,10 @@ function setOperationLabel(kind, busy) {
   if (kind === "cool") {
     els.btnCool.textContent = busy ? "冷却中…" : "开启深度冷却";
     setBusy(els.btnCool, busy);
+  }
+  if (kind === "uncool" && els.btnUncool) {
+    els.btnUncool.textContent = busy ? "解除中…" : "立即解除冷却";
+    setBusy(els.btnUncool, busy);
   }
   if (kind === "reset") {
     els.btnReset.textContent = busy ? "重置中…" : "重置本会话状态";
@@ -1155,6 +1162,28 @@ async function coolSelected() {
   }
 }
 
+async function uncoolSelected() {
+  if (!selectedId || !overviewOnline || !lastDetail || detailLoading || operationInFlight) return;
+  const sessionId = selectedId;
+  const token = beginOperation("uncool", sessionId);
+  setOps(msg("正在解除深度冷却…"));
+  try {
+    await apiPost("uncool", { session_key: sessionId });
+    if (token !== operationRequestToken) return;
+    if (selectedId === sessionId) {
+      setOps(msg("已解除当前会话的深度冷却（对话图谱已保留）。"));
+    }
+    await refresh({ refreshDetail: true, operationToken: token });
+  } catch (err) {
+    if (token === operationRequestToken && selectedId === sessionId) {
+      setOps(friendlyError(err, "解除冷却失败，请稍后重试。"), true);
+      showOperationDetailError("解除冷却失败，详情可重试。", err);
+    }
+  } finally {
+    endOperation(token, "uncool");
+  }
+}
+
 async function resetSelected() {
   if (!selectedId || !overviewOnline || !lastDetail || detailLoading || operationInFlight) return;
   const sessionId = selectedId;
@@ -1236,6 +1265,7 @@ async function boot() {
     startPolling();
   });
   els.btnCool.addEventListener("click", coolSelected);
+  if (els.btnUncool) els.btnUncool.addEventListener("click", uncoolSelected);
   els.btnReset.addEventListener("click", resetSelected);
   els.toggleNodeContent.addEventListener("click", () => {
     revealMessageContent = !revealMessageContent;

@@ -173,6 +173,7 @@ class ConsoleWebAPI:
             ("sessions", self.sessions, ["GET"], "会话列表与遥测"),
             ("session", self.session, ["GET"], "单个会话详情与 DAG 片段"),
             ("cool", self.cool, ["POST"], "为指定群开启深度冷却"),
+            ("uncool", self.uncool, ["POST"], "立即解除指定群的深度冷却"),
             ("reset", self.reset, ["POST"], "重置指定群的图谱与状态"),
             ("presets", self.presets, ["GET"], "查看推荐配置预设"),
             ("preset/apply", self.apply_preset, ["POST"], "应用推荐配置预设"),
@@ -194,6 +195,7 @@ class ConsoleWebAPI:
             ("topic_annotations", self.annotations_post, ["POST"], "保存话题纠错标注"),
             ("setup/groups", self.setup_groups, ["GET"], "发现可用于引导接管的群聊列表"),
             ("setup/probe", self.setup_probe, ["POST"], "手动检测所选模型的连通性"),
+            ("setup/activate_companions", self.setup_activate_companions, ["POST"], "一键激活系列伴生插件运行态与群范围"),
             ("series_matrix", self.series_matrix_get, ["GET"], "跨 8 插件群聊总控矩阵"),
             ("series_matrix_toggle", self.series_matrix_toggle_post, ["POST"], "跨插件群聊接管开关"),
             ("series_matrix_batch", self.series_matrix_batch_post, ["POST"], "跨插件群聊整行批量切换与应用模板"),
@@ -490,6 +492,36 @@ class ConsoleWebAPI:
             return _json_err("cool operation unavailable", 503)
         return _json_ok(data)
 
+    async def uncool(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
+        if (limited := self._rate_limit("uncool", 20)) is not None:
+            return limited
+        if self.plugin._shutting_down:
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (invalid := self._validate_fields(body, {"session_key", "session_id", "group_id", "id"})) is not None:
+            return invalid
+        session_id = _session_identifier(body) or _query_param("session_key") or _query_param("session_id")
+        if not session_id:
+            return _json_err("missing session_key", 400)
+        if len(session_id) > _MAX_SESSION_ID_LENGTH:
+            return _json_err("session_key is too long", 400)
+        key = self.plugin._resolve_session_key(session_id)
+        if key is None:
+            return _json_err("unknown session", 404)
+        runtime = self.plugin._sessions.get(key)
+        group_id = runtime.group_id if runtime is not None else key
+        if not self.plugin.is_group_takeover_enabled(group_id):
+            return _json_err("unknown session", 404)
+        try:
+            await self.plugin._uncool_session_async(key)
+            data = snapshot_session_or_none(self.plugin, key)
+        except Exception as exc:
+            logger.error("[ChatDynamics] Uncool operation failed code=CD_WEB_UNCOOL type=%s", type(exc).__name__)
+            return _json_err("uncool operation unavailable", 503)
+        return _json_ok(data)
+
     async def reset(self):
         if (denied := await self._require_admin(check_csrf=True)) is not None:
             return denied
@@ -718,6 +750,31 @@ class ConsoleWebAPI:
         except Exception as exc:
             logger.error("[ChatDynamics] Setup provider probe failed code=CD_SETUP_PROBE type=%s", type(exc).__name__)
             return _json_err("setup probe unavailable", 503)
+
+    async def setup_activate_companions(self):
+        if (denied := await self._require_admin(check_csrf=True)) is not None:
+            return denied
+        if (limited := self._rate_limit("setup_activate_companions", 10)) is not None:
+            return limited
+        if getattr(self.plugin, "_shutting_down", False):
+            return _json_err("plugin is shutting down", 503)
+        body = await _json_body()
+        if (invalid := self._validate_fields(body, {"umos", "plugin_ids"})) is not None:
+            return invalid
+        umos = body.get("umos")
+        if umos is not None and (not isinstance(umos, list) or len(umos) > 100 or any(not isinstance(u, str) for u in umos)):
+            return _json_err("umos must be a list of strings (max 100)", 400)
+        plugin_ids = body.get("plugin_ids")
+        if plugin_ids is not None and (not isinstance(plugin_ids, list) or len(plugin_ids) > 16 or any(not isinstance(p, str) for p in plugin_ids)):
+            return _json_err("plugin_ids must be a list of strings", 400)
+        try:
+            from .setup_wizard import activate_setup_companions
+
+            data = await activate_setup_companions(self.plugin, umos=umos, plugin_ids=plugin_ids)
+            return _json_ok(data)
+        except Exception as exc:
+            logger.error("[ChatDynamics] Setup companion activation failed code=CD_SETUP_ACTIVATE type=%s", type(exc).__name__)
+            return _json_err("setup companion activation failed", 503)
 
     async def page_nav(self):
         """Return a fresh app-scoped content_path for an internal section.
@@ -1166,7 +1223,11 @@ class ConsoleWebAPI:
                 if budget is not None and callable(getattr(budget, "live_snapshot", None))
                 else None
             )
-            return _json_ok(await asyncio.to_thread(store.snapshot, window=window, live_queue=live_queue))
+            snap = await asyncio.to_thread(store.snapshot, window=window, live_queue=live_queue)
+            from .turn_latency import summarize_turn_latencies
+
+            snap["turn_latency"] = summarize_turn_latencies(getattr(self.plugin, "dags", {}))
+            return _json_ok(snap)
         except ValueError as exc:
             return _json_err(str(exc), 400)
         except Exception as exc:

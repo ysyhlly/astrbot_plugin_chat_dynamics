@@ -17,6 +17,7 @@
   let stopping = false;
   if (query.has("lang")) preferences.localeOverride = query.get("lang");
   if (query.has("umo")) preferences.scope = query.get("umo");
+  if (query.has("persona")) preferences.persona = query.get("persona");
   if (query.has("ui")) preferences.ui = query.get("ui");
   if (query.has("series_deeplink")) {
     const rawDeepLink = String(query.get("series_deeplink") || "").trim();
@@ -27,7 +28,7 @@
   }
 
   const RESERVED_QUERY_KEYS = new Set([
-    "series_entry", "series_deeplink", "lang", "umo", "ui", "theme", "scope", "locale", "deep_link", "plugin",
+    "series_entry", "series_deeplink", "lang", "umo", "persona", "ui", "theme", "scope", "locale", "deep_link", "plugin",
   ]);
   const SAFE_QUERY_KEY = /^[a-zA-Z][a-zA-Z0-9_]{0,31}$/;
 
@@ -71,6 +72,7 @@
       if (typeof options.locale === "string") preferences.localeOverride = options.locale;
       if (typeof options.ui === "string") preferences.ui = options.ui;
       if (typeof options.scope === "string") preferences.scope = options.scope;
+      if (typeof options.persona === "string") preferences.persona = options.persona;
       notify();
     },
     apiGet(name, params) { return native.apiGet(endpoint(name), params); },
@@ -130,6 +132,9 @@
       if (!url.searchParams.has("umo") && (clean.umo || clean.scope)) {
         url.searchParams.set("umo", clean.umo || clean.scope);
       }
+      if (!url.searchParams.has("persona") && clean.persona) {
+        url.searchParams.set("persona", clean.persona);
+      }
       if (Object.keys(clean).length) {
         const encoded = JSON.stringify(clean);
         if (encoded.length <= 1024) url.searchParams.set("series_deeplink", encoded);
@@ -154,7 +159,7 @@
     if (response?.status === "error") throw Error(response.message);
     const url = destinationPath(response?.data ?? response, id, page);
     url.searchParams.set("series_entry", entry || plugin);
-    for (const [key, value] of Object.entries({ lang: opts.locale, umo: opts.scope, ui: opts.ui })) {
+    for (const [key, value] of Object.entries({ lang: opts.locale, umo: opts.scope, persona: opts.persona, ui: opts.ui })) {
       if (typeof value === "string" && value) url.searchParams.set(key, value);
     }
     if (opts.ui) url.searchParams.set("theme", opts.ui === "night" ? "dark" : "light");

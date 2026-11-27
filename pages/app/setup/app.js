@@ -291,6 +291,7 @@ const els = {
   saveNote: document.getElementById("saveNote"),
   saveSuccessBanner: document.getElementById("saveSuccessBanner"),
   setupTemplateReceipt: document.getElementById("setupTemplateReceipt"),
+  btnActivateCompanions: document.getElementById("btnActivateCompanions"),
   btnRefreshCompanions: document.getElementById("btnRefreshCompanions"),
   sharedDefaultsBox: document.getElementById("sharedDefaultsBox"),
   companionNote: document.getElementById("companionNote"),
@@ -1690,6 +1691,7 @@ function renderCompanions() {
 
 async function loadCompanions() {
   els.btnRefreshCompanions.disabled = true;
+  if (els.btnActivateCompanions) els.btnActivateCompanions.disabled = true;
   setStatus(els.companionNote, "正在读取伙伴插件状态…");
   try {
     const [presRes, intRes] = await Promise.allSettled([
@@ -1702,6 +1704,54 @@ async function loadCompanions() {
   } catch (err) {
     setStatus(els.companionNote, friendlyError(err, "伙伴插件状态读取失败。"), true);
   } finally {
+    els.btnRefreshCompanions.disabled = false;
+    if (els.btnActivateCompanions) els.btnActivateCompanions.disabled = false;
+  }
+}
+
+async function activateInstalledCompanions() {
+  if (!els.btnActivateCompanions || state.busy) return;
+  els.btnActivateCompanions.disabled = true;
+  els.btnRefreshCompanions.disabled = true;
+  setStatus(els.companionNote, "正在一键激活已安装的群间系列伙伴并同步群聊作用域…");
+  try {
+    const targetUmos = [];
+    const seen = new Set();
+    const excludeSet = new Set(parseList(state.draft.exclude_groups));
+    const takeoverList = parseList(state.draft.takeover_groups);
+    const byGid = new Map();
+    for (const g of state.groups || []) {
+      const gid = String(g?.group_id || "").trim();
+      const umo = String(g?.umo || g?.session_key || "").trim();
+      if (gid && umo) byGid.set(gid, umo);
+    }
+    const candidates = state.draft.takeover_all
+      ? (state.groups || []).map((g) => String(g?.umo || g?.group_id || "").trim())
+      : takeoverList.map((gid) => byGid.get(gid) || gid);
+    for (const item of candidates) {
+      if (!item || excludeSet.has(item) || seen.has(item)) continue;
+      seen.add(item);
+      targetUmos.push(item);
+    }
+    const res = await apiPost(
+      "setup/activate_companions",
+      { umos: targetUmos },
+      { timeoutMs: 15000 }
+    );
+    const activated = Array.isArray(res?.activated) ? res.activated : [];
+    const skipped = Array.isArray(res?.skipped) ? res.skipped : [];
+    const failed = Array.isArray(res?.failed) ? res.failed : [];
+    const summaryParts = [
+      `已激活 ${activated.length} 个伙伴`,
+      skipped.length ? `跳过 ${skipped.length} 个` : "",
+      failed.length ? `失败 ${failed.length} 个` : "",
+    ].filter(Boolean);
+    setStatus(els.companionNote, summaryParts.join(" · "), failed.length > 0 && activated.length === 0);
+    await loadCompanions();
+  } catch (err) {
+    setStatus(els.companionNote, friendlyError(err, "一键激活伙伴失败，请稍后重试。"), true);
+  } finally {
+    els.btnActivateCompanions.disabled = false;
     els.btnRefreshCompanions.disabled = false;
   }
 }
@@ -2074,6 +2124,11 @@ function bindEvents() {
   els.btnGoConfig.addEventListener("click", () => {
     void navigateToPluginPage("config", els.btnGoConfig);
   });
+  if (els.btnActivateCompanions) {
+    els.btnActivateCompanions.addEventListener("click", () => {
+      void activateInstalledCompanions();
+    });
+  }
   els.btnRefreshCompanions.addEventListener("click", () => {
     void loadCompanions();
   });

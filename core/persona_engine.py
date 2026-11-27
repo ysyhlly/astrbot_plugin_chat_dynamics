@@ -58,6 +58,7 @@ from .early_reply import final_fragments
 from .native_decision import selected_decision_client
 from .integrations import dynamics_horizons
 from .integrations import dynamics_learning
+from .integrations import group_ecosystem
 from .integrations import scene_learning
 
 
@@ -84,6 +85,28 @@ def _decision_prefix(plugin):
     return 'llm_' if plugin._runtime_config.decision_backend == 'llm' else 'jev_'
 
 
+_SOFT_TIMEOUT_HIGH_DIRECTIVITY_CUES = (
+    "在吗", "在不", "在不在", "问一下", "问个", "请问", "帮我", "帮忙",
+    "有空吗", "那个", "话说", "等下", "等等", "顺便", "对了", "?", "？",
+)
+
+
+def _should_soft_timeout_wait(turn: TurnContext, item: "ModelTurn") -> bool:
+    """Return True when a `wait` turn should trigger a soft-timeout final re-check instead of 60s drop."""
+    if item.observations.get("force_complete"):
+        return False
+    if item.private_direct:
+        return True
+    if turn.soft_wake or turn.mandatory_reply or turn.wake_kind in {"at", "quote", "name", "private", "supplement"}:
+        return True
+    if turn.dialogue is not None and turn.dialogue.continuation_kind:
+        return True
+    clean = str(turn.text or "").strip()
+    if clean and len(clean) <= 24 and any(cue in clean for cue in _SOFT_TIMEOUT_HIGH_DIRECTIVITY_CUES):
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class ModelTurn:
     context: TurnContext
@@ -97,6 +120,7 @@ class ModelTurn:
     narrative_bundle: Any = None
     private_direct: bool = False
     submitted_monotonic: float = 0.0
+    followup_merge_count: int = 0
 
     @property
     def context_node_ids(self) -> frozenset[str] | None:
@@ -1026,12 +1050,35 @@ class PersonaEngine:
             )
         return False
 
+    def _is_turn_recalled(self, runtime, item: ModelTurn) -> bool:
+        """Return True if any message backing this turn was recalled on the platform."""
+        checker = getattr(runtime, "is_recalled", None)
+        if not callable(checker):
+            return False
+        for message in getattr(item.context, "messages", ()) or ():
+            mid = str(getattr(message, "message_id", "") or "")
+            if mid and checker(mid):
+                return True
+        for pid in getattr(item, "platform_message_ids", ()) or ():
+            if pid and checker(str(pid)):
+                return True
+        for ev in getattr(item, "events", ()) or ():
+            ev_mid = getattr(ev, "message_id", None)
+            if not ev_mid:
+                msg_obj = getattr(ev, "message_obj", None)
+                ev_mid = getattr(msg_obj, "message_id", None) if msg_obj is not None else None
+            if ev_mid and checker(str(ev_mid)):
+                return True
+        return False
+
     def _valid_prefix(self, runtime, item: ModelTurn, *, stage: str = ""):
         """事件/边界前置检查。
 
         返回值 True/False 表示已可判定，None 表示需要继续做证据校验与尾部判定。
         """
         p, turn = self.plugin, item.context
+        if self._is_turn_recalled(runtime, item):
+            return self._invalid(runtime, item, "message_recalled", stage=stage)
         if item.events:
             event = item.events[-1]
             if getattr(event, "_chat_dynamics_boundary_failed_closed", False):
@@ -1051,6 +1098,8 @@ class PersonaEngine:
     def _valid_suffix(self, runtime, item: ModelTurn, *, stage: str = "") -> bool:
         """尾部判定（会话/epoch/冷却等纯本地状态检查）。"""
         p, turn = self.plugin, item.context
+        if self._is_turn_recalled(runtime, item):
+            return self._invalid(runtime, item, "message_recalled", stage=stage)
         if not dynamics_learning.current(runtime, item):
             return self._invalid(runtime, item, "learning_revision_changed", stage=stage)
         scope_enabled = (
@@ -1181,6 +1230,12 @@ class PersonaEngine:
 
     async def submit(self, runtime, item: ModelTurn) -> None:
         item = replace(item, submitted_monotonic=time.monotonic())
+        is_merged = getattr(runtime, "is_merged_followup", None)
+        if callable(is_merged) and item.context.messages:
+            msg_ids = [str(m.message_id) for m in item.context.messages if getattr(m, "message_id", "")]
+            if msg_ids and all(is_merged(mid) for mid in msg_ids):
+                self.plugin.debounce.finish_result(item.debounce_result)
+                return
         if not await self.valid_async(runtime, item):
             self.plugin.debounce.finish_result(item.debounce_result)
             return
@@ -1222,11 +1277,15 @@ class PersonaEngine:
                 self.plugin.debounce.finish_result(item.debounce_result)
 
     def has_in_flight_reply_generation(self, runtime, user_id: str) -> bool:
-        """True while generate_ready() is in flight or completing delivery validation for user_id."""
+        """True while generate_ready() or active fragment delivery is running for user_id."""
+        uid = str(user_id or "")
         owners = getattr(runtime, "reply_generation_owners", None)
-        if not isinstance(owners, dict):
-            return False
-        return int(owners.get(str(user_id or ""), 0) or 0) > 0
+        if isinstance(owners, dict) and int(owners.get(uid, 0) or 0) > 0:
+            return True
+        first_sent = getattr(runtime, "reply_first_sentence_sent", None)
+        if isinstance(first_sent, dict) and int(first_sent.get(uid, 0) or 0) > 0:
+            return True
+        return False
 
     def has_pending_explicit_request(self, runtime, user_id: str, *, mandatory_only: bool = False) -> bool:
         """Ordinary chatter must not cancel a pending, unanswered wake request.
@@ -1411,6 +1470,10 @@ class PersonaEngine:
                     "不需另行向此人确认。普通批评或反馈本身不自动构成暂停理由，也不得按他人一句命令封锁第三人。"
                     "仅在确有需要时调用，不必每轮调用。"
                 )
+        force_complete = bool(observations.get("force_complete"))
+        game_ctx = observations.get("active_game_context") if isinstance(observations.get("active_game_context"), dict) else None
+        if game_ctx and game_ctx.get("active"):
+            decision_prompt = decision_prompt.rstrip() + "\n" + group_ecosystem.GAMES_DECISION_GUIDANCE
         try:
             from .nearby_context import filter_nearby
 
@@ -1424,6 +1487,19 @@ class PersonaEngine:
                 merged_cs = {**char_state, "horizons": horizons_slot}
                 if len(json.dumps(merged_cs, ensure_ascii=False, separators=(",", ":"))) <= 2400:
                     char_state = merged_cs
+            if game_ctx and game_ctx.get("active"):
+                game_slot = {
+                    "active": True,
+                    "engines": list(game_ctx.get("engines") or [])[:4],
+                    "companion_mode_hint": str(game_ctx.get("companion_mode_hint") or "accompany_quietly")[:64],
+                    "summary": str(game_ctx.get("summary") or "")[:200],
+                }
+                if char_state is None:
+                    char_state = {"active_game": game_slot}
+                elif isinstance(char_state, dict) and "active_game" not in char_state:
+                    merged_game_cs = {**char_state, "active_game": game_slot}
+                    if len(json.dumps(merged_game_cs, ensure_ascii=False, separators=(",", ":"))) <= 2600:
+                        char_state = merged_game_cs
             bundle_character = item.narrative_bundle.wire()["character"] if item.narrative_bundle else None
             bounded_state = build_state(
                 turn,
@@ -1454,7 +1530,12 @@ class PersonaEngine:
             if scene:
                 bounded_state["conversation"]["nearby_context"] = scene
                 bounded_state["conversation"]["nearby_context_policy"] = POLICY
-            core_questions = build_questions(turn, narrative=item.narrative_bundle is not None, **context_options)
+            core_questions = build_questions(
+                turn,
+                narrative=item.narrative_bundle is not None,
+                force_complete=force_complete,
+                **context_options,
+            )
             if rule_routing:
                 core_questions.pop("recipient", None)
             topic_questions, topic_mapping = align_topic_task(bounded_state, topic_questions, topic_mapping)
@@ -1617,17 +1698,24 @@ class PersonaEngine:
                     key: reading[key] for key in ("choice", "reason", "source_message_id") if key in reading
                 }
         p._metric(prefix + "decision")
+        base_join_floor = (
+            learning["threshold"]
+            if learning["threshold"] is not None
+            else getattr(p._runtime_config, "reply_probability_threshold", 70.0)
+        ) / 100.0
+        if game_ctx and game_ctx.get("active") and not turn.mandatory_reply and not turn.soft_wake and not item.private_direct:
+            base_join_floor = min(0.95, base_join_floor + 0.12)
         decision = decision_from_answers(
             turn,
             answers,
             min_confidence=floor,
-            join_floor=(learning["threshold"] if learning["threshold"] is not None else
-                        getattr(p._runtime_config, "reply_probability_threshold", 70.0)) / 100.0,
+            join_floor=base_join_floor,
             quote_recipient_floor=getattr(p._runtime_config, "quote_reply_threshold", 35.0) / 100.0,
             name_recipient_floor=getattr(p._runtime_config, "name_reply_threshold", 70.0) / 100.0,
             prefix=prefix,
             narrative=item.narrative_bundle is not None,
             addressees=resolved_addressees,
+            force_complete=force_complete,
         )
         decision = annotate_model_decision(decision, turn, answers, resolved_addressees)
         if topic_mapping is not None and decision.reason_code not in _WAITING_REASONS:
@@ -2146,6 +2234,13 @@ class PersonaEngine:
                 return
         dynamics_learning.begin(p, runtime, item, judgement_persona)
         dynamics_horizons.begin(p, runtime, item, judgement_persona)
+        game_ctx = None
+        if not item.private_direct:
+            game_ctx = await group_ecosystem.read_game_context(
+                p, runtime.umo or runtime.session_key, query=str(turn.text or "")
+            )
+            if game_ctx.get("active"):
+                item = replace(item, observations={**item.observations, "active_game_context": game_ctx})
         private_outreach_observer = None
         private_outreach_scope = None
         if item.private_direct:
@@ -2361,7 +2456,39 @@ class PersonaEngine:
                                 runtime, _decision_prefix(p) + "incomplete_expired", action="ignore", reason_zh="补充输入等待已结束"
                             )
 
-                deferred = await p.debounce.defer_result(item.debounce_result, on_expire=expired)
+                soft_timeout_val = float(getattr(p._runtime_config, "pending_input_soft_timeout", 12.0) or 0.0)
+                if soft_timeout_val > 0 and getattr(p.debounce, "pending_input_soft_timeout", None) is not None:
+                    soft_timeout_val = float(p.debounce.pending_input_soft_timeout)
+                use_soft_timeout = soft_timeout_val > 0 and _should_soft_timeout_wait(turn, item)
+
+                async def soft_timed_out(_res):
+                    if getattr(p, "_shutting_down", False):
+                        return
+                    async with runtime.state_lock:
+                        if (
+                            p._sessions.get(runtime.session_key) is not runtime
+                            or runtime.epoch != turn.epoch
+                            or runtime.user_revisions.get(turn.author, 0) != turn.revision
+                            or self._is_turn_recalled(runtime, item)
+                        ):
+                            return
+                    retry_item = replace(
+                        item,
+                        observations={
+                            **item.observations,
+                            "force_complete": True,
+                            "wait_soft_timeout_seconds": soft_timeout_val,
+                        },
+                        debounce_result=None,
+                    )
+                    await self.submit(runtime, retry_item)
+
+                deferred = await p.debounce.defer_result(
+                    item.debounce_result,
+                    on_expire=expired,
+                    soft_timeout=soft_timeout_val if use_soft_timeout else None,
+                    on_soft_timeout=soft_timed_out if use_soft_timeout else None,
+                )
                 reason = decision.reason_code if deferred else _decision_prefix(p) + "incomplete_expired"
                 self.diagnostic(
                     runtime,
@@ -2769,86 +2896,208 @@ class PersonaEngine:
                         owners[turn.author] = rem
                     else:
                         owners.pop(turn.author, None)
+                        merge_counts = getattr(runtime, "reply_merge_counts", None)
+                        if isinstance(merge_counts, dict):
+                            merge_counts.pop(turn.author, None)
+                        pending_fu = getattr(runtime, "pending_reply_followups", None)
+                        if isinstance(pending_fu, dict):
+                            pending_fu.pop(turn.author, None)
+
+            culture_ctx = None
+            if not item.private_direct:
+                culture_ctx = await group_ecosystem.read_culture_context(
+                    p, runtime.umo or runtime.session_key, query=str(turn.text or ""), limit=6
+                )
 
             with ExitStack() as _reply_gen_scope:
                 owners = getattr(runtime, "reply_generation_owners", None)
                 if isinstance(owners, dict):
                     owners[turn.author] = int(owners.get(turn.author, 0) or 0) + 1
                     _reply_gen_scope.callback(_release_reply_owner)
+                merge_counts = getattr(runtime, "reply_merge_counts", None)
+                if isinstance(merge_counts, dict):
+                    merge_counts[turn.author] = int(item.followup_merge_count)
                 outer_task = asyncio.current_task()
                 reply_tasks = getattr(runtime, "reply_generation_tasks", None)
                 if outer_task is not None and isinstance(reply_tasks, set) and outer_task not in reply_tasks:
                     reply_tasks.add(outer_task)
                     _reply_gen_scope.callback(reply_tasks.discard, outer_task)
-                try:
-                    p._metric("native_agent_started")
-                    generation_started = time.monotonic()
-                    frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
-                    output = await self.generate_ready(
-                        runtime,
-                        turn,
-                        event,
-                        item.events,
-                        dynamics_horizons.augment_reply(
-                            await scene_learning.prepare_all(reply_prompt(
-                                turn,
-                                decision,
-                                interaction_frame=frame,
-                                tone_context=tone_rows,
-                                interaction_floor=p._runtime_config.jev_min_confidence,
-                                conversation_map=conversation_map(
-                                    turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
-                                ),
-                                delivery_constraints={
-                                    "length_hint": decision.length,
-                                    "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
-                                    "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
-                                    **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
-                                },
-                                reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
-                                group_reminders=reminder_context,
-                                character_context=(
-                                    {"horizons": h_slot}
-                                    if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
-                                    else None
-                                ),
-                                include_reply_guidance=bundle is None,
-                            ), runtime, item),
+
+                while True:
+                    try:
+                        p._metric("native_agent_started")
+                        generation_started = time.monotonic()
+                        frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
+                        reply_prompt_json = group_ecosystem.augment_reply_prompt(
+                            dynamics_horizons.augment_reply(
+                                await scene_learning.prepare_all(reply_prompt(
+                                    turn,
+                                    decision,
+                                    interaction_frame=frame,
+                                    tone_context=tone_rows,
+                                    interaction_floor=p._runtime_config.jev_min_confidence,
+                                    conversation_map=conversation_map(
+                                        turn, getattr(runtime, "jev_addressees", None), floor=p._runtime_config.jev_min_confidence
+                                    ),
+                                    delivery_constraints={
+                                        "length_hint": decision.length,
+                                        "rhythm_state": str(getattr(getattr(gate, "rhythm", None), "state", "")),
+                                        "rhythm_action": str(getattr(getattr(gate, "rhythm", None), "action", "")),
+                                        **({"rhythm_mode": "catchup"} if item.observations.get("rhythm_catchup") else {}),
+                                    },
+                                    reply_guidance=REPLY_GUIDANCE if bundle is not None else p._runtime_config.reply_prompt,
+                                    group_reminders=reminder_context,
+                                    character_context=(
+                                        {"horizons": h_slot}
+                                        if bundle is None and (h_slot := dynamics_horizons.decision_slot(runtime, item))
+                                        else None
+                                    ),
+                                    include_reply_guidance=bundle is None,
+                                ), runtime, item),
+                                runtime,
+                                item,
+                            ),
+                            game_context=game_ctx,
+                            culture_context=culture_ctx,
+                        )
+                        output = await self.generate_ready(
                             runtime,
-                            item,
-                        ),
-                        persona,
-                        provider,
-                        execution_log=runtime.tool_executions,
-                        history_text=turn.history_text(),
-                        media_understand=understand,
-                        context_images=context_images,
-                        private_direct=item.private_direct,
-                        deferred_reply_media=deferred_media,
-                    )
-                except ModelReplyFailure as exc:
-                    p._metric("native_agent_failed")
-                    record_outcome(runtime, item, outcomes.mark_generation_failed, exc.reason_code)
-                    self.diagnostic(runtime, exc.reason_code, reason_zh="回复模型未提供可发送内容")
-                    p._metric("llm_reply_unavailable")
-                    logger.warning(
-                        "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s private=%s",
-                        getattr(event, "unified_msg_origin", ""),
-                        _turn_log_id(runtime, item) or getattr(getattr(item, "narrative_bundle", None), "turn_id", "") or "unknown",
-                        str(exc.reason_code)[:64],
-                        bool(item.private_direct),
-                    )
-                    return
-                except asyncio.CancelledError:
-                    p._metric("native_agent_cancelled")
-                    raise
-                except (PersonaChanged, member_boundary.BoundaryCancelled):
-                    p._metric("native_agent_cancelled")
-                    raise
-                except Exception:
-                    p._metric("native_agent_failed")
-                    p._metric("llm_reply_failed")
-                    raise
+                            turn,
+                            event,
+                            item.events,
+                            reply_prompt_json,
+                            persona,
+                            provider,
+                            execution_log=runtime.tool_executions,
+                            history_text=turn.history_text(),
+                            media_understand=understand,
+                            context_images=context_images,
+                            private_direct=item.private_direct,
+                            deferred_reply_media=deferred_media,
+                        )
+                    except ModelReplyFailure as exc:
+                        p._metric("native_agent_failed")
+                        record_outcome(runtime, item, outcomes.mark_generation_failed, exc.reason_code)
+                        self.diagnostic(runtime, exc.reason_code, reason_zh="回复模型未提供可发送内容")
+                        p._metric("llm_reply_unavailable")
+                        logger.warning(
+                            "[ChatDynamics] reply generation failed session=%s turn=%s reason=%s private=%s",
+                            getattr(event, "unified_msg_origin", ""),
+                            _turn_log_id(runtime, item) or getattr(getattr(item, "narrative_bundle", None), "turn_id", "") or "unknown",
+                            str(exc.reason_code)[:64],
+                            bool(item.private_direct),
+                        )
+                        return
+                    except asyncio.CancelledError:
+                        p._metric("native_agent_cancelled")
+                        raise
+                    except (PersonaChanged, member_boundary.BoundaryCancelled):
+                        p._metric("native_agent_cancelled")
+                        raise
+                    except Exception:
+                        p._metric("native_agent_failed")
+                        p._metric("llm_reply_failed")
+                        raise
+
+                    # Smart follow-up merge: if the same speaker sent substantive follow-up(s)
+                    # before the first sentence was sent, merge and regenerate at most ONCE.
+                    merged_followups: list[dict[str, Any]] = []
+                    if item.followup_merge_count < 1:
+                        pending_map = getattr(runtime, "pending_reply_followups", None)
+                        if isinstance(pending_map, dict) and pending_map.get(turn.author):
+                            async with runtime.state_lock:
+                                raw_followups = pending_map.pop(turn.author, [])
+                                valid_fu = [
+                                    fu for fu in raw_followups
+                                    if isinstance(fu, dict)
+                                    and str(fu.get("text") or "").strip()
+                                    and not (
+                                        fu.get("message_id")
+                                        and callable(getattr(runtime, "is_recalled", None))
+                                        and runtime.is_recalled(str(fu.get("message_id")))
+                                    )
+                                ]
+                                if valid_fu and await self.valid_async(runtime, item, stage="followup_merge"):
+                                    merged_followups = valid_fu
+                                    if isinstance(merge_counts, dict):
+                                        merge_counts[turn.author] = item.followup_merge_count + 1
+                                    merged_id_set: set[str] = set()
+                                    new_msgs = list(turn.messages)
+                                    new_events = list(item.events)
+                                    new_nodes = list(item.outcome_nodes)
+                                    new_plat_ids = set(item.platform_message_ids)
+                                    extra_texts: list[str] = []
+                                    for fu in merged_followups:
+                                        fu_text = str(fu.get("text") or "").strip()
+                                        fu_mid = str(fu.get("message_id") or "").strip() or p._next_outgoing_id()
+                                        fu_ts = float(fu.get("timestamp") or p.time_service.time())
+                                        fu_ev = fu.get("event")
+                                        extra_texts.append(fu_text)
+                                        merged_id_set.add(fu_mid)
+                                        if callable(getattr(runtime, "remember_merged_followup", None)):
+                                            runtime.remember_merged_followup(fu_mid)
+                                        if fu.get("message_id"):
+                                            new_plat_ids.add(fu_mid)
+                                        node = _dag_node(runtime, fu_mid)
+                                        if node is None and getattr(runtime, "dag", None) is not None:
+                                            node = runtime.dag.add_message(
+                                                msg_id=fu_mid,
+                                                user_id=turn.author,
+                                                text=fu_text,
+                                                timestamp=fu_ts,
+                                                metadata={"platform_message_id": bool(fu.get("message_id"))},
+                                            )
+                                        if node is not None:
+                                            new_nodes.append(node)
+                                        if fu_ev is not None:
+                                            new_events.append(fu_ev)
+                                        new_msgs.append(
+                                            MessageSnapshot(
+                                                message_id=fu_mid,
+                                                author=turn.author,
+                                                text=fu_text,
+                                                timestamp=fu_ts,
+                                                author_name=str(fu.get("sender_name") or ""),
+                                                platform=str(fu.get("platform") or ""),
+                                            )
+                                        )
+                                    if callable(getattr(runtime, "drop_merged_model_turns", None)):
+                                        runtime.drop_merged_model_turns(turn.author, merged_id_set)
+                                    await p.debounce.discard(runtime.session_key, user_id=turn.author)
+                                    merged_text = "\n".join([turn.text, *extra_texts])
+                                    turn = replace(
+                                        turn,
+                                        text=merged_text,
+                                        messages=tuple(new_msgs),
+                                        snapshot_at=p.time_service.time(),
+                                    )
+                                    item = replace(
+                                        item,
+                                        context=turn,
+                                        events=tuple(new_events),
+                                        outcome_nodes=tuple(new_nodes),
+                                        platform_message_ids=frozenset(new_plat_ids),
+                                        followup_merge_count=item.followup_merge_count + 1,
+                                    )
+                                    event = item.events[-1] if item.events else event
+                                    decision = replace(
+                                        decision,
+                                        target_message_ids=(turn.messages[-1].message_id, *decision.target_message_ids),
+                                    )
+                    if merged_followups:
+                        completion = getattr(output, "completion_task", None)
+                        if completion is not None and not completion.done():
+                            completion.cancel()
+                            await asyncio.gather(completion, return_exceptions=True)
+                        p._metric("followup_merged_regeneration")
+                        logger.info(
+                            "[ChatDynamics] merged %d follow-up(s) before first send; regenerating once session=%s turn=%s",
+                            len(merged_followups),
+                            runtime.session_key,
+                            _turn_log_id(runtime, item),
+                        )
+                        continue
+                    break
                 reply_mode = getattr(output, "reply_mode", "")
                 narration = str(getattr(output, "narration", "") or "")
                 reply_reason = getattr(output, "reply_reason", "")
@@ -2934,6 +3183,7 @@ class PersonaEngine:
             delivered_message_ids = []
             poke_delivered_in_turn = False
             first_verbal_committed = False
+            first_sentence_marked = False
             send_cancellation = None
             send_failed_in_turn = False
             delivery_uncertain_in_turn = False
@@ -3070,7 +3320,10 @@ class PersonaEngine:
                         )
                         break
                     async with runtime.send_lock:
-                        if not await self.valid_async(runtime, item):
+                        if self._is_turn_recalled(runtime, item):
+                            record_outcome(runtime, item, outcomes.mark_suppressed, "message_recalled", stage="delivery")
+                            break
+                        if not await self.valid_async(runtime, item, stage="delivery"):
                             break
                         check_sources = getattr(output, "native_sources_current", None)
                         if callable(check_sources) and not await check_sources():
@@ -3224,6 +3477,11 @@ class PersonaEngine:
                             p._metric("first_sentence_before_agent_finalize")
                     delivered_text = "[戳一戳]" if is_poke_fragment else sent.delivered_text(fragment)
                     delivered.append(delivered_text)
+                    if not first_sentence_marked:
+                        first_sentence_marked = True
+                        fs_map = getattr(runtime, "reply_first_sentence_sent", None)
+                        if isinstance(fs_map, dict):
+                            fs_map[turn.author] = int(fs_map.get(turn.author, 0) or 0) + 1
                     if is_poke_fragment:
                         poke_delivered_in_turn = True
                     if not fragment_nonverbal:
@@ -3332,6 +3590,14 @@ class PersonaEngine:
                 if not fragments:
                     record_outcome(runtime, item, outcomes.mark_generation_failed, "empty_reply")
             finally:
+                if first_sentence_marked:
+                    fs_map = getattr(runtime, "reply_first_sentence_sent", None)
+                    if isinstance(fs_map, dict):
+                        rem_fs = int(fs_map.get(turn.author, 0) or 0) - 1
+                        if rem_fs > 0:
+                            fs_map[turn.author] = rem_fs
+                        else:
+                            fs_map.pop(turn.author, None)
                 completion_cancelled = False
                 completion = getattr(output, "completion_task", None)
                 if completion is not None:

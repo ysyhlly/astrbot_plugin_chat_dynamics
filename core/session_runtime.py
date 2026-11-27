@@ -253,6 +253,11 @@ class SessionRuntime:
     owned_turn_tasks: Dict[asyncio.Task, str] = field(default_factory=dict, repr=False)
     reply_generation_tasks: Set[asyncio.Task] = field(default_factory=set, repr=False)
     reply_generation_owners: Dict[str, int] = field(default_factory=dict, repr=False)
+    reply_first_sentence_sent: Dict[str, int] = field(default_factory=dict, repr=False)
+    reply_merge_counts: Dict[str, int] = field(default_factory=dict, repr=False)
+    pending_reply_followups: Dict[str, list[Dict[str, Any]]] = field(default_factory=dict, repr=False)
+    merged_followup_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=256), repr=False)
+    merged_followup_id_set: Set[str] = field(default_factory=set, repr=False)
     user_revisions: Dict[str, int] = field(default_factory=dict)
     recent_images: RecentImages = field(default_factory=RecentImages, repr=False)
     interaction_state: str = "observing"
@@ -450,6 +455,71 @@ class SessionRuntime:
     def is_recalled(self, message_id: str) -> bool:
         return bool(message_id and str(message_id) in self.recalled_id_set)
 
+    def remember_merged_followup(self, message_id: str) -> None:
+        mid = str(message_id or "").strip()
+        if not mid or mid in self.merged_followup_id_set:
+            return
+        if len(self.merged_followup_ids) == self.merged_followup_ids.maxlen:
+            self.merged_followup_id_set.discard(self.merged_followup_ids[0])
+        self.merged_followup_ids.append(mid)
+        self.merged_followup_id_set.add(mid)
+
+    def is_merged_followup(self, message_id: str) -> bool:
+        return bool(message_id and str(message_id) in self.merged_followup_id_set)
+
+    def clear_reply_followup_state(self, user_id: str | None = None) -> None:
+        if user_id is None:
+            self.reply_first_sentence_sent.clear()
+            self.reply_merge_counts.clear()
+            self.pending_reply_followups.clear()
+            return
+        uid = str(user_id or "")
+        self.reply_first_sentence_sent.pop(uid, None)
+        self.reply_merge_counts.pop(uid, None)
+        self.pending_reply_followups.pop(uid, None)
+
+    def drop_recalled_model_turns(self, recalled_id: str) -> int:
+        """Drop queued ModelTurns referencing a recalled message and release admission."""
+        target = str(recalled_id or "").strip()
+        if not target or not self.model_queue:
+            return 0
+        survivors = deque()
+        removed = 0
+        while self.model_queue:
+            item = self.model_queue.popleft()
+            ctx = getattr(item, "context", None)
+            msg_ids = {str(getattr(m, "message_id", "") or "") for m in (getattr(ctx, "messages", ()) or ())}
+            plat_ids = {str(pid) for pid in (getattr(item, "platform_message_ids", ()) or ())}
+            if target in msg_ids or target in plat_ids:
+                removed += 1
+                self.model_admission.release()
+            else:
+                survivors.append(item)
+        self.model_queue.extend(survivors)
+        return removed
+
+    def drop_merged_model_turns(self, user_id: str, merged_ids: Set[str]) -> int:
+        """Drop queued ModelTurns for user_id whose messages were all merged into the active reply."""
+        uid = str(user_id or "")
+        if not uid or not merged_ids or not self.model_queue:
+            return 0
+        survivors = deque()
+        removed = 0
+        while self.model_queue:
+            item = self.model_queue.popleft()
+            ctx = getattr(item, "context", None)
+            item_owner = self._model_turn_owner(item)
+            msg_ids = {str(getattr(m, "message_id", "") or "") for m in (getattr(ctx, "messages", ()) or ()) if getattr(m, "message_id", "")}
+            plat_ids = {str(pid) for pid in (getattr(item, "platform_message_ids", ()) or ()) if pid}
+            all_ids = msg_ids | plat_ids
+            if item_owner == uid and all_ids and all_ids.issubset(merged_ids):
+                removed += 1
+                self.model_admission.release()
+            else:
+                survivors.append(item)
+        self.model_queue.extend(survivors)
+        return removed
+
     def expire_hovers(self, now: float, ttl: float = 120.0) -> None:
         alive = [node for node in self.pending_hovers if 0.0 <= now - node.timestamp <= ttl]
         self.pending_hovers.clear()
@@ -506,6 +576,11 @@ class SessionRuntime:
         self.clear_model_queue()
         self.reply_generation_tasks.clear()
         self.reply_generation_owners.clear()
+        self.reply_first_sentence_sent.clear()
+        self.reply_merge_counts.clear()
+        self.pending_reply_followups.clear()
+        self.merged_followup_ids.clear()
+        self.merged_followup_id_set.clear()
         self.user_revisions.clear()
         self.interaction_state = "observing"
         self.peer_bot_rounds.clear()

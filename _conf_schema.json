@@ -1161,6 +1161,20 @@
       "show_advanced_options": true
     }
   },
+  "pending_input_soft_timeout": {
+    "description": "显式呼唤等待软超时 (秒)",
+    "type": "float",
+    "default": 12.0,
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "对引用、昵称呼唤、私聊或高指向性短句判定“未说完”后的软超时（默认 12 秒，设为 0 关闭）。超时后强制复判或简短澄清，避免 60 秒静默丢单。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
   "chars_per_second": {
     "description": "模拟打字速率 (字/秒)",
     "type": "float",
@@ -1554,6 +1568,44 @@
     "type": "bool",
     "default": true,
     "hint": "默认开启：将宿主注入的分钟级当前时间行以及第三方请求钩子动态追加的非静态尾巴转移至本轮临时上下文（不丢内容），使同一会话的 system_prompt 跨分钟、跨发言人保持字节恒定，显著提升前缀缓存命中率。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "light_analysis_provider": {
+    "description": "系列共享轻量分析/审查模型（可选）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "供群间学习、记忆、见闻、史记等伴生插件在对应槽位留空时继承的轻量分析模型；留空时自动回退至标题/回复模型。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "vision_provider": {
+    "description": "系列共享视觉多模态模型（可选）",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "供群间视觉、见闻等伴生插件在视觉模型留空时继承的共享多模态模型。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "rerank_provider": {
+    "description": "系列共享重排模型（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "供群间记忆等伴生插件在重排模型留空时继承的原生 Rerank 模型；留空时自动回退至讨论归属 Rerank 模型。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "private_shared_group_sources": {
+    "description": "系列共享私聊关联群来源（可选）",
+    "type": "list",
+    "default": [],
+    "hint": "私聊场景允许共享背景记忆与关系的群聊 UMO/群号列表；伴生插件留空时统一继承此列表（再留空回退接管群列表）。",
     "condition": {
       "show_advanced_options": true
     }

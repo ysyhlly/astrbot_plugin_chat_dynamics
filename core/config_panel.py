@@ -159,6 +159,7 @@ class ConfigPanel:
             "debounce_extended_cooldown": getattr(cfg, "debounce_extended_cooldown", 1.0),
             "debounce_max_cap": getattr(cfg, "debounce_max_cap", 4.0),
             "pending_input_timeout": cfg.pending_input_timeout,
+            "pending_input_soft_timeout": float(getattr(cfg, "pending_input_soft_timeout", 12.0)),
             "strong_addressivity_threshold": getattr(cfg, "strong_addressivity_threshold", 0.7),
             "safe_hover_threshold": getattr(cfg, "safe_hover_threshold", 0.4),
             "deep_cooling_minutes": getattr(cfg, "deep_cooling_minutes", 15.0),
@@ -188,6 +189,8 @@ class ConfigPanel:
             "narrative_context_retention_days": getattr(cfg, "narrative_context_retention_days", 7),
             "narrative_archive_retention_days": getattr(cfg, "narrative_archive_retention_days", 30),
             "narrative_dead_letter_ttl_days": getattr(cfg, "narrative_dead_letter_ttl_days", 7),
+            "narrative_rpc_timeout_seconds": _effective_int(cfg, "narrative_rpc_timeout_seconds", 5),
+            "narrative_evidence_timeout_seconds": _effective_int(cfg, "narrative_evidence_timeout_seconds", 10),
             "social_manners_enabled": bool(getattr(cfg, "social_manners_enabled", True)),
             "relay_baton_enabled": bool(getattr(cfg, "relay_baton_enabled", True)),
             "private_chat_enabled": bool(getattr(cfg, "private_chat_enabled", False)),
@@ -236,6 +239,15 @@ class ConfigPanel:
             "selflearning_integration": bool(getattr(cfg, "selflearning_integration", True)),
             "selflearning_hub_url": cfg.selflearning_hub_url,
             "selflearning_hub_key_env": cfg.selflearning_hub_key_env,
+            "stream_safe_strip_tools": bool(getattr(cfg, "stream_safe_strip_tools", False)),
+            "history_cache_high_rounds": _effective_int(cfg, "history_cache_high_rounds", 36),
+            "history_cache_low_rounds": _effective_int(cfg, "history_cache_low_rounds", 20),
+            "force_refine_host_caption": bool(getattr(cfg, "force_refine_host_caption", False)),
+            "isolate_volatile_system_tail": bool(getattr(cfg, "isolate_volatile_system_tail", True)),
+            "light_analysis_provider": str(getattr(cfg, "light_analysis_provider", "") or ""),
+            "vision_provider": str(getattr(cfg, "vision_provider", "") or ""),
+            "rerank_provider": str(getattr(cfg, "rerank_provider", "") or ""),
+            "private_shared_group_sources": list(getattr(cfg, "private_shared_group_sources", ()) or ()),
         }
 
 

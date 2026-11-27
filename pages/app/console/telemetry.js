@@ -91,6 +91,10 @@ export function mountSeriesTelemetry({ apiGet }) {
 
   const pluginBody = document.getElementById("telemetryPluginTableBody");
   const providerBody = document.getElementById("telemetryProviderTableBody");
+  const turnLatencyCard = document.getElementById("telemetryTurnLatencyCard");
+  const turnLatencyMeta = document.getElementById("telemetryTurnLatencyMeta");
+  const turnLatencyDegraded = document.getElementById("telemetryTurnLatencyDegraded");
+  const turnLatencyBody = document.getElementById("telemetryTurnLatencyBody");
 
   let activeWindow = "24h";
   let chartMetric = "tokens"; // "tokens" | "calls"
@@ -284,6 +288,59 @@ export function mountSeriesTelemetry({ apiGet }) {
       .join("");
   }
 
+  const TURN_STAGE_LABELS = {
+    debounce: "防抖聚合",
+    graph: "图谱与路由",
+    decision: "参与抉择 (Jev/LLM)",
+    vibe: "氛围校准",
+    context: "上下文拼装",
+    reply: "回复生成",
+    first_send: "首句发出（端到端）",
+    send: "消息发送",
+  };
+
+  function renderTurnLatency(turnLatency) {
+    if (!turnLatencyBody) return;
+    const tl = turnLatency && typeof turnLatency === "object" ? turnLatency : {};
+    const stages = tl.stages && typeof tl.stages === "object" ? tl.stages : {};
+    const entries = Object.entries(stages);
+    const sampledNodes = num(tl.sampled_nodes);
+    const degradedMap = tl.degraded && typeof tl.degraded === "object" ? tl.degraded : {};
+    const degradedEntries = Object.entries(degradedMap).filter(([, c]) => num(c) > 0);
+
+    if (turnLatencyMeta) {
+      turnLatencyMeta.textContent = sampledNodes > 0
+        ? `${tr("最近采样")} ${sampledNodes} ${tr("条节点")} · ${entries.length} ${tr("个阶段")}`
+        : tr("暂无近期回合采样");
+    }
+    if (turnLatencyDegraded) {
+      turnLatencyDegraded.textContent = degradedEntries.length
+        ? `${tr("降级记录")}：${degradedEntries.map(([k, v]) => `${k} (${v})`).join(" · ")}`
+        : "";
+    }
+    if (turnLatencyCard) {
+      turnLatencyCard.classList.toggle("hidden", false);
+    }
+    if (!entries.length) {
+      turnLatencyBody.innerHTML = `<tr><td colspan="4" class="telemetry-td-empty">${escapeHtml(tr("暂无分阶段耗时样本，产生群聊回复后自动汇总。"))}</td></tr>`;
+      return;
+    }
+    turnLatencyBody.innerHTML = entries
+      .map(([stageKey, stats]) => {
+        const label = TURN_STAGE_LABELS[stageKey] || stageKey;
+        const count = num(stats?.count);
+        const p50 = formatMs(num(stats?.p50_seconds) * 1000);
+        const p95 = formatMs(num(stats?.p95_seconds) * 1000);
+        return `<tr>
+          <td class="telemetry-td-name"><strong>${escapeHtml(label)}</strong>${label !== stageKey ? `<span class="telemetry-sub-id">${escapeHtml(stageKey)}</span>` : ""}</td>
+          <td class="tabular-nums">${escapeHtml(String(count))}</td>
+          <td class="tabular-nums">${escapeHtml(p50)}</td>
+          <td class="tabular-nums">${escapeHtml(p95)}</td>
+        </tr>`;
+      })
+      .join("");
+  }
+
   function render() {
     syncToolbarButtons();
     const safe = data && typeof data === "object" ? data : null;
@@ -374,6 +431,7 @@ export function mountSeriesTelemetry({ apiGet }) {
       labelKey: null,
       liveMap: live.by_provider,
     });
+    renderTurnLatency(safe?.turn_latency);
   }
 
   async function load({ quiet = false, windowOverride = null } = {}) {

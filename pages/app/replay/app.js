@@ -204,6 +204,41 @@ function recipientValues(row) {
   return result;
 }
 
+function messageDiagnosticsHtml(message) {
+  if (!message || typeof message !== "object") return "";
+  const pills = [];
+  if (message.recalled) {
+    pills.push('<span class="jev-wf-badge" data-tone="quiet" data-recalled-badge>已撤回</span>');
+  }
+  const tl = message.turn_latency && typeof message.turn_latency === "object" ? message.turn_latency : null;
+  if (tl) {
+    const stageParts = [];
+    if (typeof tl.first_send_seconds === "number" && Number.isFinite(tl.first_send_seconds)) {
+      stageParts.push(`首句 ${Math.round(tl.first_send_seconds * 1000)}ms`);
+    }
+    const stages = tl.stages && typeof tl.stages === "object" ? tl.stages : {};
+    for (const [k, v] of Object.entries(stages)) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        stageParts.push(`${k} ${Math.round(v * 1000)}ms`);
+      }
+    }
+    const degraded = Array.isArray(tl.degraded) && tl.degraded.length ? ` · 降级: ${tl.degraded.join(",")}` : "";
+    if (stageParts.length || degraded) {
+      pills.push(`<span class="jev-wf-badge" data-turn-latency>耗时：${escapeHtml(stageParts.join(" / ") || "已记录")}${escapeHtml(degraded)}</span>`);
+    }
+  }
+  const rt = message.rhythm_trace && typeof message.rhythm_trace === "object" ? message.rhythm_trace : null;
+  if (rt && Object.keys(rt).length) {
+    const rtSummary = [
+      rt.action ? `动作 ${rt.action}` : "",
+      rt.mode ? `模式 ${rt.mode}` : "",
+      rt.reason ? String(rt.reason) : "",
+    ].filter(Boolean).join(" · ") || JSON.stringify(rt).slice(0, 120);
+    pills.push(`<span class="jev-wf-badge" data-rhythm-trace>节奏：${escapeHtml(rtSummary)}</span>`);
+  }
+  return pills.length ? `<div class="jev-waterfall-strip" data-message-diagnostics>${pills.join("")}</div>` : "";
+}
+
 async function renderAnnotations(block) {
   const revision = ++annotationRevision;
   annotationData = null;
@@ -215,7 +250,7 @@ async function renderAnnotations(block) {
   annotationMessages.innerHTML = (block.messages || []).map((message, index) => {
     const targetId = `annotation-target-${index}`;
     const errorId = `annotation-error-${index}`;
-    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p><p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="UNREVIEWED">话题未审核</option><option value="CORRECT" selected>判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}" aria-label="保存第 ${index + 1} 条消息的标注">保存标注</button></div>`;
+    return `<div class="annotation-row"><p>${escapeHtml(message.text)}</p>${messageDiagnosticsHtml(message)}<p class="ops-note">系统判断：${escapeHtml(message.topic_id)} · ${escapeHtml(message.confidence)}${message.ambiguous ? " · 待确认" : ""}</p><label for="${targetId}">应归属</label><select id="${targetId}" data-target><option value="UNREVIEWED">话题未审核</option><option value="CORRECT" selected>判断正确</option><option value="NEW">新话题</option><option value="UNKNOWN">无法判断</option>${topics.map(t => `<option value="${escapeHtml(t.topic_id)}">${escapeHtml(t.topic_title)} (${escapeHtml(t.topic_id)})</option>`).join("")}</select><label for="${errorId}">错误类型</label><select id="${errorId}" data-error>${Object.entries(ERROR_LABELS).filter(([key]) => key !== "correct").map(([key, label]) => `<option value="${key}">${label}</option>`).join("")}</select>${traceView(message.decision_trace)}${recipientEditor(index)}<button type="button" class="button" data-annotate="${index}" aria-label="保存第 ${index + 1} 条消息的标注">保存标注</button></div>`;
   }).join("");
   (block.messages || []).forEach((message, index) => {
     annotationBindings.set(annotationMessages.children[index], { block, message });

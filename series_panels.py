@@ -54,7 +54,19 @@ CATALOG = (
     ),
 )
 
-# Legacy standalone plugins superseded by consolidated series plugins.
+# Canonical unified brand names for the 8 core series plugins.
+SERIES_BRAND_NAMES: dict[str, str] = {
+    "astrbot_plugin_chat_dynamics": "对话主控",
+    "astrbot_plugin_dynamics_world": "群间世界",
+    "astrbot_plugin_dynamics_learning": "群间学习",
+    "astrbot_plugin_dynamics_memory": "群间记忆",
+    "astrbot_plugin_dynamics_horizons": "群间见闻",
+    "astrbot_plugin_dynamics_games": "群间游戏",
+    "astrbot_plugin_visual_media": "视觉工坊",
+    "astrbot_plugin_group_chronicle": "群文化沿革",
+}
+
+# Legacy standalone plugins superseded by consolidated series plugins (strong conflicts).
 LEGACY_CONFLICTS = (
     (
         "astrbot_plugin_self_learning",
@@ -85,6 +97,46 @@ LEGACY_CONFLICTS = (
     ),
     ("astrbot_plugin_meme_manager", "旧表情管理", "astrbot_plugin_visual_media"),
 )
+
+# Third-party / ecosystem plugins with gentle feature overlap (non-blocking, coexist cleanly).
+OVERLAP_CONFLICTS = (
+    (
+        "astrbot_plugin_qq_group_daily_analysis",
+        "QQ 群日常分析",
+        "astrbot_plugin_group_chronicle",
+        "与群文化沿革存在部分群聊分析重叠，两者可共存，按需调整定时总结频率即可",
+    ),
+    (
+        "astrbot_plugin_group_relation_analyzer",
+        "群关系分析",
+        "astrbot_plugin_dynamics_learning",
+        "与群间学习的关系图存在部分重叠，两者可共存，不建议强行停用",
+    ),
+    (
+        "astrbot_plugin_portrayal",
+        "群友画像",
+        "astrbot_plugin_dynamics_memory",
+        "与群间记忆的成员画像存在部分重叠，可和平共存，互不阻断",
+    ),
+    (
+        "astrbot_plugin_bili_push",
+        "B 站动态推送",
+        "astrbot_plugin_dynamics_horizons",
+        "与群间见闻的 B 站信息源存在部分重叠，避免同账号双推即可共存",
+    ),
+    (
+        "astrbot_plugin_weather_query",
+        "天气查询",
+        "astrbot_plugin_dynamics_world",
+        "与群间世界的天气感知略有重叠，查询指令完全兼容，可自由共存",
+    ),
+)
+
+CONFLICT_TIERS = {
+    "strong": LEGACY_CONFLICTS,
+    "overlap": OVERLAP_CONFLICTS,
+}
+
 LEGACY_GAME_IDS = frozenset(
     identity
     for identity, _label, owner in LEGACY_CONFLICTS
@@ -93,10 +145,19 @@ LEGACY_GAME_IDS = frozenset(
 
 CHAT_DYNAMICS_ID = "astrbot_plugin_chat_dynamics"
 _SHARED_BOOL_KEYS = ("takeover_all_groups",)
-_SHARED_LIST_KEYS = ("takeover_groups", "exclude_groups", "bot_names")
+_SHARED_LIST_KEYS = (
+    "takeover_groups",
+    "exclude_groups",
+    "bot_names",
+    "private_shared_group_sources",
+)
 _SHARED_STR_KEYS = (
     "reply_provider",
     "decision_provider",
+    "light_analysis_provider",
+    "vision_provider",
+    "embedding_provider",
+    "rerank_provider",
     "persona_id",
     "rhythm_timezone",
     "ui_language",
@@ -575,6 +636,8 @@ def _sanitize_shared_config(raw: dict) -> dict:
         cleaned[key] = val.strip() if isinstance(val, str) else ""
     quiet = _safe_json_value(raw.get("quiet_hours"))
     cleaned["quiet_hours"] = quiet if quiet is not None else ""
+    profiles = _safe_json_value(raw.get("group_profiles"), depth=3)
+    cleaned["group_profiles"] = profiles if isinstance(profiles, dict) else {}
     return cleaned
 
 
@@ -694,7 +757,77 @@ def inherit_provider(explicit, context, role: str = "reply") -> str:
         return str(
             defaults.get("decision_provider") or defaults.get("reply_provider") or ""
         )
+    if role == "light_analysis":
+        return str(
+            defaults.get("light_analysis_provider")
+            or defaults.get("decision_provider")
+            or defaults.get("reply_provider")
+            or ""
+        )
+    if role == "vision":
+        return str(
+            defaults.get("vision_provider") or defaults.get("reply_provider") or ""
+        )
+    if role == "embedding":
+        return str(defaults.get("embedding_provider") or "")
+    if role == "rerank":
+        return str(defaults.get("rerank_provider") or "")
     return str(defaults.get("reply_provider") or "")
+
+
+def get_member_privacy_muted(
+    context,
+    umo: str = "",
+    member_id: str = "",
+    scope: str = "",
+) -> dict:
+    """Read-only lookup into chat_dynamics's cross-plugin privacy mute registry."""
+    owner = _find_chat_dynamics_owner(context)
+    if owner is None:
+        return {"muted": False, "scopes": []}
+    getter = getattr(owner, "get_series_privacy_muted", None)
+    if not callable(getter) or inspect.iscoroutinefunction(getter):
+        return {"muted": False, "scopes": []}
+    try:
+        raw = getter(
+            umo=str(umo or "").strip(),
+            member_id=str(member_id or "").strip(),
+            scope=str(scope or "").strip(),
+        )
+    except TypeError:
+        try:
+            raw = getter(str(umo or "").strip(), str(member_id or "").strip())
+        except Exception:
+            return {"muted": False, "scopes": []}
+    except Exception:
+        return {"muted": False, "scopes": []}
+    if inspect.isawaitable(raw):
+        if inspect.iscoroutine(raw):
+            raw.close()
+        return {"muted": False, "scopes": []}
+    if isinstance(raw, dict):
+        return raw
+    return {"muted": bool(raw), "scopes": []}
+
+
+def is_member_privacy_muted(
+    context,
+    umo: str,
+    member_id: str,
+    scope: str = "",
+) -> bool:
+    """Lightweight read-only helper: True if ``member_id`` opted out of ``scope`` in ``umo``."""
+    clean_umo = str(umo or "").strip()
+    clean_member = str(member_id or "").strip()
+    if not clean_umo or not clean_member:
+        return False
+    info = get_member_privacy_muted(
+        context,
+        umo=clean_umo,
+        member_id=clean_member,
+        scope=str(scope or "").strip(),
+    )
+    return bool(info.get("muted", False))
 
 
 class ProviderBudgetBusyError(RuntimeError):
@@ -1088,6 +1221,7 @@ def presence(context, current, root=None, *, force_refresh: bool = False):
         data = {
             "id": identity,
             "label": label,
+            "brand_name": SERIES_BRAND_NAMES.get(identity, label),
             "role": role,
             "page": page,
             "association": identity == "astrbot_plugin_group_chronicle",
@@ -1190,10 +1324,34 @@ def presence(context, current, root=None, *, force_refresh: bool = False):
         for identity in names
     }
     conflicts = [
-        {"id": identity, "label": label, "owner": owner}
+        {"id": identity, "label": label, "owner": owner, "severity": "strong"}
         for identity, label, owner in LEGACY_CONFLICTS
         if identity in active_ids and owner in active_ids
     ]
+    overlaps = []
+    for identity, label, owner, hint in OVERLAP_CONFLICTS:
+        short_id = (
+            identity[len("astrbot_plugin_") :]
+            if identity.startswith("astrbot_plugin_")
+            else identity
+        )
+        matched_id = (
+            identity
+            if identity in active_ids
+            else short_id
+            if short_id in active_ids
+            else ""
+        )
+        if matched_id and owner in active_ids:
+            overlaps.append(
+                {
+                    "id": matched_id,
+                    "label": label,
+                    "owner": owner,
+                    "severity": "overlap",
+                    "hint": hint,
+                }
+            )
 
     return {
         "schema_version": 1,
@@ -1201,6 +1359,8 @@ def presence(context, current, root=None, *, force_refresh: bool = False):
         "plugins": output,
         "legacy_conflict": bool(conflicts),
         "legacy_conflicts": conflicts,
+        "has_overlap_plugins": bool(overlaps),
+        "overlap_plugins": overlaps,
         "series_defaults": get_series_defaults(context),
     }
 

@@ -71,6 +71,7 @@ CONSOLE_READ_HANDLERS = [
 
 CONSOLE_WRITE_HANDLERS = [
     ("cool", "POST"),
+    ("uncool", "POST"),
     ("reset", "POST"),
     ("apply_preset", "POST"),
     ("config_save", "POST"),
@@ -80,6 +81,7 @@ CONSOLE_WRITE_HANDLERS = [
     ("narrative_post", "POST"),
     ("annotations_post", "POST"),
     ("setup_probe", "POST"),
+    ("setup_activate_companions", "POST"),
     ("series_matrix_toggle_post", "POST"),
     ("series_matrix_batch_post", "POST"),
     ("series_preflight_post", "POST"),

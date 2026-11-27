@@ -157,6 +157,7 @@ class DebounceBuffer:
         max_turn_chars: int = 8000,
         semantic: bool = False,
         pending_input_timeout: float = 60.0,
+        pending_input_soft_timeout: float = 12.0,
     ):
         """Initializes the DebounceBuffer.
 
@@ -177,6 +178,7 @@ class DebounceBuffer:
         self.max_turn_chars: int = max(256, int(max_turn_chars))
         self.semantic = semantic
         self.pending_input_timeout = float(pending_input_timeout)
+        self.pending_input_soft_timeout = float(pending_input_soft_timeout)
 
         if incompleteness_detector is not None:
             self.detector = incompleteness_detector
@@ -515,8 +517,15 @@ class DebounceBuffer:
             for event in result.raw_events:
                 release_event_media(event)
 
-    async def defer_result(self, result: Optional[DebounceResult], *, on_expire=None) -> bool:
-        """Park judged fragments until new input; expiration never calls the model."""
+    async def defer_result(
+        self,
+        result: Optional[DebounceResult],
+        *,
+        on_expire=None,
+        soft_timeout: Optional[float] = None,
+        on_soft_timeout=None,
+    ) -> bool:
+        """Park judged fragments until new input; optional soft_timeout triggers one final re-check."""
         if result is None or self._is_closed or not self.is_result_current(result):
             return False
         slot = self._slots.get((result.session_id, result.user_id))
@@ -526,38 +535,160 @@ class DebounceBuffer:
             if (self._is_closed or not self.is_result_current(result)
                     or slot.pending_result is not result):
                 return False
+            now = self.time_service.time()
             deadline = result.metadata.get("input_deadline")
             if deadline is None:
                 deadline = result.start_time + self.pending_input_timeout
-            remaining = deadline - self.time_service.time()
+            remaining = deadline - now
             if remaining <= 0:
                 slot.pending_result = None
                 return False
-            result.metadata.update(awaiting_input=True, input_deadline=deadline, was_extended=True)
+            use_soft = (
+                soft_timeout is not None
+                and on_soft_timeout is not None
+                and float(soft_timeout) > 0.0
+                and float(soft_timeout) < remaining
+            )
+            delay = float(soft_timeout) if use_soft else remaining
+            result.metadata.update(
+                awaiting_input=True,
+                input_deadline=deadline,
+                was_extended=True,
+                soft_timeout_seconds=float(soft_timeout) if use_soft else None,
+            )
             slot.epoch += 1
             if slot.timer_task and not slot.timer_task.done():
                 slot.timer_task.cancel()
-            slot.timer_task = self._create_task(self._expire_input(slot, slot.epoch, result, remaining, on_expire))
+            slot.timer_task = self._create_task(
+                self._expire_input(
+                    slot,
+                    slot.epoch,
+                    result,
+                    delay,
+                    on_soft_timeout if use_soft else on_expire,
+                    soft=use_soft,
+                )
+            )
         return True
 
-    async def _expire_input(self, slot, epoch, result, delay, callback) -> None:
+    async def _expire_input(self, slot, epoch, result, delay, callback, *, soft: bool = False) -> None:
         try:
             await self.time_service.sleep(delay)
             async with slot.lock:
                 if (slot.epoch != epoch or slot.pending_result is not result
                         or not self.is_result_current(result)):
                     return
-                result.metadata.update(superseded=True, awaiting_input=False)
+                if soft:
+                    result.metadata.update(awaiting_input=False, soft_timeout_fired=True)
+                else:
+                    result.metadata.update(superseded=True, awaiting_input=False)
                 slot.pending_result = None
                 slot.timer_task = None
                 slot.input_deadline = None
             if callback is not None:
-                await callback()
-            from .deferred_media import release_event_media
-            for event in result.raw_events:
-                release_event_media(event)
+                if soft:
+                    await callback(result)
+                else:
+                    await callback()
+            if not soft:
+                from .deferred_media import release_event_media
+                for event in result.raw_events:
+                    release_event_media(event)
         except asyncio.CancelledError:
             return
+
+    @staticmethod
+    def _item_matches_message_id(item: DebounceItem, target_id: str) -> bool:
+        if item.node_id and str(item.node_id) == target_id:
+            return True
+        ev = item.event
+        if ev is None:
+            return False
+        mid = getattr(ev, "message_id", None)
+        if mid and str(mid) == target_id:
+            return True
+        msg_obj = getattr(ev, "message_obj", None)
+        obj_mid = getattr(msg_obj, "message_id", None) if msg_obj is not None else None
+        if obj_mid and str(obj_mid) == target_id:
+            return True
+        return False
+
+    async def remove_message(self, session_id: str, message_id: str) -> int:
+        """Purge a recalled message from buffered items and pending semantic results."""
+        target = str(message_id or "").strip()
+        if not session_id or not target:
+            return 0
+        async with self._master_lock:
+            slots = [
+                (key, slot)
+                for key, slot in self._slots.items()
+                if key[0] == session_id
+            ]
+        removed = 0
+        removed_events: List[Any] = []
+        for _key, slot in slots:
+            async with slot.lock:
+                if slot.items:
+                    kept: List[DebounceItem] = []
+                    for it in slot.items:
+                        if self._item_matches_message_id(it, target):
+                            removed += 1
+                            if it.event is not None:
+                                removed_events.append(it.event)
+                        else:
+                            kept.append(it)
+                    if len(kept) != len(slot.items):
+                        slot.items = kept
+                        if not slot.items:
+                            if slot.timer_task and not slot.timer_task.done():
+                                slot.timer_task.cancel()
+                            slot.timer_task = None
+                            slot.epoch += 1
+                            slot.start_time = 0.0
+                            slot.was_extended = False
+                pending = slot.pending_result
+                if pending is not None and pending.messages:
+                    kept_msgs: List[DebounceItem] = []
+                    kept_events: List[Any] = []
+                    hit_pending = False
+                    for it in pending.messages:
+                        if self._item_matches_message_id(it, target):
+                            hit_pending = True
+                            removed += 1
+                            if it.event is not None:
+                                removed_events.append(it.event)
+                        else:
+                            kept_msgs.append(it)
+                            kept_events.append(it.event)
+                    if hit_pending:
+                        if not kept_msgs:
+                            pending.metadata["superseded"] = True
+                            pending.metadata["awaiting_input"] = False
+                            pending.metadata["recalled"] = True
+                            slot.pending_result = None
+                            if slot.timer_task and not slot.timer_task.done():
+                                slot.timer_task.cancel()
+                            slot.timer_task = None
+                            slot.epoch += 1
+                            slot.input_deadline = None
+                        else:
+                            pending.messages = kept_msgs
+                            pending.raw_events = kept_events
+                            pending.consolidated_text = self._merge_texts(
+                                [it.text for it in kept_msgs], max_chars=self.max_turn_chars
+                            )
+                            pending.metadata["message_count"] = len(kept_msgs)
+                            pending.metadata["first_event"] = kept_events[0]
+                            pending.metadata["last_event"] = kept_events[-1]
+        if removed_events:
+            from .deferred_media import release_event_media
+            for ev in removed_events:
+                release_event_media(ev)
+        async with self._master_lock:
+            for key, slot in slots:
+                if self._slots.get(key) is slot and slot.is_empty and not slot.has_active_timer:
+                    self._slots.pop(key, None)
+        return removed
 
     async def flush(
         self, session_id: Optional[str] = None, user_id: Optional[str] = None

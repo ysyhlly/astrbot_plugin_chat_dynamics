@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from astrbot.api import logger
 
 from .routing_trace import build_routing_trace, redact_trace_identifiers, trace_with_updates
@@ -747,6 +749,26 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
             group["end_ts"] = max(group["end_ts"], node.timestamp + wall_offset)
             group["message_count"] += 1
             routing = node.metadata.get("routing", {})
+            raw_latency = node.metadata.get("turn_latency")
+            turn_latency_out = None
+            if isinstance(raw_latency, dict):
+                stages_out = {
+                    str(k): round(float(v), 4)
+                    for k, v in (raw_latency.get("stages") or {}).items()
+                    if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0
+                }
+                first_send = raw_latency.get("first_send_seconds")
+                degraded_out = [str(r)[:64] for r in (raw_latency.get("degraded") or ())[:8] if str(r).strip()]
+                if stages_out or degraded_out or (isinstance(first_send, (int, float)) and math.isfinite(first_send)):
+                    turn_latency_out = {
+                        "stages": stages_out,
+                        "degraded": degraded_out,
+                        **(
+                            {"first_send_seconds": round(float(first_send), 4)}
+                            if isinstance(first_send, (int, float)) and math.isfinite(first_send) and first_send >= 0
+                            else {}
+                        ),
+                    }
             group["messages"].append({
                 "msg_id": node.msg_id,
                 "decision_trace": _replay_decision_trace(node, show_content),
@@ -762,6 +784,7 @@ def replay_topic_blocks(plugin: Any, events: List[Dict[str, Any]], selected: str
                 "candidates": routing.get("topic_candidates", routing.get("candidates", [])),
                 "recalled": bool(node.metadata.get("recalled", False)),
                 **({"rhythm_trace": dict(node.metadata["rhythm_trace"])} if isinstance(node.metadata.get("rhythm_trace"), dict) else {}),
+                **({"turn_latency": turn_latency_out} if turn_latency_out is not None else {}),
             })
     for event in events:
         sid = str(event.get("session_id") or selected)

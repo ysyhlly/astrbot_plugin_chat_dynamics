@@ -6,13 +6,16 @@ const PLUGIN = "astrbot_plugin_chat_dynamics";
 const REQUEST_TIMEOUT_MS = 8000;
 const CHAT_PROVIDER_KEYS = new Set([
   "reply_provider",
+  "vibe_provider",
   "decision_provider",
   "topic_reranker_provider",
   "discussion_llm_provider",
   "decision_llm_provider",
+  "light_analysis_provider",
+  "vision_provider",
 ]);
 const EMBEDDING_PROVIDER_KEYS = new Set(["embedding_provider"]);
-const RERANK_PROVIDER_KEYS = new Set(["discussion_reranker_provider"]);
+const RERANK_PROVIDER_KEYS = new Set(["discussion_reranker_provider", "rerank_provider"]);
 const ROUTE_KEYS = new Set([
   "enable", "shadow_mode", "takeover_all", "takeover_groups", "exclude_groups",
   "decision_provider", "reply_provider",
@@ -107,8 +110,24 @@ const CONFIG_GROUPS = [
       "reply_provider",
       "reply_timeout",
       "reply_first_sentence_enabled",
+      "stream_safe_strip_tools",
+      "history_cache_high_rounds",
+      "history_cache_low_rounds",
+      "isolate_volatile_system_tail",
       "tool_agent_timeout",
       "reply_prompt"
+    ]
+  },
+  {
+    "id": "series_shared",
+    "title": "系列共享模型与群源",
+    "blurb": "供全系列 8 插件留空自动继承的共享模型槽位与私聊关联群来源",
+    "open": false,
+    "keys": [
+      "light_analysis_provider",
+      "vision_provider",
+      "rerank_provider",
+      "private_shared_group_sources"
     ]
   },
   {
@@ -124,6 +143,8 @@ const CONFIG_GROUPS = [
       "narrative_outreach_enabled",
       "narrative_outreach_sessions",
       "narrative_context_retention_days",
+      "narrative_archive_retention_days",
+      "narrative_dead_letter_ttl_days",
       "narrative_rpc_timeout_seconds",
       "narrative_evidence_timeout_seconds"
     ]
@@ -219,6 +240,7 @@ const CONFIG_GROUPS = [
       "media_image_gate_enabled",
       "media_voice_gate_enabled",
       "media_understand_reply_enabled",
+      "force_refine_host_caption",
       "media_privacy_strict"
     ]
   },
@@ -228,6 +250,7 @@ const CONFIG_GROUPS = [
     "blurb": "低频氛围校准仅在规则模式启用；人设模式使用本地遥测",
     "open": false,
     "keys": [
+      "vibe_provider",
       "telemetrics_window_seconds",
       "fast_banter_enter_mpm",
       "chill_fade_enter_mpm"
@@ -242,7 +265,8 @@ const CONFIG_GROUPS = [
       "debounce_base_cooldown",
       "debounce_extended_cooldown",
       "debounce_max_cap",
-      "pending_input_timeout"
+      "pending_input_timeout",
+      "pending_input_soft_timeout"
     ]
   },
   {
@@ -277,6 +301,28 @@ const CONFIG_GROUPS = [
       "rhythm_insomnia_enabled",
       "rhythm_force_sleep",
       "rhythm_skip_morning_hi_tonight"
+    ]
+  },
+  {
+    "id": "natural_rhythm",
+    "title": "自然回复节奏",
+    "blurb": "暂离按序回看、聊完补话、短暂分心与拟真微节奏",
+    "open": false,
+    "keys": [
+      "natural_reply_rhythm_enabled",
+      "rhythm_catchup_enabled",
+      "rhythm_afterthought_enabled",
+      "rhythm_micro_pacing_enabled",
+      "rhythm_lookback_minutes",
+      "rhythm_direct_lookback_minutes",
+      "rhythm_distract_min_seconds",
+      "rhythm_distract_max_seconds",
+      "rhythm_distract_probability",
+      "rhythm_catchup_max_items",
+      "rhythm_afterthought_min_seconds",
+      "rhythm_afterthought_max_seconds",
+      "rhythm_afterthought_cooldown_seconds",
+      "rhythm_afterthought_probability"
     ]
   },
   {

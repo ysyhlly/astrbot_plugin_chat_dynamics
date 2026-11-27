@@ -518,6 +518,19 @@ class PluginWebAndAdminMixin:
             await asyncio.gather(*tasks, return_exceptions=True)
         return True
 
+    async def _uncool_session_async(self, session_id: str) -> bool:
+        """Clear deep cooling for one session without wiping DAG or conversation state."""
+        key = self._resolve_session_key(session_id) or session_id
+        runtime = self._sessions.get(key)
+        if runtime is None:
+            return self.arbiter.clear_cooling(key)
+        async with runtime.state_lock:
+            self.arbiter.clear_cooling(key)
+            runtime.touch(self.time_service.time())
+            self._metric("cooling_cleared")
+            self._mark_panel_runtime_dirty()
+        return True
+
     def _clear_pending_gate(self, runtime: Any) -> None:
         if runtime is None:
             return

@@ -327,7 +327,7 @@ async def test_plugin_admin_cool_rejects_invalid_minutes():
 
     await plugin.cmd_dynamics(event, action="cool", param="not-a-number")
 
-    assert event.replies_sent == ["冷却时间必须是 1 到 180 之间的分钟数。"]
+    assert event.replies_sent == ["冷却时间必须是 0（解除冷却）或 1 到 180 之间的分钟数。"]
     assert plugin.arbiter.is_in_deep_cooling(_session_key("group_adm")) is False
 
 

@@ -1,7 +1,7 @@
 /* Canonical series navigation shell v2.0 — single-line bar, 8-panel live matrix & Ctrl+K command palette. */
 import {
  msg,tr,setText,feedback,languagePicker,confirmAction,
- getLanguage,getSharedScope,setSharedScope,formatScopeLabel,icon,
+ getLanguage,getSharedScope,setSharedScope,getSharedPersona,formatScopeLabel,icon,
 } from './series-ui.js';
 
 const root=document.getElementById('dynamics-series-panel');
@@ -85,7 +85,7 @@ for(const type of ['input','change']){
 
 const FEDERATED_SEARCH_TIMEOUT_MS=1500;
 const RESERVED_NAV_KEYS=new Set([
- 'ui','locale','scope','deep_link','series_entry','series_deeplink','lang','theme','umo','plugin',
+ 'ui','locale','scope','persona','deep_link','series_entry','series_deeplink','lang','theme','umo','plugin',
 ]);
 const TARGET_QUERY_KEYS=new Set([
  'tab','section','view','page','subpage','anchor','id','memory_id','node_id','entry_id',
@@ -200,6 +200,7 @@ async function navigatePlugin(plugin,transition,extraOptions={}){
    ui:document.documentElement.dataset.uiTheme,
    locale:getLanguage(),
    scope:extraOptions.scope??(getSharedScope()||undefined),
+   persona:extraOptions.persona??(getSharedPersona()||undefined),
   };
   if(deepLink){
    options.deep_link=deepLink;
@@ -414,7 +415,8 @@ function render(data){
 
   const auxPlugins=(data.plugins||[]).filter(p=>!p.page||(p.association&&!p.current));
   const versionPlugins=(data.plugins||[]).filter(p=>p.version&&PLUGIN_META[p.id]);
-  if(data.legacy_conflict||auxPlugins.length||versionPlugins.length){
+  const overlapPlugins=Array.isArray(data.overlap_plugins)?data.overlap_plugins:[];
+  if(data.legacy_conflict||overlapPlugins.length||auxPlugins.length||versionPlugins.length){
    const extra=node('details','',`sp-extra${data.legacy_conflict?' sp-extra-alert':''}`);
    extra.open=extraOpen||Boolean(data.legacy_conflict);
    extra.append(node('summary',msg(data.legacy_conflict?'存在旧插件冲突':'系列版本与兼容详情')));
@@ -423,6 +425,10 @@ function render(data){
     body.append(node('p',msg('旧插件仍在运行，请检查接管归属，避免重复处理。'),'sp-warning'));
     const conflictNames=(data.legacy_conflicts||[]).map(c=>c.label).filter(Boolean);
     if(conflictNames.length)body.append(node('p',conflictNames.join('、'),'sp-warning'));
+   }
+   if(overlapPlugins.length){
+    const names=overlapPlugins.map(item=>item.label||item.id).filter(Boolean).join('、');
+    body.append(node('p',msg('温和提醒：检测到功能有部分重叠的生态插件（{0}），可和平共存，不阻断运行。',names),'sp-note'));
    }
    for(const plugin of auxPlugins){
     if(plugin.page){body.append(buildPluginCard(plugin));continue;}

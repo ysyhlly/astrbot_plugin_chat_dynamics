@@ -238,6 +238,7 @@
                     <input id="coolMinutes" type="number" min="1" max="180" step="1" value="15" inputmode="numeric" disabled />
                   </div>
                   <button type="button" class="button button-primary" id="btnCool" disabled data-series-text="开启深度冷却">开启深度冷却</button>
+                  <button type="button" class="button button-quiet" id="btnUncool" disabled data-series-text="立即解除冷却">立即解除冷却</button>
                   <button type="button" class="button button-danger" id="btnReset" disabled data-series-text="重置本会话状态">重置本会话状态</button>
                 </div>
                 <p class="ops-note" id="opsNote" role="status" aria-live="polite"></p>
@@ -426,6 +427,29 @@
                         <tbody id="telemetryProviderTableBody"></tbody>
                       </table>
                     </div>
+                  </div>
+                </div>
+
+                <div class="telemetry-table-card" id="telemetryTurnLatencyCard">
+                  <div class="telemetry-subhead">
+                    <div>
+                      <h3 data-series-text="对话回合分阶段耗时（P50 / P95）">对话回合分阶段耗时（P50 / P95）</h3>
+                      <span class="telemetry-trend-meta" id="telemetryTurnLatencyMeta">—</span>
+                    </div>
+                    <span class="telemetry-trend-meta" id="telemetryTurnLatencyDegraded"></span>
+                  </div>
+                  <div class="telemetry-table-wrap">
+                    <table class="telemetry-table">
+                      <thead>
+                        <tr>
+                          <th scope="col" data-series-text="处理阶段">处理阶段</th>
+                          <th scope="col" data-series-text="样本数">样本数</th>
+                          <th scope="col" data-series-text="P50 耗时">P50 耗时</th>
+                          <th scope="col" data-series-text="P95 耗时">P95 耗时</th>
+                        </tr>
+                      </thead>
+                      <tbody id="telemetryTurnLatencyBody"></tbody>
+                    </table>
                   </div>
                 </div>
               </section>

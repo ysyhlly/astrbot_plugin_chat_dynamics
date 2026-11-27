@@ -242,6 +242,7 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
             for route, _, methods, _ in context.routes if "/setup/" in route} == {
         ("groups", ("GET",)),
         ("probe", ("POST",)),
+        ("activate_companions", ("POST",)),
     }
     routes_by_tail = {
         route.rsplit("/", 1)[-1]: (handler, tuple(methods))
@@ -255,6 +256,7 @@ async def test_real_sdk_plugin_contract_smoke(monkeypatch):
         "sessions",
         "session",
         "cool",
+        "uncool",
         "reset",
         "presets",
         "apply",

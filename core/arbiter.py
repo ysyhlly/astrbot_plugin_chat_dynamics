@@ -142,6 +142,15 @@ class InterventionArbiter:
         logger.info("Triggered deep cooling for session %s for %.1fs", _session_label(session_id), duration)
         self._emit_cooling_changed()
 
+    def clear_cooling(self, session_id: str) -> bool:
+        """Immediately lift deep cooling for one session while keeping DAG and routing state."""
+        had_cooling = session_id in self._cooling_until
+        self._cooling_until.pop(session_id, None)
+        if had_cooling:
+            logger.info("Cleared deep cooling for session %s", _session_label(session_id))
+            self._emit_cooling_changed()
+        return had_cooling
+
     def cooling_export(self) -> Dict[str, float]:
         return dict(self._cooling_until)
 

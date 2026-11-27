@@ -75,6 +75,7 @@ _ESSENTIAL_OBSERVATIONS = frozenset(
         "pending_input",
         "ambient_openings_used",
         "context_completion",
+        "force_complete",
     }
 )
 
@@ -543,6 +544,7 @@ def build_questions(
     narrative: bool = False,
     context_completion: bool = False,
     context_completed: bool = False,
+    force_complete: bool = False,
 ) -> dict[str, dict]:
     """One call, with bounded questions about the same state.
 
@@ -636,6 +638,8 @@ def build_questions(
             "criteria": REASON_CRITERIA,
         },
     }
+    if force_complete:
+        questions.pop("completion", None)
     if turn.soft_wake:
         questions.pop("join")
     if turn.soft_wake or (turn.dialogue is not None and turn.dialogue.continuation_kind):
@@ -814,6 +818,7 @@ def _low_confidence_ack_is_supported(
     floor: float,
     join_floor: float,
     allow_soft_wake: bool = False,
+    force_complete: bool = False,
 ) -> bool:
     """Conservatively preserve a clear invitation when action labels are split.
 
@@ -830,7 +835,7 @@ def _low_confidence_ack_is_supported(
     if _aimed_only_at_others(turn):
         return False
     completion = _choice(answers, "completion", ("complete", "wait"))
-    if completion is None or completion[0] != "complete" or completion[1] < floor:
+    if not force_complete and (completion is None or completion[0] != "complete" or completion[1] < floor):
         return False
     if turn.soft_wake:
         # The caller has already checked the configured bot-recipient floor.
@@ -941,6 +946,7 @@ def decision_from_answers(
     quote_recipient_floor: float = WAKE_RECIPIENT_FLOOR,
     name_recipient_floor: float = 0.7,
     addressees: Mapping[str, Mapping[str, Any]] | None = None,
+    force_complete: bool = False,
 ) -> TurnDecision:
     """Map validated System One answers onto the plugin's own decision contract.
 
@@ -979,7 +985,7 @@ def decision_from_answers(
         return TurnDecision("ignore", "observing", _targets(turn, answers, needed=False, floor=min_confidence), "",
                             "brief", prefix + veto)
     completion = _choice(answers, "completion", ("complete", "wait"))
-    if completion is not None and completion[0] == "wait" and completion[1] >= min_confidence:
+    if not force_complete and completion is not None and completion[0] == "wait" and completion[1] >= min_confidence:
         return TurnDecision("ignore", "observing", _targets(turn, answers, needed=False, floor=min_confidence), "",
                             "brief", prefix + "waiting_for_completion")
     dialogue = turn.dialogue
@@ -1007,9 +1013,10 @@ def decision_from_answers(
         and recipient is not None
         and recipient[0] == "bot"
         and recipient[1] >= max(min_confidence, 0.7)
-        and completion is not None
-        and completion[0] == "complete"
-        and completion[1] >= min_confidence
+        and (
+            force_complete
+            or (completion is not None and completion[0] == "complete" and completion[1] >= min_confidence)
+        )
         and action is not None
         and not (action[0] == "ignore" and action[1] >= min_confidence)
         and reason is not None
@@ -1047,7 +1054,8 @@ def decision_from_answers(
         # replace an ignore or an uncertain action with a fabricated reply.
         action = _choice(answers, "action", ACTIONS)
         if action is not None and action[1] < min_confidence and _low_confidence_ack_is_supported(
-                turn, answers, action, floor=min_confidence, join_floor=join_floor, allow_soft_wake=True):
+                turn, answers, action, floor=min_confidence, join_floor=join_floor,
+                allow_soft_wake=True, force_complete=force_complete):
             state = _choice(answers, "state", STATES)
             length = _choice(answers, "length", LENGTHS)
             reason = _choice(answers, "reason", REASONS)
@@ -1056,6 +1064,15 @@ def decision_from_answers(
                                 _goal("acknowledge", chosen_reason), "brief",
                                 prefix + "wake_low_confidence_acknowledged")
         if action is None or action[1] < min_confidence:
+            if force_complete:
+                return TurnDecision(
+                    "clarify",
+                    "casual",
+                    _targets(turn, answers, needed=True, floor=min_confidence),
+                    "对方呼唤后未继续补充完整内容，请简短自然地应一声或轻问一句确认对方想说什么，不要猜测未说出的内容。",
+                    "brief",
+                    prefix + "soft_timeout_clarify",
+                )
             return TurnDecision.abstain(prefix + "wake_action_uncertain")
         if action[0] == "ignore":
             return TurnDecision.abstain(prefix + "wake_action_ignore")
@@ -1081,7 +1098,9 @@ def decision_from_answers(
         return TurnDecision.fallback(turn, prefix + "invalid_answer")
     floor = float(min_confidence)
     if action[1] < floor:
-        if _low_confidence_ack_is_supported(turn, answers, action, floor=floor, join_floor=join_floor):
+        if _low_confidence_ack_is_supported(
+            turn, answers, action, floor=floor, join_floor=join_floor, force_complete=force_complete
+        ):
             chosen_state, chosen_length, chosen_reason = _reply_style(
                 "acknowledge", state, length, reason, floor)
             return TurnDecision(
