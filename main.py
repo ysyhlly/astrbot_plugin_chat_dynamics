@@ -363,6 +363,7 @@ _METRIC_NAMES = (
     "rhythm_reload_dedup_skipped",
     "cooling_cleared",
     "followup_merged_regeneration",
+    "slow_turn_ack_sent",
 )
 _DIRECT_RUNTIME_ATTRS = (
     "enabled",
@@ -521,6 +522,10 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         self.series_privacy = SeriesPrivacyRegistry(data_root / "series-privacy-muted.json")
         self.group_profiles_store = GroupProfileStore(data_root / "group-profiles.json")
         self._group_profiles: dict[str, dict[str, Any]] = self.group_profiles_store.all_profiles()
+        from .core.series_hub import DynamicsEventBus
+
+        self.event_bus = DynamicsEventBus()
+        self.vibe_analyzer.on_mode_transition = self._on_vibe_mode_transition
         attach_context_telemetry(self.context, self.series_telemetry)
         self.media_archive = MediaArchive(data_root / "attachments")
         self.integrations = IntegrationRegistry(
@@ -4591,6 +4596,56 @@ class ChatDynamicsPlugin(PluginWebAndAdminMixin, Star):
         saved = store.set(session_or_umo, overrides)
         self._group_profiles = store.all_profiles()
         return saved
+
+    def subscribe_dynamics_event(
+        self,
+        event_type: str,
+        callback: Any,
+        *,
+        owner: str = "",
+    ) -> str:
+        """Subscribe to a standard Dynamics Event Bus event type."""
+        from .core.series_hub import get_event_bus
+
+        return get_event_bus(self).subscribe(event_type, callback, owner=owner)
+
+    def unsubscribe_dynamics_event(self, token: str) -> bool:
+        """Unsubscribe a previously registered Dynamics Event Bus listener."""
+        from .core.series_hub import get_event_bus
+
+        return get_event_bus(self).unsubscribe(token)
+
+    async def emit_dynamics_event(self, event_type: str, payload: dict[str, Any]) -> int:
+        """Emit an event on the public Dynamics Event Bus (open to core and companion plugins)."""
+        from .core.series_hub import get_event_bus
+
+        return await get_event_bus(self).emit(event_type, payload)
+
+    def _schedule_dynamics_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Best-effort fire-and-forget event emission from synchronous lifecycle hooks."""
+        if getattr(self, "_shutting_down", False):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        try:
+            self._create_background_task(self.emit_dynamics_event(event_type, payload))
+        except Exception:
+            pass
+
+    def _on_vibe_mode_transition(self, session_id: str, old_vibe: str, new_vibe: str) -> None:
+        runtime = self._sessions.get(session_id)
+        umo = str(getattr(runtime, "umo", "") or session_id or "")
+        self._schedule_dynamics_event(
+            "vibe_transition",
+            {
+                "umo": umo,
+                "old_vibe": str(old_vibe or ""),
+                "new_vibe": str(new_vibe or ""),
+                "serious_mode": str(new_vibe or "").lower() == "serious_inquiry",
+            },
+        )
 
     def get_series_shared_config(self) -> dict[str, Any]:
         """Return a synchronous, read-only, secret-free summary of active series defaults."""

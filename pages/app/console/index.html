@@ -644,6 +644,24 @@
           <p class="integration-empty" id="integrationEmpty" data-series-text="正在读取接口诊断…">正在读取接口诊断…</p>
           <p class="integration-footnote" id="integrationNote" data-series-text="这里显示接入方式，不展示记忆正文。">这里显示接入方式，不展示记忆正文。</p>
         </section>
+
+        <section class="integration-panel" id="eventBusPanel" aria-labelledby="eventBusTitle">
+          <div class="integration-header">
+            <div>
+              <p class="eyebrow">DYNAMICS EVENT BUS</p>
+              <h2 id="eventBusTitle" data-series-text="公开调度事件总线">公开调度事件总线</h2>
+              <p class="integration-subtitle" data-series-text="向全系列伴生插件广播话题归档、氛围切换、静默窗、游戏状态与群里程碑事件。">向全系列伴生插件广播话题归档、氛围切换、静默窗、游戏状态与群里程碑事件。</p>
+            </div>
+            <span class="integration-badge" id="eventBusStatus" data-series-text="待命">待命</span>
+          </div>
+          <div class="integration-metrics" aria-label="事件总线统计" data-series-aria-label="事件总线统计">
+            <div><strong id="eventBusSubCount">0</strong><span data-series-text="当前活跃订阅">当前活跃订阅</span></div>
+            <div><strong id="eventBus24hCount">0</strong><span data-series-text="近 24h 派发次数">近 24h 派发次数</span></div>
+            <div><strong id="eventBusErrCount">0</strong><span data-series-text="隔离异常/超时">隔离异常/超时</span></div>
+          </div>
+          <div class="ops-note" id="eventBusCountsByType"></div>
+          <ol class="nodes" id="eventBusRecentList"></ol>
+        </section>
             </section>
           </main>
         </div>

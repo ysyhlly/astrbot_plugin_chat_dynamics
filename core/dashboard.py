@@ -404,6 +404,11 @@ def snapshot_overview(plugin: Any) -> Dict[str, Any]:
             "multimodal": _multimodal_lamp(plugin),
         },
         "selflearning": companion_snapshot(plugin),
+        "event_bus": (
+            plugin.event_bus.diagnostics()
+            if callable(getattr(getattr(plugin, "event_bus", None), "diagnostics", None))
+            else {}
+        ),
         "jev": jev_snapshot(plugin),
         "read_air": _read_air_summary(plugin, sessions),
         "features": {
@@ -846,6 +851,25 @@ def replay_topic_blocks(
                             else {}
                         ),
                     }
+            raw_merged = node.metadata.get("merged_followups")
+            merged_followups_out = None
+            if isinstance(raw_merged, dict) and int(raw_merged.get("count") or 0) > 0:
+                cnt = int(raw_merged.get("count") or 0)
+                raw_snips = [str(s)[:120] for s in (raw_merged.get("snippets") or ())[:4] if str(s).strip()]
+                merged_followups_out = {
+                    "count": cnt,
+                    "redacted": not show_content,
+                    "snippets": raw_snips if show_content else ["追问内容已脱敏"] * max(1, min(cnt, 4)),
+                }
+            raw_slow_ack = node.metadata.get("slow_turn_ack")
+            slow_ack_out = (
+                {
+                    "mode": str(raw_slow_ack.get("mode") or "")[:24],
+                    "elapsed_seconds": round(float(raw_slow_ack.get("elapsed_seconds") or 0.0), 2),
+                }
+                if isinstance(raw_slow_ack, dict) and raw_slow_ack.get("mode")
+                else None
+            )
             group["messages"].append({
                 "msg_id": node.msg_id,
                 "decision_trace": _replay_decision_trace(node, show_content),
@@ -862,6 +886,8 @@ def replay_topic_blocks(
                 "recalled": bool(node.metadata.get("recalled", False)),
                 **({"rhythm_trace": dict(node.metadata["rhythm_trace"])} if isinstance(node.metadata.get("rhythm_trace"), dict) else {}),
                 **({"turn_latency": turn_latency_out} if turn_latency_out is not None else {}),
+                **({"merged_followups": merged_followups_out} if merged_followups_out is not None else {}),
+                **({"slow_turn_ack": slow_ack_out} if slow_ack_out is not None else {}),
             })
     for event in events:
         sid = str(event.get("session_id") or selected)

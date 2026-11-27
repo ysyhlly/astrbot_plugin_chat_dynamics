@@ -251,6 +251,17 @@ function messageDiagnosticsHtml(message) {
     ].filter(Boolean).join(" · ") || JSON.stringify(rt).slice(0, 120);
     pills.push(`<span class="jev-wf-badge" data-rhythm-trace>节奏：${escapeHtml(rtSummary)}</span>`);
   }
+  const mf = message.merged_followups && typeof message.merged_followups === "object" ? message.merged_followups : null;
+  if (mf && Number(mf.count || 0) > 0) {
+    const snips = Array.isArray(mf.snippets) ? mf.snippets.filter(Boolean).slice(0, 2).join(" / ") : "";
+    const detail = snips ? `（${snips}）` : "";
+    pills.push(`<span class="jev-wf-badge" data-tone="speak" data-merged-followups>已合并追问 ×${escapeHtml(String(mf.count))}${escapeHtml(detail)}</span>`);
+  }
+  const sa = message.slow_turn_ack && typeof message.slow_turn_ack === "object" ? message.slow_turn_ack : null;
+  if (sa && sa.mode) {
+    const modeLabel = sa.mode === "typing" ? "输入态" : "微确认";
+    pills.push(`<span class="jev-wf-badge" data-slow-turn-ack>长耗时轻态：${escapeHtml(modeLabel)} (${escapeHtml(String(sa.elapsed_seconds ?? ""))}s)</span>`);
+  }
   return pills.length ? `<div class="jev-waterfall-strip" data-message-diagnostics>${pills.join("")}</div>` : "";
 }
 

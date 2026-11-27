@@ -2964,10 +2964,73 @@ class PersonaEngine:
                     reply_tasks.add(outer_task)
                     _reply_gen_scope.callback(reply_tasks.discard, outer_task)
 
+                slow_ack_sent = False
+                slow_ack_eligible = (
+                    not item.shadow
+                    and (turn.mandatory_reply or turn.wake_kind == "quote" or item.private_direct)
+                    and bool(getattr(p._runtime_config, "slow_turn_ack_enabled", True))
+                    and float(getattr(p._runtime_config, "slow_turn_ack_seconds", 8.0) or 0.0) > 0.0
+                )
+                slow_ack_delay = float(getattr(p._runtime_config, "slow_turn_ack_seconds", 8.0) or 8.0)
+
                 while True:
+                    slow_ack_task: asyncio.Task | None = None
                     try:
                         p._metric("native_agent_started")
                         generation_started = time.monotonic()
+                        if slow_ack_eligible and not slow_ack_sent:
+                            async def _slow_turn_ack_watchdog(
+                                _delay: float = slow_ack_delay,
+                                _started: float = generation_started,
+                                _ev: Any = event,
+                                _item: ModelTurn = item,
+                            ) -> None:
+                                nonlocal slow_ack_sent
+                                try:
+                                    await asyncio.sleep(_delay)
+                                except asyncio.CancelledError:
+                                    return
+                                if slow_ack_sent or getattr(p, "_shutting_down", False):
+                                    return
+                                if self._is_turn_recalled(runtime, _item) or not await self.valid_async(runtime, _item, stage="slow_ack"):
+                                    return
+                                fs_map = getattr(runtime, "reply_first_sentence_sent", None)
+                                if isinstance(fs_map, dict) and int(fs_map.get(turn.author, 0) or 0) > 0:
+                                    return
+                                from .platform_bridge import try_send_typing_status
+
+                                ack_mode = ""
+                                typed = await try_send_typing_status(
+                                    _ev,
+                                    group_id=str(getattr(runtime, "group_id", "") or ""),
+                                    user_id=str(turn.author or ""),
+                                )
+                                if typed:
+                                    ack_mode = "typing"
+                                else:
+                                    async with runtime.send_lock:
+                                        if (
+                                            slow_ack_sent
+                                            or self._is_turn_recalled(runtime, _item)
+                                            or not await self.valid_async(runtime, _item, stage="slow_ack")
+                                        ):
+                                            return
+                                        sent_ack = await p._send_owned(runtime, _ev, "稍等一下，我在看…")
+                                        if sent_ack.success:
+                                            ack_mode = "micro_ack"
+                                if ack_mode:
+                                    slow_ack_sent = True
+                                    elapsed = max(0.0, time.monotonic() - _started)
+                                    p._metric("slow_turn_ack_sent")
+                                    for nd in _item.outcome_nodes:
+                                        if nd is not None and isinstance(getattr(nd, "metadata", None), dict):
+                                            nd.metadata["slow_turn_ack"] = {
+                                                "mode": ack_mode,
+                                                "elapsed_seconds": round(elapsed, 2),
+                                            }
+
+                            slow_ack_task = asyncio.create_task(_slow_turn_ack_watchdog())
+
                         frame, tone_rows = tone_context.for_reply(turn, runtime.jev_decision.get("interaction_frame"), p, event)
                         reply_prompt_json = group_ecosystem.augment_reply_prompt(
                             dynamics_horizons.augment_reply(
@@ -3039,6 +3102,10 @@ class PersonaEngine:
                         p._metric("native_agent_failed")
                         p._metric("llm_reply_failed")
                         raise
+                    finally:
+                        if slow_ack_task is not None and not slow_ack_task.done():
+                            slow_ack_task.cancel()
+                            await asyncio.gather(slow_ack_task, return_exceptions=True)
 
                     # Smart follow-up merge: if the same speaker sent substantive follow-up(s)
                     # before the first sentence was sent, merge and regenerate at most ONCE.
@@ -3105,6 +3172,14 @@ class PersonaEngine:
                                     if callable(getattr(runtime, "drop_merged_model_turns", None)):
                                         runtime.drop_merged_model_turns(turn.author, merged_id_set)
                                     await p.debounce.discard(runtime.session_key, user_id=turn.author)
+                                    merge_trace = {
+                                        "count": len(merged_followups),
+                                        "message_ids": sorted(merged_id_set)[:4],
+                                        "snippets": [t[:120] for t in extra_texts[:4]],
+                                    }
+                                    for orig_node in item.outcome_nodes:
+                                        if orig_node is not None and isinstance(getattr(orig_node, "metadata", None), dict):
+                                            orig_node.metadata["merged_followups"] = dict(merge_trace)
                                     merged_text = "\n".join([turn.text, *extra_texts])
                                     turn = replace(
                                         turn,

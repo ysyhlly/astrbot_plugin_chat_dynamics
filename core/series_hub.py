@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import contextvars
 import copy
 import hashlib
 import inspect
@@ -12,6 +13,9 @@ import json
 import math
 import threading
 import time
+import uuid
+from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1670,7 +1674,189 @@ def build_series_health(plugin: Any) -> dict[str, Any]:
         },
         "host_default_provider": host_default,
         "series_panels_sync": panels_sync,
+        "event_bus": event_bus_diagnostics(plugin),
         "environment_warnings": env_warnings,
         "plugins": plugins_out,
         "issues": all_issues,
     }
+
+
+# ---------------------------------------------------------------------------
+# Wave 3: Public Dynamics Event Bus
+# ---------------------------------------------------------------------------
+
+STANDARD_DYNAMICS_EVENTS: tuple[str, ...] = (
+    "topic_archived",
+    "vibe_transition",
+    "session_quiet_window",
+    "game_state_changed",
+    "milestone_achieved",
+)
+_EVENT_BUS_STACK: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "chat_dynamics_event_bus_stack", default=()
+)
+_EVENT_BUS_MAX_DEPTH = 3
+_EVENT_BUS_CALLBACK_TIMEOUT = 1.5
+_EVENT_BUS_RECENT_MAX = 60
+_EVENT_BUS_24H_SECONDS = 86400.0
+
+
+class DynamicsEventBus:
+    """In-process pub/sub event bus with error/timeout isolation, loop guard, and 24h diagnostics."""
+
+    def __init__(self, *, callback_timeout: float = _EVENT_BUS_CALLBACK_TIMEOUT) -> None:
+        self._lock = threading.RLock()
+        self._callback_timeout = max(0.05, float(callback_timeout))
+        # token -> {"event_type": str, "callback": Callable, "owner": str, "created_at": str}
+        self._subs: dict[str, dict[str, Any]] = {}
+        self._recent: deque[dict[str, Any]] = deque(maxlen=_EVENT_BUS_RECENT_MAX)
+        self._emit_timestamps: dict[str, deque[float]] = {
+            ev: deque(maxlen=2000) for ev in STANDARD_DYNAMICS_EVENTS
+        }
+        self._error_count = 0
+        self._timeout_count = 0
+        self._recursion_blocked_count = 0
+
+    def subscribe(
+        self,
+        event_type: str,
+        callback: Callable[[dict[str, Any]], Awaitable[None] | None],
+        *,
+        owner: str = "",
+    ) -> str:
+        clean_type = str(event_type or "").strip()
+        if not clean_type:
+            raise ValueError("event_type is required")
+        if not callable(callback):
+            raise ValueError("callback must be callable")
+        token = f"evt_{uuid.uuid4().hex[:12]}"
+        with self._lock:
+            self._subs[token] = {
+                "event_type": clean_type,
+                "callback": callback,
+                "owner": str(owner or "").strip()[:64] or "anonymous",
+                "created_at": _now_iso(),
+            }
+        return token
+
+    def unsubscribe(self, token: str) -> bool:
+        clean = str(token or "").strip()
+        if not clean:
+            return False
+        with self._lock:
+            return self._subs.pop(clean, None) is not None
+
+    async def emit(self, event_type: str, payload: dict[str, Any]) -> int:
+        clean_type = str(event_type or "").strip()
+        if not clean_type:
+            return 0
+        stack = _EVENT_BUS_STACK.get()
+        if len(stack) >= _EVENT_BUS_MAX_DEPTH or clean_type in stack:
+            with self._lock:
+                self._recursion_blocked_count += 1
+            return 0
+
+        safe_payload = dict(payload) if isinstance(payload, dict) else {"value": payload}
+        safe_payload.setdefault("event_type", clean_type)
+        now_wall = time.time()
+
+        with self._lock:
+            matched = [
+                dict(entry, token=tok)
+                for tok, entry in self._subs.items()
+                if entry["event_type"] == clean_type or entry["event_type"] == "*"
+            ]
+            bucket = self._emit_timestamps.setdefault(clean_type, deque(maxlen=2000))
+            bucket.append(now_wall)
+
+        delivered = 0
+        errors = 0
+        reset_tok = _EVENT_BUS_STACK.set((*stack, clean_type))
+        try:
+            for sub in matched:
+                cb = sub["callback"]
+                call_payload = copy.deepcopy(safe_payload)
+                try:
+                    if inspect.iscoroutinefunction(cb):
+                        await asyncio.wait_for(cb(call_payload), timeout=self._callback_timeout)
+                    else:
+                        res = cb(call_payload)
+                        if inspect.isawaitable(res):
+                            await asyncio.wait_for(res, timeout=self._callback_timeout)
+                    delivered += 1
+                except (asyncio.TimeoutError, TimeoutError):
+                    errors += 1
+                    with self._lock:
+                        self._timeout_count += 1
+                        self._error_count += 1
+                except Exception:
+                    errors += 1
+                    with self._lock:
+                        self._error_count += 1
+        finally:
+            _EVENT_BUS_STACK.reset(reset_tok)
+
+        summary_bits: list[str] = []
+        for k in ("title", "summary", "new_vibe", "phase", "topic_id"):
+            val = safe_payload.get(k)
+            if isinstance(val, str) and val.strip():
+                summary_bits.append(f"{k}={val.strip()[:48]}")
+        with self._lock:
+            self._recent.append(
+                {
+                    "ts": _now_iso(),
+                    "event_type": clean_type,
+                    "umo": str(safe_payload.get("umo") or "")[:96],
+                    "delivered": delivered,
+                    "subscribers": len(matched),
+                    "errors": errors,
+                    "summary": " · ".join(summary_bits)[:140],
+                }
+            )
+        return delivered
+
+    def diagnostics(self) -> dict[str, Any]:
+        cutoff = time.time() - _EVENT_BUS_24H_SECONDS
+        with self._lock:
+            by_event: dict[str, int] = {ev: 0 for ev in STANDARD_DYNAMICS_EVENTS}
+            owners: set[str] = set()
+            for entry in self._subs.values():
+                et = entry["event_type"]
+                by_event[et] = by_event.get(et, 0) + 1
+                owners.add(entry["owner"])
+
+            counts_24h: dict[str, int] = {}
+            total_24h = 0
+            for et, dq in self._emit_timestamps.items():
+                while dq and dq[0] < cutoff:
+                    dq.popleft()
+                c = len(dq)
+                counts_24h[et] = c
+                total_24h += c
+
+            return {
+                "subscription_count": len(self._subs),
+                "subscribers_by_event": by_event,
+                "owners": sorted(owners),
+                "counts_24h": counts_24h,
+                "total_emitted_24h": total_24h,
+                "error_count": self._error_count,
+                "timeout_count": self._timeout_count,
+                "recursion_blocked_count": self._recursion_blocked_count,
+                "recent_events": list(reversed(self._recent))[:20],
+            }
+
+
+def get_event_bus(plugin: Any) -> DynamicsEventBus:
+    bus = getattr(plugin, "event_bus", None)
+    if not isinstance(bus, DynamicsEventBus):
+        bus = DynamicsEventBus()
+        try:
+            setattr(plugin, "event_bus", bus)
+        except Exception:
+            pass
+    return bus
+
+
+def event_bus_diagnostics(plugin: Any) -> dict[str, Any]:
+    return get_event_bus(plugin).diagnostics()

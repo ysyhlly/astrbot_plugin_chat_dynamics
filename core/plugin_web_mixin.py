@@ -349,10 +349,55 @@ class PluginWebAndAdminMixin:
         self._prune_native_contexts()
         self.arbiter.prune_cooling(current_time=now)
         topics_changed = False
+        schedule_event = getattr(self, "_schedule_dynamics_event", None)
         for runtime in self._sessions.values():
             if not runtime.state_lock.locked():
                 runtime.recent_images.prune(now)
-                topics_changed = runtime.routing_state.expire_topics(runtime.dag, now) or topics_changed
+
+                def _emit_archived(archived_entry: Any, topic: Any, _rt: Any = runtime) -> None:
+                    if not callable(schedule_event):
+                        return
+                    umo = str(getattr(_rt, "umo", "") or getattr(_rt, "session_key", "") or "")
+                    summary = str(
+                        getattr(archived_entry, "summary", "")
+                        or getattr(archived_entry, "title", "")
+                        or getattr(topic, "generated_title", "")
+                        or getattr(topic, "label", "")
+                        or ""
+                    )[:240]
+                    schedule_event(
+                        "topic_archived",
+                        {
+                            "umo": umo,
+                            "topic_id": str(getattr(topic, "topic_id", "") or ""),
+                            "summary": summary,
+                            "participants": sorted(str(p) for p in (getattr(topic, "participants", ()) or ()))[:24],
+                            "message_count": len(getattr(topic, "message_ids", ()) or ()),
+                            "ended_at": float(now),
+                        },
+                    )
+
+                topics_changed = (
+                    runtime.routing_state.expire_topics(runtime.dag, now, on_archived=_emit_archived)
+                    or topics_changed
+                )
+            last_act = float(getattr(runtime, "last_activity", 0.0) or 0.0)
+            quiet_sec = now - last_act if last_act > 0.0 else 0.0
+            if (
+                callable(schedule_event)
+                and last_act > 0.0
+                and quiet_sec >= 300.0
+                and float(getattr(runtime, "last_quiet_event_at", 0.0) or 0.0) < last_act
+            ):
+                runtime.last_quiet_event_at = now
+                schedule_event(
+                    "session_quiet_window",
+                    {
+                        "umo": str(getattr(runtime, "umo", "") or getattr(runtime, "session_key", "") or ""),
+                        "quiet_seconds": round(quiet_sec, 1),
+                        "last_activity_at": last_act,
+                    },
+                )
         if topics_changed:
             self._mark_panel_runtime_dirty()
         debounce_activity, debounce_active = self.debounce.session_activity_snapshot()

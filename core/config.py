@@ -172,6 +172,8 @@ class RuntimeConfig:
     force_refine_host_caption: bool = False
     isolate_volatile_system_tail: bool = True
     pending_input_soft_timeout: float = 12.0
+    slow_turn_ack_enabled: bool = True
+    slow_turn_ack_seconds: float = 8.0
     light_analysis_provider: str = ""
     vision_provider: str = ""
     rerank_provider: str = ""
@@ -546,6 +548,10 @@ def parse_runtime_config(raw: Any) -> Tuple[RuntimeConfig, tuple[str, ...]]:
         isolate_volatile_system_tail=_bool(_get(raw, "isolate_volatile_system_tail", True), True),
         pending_input_soft_timeout=_number(
             raw, "pending_input_soft_timeout", 12.0, lambda value: 0 <= value <= 60, warnings
+        ),
+        slow_turn_ack_enabled=_bool(_get(raw, "slow_turn_ack_enabled", True), True),
+        slow_turn_ack_seconds=_number(
+            raw, "slow_turn_ack_seconds", 8.0, lambda value: 0 <= value <= 60, warnings
         ),
         light_analysis_provider=str(_get(raw, "light_analysis_provider", "") or "").strip(),
         vision_provider=str(_get(raw, "vision_provider", "") or "").strip(),

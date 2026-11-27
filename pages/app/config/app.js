@@ -110,6 +110,8 @@ const CONFIG_GROUPS = [
       "reply_provider",
       "reply_timeout",
       "reply_first_sentence_enabled",
+      "slow_turn_ack_enabled",
+      "slow_turn_ack_seconds",
       "stream_safe_strip_tools",
       "history_cache_high_rounds",
       "history_cache_low_rounds",

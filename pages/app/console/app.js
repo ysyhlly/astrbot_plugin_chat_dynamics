@@ -95,6 +95,12 @@ const els = {
   shadowBorderlineList: document.getElementById("shadowBorderlineList"),
   btnShadowGoLive: document.getElementById("btnShadowGoLive"),
   shadowGoLiveNote: document.getElementById("shadowGoLiveNote"),
+  eventBusStatus: document.getElementById("eventBusStatus"),
+  eventBusSubCount: document.getElementById("eventBusSubCount"),
+  eventBus24hCount: document.getElementById("eventBus24hCount"),
+  eventBusErrCount: document.getElementById("eventBusErrCount"),
+  eventBusCountsByType: document.getElementById("eventBusCountsByType"),
+  eventBusRecentList: document.getElementById("eventBusRecentList"),
 };
 
 let presetCatalogCache = {};
@@ -446,6 +452,7 @@ function renderOverview(data) {
   }
   const partner = safeData.selflearning || {};
   renderIntegrations(safeData.selflearning);
+  renderEventBus(safeData.event_bus);
   renderDecisionLayer(safeData.jev);
   if (els.statPartner) els.statPartner.textContent = partner.lamp || partner.status || "—";
   if (els.statPartnerHint) {
@@ -618,6 +625,31 @@ function endOperation(token, kind) {
   operationSessionId = "";
   setOperationLabel(kind, false);
   updateManagementControls();
+}
+
+function renderEventBus(bus) {
+  if (!els.eventBusSubCount) return;
+  const info = bus && typeof bus === "object" ? bus : {};
+  const subs = Number(info.subscription_count || 0);
+  const total24h = Number(info.total_emitted_24h || 0);
+  const errs = Number(info.error_count || 0);
+  els.eventBusSubCount.textContent = String(subs);
+  if (els.eventBus24hCount) els.eventBus24hCount.textContent = String(total24h);
+  if (els.eventBusErrCount) els.eventBusErrCount.textContent = String(errs);
+  if (els.eventBusStatus) {
+    els.eventBusStatus.textContent = subs > 0 ? `已接入 ${subs} 个订阅` : "待命";
+  }
+  if (els.eventBusCountsByType) {
+    const counts = info.counts_24h && typeof info.counts_24h === "object" ? info.counts_24h : {};
+    const parts = Object.entries(counts).map(([k, v]) => `${k}: ${Number(v || 0)}`);
+    els.eventBusCountsByType.textContent = parts.length ? `24h 分类触发：${parts.join(" · ")}` : "暂无近 24h 事件触发";
+  }
+  if (els.eventBusRecentList) {
+    const rows = Array.isArray(info.recent_events) ? info.recent_events.slice(0, 12) : [];
+    els.eventBusRecentList.innerHTML = rows.length
+      ? rows.map((row) => `<li><b>${escapeHtml(row.event_type || "—")}</b> · ${escapeHtml(row.ts || "")} · 投递 ${escapeHtml(String(row.delivered ?? 0))}/${escapeHtml(String(row.subscribers ?? 0))}${row.summary ? ` · ${escapeHtml(row.summary)}` : ""}</li>`).join("")
+      : `<li class="ops-note">${escapeHtml(tr("暂无近期事件记录"))}</li>`;
+  }
 }
 
 function renderShadowHealth(health) {

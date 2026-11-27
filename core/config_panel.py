@@ -210,6 +210,8 @@ class ConfigPanel:
             "debounce_max_cap": getattr(cfg, "debounce_max_cap", 4.0),
             "pending_input_timeout": cfg.pending_input_timeout,
             "pending_input_soft_timeout": float(getattr(cfg, "pending_input_soft_timeout", 12.0)),
+            "slow_turn_ack_enabled": bool(getattr(cfg, "slow_turn_ack_enabled", True)),
+            "slow_turn_ack_seconds": float(getattr(cfg, "slow_turn_ack_seconds", 8.0)),
             "strong_addressivity_threshold": getattr(cfg, "strong_addressivity_threshold", 0.7),
             "safe_hover_threshold": getattr(cfg, "safe_hover_threshold", 0.4),
             "deep_cooling_minutes": getattr(cfg, "deep_cooling_minutes", 15.0),

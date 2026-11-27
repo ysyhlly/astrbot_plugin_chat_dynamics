@@ -87,6 +87,7 @@ class VibeAnalyzer:
         self._mode_sources: Dict[str, str] = {}
         # Optional external async LLM analyzer callback for hybrid mode
         self.llm_intent_analyzer: Optional[Callable[[str, str], Awaitable[Optional[GroupChatMode]]]] = None
+        self.on_mode_transition: Optional[Callable[[str, str, str], None]] = None
         self._last_llm_snapshot_time: Dict[str, float] = {}
         self._llm_snapshot_counts: Dict[str, int] = {}
 
@@ -124,9 +125,15 @@ class VibeAnalyzer:
 
     def get_mode(self, session_id: str, current_time: Optional[float] = None) -> GroupChatMode:
         """Evaluates mode, commits hysteresis, and returns the active GroupChatMode."""
+        prev_mode = self._current_modes.get(session_id)
         new_mode = self._evaluate_mode(session_id, current_time=current_time)
         self._current_modes[session_id] = new_mode
         self._mode_sources[session_id] = "telemetrics"
+        if prev_mode is not None and prev_mode != new_mode and callable(self.on_mode_transition):
+            try:
+                self.on_mode_transition(session_id, prev_mode.value, new_mode.value)
+            except Exception:
+                pass
         return new_mode
 
     def _evaluate_mode(self, session_id: str, current_time: Optional[float] = None) -> GroupChatMode:
@@ -178,8 +185,14 @@ class VibeAnalyzer:
 
     def set_mode(self, session_id: str, mode: GroupChatMode, source: str = "manual") -> None:
         """Manually overrides or sets mode (e.g. from LLM analyzer snapshot)."""
+        prev_mode = self._current_modes.get(session_id)
         self._current_modes[session_id] = mode
         self._mode_sources[session_id] = str(source or "manual")
+        if prev_mode is not None and prev_mode != mode and callable(self.on_mode_transition):
+            try:
+                self.on_mode_transition(session_id, prev_mode.value, mode.value)
+            except Exception:
+                pass
 
     def mode_source(self, session_id: str) -> str:
         return self._mode_sources.get(session_id, "telemetrics")

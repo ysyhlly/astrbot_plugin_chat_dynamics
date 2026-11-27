@@ -1175,6 +1175,29 @@
       "show_advanced_options": true
     }
   },
+  "slow_turn_ack_enabled": {
+    "description": "长耗时回合轻态感知（输入态 / 微确认）",
+    "type": "bool",
+    "default": true,
+    "hint": "对真实 @、引用或私聊触发的长耗时回合，超过阈值仍未出首句时优先触发平台输入态，不支持时发送 1 次极短微确认，避免用户干等。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
+  "slow_turn_ack_seconds": {
+    "description": "长耗时回合轻态感知阈值 (秒)",
+    "type": "float",
+    "default": 8.0,
+    "slider": {
+      "min": 0,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "真实 @ / 引用 / 私聊进入回复生成后超过该秒数仍未出首句，则触发一次输入态或极短微确认（默认 8 秒，设为 0 关闭）。",
+    "condition": {
+      "show_advanced_options": true
+    }
+  },
   "chars_per_second": {
     "description": "模拟打字速率 (字/秒)",
     "type": "float",

@@ -1299,3 +1299,48 @@ def as_send_result(result: Any, *, onebot: bool = False) -> SendResult:
     if isinstance(result, str) and result.strip():
         return SendResult(True, result)
     return SendResult(True, _receipt_message_id(result))
+
+
+async def try_send_typing_status(
+    event: Any,
+    *,
+    group_id: str = "",
+    user_id: str = "",
+    timeout: float = 1.5,
+) -> bool:
+    """Best-effort platform typing indicator (e.g. OneBot set_input_status); never raises."""
+    if event is None:
+        return False
+    bot = getattr(event, "bot", None)
+    if bot is None:
+        return False
+    payload: dict[str, Any] = {"event_type": 1}
+    if user_id and str(user_id).isdigit():
+        payload["user_id"] = int(user_id)
+    elif user_id:
+        payload["user_id"] = str(user_id)
+    if group_id and str(group_id).isdigit():
+        payload["group_id"] = int(group_id)
+    elif group_id:
+        payload["group_id"] = str(group_id)
+
+    candidates = [
+        getattr(bot, "set_input_status", None),
+        getattr(bot, "call_action", None),
+        getattr(getattr(bot, "api", None), "call_action", None),
+    ]
+    for idx, fn in enumerate(candidates):
+        if not callable(fn):
+            continue
+        try:
+            res = fn(**payload) if idx == 0 else fn("set_input_status", **payload)
+            if inspect.isawaitable(res):
+                res = await asyncio.wait_for(res, timeout=timeout)
+            if isinstance(res, dict):
+                status = str(res.get("status") or "").lower()
+                if status in {"failed", "error"} or res.get("retcode") not in (None, 0):
+                    continue
+            return True
+        except Exception:
+            continue
+    return False

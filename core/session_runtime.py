@@ -122,19 +122,24 @@ class RoutingState:
             # label: Jev can still match its cached summary during the next hour.
             topic.message_ids = [mid for mid in topic.message_ids if mid in dag.nodes]
 
-    def expire_topics(self, dag: Any, now: float) -> bool:
+    def expire_topics(self, dag: Any, now: float, *, on_archived: Any = None) -> bool:
         expired = False
         excess = set(t.topic_id for t in sorted(self.topics.values(), key=lambda t: t.updated_at, reverse=True)[MAX_ACTIVE_TOPICS:])
         for key, topic in list(self.topics.items()):
             if key not in excess and now - (topic.human_updated_at or topic.updated_at) <= TOPIC_IDLE_SECONDS:
                 continue
-            self.archive.archive(topic, dag, now)
+            archived_entry = self.archive.archive(topic, dag, now)
             del self.topics[key]
             if self.last_topic_id == key:
                 self.last_topic_id = None
             if self.last_bot_topic_id == key:
                 self.last_bot_topic_id = None
             expired = True
+            if callable(on_archived):
+                try:
+                    on_archived(archived_entry, topic)
+                except Exception:
+                    pass
         previous_archives = set(self.archive.entries)
         self.archive.prune(now)
         return expired or previous_archives != set(self.archive.entries)
@@ -258,6 +263,7 @@ class SessionRuntime:
     pending_reply_followups: Dict[str, list[Dict[str, Any]]] = field(default_factory=dict, repr=False)
     merged_followup_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=256), repr=False)
     merged_followup_id_set: Set[str] = field(default_factory=set, repr=False)
+    last_quiet_event_at: float = 0.0
     user_revisions: Dict[str, int] = field(default_factory=dict)
     recent_images: RecentImages = field(default_factory=RecentImages, repr=False)
     interaction_state: str = "observing"
