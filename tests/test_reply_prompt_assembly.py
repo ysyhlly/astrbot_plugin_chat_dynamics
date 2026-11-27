@@ -409,8 +409,8 @@ async def test_private_silence_and_internal_permissions(monkeypatch, tmp_path):
         and not private.result.chains
         and not private.result.text
     )
-    assert "[不回时的展示范围]" in system_text(private.body)
-    assert "其余场景选 silent 保持完全静默" in system_text(private.body)
+    assert "[回应方式协议]" in system_text(private.body)
+    assert "仅在被明确 @ 触发强制回应时才会对外发出该旁白，其余场景完全静默" in system_text(private.body)
     assert GROUP_RULES not in system_text(private.body)
     serialized_internal = json.dumps(internal.body, ensure_ascii=False)
     assert "private-only" not in serialized_internal
